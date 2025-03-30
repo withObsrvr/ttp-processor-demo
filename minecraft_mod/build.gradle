@@ -1,0 +1,83 @@
+plugins {
+    id 'fabric-loom' version '1.4-SNAPSHOT'
+    id 'maven-publish'
+    id 'com.google.protobuf' version '0.9.4'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+repositories {
+    // Add repositories to retrieve artifacts from in here.
+    mavenCentral()
+    // Fabric's repository for Fabric API
+    maven { url 'https://maven.fabricmc.net/' }
+    // For grpc
+    maven { url 'https://repo.maven.apache.org/maven2/' }
+}
+
+dependencies {
+    // Minecraft and Fabric API
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+
+    // GRPC for communication with the TTP processor
+    implementation 'io.grpc:grpc-netty-shaded:1.59.0'
+    implementation 'io.grpc:grpc-protobuf:1.59.0'
+    implementation 'io.grpc:grpc-stub:1.59.0'
+    implementation 'javax.annotation:javax.annotation-api:1.3.2'
+    implementation 'com.google.protobuf:protobuf-java:3.25.1'
+}
+
+protobuf {
+    protoc {
+        artifact = 'com.google.protobuf:protoc:3.25.1'
+    }
+    plugins {
+        grpc {
+            artifact = 'io.grpc:protoc-gen-grpc-java:1.59.0'
+        }
+    }
+    generateProtoTasks {
+        all()*.plugins {
+            grpc {}
+        }
+    }
+}
+
+processResources {
+    inputs.property "version", project.version
+    filteringCharset "UTF-8"
+
+    filesMatching("fabric.mod.json") {
+        expand "version": project.version
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    // Ensure JDK compatibility
+    it.options.release = 17
+}
+
+java {
+    // Enables generating Javadoc jars
+    withSourcesJar()
+    withJavadocJar()
+}
+
+jar {
+    from("LICENSE") {
+        rename { "${it}_${project.archivesBaseName}" }
+    }
+}
+
+// Configure publishing
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+        }
+    }
+} 

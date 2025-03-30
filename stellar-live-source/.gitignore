@@ -1,0 +1,16 @@
+# Generated code directories
+**/gen/
+
+# Binary
+stellar_live_source_server
+
+# Environment file
+.env
+
+# OS specific
+.DS_Store
+*.swp
+*.swo
+
+# IDE specific
+.vscode/

@@ -1,0 +1,20 @@
+# Generated code directories
+**/gen/
+
+# Binary
+ttp_processor_server
+
+# Vendored/Copied protos from other services/libs
+protos/raw_ledger_service/
+protos/ingest/
+
+# Environment file
+.env
+
+# OS specific
+.DS_Store
+*.swp
+*.swo
+
+# IDE specific
+.vscode/

@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package token_transfer_service;
+
+// Import the definition of the event we will stream
+// Path is relative to the --proto_path specified in protoc command (./protos)
+import "ingest/processors/token_transfer/token_transfer_event.proto";
+
+// Define the Go package path where generated code will live
+// This should match the module path + /gen/event_service
+option go_package = "ttp-processor/gen/event_service";
+
+// The service providing token transfer events
+service EventService {
+    // GetTTPEvents requests a stream of token transfer events for a given ledger range.
+    // If end_ledger is 0 or less than start_ledger, the stream is potentially infinite (live).
+    rpc GetTTPEvents(GetEventsRequest) returns (stream token_transfer.TokenTransferEvent) {}
+}
+
+// Request message for GetTTPEvents
+message GetEventsRequest {
+    uint32 start_ledger = 1; // The first ledger sequence number to include
+    uint32 end_ledger = 2;   // The last ledger sequence number to include (inclusive). If 0 or < start_ledger, indicates a live stream.
+}
