@@ -1,11 +1,11 @@
-#!/bin/bash
+#!/usr/bin/bash
 set -e
 
 # This script copies the necessary proto files from the cli_tool to the Minecraft mod
 # and prepares them for Java code generation
 
 # Base directories
-CLI_TOOL_DIR="../cli_tool"
+CLI_TOOL_DIR="../ttp-processor"
 PROTOS_DIR="src/main/proto"
 
 # Create the necessary directories

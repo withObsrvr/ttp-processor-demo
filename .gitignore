@@ -17,3 +17,5 @@ ttp_grpc_server
 *.swo
 
 .DS_Store
+.gradle
+**/minecraft_mod/build/
