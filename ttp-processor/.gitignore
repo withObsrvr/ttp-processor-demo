@@ -5,8 +5,8 @@
 ttp_processor_server
 
 # Vendored/Copied protos from other services/libs
-protos/raw_ledger_service/
-protos/ingest/
+# protos/raw_ledger_service/
+# protos/ingest/
 
 # Environment file
 .env

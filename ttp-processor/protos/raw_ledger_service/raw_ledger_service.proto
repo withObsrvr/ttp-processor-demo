@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package raw_ledger_service;
+
+// Replace with your actual Go module path structure
+option go_package = "stellar-live-source/gen/go/raw_ledger_service";
+
+// Message containing raw ledger metadata
+message RawLedger {
+    uint32 sequence = 1;
+    bytes ledger_close_meta_xdr = 2; // Raw XDR bytes of LedgerCloseMeta
+}
+
+// Request to start streaming raw ledgers
+message StreamLedgersRequest {
+    uint32 start_ledger = 1;
+    // End ledger is omitted - service streams indefinitely from start
+}
+
+// The service definition for streaming raw ledgers
+service RawLedgerService {
+    // Streams raw ledgers starting from a specific sequence indefinitely
+    rpc StreamRawLedgers(StreamLedgersRequest) returns (stream RawLedger) {}
+}
