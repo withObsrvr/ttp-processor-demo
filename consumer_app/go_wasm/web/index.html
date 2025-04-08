@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TTP Consumer Go WASM Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        pre {
+            background-color: #f5f5f5;
+            padding: 10px;
+            border-radius: 5px;
+            overflow: auto;
+            max-height: 400px;
+        }
+        button {
+            padding: 8px 12px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        input {
+            padding: 8px;
+            margin-right: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            margin-right: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>TTP Consumer Go WASM Demo</h1>
+    
+    <div class="form-group">
+        <label for="server-address">Server Address:</label>
+        <input type="text" id="server-address" value="localhost:50054">
+        <button id="use-mock-btn">Use Mock</button>
+        <div style="font-size: 12px; margin-top: 5px;">
+            <strong>Note:</strong> For real server, try these options:
+            <ul>
+                <li><code>mock</code> - Use mock data</li>
+                <li><code>localhost:50054</code> - Direct connection (might not work in browser)</li>
+            </ul>
+        </div>
+    </div>
+    
+    <div class="form-group">
+        <label for="start-ledger">Start Ledger:</label>
+        <input type="number" id="start-ledger" value="1">
+        
+        <label for="end-ledger">End Ledger:</label>
+        <input type="number" id="end-ledger" value="10">
+    </div>
+    
+    <div class="form-group">
+        <button id="get-events-btn">Get Events</button>
+        <button id="cleanup-btn">Cleanup</button>
+        <button id="clear-log">Clear Log</button>
+    </div>
+    
+    <h2>Events Log:</h2>
+    <pre id="events-log"></pre>
+    
+    <script src="wasm_exec.js"></script>
+    <script>
+        // Initialize WebAssembly
+        const go = new Go();
+        let wasmInstance = null;
+        
+        async function initWasm() {
+            try {
+                const result = await WebAssembly.instantiateStreaming(
+                    fetch("consumer_wasm.wasm"), 
+                    go.importObject
+                );
+                wasmInstance = result.instance;
+                go.run(wasmInstance);
+                
+                logMessage("WebAssembly module loaded successfully");
+            } catch (error) {
+                console.error("Failed to load WebAssembly module:", error);
+                logMessage(`Error loading WebAssembly: ${error.message}`);
+            }
+        }
+        
+        // DOM elements
+        const serverAddressInput = document.getElementById('server-address');
+        const startLedgerInput = document.getElementById('start-ledger');
+        const endLedgerInput = document.getElementById('end-ledger');
+        const getEventsBtn = document.getElementById('get-events-btn');
+        const cleanupBtn = document.getElementById('cleanup-btn');
+        const clearLogBtn = document.getElementById('clear-log');
+        const eventsLog = document.getElementById('events-log');
+        
+        // Logging function
+        function logMessage(message) {
+            eventsLog.textContent += message + "\n";
+            eventsLog.scrollTop = eventsLog.scrollHeight;
+        }
+        
+        // Format event for display
+        function formatEvent(event) {
+            const meta = event.meta || {};
+            let output = `Event Type: ${event.eventType}\n`;
+            
+            if (meta) {
+                output += `Ledger: ${meta.ledgerSequence || 'N/A'}\n`;
+                output += `Tx Hash: ${meta.txHash || 'N/A'}\n`;
+                if (meta.contractAddress) {
+                    output += `Contract: ${meta.contractAddress}\n`;
+                }
+            }
+            
+            const data = event.data || {};
+            if (data) {
+                if (data.from) output += `From: ${data.from}\n`;
+                if (data.to) output += `To: ${data.to}\n`;
+                if (data.amount) output += `Amount: ${data.amount}\n`;
+                
+                if (data.asset) {
+                    if (data.asset.native) {
+                        output += `Asset: Native (XLM)\n`;
+                    } else if (data.asset.issuedAsset) {
+                        const issued = data.asset.issuedAsset;
+                        output += `Asset: ${issued.assetCode} (Issuer: ${issued.issuer})\n`;
+                    }
+                }
+            }
+            
+            return output;
+        }
+        
+        // Event handlers
+        getEventsBtn.addEventListener('click', async () => {
+            if (!window.getTTPEvents) {
+                logMessage("WebAssembly functions not available. Make sure the WASM module is loaded.");
+                return;
+            }
+            
+            const serverAddress = serverAddressInput.value;
+            const startLedger = startLedgerInput.value;
+            const endLedger = endLedgerInput.value;
+            
+            if (!serverAddress || !startLedger || !endLedger) {
+                logMessage("Please fill in all fields");
+                return;
+            }
+            
+            getEventsBtn.disabled = true;
+            getEventsBtn.textContent = "Getting Events...";
+            
+            try {
+                logMessage(`Getting events from ledger ${startLedger} to ${endLedger}...`);
+                
+                const result = await window.getTTPEvents(serverAddress, startLedger, endLedger);
+                
+                logMessage(`Received ${result.count} events:`);
+                
+                result.events.forEach((event, index) => {
+                    logMessage(`\n--- Event ${index + 1} ---`);
+                    logMessage(formatEvent(event));
+                });
+                
+                logMessage("\nDone fetching events.");
+            } catch (error) {
+                logMessage(`Error: ${error}`);
+                console.error(error);
+            } finally {
+                getEventsBtn.disabled = false;
+                getEventsBtn.textContent = "Get Events";
+            }
+        });
+        
+        cleanupBtn.addEventListener('click', () => {
+            if (!window.cleanupTTPClient) {
+                logMessage("WebAssembly functions not available. Make sure the WASM module is loaded.");
+                return;
+            }
+            
+            const result = window.cleanupTTPClient();
+            logMessage(result);
+        });
+        
+        clearLogBtn.addEventListener('click', () => {
+            eventsLog.textContent = '';
+        });
+        
+        // Add a "Use Mock" button handler
+        const useMockBtn = document.getElementById('use-mock-btn');
+        useMockBtn.addEventListener('click', () => {
+            serverAddressInput.value = 'mock';
+        });
+        
+        // Initialize WebAssembly on page load
+        initWasm();
+        
+        // Log browser information
+        logMessage("Browser information:");
+        logMessage(`User Agent: ${navigator.userAgent}`);
+        logMessage("Note: If you're having connection issues, try using 'mock' as the server address.");
+    </script>
+</body>
+</html> 

@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TTP Consumer WASM Demo (Simplified)</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        pre {
+            background-color: #f5f5f5;
+            padding: 10px;
+            border-radius: 5px;
+            overflow: auto;
+            max-height: 400px;
+        }
+        button {
+            padding: 8px 12px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        input {
+            padding: 8px;
+            margin-right: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            margin-right: 10px;
+        }
+        .notification {
+            background-color: #fff3cd;
+            border: 1px solid #ffeeba;
+            color: #856404;
+            padding: 10px;
+            margin-bottom: 20px;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <h1>TTP Consumer WASM Demo (Simplified)</h1>
+    
+    <div class="notification">
+        <strong>Note:</strong> This is a simplified version of the demo that doesn't include the full gRPC functionality.
+        It's intended to test that the WebAssembly module compiles and loads correctly.
+    </div>
+    
+    <div class="form-group">
+        <label for="server-address">Server Address:</label>
+        <input type="text" id="server-address" value="http://localhost:50051">
+    </div>
+    
+    <div class="form-group">
+        <button id="create-client">Create Client</button>
+        <button id="clear-log">Clear Log</button>
+    </div>
+    
+    <h2>Output:</h2>
+    <pre id="events-log"></pre>
+    
+    <script type="module">
+        // This would import the WASM module after it's built
+        // import init, { EventClient } from './pkg/ttp_consumer_wasm.js';
+        
+        // Since we can't build it now, use a placeholder
+        const placeholderInit = () => {
+            return Promise.resolve();
+        };
+        
+        class PlaceholderEventClient {
+            constructor(serverAddress) {
+                this.serverAddress = serverAddress;
+                console.log(`Created client with server address: ${serverAddress}`);
+            }
+            
+            get_info() {
+                return `EventClient connected to: ${this.serverAddress}`;
+            }
+        }
+        
+        // When the real WASM module is available, use:
+        // const { EventClient } = await init();
+        const EventClient = PlaceholderEventClient;
+        
+        // DOM elements
+        const serverAddressInput = document.getElementById('server-address');
+        const createClientButton = document.getElementById('create-client');
+        const clearLogButton = document.getElementById('clear-log');
+        const eventsLog = document.getElementById('events-log');
+        
+        // Event handlers
+        createClientButton.addEventListener('click', async () => {
+            const serverAddress = serverAddressInput.value;
+            
+            if (!serverAddress) {
+                alert('Please enter a valid server address');
+                return;
+            }
+            
+            try {
+                // Create the client
+                const client = new EventClient(serverAddress);
+                
+                // Get client info
+                const info = client.get_info();
+                eventsLog.textContent += `${info}\n`;
+                
+                eventsLog.textContent += 'Client created successfully!\n';
+            } catch (error) {
+                eventsLog.textContent += `Error: ${error.message || error}\n`;
+                console.error(error);
+            }
+        });
+        
+        clearLogButton.addEventListener('click', () => {
+            eventsLog.textContent = '';
+        });
+        
+        // Initialize
+        await placeholderInit();
+    </script>
+</body>
+</html> 
