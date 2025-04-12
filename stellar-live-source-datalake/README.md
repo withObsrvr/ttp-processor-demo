@@ -48,9 +48,8 @@ The service is configured via environment variables:
 
 1. Set required environment variables:
    ```bash
-   export STORAGE_TYPE="S3"
+   export STORAGE_TYPE="GCS"
    export BUCKET_NAME="my-stellar-ledgers"
-   export AWS_REGION="us-west-2"
    ```
 
 2. Run the service:
@@ -58,7 +57,7 @@ The service is configured via environment variables:
    make run
    ```
 
-The service will start listening on port 50051 and begin streaming ledger data when requested.
+The service will start listening on port 50052 and begin streaming ledger data when requested.
 
 ## gRPC Interface
 
@@ -82,30 +81,87 @@ The service uses:
 
 ## Development
 
-### Directory Structure
+### Module Structure
+
+The project is organized as a Go module with the following structure:
 
 ```
-stellar-live-source-datalake/
-├── protos/
-│   └── raw_ledger_service/
-│       └── raw_ledger_service.proto
-├── gen/
-│   └── raw_ledger_service/
-│       ├── raw_ledger_service.pb.go
-│       └── raw_ledger_service_grpc.pb.go
-├── server/
-│   └── server.go
-├── main.go
-├── Makefile
-└── go.mod
+github.com/withObsrvr/ttp-processor-demo/
+└── stellar-live-source-datalake/
+    ├── go/
+    │   ├── gen/
+    │   │   └── raw_ledger_service/
+    │   │       ├── raw_ledger_service.pb.go
+    │   │       └── raw_ledger_service_grpc.pb.go
+    │   ├── server/
+    │   │   └── server.go
+    │   ├── main.go
+    │   ├── go.mod
+    │   └── go.sum
+    ├── protos/
+    │   └── raw_ledger_service/
+    │       └── raw_ledger_service.proto
+    ├── Makefile
+    └── README.md
 ```
 
-### Adding New Features
+### Dependencies
 
-1. Modify the proto file in `protos/raw_ledger_service/`
-2. Regenerate gRPC code: `make generate-proto`
-3. Implement the new functionality in `server/server.go`
-4. Update tests if necessary
+The project depends on several key packages:
+
+- `github.com/withObsrvr/stellar-datastore`: For reading from various storage backends
+- `github.com/withObsrvr/stellar-cdp`: For efficient ledger processing
+- `github.com/withObsrvr/stellar-ledgerbackend`: For ledger backend functionality
+
+### Protobuf Generation
+
+The gRPC service definitions are generated from Protocol Buffer files. The generated code is placed in the `go/gen/raw_ledger_service` directory and is included in the module. To ensure proper module resolution:
+
+1. The `go/go.mod` file should have the correct module path:
+   ```go
+   module github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/go
+   ```
+
+2. The generated protobuf code should be in the correct directory structure:
+   ```
+   go/gen/raw_ledger_service/
+   ```
+
+3. Ensure the generated code is not ignored by Git (check `.gitignore`)
+
+### Building and Testing
+
+1. Generate protobuf code:
+   ```bash
+   make gen-proto
+   ```
+
+2. Update dependencies:
+   ```bash
+   cd go && go mod tidy
+   ```
+
+3. Build the service:
+   ```bash
+   make build-server
+   ```
+
+4. Run tests:
+   ```bash
+   make test
+   ```
+
+## Troubleshooting
+
+If you encounter issues with `go mod tidy` not finding the generated protobuf code:
+
+1. Verify the module path in `go/go.mod` matches your import paths
+2. Check that the generated code is in the correct directory structure
+3. Ensure the generated code is not being ignored by Git
+4. Try cleaning the module cache and rebuilding:
+   ```bash
+   cd go && go clean -modcache && go mod tidy
+   ```
 
 ## License
 
