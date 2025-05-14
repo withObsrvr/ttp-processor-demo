@@ -20,6 +20,10 @@
             
             # Use vendored dependencies for improved build reliability
             vendorHash = null;
+            # Set environment variables for go builds
+            env = {
+              GO111MODULE = "on";
+            };
             
             # Customize Go build to work with our project structure
             preBuild = ''
@@ -109,6 +113,7 @@
             
             # Disable Go workspace mode
             export GOWORK=off
+            export GO111MODULE="on"
             
             # Helper to vendor dependencies - improves build reliability
             if [ ! -d go/vendor ]; then
