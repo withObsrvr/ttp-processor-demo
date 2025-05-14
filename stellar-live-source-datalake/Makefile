@@ -1,4 +1,4 @@
-.PHONY: build clean generate-proto nix-build nix-shell nix-docker nix-docker-load nix-run vendor docker-build docker-run
+.PHONY: build clean generate-proto nix-build nix-shell nix-docker nix-docker-load nix-run vendor vendor-all docker-build docker-run
 
 # Go parameters
 GOCMD=go
@@ -84,6 +84,10 @@ test:
 vendor:
 	cd $(GO_SRC_DIR) && GOWORK=off $(GOCMD) mod tidy && GOWORK=off $(GOCMD) mod vendor
 	echo "✓ Dependencies vendored for offline builds (workspace mode disabled)"
+
+# Generate proto and vendor dependencies (all-in-one)
+vendor-all:
+	./vendor-all.sh
 
 # --- Nix-based build targets ---
 

@@ -27,15 +27,35 @@
             
             # Customize Go build to work with our project structure
             preBuild = ''
-              # Ensure go.mod in the right directory
+              # Generate protobuf files
+              echo "Generating protobuf files..."
+              
+              # First create the output directory
+              mkdir -p go/gen/raw_ledger_service
+              
+              # Run protoc directly
+              protoc \
+                --proto_path=./protos \
+                --go_out=./go/gen \
+                --go_opt=paths=source_relative \
+                --go_opt=Mraw_ledger_service/raw_ledger_service.proto=github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/gen/raw_ledger_service \
+                --go-grpc_out=./go/gen \
+                --go-grpc_opt=paths=source_relative \
+                --go-grpc_opt=Mraw_ledger_service/raw_ledger_service.proto=github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/gen/raw_ledger_service \
+                ./protos/raw_ledger_service/raw_ledger_service.proto
+                
+              echo "Updating go.mod with replace directives..."
               cd go
+              echo 'replace github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/gen/raw_ledger_service => ./gen/raw_ledger_service' >> go.mod
+              echo 'replace github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/server => ./server' >> go.mod
+              GOWORK=off go mod tidy
             '';
             
             buildPhase = ''
               runHook preBuild
               # Disable go workspace mode
               export GOWORK=off
-              pwd
+              
               
               # Build using vendored deps if available
               if [ -d "vendor" ]; then
@@ -55,7 +75,13 @@
             '';
             
             # Add any native build dependencies
-            nativeBuildInputs = [ pkgs.go ];
+            nativeBuildInputs = [ 
+              pkgs.go 
+              pkgs.protobuf
+              pkgs.protoc-gen-go
+              pkgs.protoc-gen-go-grpc
+              pkgs.gnumake
+            ];
           };
           
           # Docker image

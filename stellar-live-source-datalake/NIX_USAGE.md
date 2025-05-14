@@ -145,16 +145,43 @@ docker run --network=host \
   stellar-live-source-datalake:latest
 ```
 
+## Preparing for Nix Build
+
+Before building with Nix, you may need to generate Protocol Buffers and vendor dependencies:
+
+```bash
+# All-in-one command for protobuf generation and dependency vendoring
+make vendor-all
+
+# Or run the script directly
+./vendor-all.sh
+```
+
+This script:
+1. Generates Protocol Buffer code from .proto files
+2. Adds replace directives to go.mod
+3. Runs go mod tidy and go mod vendor with workspace mode disabled
+
+After running this, you can build with Nix:
+```bash
+nix build
+```
+
 ## Handling Network Connectivity Issues
 
 If you encounter network connectivity issues with Go dependencies:
 
-1. Vendor dependencies when online:
+1. Run the vendor-all script when you have internet:
    ```bash
-   make vendor
+   ./vendor-all.sh
    ```
 
-2. Then use the offline build mode:
+2. Then build with Nix (which will use the vendored dependencies):
+   ```bash
+   nix build
+   ```
+
+3. Or use the offline build mode:
    ```bash
    make build-server-offline
    ```
