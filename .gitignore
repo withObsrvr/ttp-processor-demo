@@ -28,6 +28,8 @@ result
 result-*
 .direnv/
 .go/
+.cache/
+.gopath/
 
 # Binary files
 stellar_live_source_datalake

@@ -11,7 +11,7 @@ RUN mkdir -p /app/bin
 RUN addgroup -g 1000 -S app && \
     adduser -u 1000 -S app -G app
 
-# Copy the binary (to be added at build time)
+# Copy the binary (built with Nix)
 COPY ./result/bin/stellar_live_source_datalake /app/bin/
 
 # Set permissions
