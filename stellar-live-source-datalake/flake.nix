@@ -13,22 +13,31 @@
       in
       {
         packages = {
-          # Binary application
-          stellar-live-source-datalake = pkgs.buildGoModule {
+          # Binary application - use a plain derivation for more direct control
+          stellar-live-source-datalake = pkgs.stdenv.mkDerivation {
             pname = "stellar-live-source-datalake";
             version = "0.1.0";
             src = ./.;
             
-            # Since we're using the vendor directory directly
-            vendorHash = null;
+            # Use Go for building
+            nativeBuildInputs = [ pkgs.go_1_22 ];
             
-            # Build the main binary
+            # Build the main binary directly
             buildPhase = ''
               echo "Building binary from $(pwd)"
               cd go
-              go build -o stellar_live_source_datalake main.go
-              cd ..
-              echo "Build complete, file size: $(ls -la go/stellar_live_source_datalake)"
+              # Ensure clean environment and module setup
+              export GOCACHE=$TMPDIR/go-cache
+              export GOPATH=$TMPDIR/go
+              
+              # Update dependencies
+              go mod tidy
+              go mod vendor
+              
+              # Build with vendor directory
+              go build -mod=vendor -o stellar_live_source_datalake main.go
+              
+              echo "Build complete, file size: $(ls -la stellar_live_source_datalake)"
             '';
 
             # Install the binary
@@ -40,34 +49,32 @@
             '';
           };
 
-          # Docker image
-          docker = pkgs.dockerTools.buildImage {
+          # Docker image using a more reliable approach
+          docker = let 
+            app = self.packages.${system}.stellar-live-source-datalake;
+          in pkgs.dockerTools.buildLayeredImage {
             name = "stellar-live-source-datalake";
             tag = "latest";
             
-            # Copy the built binary and required tools
-            copyToRoot = pkgs.buildEnv {
-              name = "image-root";
-              paths = [
-                self.packages.${system}.stellar-live-source-datalake
-                pkgs.bash
-                pkgs.coreutils
-                pkgs.cacert
-                pkgs.tzdata
-              ];
-              pathsToLink = [ "/bin" "/etc" ];
-            };
+            # Use layered image for better caching and smaller size
+            contents = [
+              app
+              pkgs.bash
+              pkgs.coreutils
+              pkgs.cacert
+              pkgs.tzdata
+            ];
             
             # Docker configuration
             config = {
-              Cmd = [ "/bin/stellar_live_source_datalake" ];
+              Cmd = [ "${app}/bin/stellar_live_source_datalake" ];
               ExposedPorts = {
                 "50052/tcp" = {}; # Main gRPC port
                 "8088/tcp" = {};  # Health check port
               };
               Env = [
                 "STORAGE_TYPE=FS"
-                "PATH=/bin"
+                "PATH=/bin:${app}/bin"
                 "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
               ];
               WorkingDir = "/";
