@@ -108,6 +108,8 @@
           
           # Shell setup for development environment
           shellHook = ''
+            # Set custom prompt
+            export PS1="\[\033[1;32m\][nix:stellar-live-datalake]\[\033[0m\] \[\033[1;34m\]\w\[\033[0m\] \[\033[1;36m\]\$\[\033[0m\] "
             echo "🚀 Stellar Live Source Datalake Development Environment"
             echo "Go version: $(go version)"
             
