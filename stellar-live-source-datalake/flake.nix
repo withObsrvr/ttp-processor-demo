@@ -35,6 +35,7 @@
               runHook preBuild
               # Disable go workspace mode
               export GOWORK=off
+              pwd
               
               # Build using vendored deps if available
               if [ -d "vendor" ]; then
