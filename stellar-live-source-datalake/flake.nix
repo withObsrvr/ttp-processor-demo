@@ -29,6 +29,9 @@
             
             buildPhase = ''
               runHook preBuild
+              # Disable go workspace mode
+              export GOWORK=off
+              
               # Build using vendored deps if available
               if [ -d "vendor" ]; then
                 go build -mod=vendor -o ../stellar_live_source_datalake main.go
@@ -104,12 +107,15 @@
             echo "🚀 Stellar Live Source Datalake Development Environment"
             echo "Go version: $(go version)"
             
+            # Disable Go workspace mode
+            export GOWORK=off
+            
             # Helper to vendor dependencies - improves build reliability
             if [ ! -d go/vendor ]; then
               echo "Vendoring dependencies..."
               cd go
-              go mod tidy
-              go mod vendor
+              GOWORK=off go mod tidy
+              GOWORK=off go mod vendor
               cd ..
             fi
             
@@ -117,9 +123,10 @@
             echo ""
             echo "Available commands:"
             echo "  make build-server      - Build the binary"
-            echo "  nix build              - Build with Nix"
-            echo "  nix build .#docker     - Build Docker image"
-            echo "  nix run                - Run the binary"
+            echo "  make nix-build         - Build with Nix"
+            echo "  make docker-build      - Build Docker image"
+            echo "  make nix-run           - Run the binary"
+            echo "  make vendor            - Vendor dependencies (with GOWORK=off)"
           '';
         };
         

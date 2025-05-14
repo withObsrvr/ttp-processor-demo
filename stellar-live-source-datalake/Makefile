@@ -30,13 +30,13 @@ all: build-server
 # Build the server
 build-server: gen-proto
 	set -e
-	cd $(GO_SRC_DIR) && $(GOBUILD) -o ../$(BINARY_NAME) main.go
+	cd $(GO_SRC_DIR) && GOWORK=off $(GOBUILD) -o ../$(BINARY_NAME) main.go
 	echo "✓ Server build completed: $(BINARY_NAME)"
 
 # Build with vendored dependencies (offline mode)
 build-server-offline:
 	set -e
-	cd $(GO_SRC_DIR) && GO111MODULE=on GOPROXY=off go build -mod=vendor -o ../$(BINARY_NAME) main.go
+	cd $(GO_SRC_DIR) && GOWORK=off GO111MODULE=on GOPROXY=off go build -mod=vendor -o ../$(BINARY_NAME) main.go
 	echo "✓ Server build completed in offline mode: $(BINARY_NAME)"
 
 # Clean build artifacts
@@ -69,7 +69,7 @@ gen-proto: init
 	# After generation, update the go.mod file to add replace directives
 	cd $(GO_SRC_DIR) && echo 'replace github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/gen/raw_ledger_service => ./gen/raw_ledger_service' >> go.mod
 	cd $(GO_SRC_DIR) && echo 'replace github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/server => ./server' >> go.mod
-	cd $(GO_SRC_DIR) && go mod tidy
+	cd $(GO_SRC_DIR) && GOWORK=off go mod tidy
 	echo "✓ Proto generation completed for stellar-live-source-datalake"
 
 # Run the server
@@ -82,8 +82,8 @@ test:
 
 # Vendor dependencies for offline builds
 vendor:
-	cd $(GO_SRC_DIR) && $(GOCMD) mod tidy && $(GOCMD) mod vendor
-	echo "✓ Dependencies vendored for offline builds"
+	cd $(GO_SRC_DIR) && GOWORK=off $(GOCMD) mod tidy && GOWORK=off $(GOCMD) mod vendor
+	echo "✓ Dependencies vendored for offline builds (workspace mode disabled)"
 
 # --- Nix-based build targets ---
 

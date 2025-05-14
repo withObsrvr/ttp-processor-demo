@@ -159,6 +159,30 @@ If you encounter network connectivity issues with Go dependencies:
    make build-server-offline
    ```
 
+## Go Workspace Mode Issues
+
+This project is configured to disable Go workspace mode (`GOWORK=off`) for all operations because:
+
+1. It resolves issues with missing modules in workspaces
+2. It ensures consistent builds regardless of workspace configuration
+3. It allows vendoring dependencies without workspace conflicts
+
+If you see errors like:
+
+```
+go: 'go mod vendor' cannot be run in workspace mode
+```
+
+The Makefile targets automatically handle this by setting `GOWORK=off` for all Go commands. If you're running Go commands directly, you can:
+
+```bash
+# For any Go command
+GOWORK=off go <command>
+
+# Example: Vendor dependencies
+GOWORK=off go mod vendor
+```
+
 ## CI Integration
 
 For CI pipelines, use the `ci-build` target in your workflow:
