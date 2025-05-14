@@ -40,15 +40,23 @@ nix build
 # The binary will be in ./result/bin/stellar_live_source_datalake
 ```
 
-### Build a Docker Image
+### Build and Create a Docker Image
+
+Due to potential issues with direct Docker image building in Nix, we provide a two-step approach:
 
 ```bash
-# Build the Docker image
-nix build .#docker
+# Option 1: Use the provided helper script (recommended)
+./build-docker.sh
 
-# Load the image into Docker
-docker load < result
+# Option 2: Build manually
+# 1. Build the binary with Nix
+nix build
+
+# 2. Build the Docker image with Docker using the provided Dockerfile
+docker build -t stellar-live-source-datalake:latest .
 ```
+
+This approach is more reliable across different environments.
 
 ## Running
 

@@ -19,8 +19,8 @@
             version = "0.1.0";
             src = ./.;
             
-            # Use Go for building
-            nativeBuildInputs = [ pkgs.go_1_22 ];
+            # Use Go for building (use the latest available version)
+            nativeBuildInputs = [ pkgs.go ];
             
             # Build the main binary directly
             buildPhase = ''
@@ -49,37 +49,8 @@
             '';
           };
 
-          # Docker image using a more reliable approach
-          docker = let 
-            app = self.packages.${system}.stellar-live-source-datalake;
-          in pkgs.dockerTools.buildLayeredImage {
-            name = "stellar-live-source-datalake";
-            tag = "latest";
-            
-            # Use layered image for better caching and smaller size
-            contents = [
-              app
-              pkgs.bash
-              pkgs.coreutils
-              pkgs.cacert
-              pkgs.tzdata
-            ];
-            
-            # Docker configuration
-            config = {
-              Cmd = [ "${app}/bin/stellar_live_source_datalake" ];
-              ExposedPorts = {
-                "50052/tcp" = {}; # Main gRPC port
-                "8088/tcp" = {};  # Health check port
-              };
-              Env = [
-                "STORAGE_TYPE=FS"
-                "PATH=/bin:${app}/bin"
-                "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
-              ];
-              WorkingDir = "/";
-            };
-          };
+          # Just alias the default package for now
+          docker = self.packages.${system}.stellar-live-source-datalake;
 
           # Default package
           default = self.packages.${system}.stellar-live-source-datalake;
@@ -96,7 +67,7 @@
         # Development environment
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
-            go_1_22
+            go            # Latest Go version
             gopls          # Go language server
             gotools        # Go tools like godoc
             go-outline

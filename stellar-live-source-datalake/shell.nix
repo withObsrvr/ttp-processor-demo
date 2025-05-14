@@ -5,7 +5,7 @@
 
 pkgs.mkShell {
   buildInputs = with pkgs; [
-    go_1_22
+    go            # Latest Go version
     gopls          # Go language server
     gotools        # Go tools like godoc
     go-outline
