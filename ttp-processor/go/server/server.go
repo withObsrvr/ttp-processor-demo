@@ -4,7 +4,8 @@ import (
 	"bytes"
 	"context"
 	"io"
-	"log"
+	"sync"
+	"time"
 
 	// Import the generated protobuf code package for the service WE PROVIDE
 	eventservice "github.com/withObsrvr/ttp-processor/gen/event_service"
@@ -14,11 +15,80 @@ import (
 	"github.com/stellar/go/ingest/processors/token_transfer"
 	"github.com/stellar/go/support/errors"
 	"github.com/stellar/go/xdr"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 )
+
+// ProcessorMetrics tracks comprehensive metrics for the TTP processor
+type ProcessorMetrics struct {
+	mu sync.RWMutex
+	// Core metrics
+	SuccessCount        int64
+	ErrorCount          int64
+	TotalProcessed      int64
+	TotalEventsEmitted  int64
+	LastError           error
+	LastErrorTime       time.Time
+	StartTime           time.Time
+	LastProcessedLedger uint32
+	ProcessingLatency   time.Duration
+}
+
+// NewProcessorMetrics creates a new metrics instance
+func NewProcessorMetrics() *ProcessorMetrics {
+	return &ProcessorMetrics{
+		StartTime: time.Now(),
+	}
+}
+
+// GetMetrics returns a copy of the current metrics
+func (m *ProcessorMetrics) GetMetrics() map[string]interface{} {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	
+	result := make(map[string]interface{})
+	result["success_count"] = m.SuccessCount
+	result["error_count"] = m.ErrorCount
+	result["total_processed"] = m.TotalProcessed
+	result["total_events_emitted"] = m.TotalEventsEmitted
+	result["uptime_seconds"] = time.Since(m.StartTime).Seconds()
+	result["last_processed_ledger"] = m.LastProcessedLedger
+	result["processing_latency_ms"] = m.ProcessingLatency.Milliseconds()
+	
+	if m.LastError != nil {
+		result["last_error"] = m.LastError.Error()
+		result["last_error_time"] = m.LastErrorTime.Format(time.RFC3339)
+		result["seconds_since_last_error"] = time.Since(m.LastErrorTime).Seconds()
+	}
+	
+	return result
+}
+
+// RecordSuccess updates metrics for successful ledger processing
+func (m *ProcessorMetrics) RecordSuccess(ledgerSequence uint32, eventCount int, processingTime time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	
+	m.SuccessCount++
+	m.TotalProcessed++
+	m.TotalEventsEmitted += int64(eventCount)
+	m.LastProcessedLedger = ledgerSequence
+	m.ProcessingLatency = processingTime
+}
+
+// RecordError updates metrics when an error occurs during processing
+func (m *ProcessorMetrics) RecordError(err error, ledgerSequence uint32) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	
+	m.ErrorCount++
+	m.LastError = err
+	m.LastErrorTime = time.Now()
+	m.LastProcessedLedger = ledgerSequence
+}
 
 // EventServer implements the EventServiceServer interface
 type EventServer struct {
@@ -28,44 +98,67 @@ type EventServer struct {
 	processor       *token_transfer.EventsProcessor  // The core TTP logic
 	rawLedgerClient rawledger.RawLedgerServiceClient // gRPC client for the raw source service
 	rawLedgerConn   *grpc.ClientConn                 // Connection to the raw source service
+	logger          *zap.Logger                      // Structured logger
+	metrics         *ProcessorMetrics                // Metrics tracking
 }
 
 // NewEventServer creates a new instance of the TTP processor server
 func NewEventServer(passphrase string, sourceServiceAddr string) (*EventServer, error) {
+	// Initialize zap logger with production configuration
+	logger, err := zap.NewProduction()
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to initialize zap logger")
+	}
+
 	processor := token_transfer.NewEventsProcessor(passphrase)
 
-	log.Printf("Attempting to connect to raw ledger source at %s", sourceServiceAddr)
+	logger.Info("connecting to raw ledger source",
+		zap.String("source_address", sourceServiceAddr))
+
 	// Set up a connection to the raw ledger source server.
 	// Using insecure credentials for this example. Use secure credentials in production.
 	conn, err := grpc.Dial(sourceServiceAddr, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
 	if err != nil {
 		return nil, errors.Wrapf(err, "did not connect to raw ledger source service at %s", sourceServiceAddr)
 	}
-	log.Printf("Successfully connected to raw ledger source service.")
+	logger.Info("successfully connected to raw ledger source service")
 
 	client := rawledger.NewRawLedgerServiceClient(conn)
 
 	return &EventServer{
 		processor:       processor,
 		rawLedgerClient: client,
-		rawLedgerConn:   conn, // Store the connection to close it later if needed
+		rawLedgerConn:   conn,
+		logger:          logger,
+		metrics:         NewProcessorMetrics(),
 	}, nil
 }
 
 // Close cleans up resources, like the connection to the source service.
 func (s *EventServer) Close() error {
-	log.Println("Closing connection to raw ledger source service...")
+	s.logger.Info("closing connection to raw ledger source service")
 	if s.rawLedgerConn != nil {
 		return s.rawLedgerConn.Close()
 	}
 	return nil
 }
 
+// GetMetrics returns a copy of the current server metrics
+func (s *EventServer) GetMetrics() ProcessorMetrics {
+	s.metrics.mu.RLock()
+	defer s.metrics.mu.RUnlock()
+	return *s.metrics
+}
+
 // GetTTPEvents implements the gRPC GetTTPEvents method
 func (s *EventServer) GetTTPEvents(req *eventservice.GetEventsRequest, stream eventservice.EventService_GetTTPEventsServer) error {
 	// The context of the incoming stream from the *consumer* (e.g., Minecraft mod)
 	ctx := stream.Context()
-	log.Printf("Received GetTTPEvents request: StartLedger=%d, EndLedger=%d", req.StartLedger, req.EndLedger)
+	logger := s.logger.With(
+		zap.Uint32("start_ledger", req.StartLedger),
+		zap.Uint32("end_ledger", req.EndLedger),
+	)
+	logger.Info("received GetTTPEvents request")
 
 	// Create a request for the raw ledger source service
 	sourceReq := &rawledger.StreamLedgersRequest{
@@ -77,21 +170,29 @@ func (s *EventServer) GetTTPEvents(req *eventservice.GetEventsRequest, stream ev
 	sourceCtx, cancelSourceStream := context.WithCancel(ctx)
 	defer cancelSourceStream() // Ensure cancellation propagates if this function returns
 
-	log.Printf("Requesting raw ledger stream from source service starting at ledger %d", sourceReq.StartLedger)
+	logger.Info("requesting raw ledger stream from source service")
 	// Call the source service to get the stream of raw ledgers
 	rawLedgerStream, err := s.rawLedgerClient.StreamRawLedgers(sourceCtx, sourceReq)
 	if err != nil {
-		log.Printf("Error calling StreamRawLedgers on source service: %v", err)
+		logger.Error("failed to connect to raw ledger source",
+			zap.Error(err))
+		// Update error metrics
+		s.metrics.mu.Lock()
+		s.metrics.ErrorCount++
+		s.metrics.LastError = err
+		s.metrics.LastErrorTime = time.Now()
+		s.metrics.mu.Unlock()
 		return status.Errorf(codes.Internal, "failed to connect to raw ledger source: %v", err)
 	}
-	log.Printf("Successfully initiated raw ledger stream from source service.")
+	logger.Info("successfully initiated raw ledger stream")
 
 	// Loop indefinitely, receiving raw ledgers from the source stream
 	for {
 		// Check if the consumer's context is cancelled first
 		select {
 		case <-ctx.Done():
-			log.Printf("Consumer context cancelled. Stopping TTP event stream. Error: %v", ctx.Err())
+			logger.Info("consumer context cancelled, stopping TTP event stream",
+				zap.Error(ctx.Err()))
 			// Cancel the upstream call to the source service
 			cancelSourceStream()
 			return status.FromContextError(ctx.Err()).Err()
@@ -103,60 +204,121 @@ func (s *EventServer) GetTTPEvents(req *eventservice.GetEventsRequest, stream ev
 		rawLedgerMsg, err := rawLedgerStream.Recv()
 		if err == io.EOF {
 			// Source stream ended unexpectedly (should not happen for live source)
-			log.Println("Raw ledger source stream ended (EOF). Closing TTP stream.")
+			logger.Error("raw ledger source stream ended unexpectedly")
+			// Update error metrics
+			s.metrics.mu.Lock()
+			s.metrics.ErrorCount++
+			s.metrics.LastError = err
+			s.metrics.LastErrorTime = time.Now()
+			s.metrics.mu.Unlock()
 			return status.Error(codes.Unavailable, "raw ledger source stream ended unexpectedly")
 		}
 		if err != nil {
 			// Handle errors from the source stream (e.g., source service crashed)
 			// Check if the error is due to the cancellation we initiated
 			if status.Code(err) == codes.Canceled && ctx.Err() != nil {
-				log.Printf("Source stream cancelled as expected due to consumer disconnection.")
+				logger.Info("source stream cancelled due to consumer disconnection")
 				return status.FromContextError(ctx.Err()).Err() // Return consumer's error
 			}
-			log.Printf("Error receiving from raw ledger source stream: %v", err)
+			logger.Error("error receiving from raw ledger source stream",
+				zap.Error(err))
+			// Update error metrics
+			s.metrics.mu.Lock()
+			s.metrics.ErrorCount++
+			s.metrics.LastError = err
+			s.metrics.LastErrorTime = time.Now()
+			s.metrics.mu.Unlock()
 			return status.Errorf(codes.Internal, "error receiving data from raw ledger source: %v", err)
 		}
+
+		ledgerLogger := logger.With(zap.Uint32("ledger_sequence", rawLedgerMsg.Sequence))
 
 		// Check if we need to stop based on the consumer's requested endLedger
 		// A non-zero endLedger indicates a bounded request.
 		if req.EndLedger > 0 && rawLedgerMsg.Sequence > req.EndLedger {
-			log.Printf("Reached end ledger %d requested by consumer. Closing TTP stream.", req.EndLedger)
+			ledgerLogger.Info("reached end ledger requested by consumer")
 			cancelSourceStream() // No need to get more from source
 			return nil           // Successful completion of bounded stream
 		}
 
-		log.Printf("Processing raw ledger %d received from source", rawLedgerMsg.Sequence)
+		ledgerLogger.Debug("processing raw ledger from source")
 
 		// Unmarshal the raw XDR bytes into a LedgerCloseMeta object
 		var lcm xdr.LedgerCloseMeta
 		_, err = xdr.Unmarshal(bytes.NewReader(rawLedgerMsg.LedgerCloseMetaXdr), &lcm)
 		if err != nil {
-			log.Printf("Error unmarshaling XDR for ledger %d: %v", rawLedgerMsg.Sequence, err)
+			ledgerLogger.Error("failed to unmarshal XDR",
+				zap.Error(err))
+			// Update error metrics
+			s.metrics.mu.Lock()
+			s.metrics.ErrorCount++
+			s.metrics.LastError = err
+			s.metrics.LastErrorTime = time.Now()
+			s.metrics.LastProcessedLedger = rawLedgerMsg.Sequence
+			s.metrics.mu.Unlock()
 			// Decide how to handle - skip ledger or terminate? Terminating is safer.
 			cancelSourceStream()
 			return status.Errorf(codes.Internal, "failed to unmarshal ledger %d XDR: %v", rawLedgerMsg.Sequence, err)
 		}
 
+		// Track start time before processing events
+		processingStart := time.Now()
+		
 		// Now use the TTP processor to get events from this ledger
 		events, err := s.processor.EventsFromLedger(lcm)
+		
+		// Calculate processing time
+		processingTime := time.Since(processingStart)
+		
 		if err != nil {
-			log.Printf("Error processing TTP events from ledger %d: %v", lcm.LedgerSequence(), err)
+			ledgerLogger.Error("failed to process TTP events",
+				zap.Error(err))
+			// Update error metrics
+			s.metrics.mu.Lock()
+			s.metrics.ErrorCount++
+			s.metrics.LastError = err
+			s.metrics.LastErrorTime = time.Now()
+			s.metrics.LastProcessedLedger = lcm.LedgerSequence()
+			s.metrics.mu.Unlock()
 			// Terminate if processing fails
 			cancelSourceStream()
 			return status.Errorf(codes.Internal, "failed to process TTP events for ledger %d: %v", lcm.LedgerSequence(), err)
 		}
 
 		// Stream each generated TTP event to the *consumer*
+		eventsSent := 0
 		for i := range events {
 			ttpEvent := events[i] // Create loop variable copy
 			if err := stream.Send(ttpEvent); err != nil {
-				log.Printf("Error sending TTP event to consumer stream for ledger %d: %v", lcm.LedgerSequence(), err)
+				ledgerLogger.Error("failed to send TTP event to consumer",
+					zap.Error(err),
+					zap.Int("event_index", i))
+				// Update error metrics
+				s.metrics.mu.Lock()
+				s.metrics.ErrorCount++
+				s.metrics.LastError = err
+				s.metrics.LastErrorTime = time.Now()
+				s.metrics.LastProcessedLedger = lcm.LedgerSequence()
+				s.metrics.mu.Unlock()
 				// Consumer likely disconnected. Cancel upstream source stream.
 				cancelSourceStream()
 				return status.Errorf(codes.Unavailable, "failed to send TTP event to consumer: %v", err)
 			}
+			eventsSent++
 		}
-		log.Printf("Finished processing ledger %d, %d TTP events sent.", lcm.LedgerSequence(), len(events))
+		
+		// Update metrics on successful processing
+		s.metrics.mu.Lock()
+		s.metrics.SuccessCount++
+		s.metrics.TotalProcessed++
+		s.metrics.LastProcessedLedger = lcm.LedgerSequence()
+		s.metrics.ProcessingLatency = processingTime
+		s.metrics.TotalEventsEmitted += int64(eventsSent)
+		s.metrics.mu.Unlock()
+		
+		ledgerLogger.Info("finished processing ledger",
+			zap.Int("events_sent", eventsSent),
+			zap.Duration("processing_time", processingTime))
 	}
 	// This part is theoretically unreachable
 }

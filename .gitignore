@@ -12,10 +12,24 @@ ttp_grpc_server
 **/dist/
 .env
 
+# Editor files
 .vscode/
 *.swp
 *.swo
 
+# OS generated files
 .DS_Store
 .gradle
 **/minecraft_mod/build/
+**/.claude/settings.local.json
+
+# Nix-related
+result
+result-*
+.direnv/
+.go/
+
+# Binary files
+stellar_live_source_datalake
+stellar_live_source
+ttp_processor_server

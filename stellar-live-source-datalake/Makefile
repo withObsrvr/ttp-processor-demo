@@ -1,4 +1,4 @@
-.PHONY: build clean generate-proto
+.PHONY: build clean generate-proto nix-build nix-shell nix-docker nix-run
 
 # Go parameters
 GOCMD=go
@@ -7,6 +7,12 @@ GOCLEAN=$(GOCMD) clean
 GOTEST=$(GOCMD) test
 GOGET=$(GOCMD) get
 BINARY_NAME=stellar_live_source_datalake
+
+# Nix parameters
+NIX=nix
+NIX_BUILD=$(NIX) build
+NIX_DEVELOP=$(NIX) develop
+NIX_RUN=$(NIX) run
 
 # Proto parameters
 PROTOC=protoc
@@ -59,3 +65,22 @@ run: build
 
 test:
 	$(GOTEST) -v ./... 
+
+# Nix targets
+nix-build:
+	$(NIX_BUILD)
+	@echo "✓ Nix build completed. Binary is available at ./result/bin/$(BINARY_NAME)"
+
+nix-docker:
+	$(NIX_BUILD) .#docker
+	@echo "✓ Docker image built with Nix. Load with: docker load < result"
+
+nix-run:
+	$(NIX_RUN)
+
+nix-shell:
+	$(NIX_DEVELOP)
+
+nix-docker-traditional:
+	docker build -f Dockerfile.nix -t stellar-live-source-datalake:latest .
+	@echo "✓ Docker image built with traditional Docker + Nix"

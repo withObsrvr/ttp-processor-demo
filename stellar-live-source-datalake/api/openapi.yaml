@@ -1,0 +1,217 @@
+openapi: 3.0.0
+info:
+  title: Stellar Live Source Datalake API
+  description: |
+    Enterprise-grade service for accessing historical Stellar ledger data stored in cloud storage.
+    Provides reliable, scalable access to historical ledger data with enterprise features:
+    - Circuit breaker pattern for fault tolerance
+    - Comprehensive metrics and monitoring
+    - Structured logging
+    - Health checks
+    - Enterprise-grade error handling
+
+    ## gRPC Service
+    The primary interface for this service is gRPC, defined in the protocol buffers file.
+    The service provides a streaming interface for historical ledger data access.
+
+    ### Service Definition
+    ```protobuf
+    service RawLedgerService {
+      // Streams raw ledger data from the specified sequence number
+      rpc StreamRawLedgers(StreamLedgersRequest) returns (stream RawLedger) {}
+    }
+    ```
+
+    ### Message Types
+    ```protobuf
+    message StreamLedgersRequest {
+      uint32 start_ledger = 1;
+      optional uint32 end_ledger = 2;
+    }
+
+    message RawLedger {
+      uint32 sequence = 1;
+      bytes ledger_close_meta_xdr = 2;
+    }
+    ```
+
+    ### Error Codes
+    | Code | Description |
+    |------|-------------|
+    | 0    | OK - Success |
+    | 1    | CANCELLED - Operation cancelled |
+    | 2    | UNKNOWN - Unknown error |
+    | 3    | INVALID_ARGUMENT - Invalid request parameters |
+    | 4    | DEADLINE_EXCEEDED - Operation timed out |
+    | 5    | NOT_FOUND - Resource not found |
+    | 6    | ALREADY_EXISTS - Resource already exists |
+    | 7    | PERMISSION_DENIED - Permission denied |
+    | 8    | RESOURCE_EXHAUSTED - Resource exhausted |
+    | 9    | FAILED_PRECONDITION - Operation failed precondition |
+    | 10   | ABORTED - Operation aborted |
+    | 11   | OUT_OF_RANGE - Value out of range |
+    | 12   | UNIMPLEMENTED - Operation not implemented |
+    | 13   | INTERNAL - Internal error |
+    | 14   | UNAVAILABLE - Service unavailable |
+    | 15   | DATA_LOSS - Data loss |
+    | 16   | UNAUTHENTICATED - Authentication failed |
+  version: 1.0.0
+  contact:
+    name: Obsrvr Team
+    email: support@obsrvr.com
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0.html
+
+servers:
+  - url: http://localhost:50052
+    description: Local development server
+  - url: https://api.obsrvr.com/stellar-live-source-datalake
+    description: Production server
+
+tags:
+  - name: RawLedgerService
+    description: Raw ledger streaming service
+  - name: Health
+    description: Health check and monitoring endpoints
+
+paths:
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Health check endpoint
+      description: Returns the current health status and metrics of the service
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [healthy, degraded, unhealthy]
+                    description: Current health status
+                  metrics:
+                    type: object
+                    properties:
+                      retry_count:
+                        type: integer
+                        description: Number of retries performed
+                      error_count:
+                        type: integer
+                        description: Number of errors encountered
+                      success_count:
+                        type: integer
+                        description: Number of successful operations
+                      total_latency:
+                        type: string
+                        description: Total processing latency
+                      average_latency:
+                        type: string
+                        description: Average processing latency
+                      last_error:
+                        type: string
+                        description: Last error encountered
+                      last_error_time:
+                        type: string
+                        format: date-time
+                        description: Timestamp of last error
+                      circuit_breaker_state:
+                        type: string
+                        enum: [closed, open, half-open]
+                        description: Current circuit breaker state
+                      uptime_percent:
+                        type: number
+                        format: float
+                        description: Service uptime percentage
+                      total_processed:
+                        type: integer
+                        description: Total ledgers processed
+                      total_bytes:
+                        type: integer
+                        description: Total bytes processed
+                      last_sequence:
+                        type: integer
+                        description: Last processed ledger sequence
+                      error_types:
+                        type: object
+                        description: Error type distribution
+                  guarantees:
+                    type: object
+                    properties:
+                      min_uptime:
+                        type: number
+                        format: float
+                        description: Minimum uptime guarantee
+                      max_latency_p99:
+                        type: string
+                        description: Maximum P99 latency guarantee
+                      max_retry_latency:
+                        type: string
+                        description: Maximum retry latency guarantee
+        '503':
+          description: Service is unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  schemas:
+    Error:
+      type: object
+      properties:
+        code:
+          type: integer
+          description: Error code
+        message:
+          type: string
+          description: Error message
+        details:
+          type: array
+          items:
+            type: object
+            description: Additional error details
+
+    RawLedger:
+      type: object
+      properties:
+        sequence:
+          type: integer
+          format: uint32
+          description: Ledger sequence number
+        ledger_close_meta_xdr:
+          type: string
+          format: byte
+          description: Base64-encoded XDR representation of the ledger close metadata
+
+    StreamLedgersRequest:
+      type: object
+      properties:
+        start_ledger:
+          type: integer
+          format: uint32
+          description: Starting ledger sequence number
+        end_ledger:
+          type: integer
+          format: uint32
+          description: Optional ending ledger sequence number
+          nullable: true
+
+security:
+  - ApiKeyAuth: []
+  - BearerAuth: []
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT 
