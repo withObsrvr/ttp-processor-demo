@@ -1,11 +1,11 @@
-# Nix Integration for Stellar Live Source Datalake
+# Nix Flake Integration for Stellar Live Source Datalake
 
-This project includes Nix flake support for development and building. Nix provides a reliable, reproducible build environment that works the same way on any machine.
+This project uses Nix flakes for development and building. Nix provides a reliable, reproducible build environment that works the same way on any machine.
 
 ## Prerequisites
 
 - Install Nix: https://nixos.org/download.html
-- Enable flakes (if not already enabled):
+- Enable flakes (required):
 
 Add to `~/.config/nix/nix.conf` or `/etc/nix/nix.conf`:
 ```
@@ -17,25 +17,24 @@ experimental-features = nix-command flakes
 To enter a development shell with all required dependencies:
 
 ```bash
-# Using flakes (recommended)
+# Using flakes 
 nix develop
-
-# Using traditional nix-shell (fallback)
-nix-shell
 ```
 
 This will provide a shell with:
-- Go compiler and tools
+- Go compiler and tools (Go 1.22)
 - Protocol Buffers and GRPC tools
 - Docker
 - Make and other build utilities
 
-## Building
+The development shell will automatically vendor dependencies if needed.
+
+## Building with Nix Flakes
 
 ### Build the Binary
 
 ```bash
-# Using Nix build system
+# Build just the binary
 nix build
 
 # The binary will be in ./result/bin/stellar_live_source_datalake
@@ -44,7 +43,7 @@ nix build
 ### Build a Docker Image
 
 ```bash
-# Build the Docker image using Nix
+# Build the Docker image
 nix build .#docker
 
 # Load the image into Docker
@@ -63,15 +62,43 @@ nix run
 ./result/bin/stellar_live_source_datalake
 ```
 
-### Run the Docker Container
+### Running the Docker Container
 
 ```bash
 # After loading the image
 docker run -p 50052:50052 -p 8088:8088 \
-  -v $HOME/.config/gcloud:/.config/gcloud:ro \
-  -e GOOGLE_APPLICATION_CREDENTIALS=/application_default_credentials.json \
+  -v $HOME/.config/gcloud:/root/.config/gcloud:ro \
+  -e GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json \
   -e STORAGE_TYPE=GCS \
-  -e BUCKET_NAME=your-bucket-name \
+  -e BUCKET_NAME="obsrvr-stellar-ledger-data-testnet-data/landing/ledgers" \
+  -e LEDGERS_PER_FILE=1 \
+  -e FILES_PER_PARTITION=64000 \
+  -e ENABLE_FLOWCTL=true \
+  -e FLOWCTL_ENDPOINT=host.docker.internal:8080 \
+  stellar-live-source-datalake:latest
+```
+
+For Linux hosts, use one of these approaches:
+
+```bash
+# Option 1: Use the host IP address
+docker run -p 50052:50052 -p 8088:8088 \
+  -v $HOME/.config/gcloud:/root/.config/gcloud:ro \
+  -e GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json \
+  -e STORAGE_TYPE=GCS \
+  -e BUCKET_NAME="obsrvr-stellar-ledger-data-testnet-data/landing/ledgers" \
+  -e LEDGERS_PER_FILE=1 \
+  -e FILES_PER_PARTITION=64000 \
+  -e ENABLE_FLOWCTL=true \
+  -e FLOWCTL_ENDPOINT=172.17.0.1:8080 \
+  stellar-live-source-datalake:latest
+
+# Option 2: Use host networking (simpler)
+docker run --network=host \
+  -v $HOME/.config/gcloud:/root/.config/gcloud:ro \
+  -e GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json \
+  -e STORAGE_TYPE=GCS \
+  -e BUCKET_NAME="obsrvr-stellar-ledger-data-testnet-data/landing/ledgers" \
   -e LEDGERS_PER_FILE=1 \
   -e FILES_PER_PARTITION=64000 \
   -e ENABLE_FLOWCTL=true \
@@ -89,14 +116,20 @@ Edit the `flake.nix` file to modify:
 
 ## CI Integration
 
-For CI pipelines, you can use Nix to ensure consistent builds:
+For CI pipelines, you can use Nix flakes to ensure consistent builds:
 
 ```yaml
 # Example GitHub Actions step
-- name: Build with Nix
+- name: Install Nix
+  uses: cachix/install-nix-action@v22
+  with:
+    extra_nix_config: |
+      experimental-features = nix-command flakes
+    
+- name: Build with Nix flakes
   run: nix build
 
-- name: Build Docker image
+- name: Build Docker image with Nix flakes
   run: nix build .#docker
 ```
 
@@ -116,4 +149,20 @@ To clean up Nix store and remove unused packages:
 
 ```bash
 nix-collect-garbage -d
+```
+
+### Debug Build Issues
+
+If you encounter build issues, you can get more detailed information:
+
+```bash
+nix build --show-trace
+```
+
+### Non-Flake Alternative
+
+For environments where flakes aren't available, you can still use traditional Nix with the provided `shell.nix` file:
+
+```bash
+nix-shell
 ```
