@@ -17,8 +17,52 @@ This service reads Stellar ledger data from a data lake (GCS, S3, or local files
 
 ## Building
 
+### Build with Nix (Recommended)
+
+For a reproducible and reliable build experience, use the Makefile with Nix:
+
+```bash
+# Build the binary
+make nix-build
+
+# Run the application
+make nix-run
+
+# Build Docker image (Nix binary + Docker)
+make docker-build
+
+# Run Docker container
+make docker-run
+```
+
+For pure Nix Docker image:
+```bash
+# Build a Docker image with Nix
+make nix-docker
+
+# Load the image into Docker
+make nix-docker-load
+```
+
+See [NIX_USAGE.md](./NIX_USAGE.md) for detailed build options and troubleshooting.
+
+### Development Environment
+
+Set up a complete development environment with Nix:
+
+```bash
+nix develop
+```
+
+This provides all necessary tools: Go, Protocol Buffers, Docker, etc.
+
+### Manual Build
+
+If you prefer not to use Nix:
+
 1. Install dependencies:
    ```bash
+   cd go
    go mod download
    ```
 
@@ -29,12 +73,14 @@ This service reads Stellar ledger data from a data lake (GCS, S3, or local files
 
 3. Build the service:
    ```bash
-   make build
+   make build-server
    ```
 
 ## Configuration
 
 The service is configured via environment variables:
+
+### Storage Configuration
 
 - `STORAGE_TYPE`: Type of storage backend ("GCS", "S3", or "FS")
 - `BUCKET_NAME`: Name of the bucket or path to the data
@@ -43,6 +89,16 @@ The service is configured via environment variables:
 - `S3_FORCE_PATH_STYLE`: Set to "true" for non-AWS S3 (optional)
 - `LEDGERS_PER_FILE`: Number of ledgers per file (default: 64)
 - `FILES_PER_PARTITION`: Number of files per partition (default: 10)
+
+### Flowctl Integration
+
+This service supports integration with the Obsrvr flowctl control plane. Enable it with:
+
+- `ENABLE_FLOWCTL`: Set to "true" to enable flowctl integration
+- `FLOWCTL_ENDPOINT`: The control plane endpoint (e.g., "localhost:8080")
+- `SERVICE_ID`: Optional unique ID for this service instance
+
+See [FLOWCTL_INTEGRATION.md](./FLOWCTL_INTEGRATION.md) for detailed integration instructions.
 
 ## Running
 
