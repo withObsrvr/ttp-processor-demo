@@ -1,7 +1,7 @@
 go 1.23.4
 
 use (
-    ./flowctl
     ./stellar-live-source-datalake/go
     ./ttp-processor/go
+    ./ledger-jsonrpc-processor
 )

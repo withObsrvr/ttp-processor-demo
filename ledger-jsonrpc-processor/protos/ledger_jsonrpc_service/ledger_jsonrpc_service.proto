@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package ledger_jsonrpc_service;
+
+// Import the definition of the event we will stream
+// Path is relative to the --proto_path specified in protoc command (./protos)
+import "ingest/processors/ledger_jsonrpc/ledger_jsonrpc_event.proto";
+
+// Define the Go package path where generated code will live
+option go_package = "github.com/withObsrvr/ledger-jsonrpc-processor/gen/ledger_jsonrpc_service";
+
+// The service providing ledger to JSON-RPC conversion events
+service LedgerJsonRpcService {
+    // GetJsonRpcResponses requests a stream of JSON-RPC responses derived from ledger data
+    // If end_ledger is 0 or less than start_ledger, the stream is potentially infinite (live).
+    rpc GetJsonRpcResponses(GetJsonRpcRequest) returns (stream ledger_jsonrpc.LedgerJsonRpcEvent) {}
+    
+    // GetJsonRpcMethod executes a single JSON-RPC method against the ledger data store
+    rpc GetJsonRpcMethod(JsonRpcMethodRequest) returns (ledger_jsonrpc.JsonRpcResponse) {}
+}
+
+// Request message for GetJsonRpcResponses
+message GetJsonRpcRequest {
+    uint32 start_ledger = 1; // The first ledger sequence number to include
+    uint32 end_ledger = 2;   // The last ledger sequence number to include (inclusive). If 0 or < start_ledger, indicates a live stream.
+    string method = 3;       // The JSON-RPC method to execute for each ledger
+    map<string, string> params = 4; // Parameters for the method
+}
+
+// Request for a single JSON-RPC method execution
+message JsonRpcMethodRequest {
+    string jsonrpc = 1;      // JSON-RPC version, should be "2.0"
+    string id = 2;           // Request ID
+    string method = 3;       // Method to execute
+    bytes params_json = 4;   // Parameters as raw JSON bytes
+}

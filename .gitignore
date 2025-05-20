@@ -35,6 +35,7 @@ result-*
 stellar_live_source_datalake
 stellar_live_source
 ttp_processor_server
+bin/ledger-json-processor
 
 # Secrets
 .envrc
