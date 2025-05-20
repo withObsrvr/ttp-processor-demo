@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+package ledger_jsonrpc;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+
+option go_package = "github.com/withObsrvr/ledger-jsonrpc-processor/gen/ingest/processors/ledger_jsonrpc";
+
+// JSON-RPC 2.0 response message
+message JsonRpcResponse {
+  string jsonrpc = 1;  // Always "2.0" per JSON-RPC 2.0 spec
+  string id = 2;      // Request ID, must match the id sent in the request
+  
+  // Only one of these should be set
+  oneof response {
+    google.protobuf.Struct result = 3;  // Successful result
+    JsonRpcError error = 4;            // Error information
+  }
+}
+
+// JSON-RPC 2.0 error structure
+message JsonRpcError {
+  int32 code = 1;             // Error code
+  string message = 2;         // Error message
+  google.protobuf.Struct data = 3;  // Additional error data (optional)
+}
+
+// Request context to associate with each envelope
+message RequestContext {
+  string id = 1;                // Request ID
+  string method = 2;            // JSON-RPC method name
+  google.protobuf.Struct params = 3;  // Method parameters
+}
+
+// Ledger metadata that applies to all events
+message LedgerMeta {
+  uint32 sequence = 1;           // Ledger sequence number
+  google.protobuf.Timestamp closed_at = 2;  // When the ledger was closed
+  string hash = 3;               // Ledger hash
+}
+
+// The main event message for the ledger-to-jsonrpc processor
+message LedgerJsonRpcEvent {
+  // The original JSON-RPC request context
+  RequestContext request_ctx = 1;
+  
+  // The corresponding JSON-RPC response
+  JsonRpcResponse response = 2;
+  
+  // Ledger metadata for context
+  LedgerMeta ledger_meta = 3;
+  
+  // Unix timestamp when this event was processed
+  google.protobuf.Timestamp processed_at = 4;
+}
