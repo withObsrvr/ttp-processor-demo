@@ -20,13 +20,28 @@
             
             # Use vendored dependencies for improved build reliability
             vendorHash = null;
+            modVendorDir = "./go/vendor"; # Point explicitly to the vendor dir
+
+            # Skip the go module verification
+            allowVendorCheck = false;
+
+            # Add more Go flags to bypass module checks
+            buildFlags = ["-mod=vendor" "-modcacherw"];
+
+            
             # Set environment variables for go builds
             env = {
-              GO111MODULE = "on";
+              GOPROXY = "off";
             };
             
             # Customize Go build to work with our project structure
             preBuild = ''
+              # Make sure vendor directory is properly set up before build
+              if [ -d "go/vendor" ]; then
+                echo "Using existing vendor directory"
+              else
+                echo "No vendor directory found, this will likely fail"
+              fi
               # Generate protobuf files
               echo "Generating protobuf files..."
               
@@ -61,7 +76,7 @@
               if [ -d "vendor" ]; then
                 go build -mod=vendor -o ../stellar_live_source_datalake main.go
               else
-                go build -o ../stellar_live_source_datalake main.go
+                go build -mod=vendor -o ../stellar_live_source_datalake main.go
               fi
               runHook postBuild
             '';

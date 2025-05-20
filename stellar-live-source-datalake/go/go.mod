@@ -121,7 +121,7 @@ require (
 replace google.golang.org/grpc/stats/opentelemetry => google.golang.org/grpc/stats/opentelemetry v0.0.0-20240907200651-3ffb98b2c93a
 
 // Add flowctl package reference
-replace github.com/withobsrvr/flowctl => /home/tmosleyiii/projects/obsrvr/flowctl
+replace github.com/withobsrvr/flowctl => github.com/withObsrvr/flowctl v0.0.1
 
 replace github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/gen/raw_ledger_service => ./gen/raw_ledger_service
 

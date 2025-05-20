@@ -496,7 +496,7 @@ github.com/withObsrvr/stellar-datastore
 # github.com/withObsrvr/stellar-ledgerbackend v0.0.0-20241220092445-b96fa5b9c924
 ## explicit; go 1.22.5
 github.com/withObsrvr/stellar-ledgerbackend
-# github.com/withobsrvr/flowctl v0.0.0-00010101000000-000000000000 => /home/tmosleyiii/projects/obsrvr/flowctl
+# github.com/withobsrvr/flowctl v0.0.0-00010101000000-000000000000 => github.com/withObsrvr/flowctl v0.0.1
 ## explicit; go 1.23
 github.com/withobsrvr/flowctl/proto
 # github.com/zeebo/errs v1.4.0
@@ -865,6 +865,6 @@ gopkg.in/djherbis/stream.v1
 ## explicit
 gopkg.in/yaml.v3
 # google.golang.org/grpc/stats/opentelemetry => google.golang.org/grpc/stats/opentelemetry v0.0.0-20240907200651-3ffb98b2c93a
-# github.com/withobsrvr/flowctl => /home/tmosleyiii/projects/obsrvr/flowctl
+# github.com/withobsrvr/flowctl => github.com/withObsrvr/flowctl v0.0.1
 # github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/gen/raw_ledger_service => ./gen/raw_ledger_service
 # github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/server => ./server

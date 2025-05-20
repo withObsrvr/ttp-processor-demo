@@ -35,3 +35,7 @@ result-*
 stellar_live_source_datalake
 stellar_live_source
 ttp_processor_server
+
+# Secrets
+.envrc
+.secrets

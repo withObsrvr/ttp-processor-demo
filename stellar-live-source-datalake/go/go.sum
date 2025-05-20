@@ -246,6 +246,8 @@ github.com/valyala/bytebufferpool v1.0.0 h1:GqA5TC/0021Y/b9FG4Oi9Mr3q7XYx6Kllzaw
 github.com/valyala/bytebufferpool v1.0.0/go.mod h1:6bBcMArwyJ5K/AmCkWv1jt77kVWyCJ6HpOuEn7z0Csc=
 github.com/valyala/fasthttp v1.34.0 h1:d3AAQJ2DRcxJYHm7OXNXtXt2as1vMDfxeIcFvhmGGm4=
 github.com/valyala/fasthttp v1.34.0/go.mod h1:epZA5N+7pY6ZaEKRmstzOuYJx9HI8DI1oaCGZpdH4h0=
+github.com/withObsrvr/flowctl v0.0.1 h1:mriKOP/vbspC4UsYT1IiKVcdnb5ylvomAKJiZZcDP0s=
+github.com/withObsrvr/flowctl v0.0.1/go.mod h1:DAFhbQa8x98oB9XeLssROgmrlL9/dJM+viJxHFw+QmU=
 github.com/withObsrvr/stellar-cdp v0.0.0-20241220082310-1a8c717a9c8f h1:z241AP/EXM2IaNA6uBmrQoP8LfQCUf+Rxat2Fe1ta7M=
 github.com/withObsrvr/stellar-cdp v0.0.0-20241220082310-1a8c717a9c8f/go.mod h1:Qr5SEHHOaO6D08isJPcx0C7zlDjlOVL7iN7Rn8ZAo0Q=
 github.com/withObsrvr/stellar-datastore v0.0.0-20250207023055-4074500adc35 h1:5pcoW0c4F4CLjxXARee+DvW1uOSVGB+Las+E8QLU2Bs=
