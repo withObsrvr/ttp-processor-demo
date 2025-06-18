@@ -12,7 +12,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	// Import the flowctl proto
-	flowctlpb "github.com/withobsrvr/flowctl/proto"
+	flowctlpb "github.com/withObsrvr/flowctl/proto"
 )
 
 // LedgerJsonRpcFlowctlController manages the interaction with the flowctl control plane
@@ -93,23 +93,23 @@ func (fc *LedgerJsonRpcFlowctlController) RegisterWithFlowctl() error {
 	defer cancel()
 
 	log.Printf("Registering with flowctl control plane at %s", fc.endpoint)
-	
+
 	// Attempt to register
 	ack, err := fc.client.Register(ctx, serviceInfo)
 	if err != nil {
 		// If registration fails, use a simulated ID but log the error
 		fc.serviceID = "sim-jsonrpc-processor-" + time.Now().Format("20060102150405")
 		log.Printf("Warning: Failed to register with flowctl. Using simulated ID: %s. Error: %v", fc.serviceID, err)
-		
+
 		// Start heartbeat loop anyway, it will use the simulated ID
 		go fc.startHeartbeatLoop()
 		return nil
 	}
-	
+
 	// Use the service ID from the response
 	fc.serviceID = ack.ServiceId
 	log.Printf("Successfully registered with flowctl control plane - Service ID: %s", fc.serviceID)
-	
+
 	// Log topic names and connection info if provided
 	if len(ack.TopicNames) > 0 {
 		log.Printf("Assigned topics: %v", ack.TopicNames)
@@ -150,12 +150,12 @@ func (fc *LedgerJsonRpcFlowctlController) sendHeartbeat() {
 		ServiceId: fc.serviceID,
 		Timestamp: timestamppb.Now(),
 		Metrics: map[string]float64{
-			"success_count":           float64(metrics.SuccessCount),
-			"error_count":             float64(metrics.ErrorCount),
-			"total_processed":         float64(metrics.TotalProcessed),
-			"total_events_emitted":    float64(metrics.TotalEventsEmitted),
-			"last_processed_ledger":   float64(metrics.LastProcessedLedger),
-			"processing_latency_ms":   float64(metrics.ProcessingLatency / time.Millisecond),
+			"success_count":         float64(metrics.SuccessCount),
+			"error_count":           float64(metrics.ErrorCount),
+			"total_processed":       float64(metrics.TotalProcessed),
+			"total_events_emitted":  float64(metrics.TotalEventsEmitted),
+			"last_processed_ledger": float64(metrics.LastProcessedLedger),
+			"processing_latency_ms": float64(metrics.ProcessingLatency / time.Millisecond),
 		},
 	}
 

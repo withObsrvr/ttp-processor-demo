@@ -33,6 +33,7 @@ result-*
 
 # Binary files
 stellar_live_source_datalake
+stellar-live-source-datalake
 stellar_live_source
 ttp_processor_server
 bin/ledger-json-processor

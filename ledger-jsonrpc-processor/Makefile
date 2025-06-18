@@ -27,6 +27,13 @@ test:
 proto:
 	mkdir -p $(GEN_DIR)/ledger_jsonrpc_service
 	mkdir -p $(GEN_DIR)/raw_ledger_service
+	mkdir -p $(GEN_DIR)/ingest/processors/ledger_jsonrpc
+	
+	# Generate protobuf code for the ledger-jsonrpc event
+	$(PROTOC) --proto_path=$(PROTO_DIR) \
+		--go_out=$(GEN_DIR) --go_opt=paths=source_relative \
+		--go-grpc_out=$(GEN_DIR) --go-grpc_opt=paths=source_relative \
+		$(PROTO_DIR)/ingest/processors/ledger_jsonrpc/ledger_jsonrpc_event.proto
 	
 	# Generate protobuf code for the ledger-jsonrpc service
 	$(PROTOC) --proto_path=$(PROTO_DIR) \

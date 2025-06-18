@@ -1,0 +1,18 @@
+{
+  "name": "ledger-jsonrpc-client-example",
+  "version": "0.1.0",
+  "description": "Example client for the Obsrvr Ledger JSON-RPC Processor",
+  "main": "example-usage.js",
+  "scripts": {
+    "start": "node example-usage.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.8.0",
+    "@grpc/proto-loader": "^0.7.0"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "private": true
+}
