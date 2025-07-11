@@ -16,16 +16,14 @@ init:
 	rm -rf node/node_modules > /dev/null 2>&1
 	rm -rf node/gen > /dev/null 2>&1
 	mkdir -p node/gen > /dev/null 2>&1
-	rm -rf protos/event_service > /dev/null 2>&1
 	mkdir -p protos/event_service > /dev/null 2>&1
-	rm -rf protos/ingest/processors/token_transfer > /dev/null 2>&1
 	mkdir -p protos/ingest/processors/token_transfer > /dev/null 2>&1
-	rm -rf protos/ingest/asset > /dev/null 2>&1
 	mkdir -p protos/ingest/asset > /dev/null 2>&1
 
-	curl -s -o protos/ingest/processors/token_transfer/token_transfer_event.proto $(PROTOS_BASE_URL)/ingest/processors/token_transfer/token_transfer_event.proto
-	curl -s -o protos/ingest/asset/asset.proto $(PROTOS_BASE_URL)/ingest/asset/asset.proto
-	cp ../cli_tool/protos/event_service/event_service.proto protos/event_service/event_service.proto > /dev/null 2>&1
+	# Copy proto files from updated sources instead of downloading
+	cp ../cli_tool/protos/event_service/event_service.proto protos/event_service/event_service.proto
+	cp ../cli_tool/protos/ingest/processors/token_transfer/token_transfer_event.proto protos/ingest/processors/token_transfer/token_transfer_event.proto
+	cp ../cli_tool/protos/ingest/asset/asset.proto protos/ingest/asset/asset.proto
 	cd ./node; npm install > /dev/null
 	echo "✓ Init completed"
 

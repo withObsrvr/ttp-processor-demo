@@ -198,6 +198,7 @@ func (s *RawLedgerServer) StreamRawLedgers(req *rawledger.StreamLedgersRequest, 
 	ctx := stream.Context()
 	s.logger.Info("Starting enterprise ledger stream",
 		zap.Uint32("start_sequence", req.StartLedger),
+		zap.Uint32("end_sequence", req.EndLedger),
 		zap.Duration("max_latency_p99", MaxLatencyP99),
 	)
 
@@ -296,6 +297,15 @@ func (s *RawLedgerServer) StreamRawLedgers(req *rawledger.StreamLedgersRequest, 
 					zap.Uint32("start_ledger", req.StartLedger),
 				)
 				continue
+			}
+			
+			// Check if we've reached the end ledger (if specified)
+			if req.EndLedger > 0 && req.EndLedger >= req.StartLedger && ledgerInfo.Sequence > req.EndLedger {
+				s.logger.Info("Reached end ledger, stopping stream",
+					zap.Uint32("sequence", ledgerInfo.Sequence),
+					zap.Uint32("end_ledger", req.EndLedger),
+				)
+				return nil
 			}
 
 			s.logger.Debug("Processing ledger",

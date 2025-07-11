@@ -150,6 +150,69 @@ func (s *EventServer) GetMetrics() ProcessorMetrics {
 	return *s.metrics
 }
 
+// matchesAccountFilter checks if a TTP event matches the account filter criteria
+func matchesAccountFilter(event *token_transfer.TokenTransferEvent, accountIDs []string) bool {
+	// If no account filter is specified, return all events
+	if len(accountIDs) == 0 {
+		return true
+	}
+	
+	// Check contract address
+	if event.Meta != nil && event.Meta.ContractAddress != "" {
+		for _, accountID := range accountIDs {
+			if event.Meta.ContractAddress == accountID {
+				return true
+			}
+		}
+	}
+	
+	// Check event-specific account fields
+	switch e := event.Event.(type) {
+	case *token_transfer.TokenTransferEvent_Transfer:
+		if e.Transfer != nil {
+			for _, accountID := range accountIDs {
+				if e.Transfer.From == accountID || e.Transfer.To == accountID {
+					return true
+				}
+			}
+		}
+	case *token_transfer.TokenTransferEvent_Mint:
+		if e.Mint != nil {
+			for _, accountID := range accountIDs {
+				if e.Mint.To == accountID {
+					return true
+				}
+			}
+		}
+	case *token_transfer.TokenTransferEvent_Burn:
+		if e.Burn != nil {
+			for _, accountID := range accountIDs {
+				if e.Burn.From == accountID {
+					return true
+				}
+			}
+		}
+	case *token_transfer.TokenTransferEvent_Clawback:
+		if e.Clawback != nil {
+			for _, accountID := range accountIDs {
+				if e.Clawback.From == accountID {
+					return true
+				}
+			}
+		}
+	case *token_transfer.TokenTransferEvent_Fee:
+		if e.Fee != nil {
+			for _, accountID := range accountIDs {
+				if e.Fee.From == accountID {
+					return true
+				}
+			}
+		}
+	}
+	
+	return false
+}
+
 // GetTTPEvents implements the gRPC GetTTPEvents method
 func (s *EventServer) GetTTPEvents(req *eventservice.GetEventsRequest, stream eventservice.EventService_GetTTPEventsServer) error {
 	// The context of the incoming stream from the *consumer* (e.g., Minecraft mod)
@@ -157,12 +220,14 @@ func (s *EventServer) GetTTPEvents(req *eventservice.GetEventsRequest, stream ev
 	logger := s.logger.With(
 		zap.Uint32("start_ledger", req.StartLedger),
 		zap.Uint32("end_ledger", req.EndLedger),
+		zap.Strings("account_ids", req.AccountIds),
 	)
 	logger.Info("received GetTTPEvents request")
 
 	// Create a request for the raw ledger source service
 	sourceReq := &rawledger.StreamLedgersRequest{
 		StartLedger: req.StartLedger,
+		EndLedger:   req.EndLedger,
 	}
 
 	// Create a new context for the *outgoing* call to the source service.
@@ -285,10 +350,18 @@ func (s *EventServer) GetTTPEvents(req *eventservice.GetEventsRequest, stream ev
 			return status.Errorf(codes.Internal, "failed to process TTP events for ledger %d: %v", lcm.LedgerSequence(), err)
 		}
 
-		// Stream each generated TTP event to the *consumer*
+		// Stream each generated TTP event to the *consumer*, applying account filter
 		eventsSent := 0
+		eventsFiltered := 0
 		for i := range events {
 			ttpEvent := events[i] // Create loop variable copy
+			
+			// Apply account filter
+			if !matchesAccountFilter(ttpEvent, req.AccountIds) {
+				eventsFiltered++
+				continue
+			}
+			
 			if err := stream.Send(ttpEvent); err != nil {
 				ledgerLogger.Error("failed to send TTP event to consumer",
 					zap.Error(err),
@@ -318,6 +391,8 @@ func (s *EventServer) GetTTPEvents(req *eventservice.GetEventsRequest, stream ev
 		
 		ledgerLogger.Info("finished processing ledger",
 			zap.Int("events_sent", eventsSent),
+			zap.Int("events_filtered", eventsFiltered),
+			zap.Int("total_events", len(events)),
 			zap.Duration("processing_time", processingTime))
 	}
 	// This part is theoretically unreachable

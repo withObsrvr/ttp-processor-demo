@@ -21,4 +21,5 @@ service EventService {
 message GetEventsRequest {
     uint32 start_ledger = 1; // The first ledger sequence number to include
     uint32 end_ledger = 2;   // The last ledger sequence number to include (inclusive). If 0 or < start_ledger, indicates a live stream.
+    repeated string account_ids = 3; // Optional account IDs to filter events by. If empty, all events are returned.
 }

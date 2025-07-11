@@ -64,14 +64,20 @@ func (c *EventServiceClient) GetTTPEvents(
 	ctx context.Context,
 	startLedger uint32,
 	endLedger uint32,
+	accountIds []string,
 	callback EventCallback,
 ) error {
 	req := &eventpb.GetEventsRequest{
 		StartLedger: startLedger,
 		EndLedger:   endLedger,
+		AccountIds:  accountIds,
 	}
 
-	log.Printf("Requesting events from ledger %d to %d from server", startLedger, endLedger)
+	if len(accountIds) > 0 {
+		log.Printf("Requesting events from ledger %d to %d for accounts %v from server", startLedger, endLedger, accountIds)
+	} else {
+		log.Printf("Requesting events from ledger %d to %d (all accounts) from server", startLedger, endLedger)
+	}
 	stream, err := c.client.GetTTPEvents(ctx, req)
 	if err != nil {
 		log.Printf("Error calling GetTTPEvents: %v", err)
@@ -194,6 +200,7 @@ func (c *mockEventServiceClient) GetTTPEvents(ctx context.Context, in *eventpb.G
 	return &mockTokenTransferStreamClient{
 		startLedger: in.StartLedger,
 		endLedger:   in.EndLedger,
+		accountIds:  in.AccountIds,
 		currentPos:  0,
 	}, nil
 }
@@ -203,6 +210,7 @@ type mockTokenTransferStreamClient struct {
 	grpc.ClientStream
 	startLedger uint32
 	endLedger   uint32
+	accountIds  []string
 	currentPos  int
 }
 

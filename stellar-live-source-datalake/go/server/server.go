@@ -157,6 +157,7 @@ func (s *RawLedgerServer) StreamRawLedgers(req *pb.StreamLedgersRequest, stream 
 	ctx := stream.Context()
 	s.logger.Info("Starting enterprise ledger stream",
 		zap.Uint32("start_sequence", req.StartLedger),
+		zap.Uint32("end_sequence", req.EndLedger),
 		zap.Duration("max_latency_p99", MaxLatencyP99),
 	)
 
@@ -224,10 +225,19 @@ func (s *RawLedgerServer) StreamRawLedgers(req *pb.StreamLedgersRequest, stream 
 	}
 
 	// --- Define Ledger Range ---
-	ledgerRange := ledgerbackend.UnboundedRange(uint32(req.StartLedger))
-	s.logger.Info("Processing ledger range",
-		zap.Uint32("start_ledger", req.StartLedger),
-	)
+	var ledgerRange ledgerbackend.Range
+	if req.EndLedger > 0 && req.EndLedger >= req.StartLedger {
+		ledgerRange = ledgerbackend.BoundedRange(uint32(req.StartLedger), uint32(req.EndLedger))
+		s.logger.Info("Processing bounded ledger range",
+			zap.Uint32("start_ledger", req.StartLedger),
+			zap.Uint32("end_ledger", req.EndLedger),
+		)
+	} else {
+		ledgerRange = ledgerbackend.UnboundedRange(uint32(req.StartLedger))
+		s.logger.Info("Processing unbounded ledger range",
+			zap.Uint32("start_ledger", req.StartLedger),
+		)
+	}
 
 	// --- Process Ledgers from Storage ---
 	processedCount := 0

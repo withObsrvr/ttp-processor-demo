@@ -67,14 +67,18 @@ async function main() {
     // from a GRPC serviceusing the protobufs generated code from github.comstellar/go/protos
     //
     const args = process.argv.slice(2);
-    if (args.length !== 2) {
-        console.error('Usage: node index.ts <startLedger> <endLedger>');
+    if (args.length < 2) {
+        console.error('Usage: node index.ts <startLedger> <endLedger> [accountId1] [accountId2] ...');
+        console.error('Example: node index.ts 100 200 GXXXXXXX GYYYYYY');
         process.exit(1);
     }
 
     const startLedger = parseInt(args[0]);
     // if the end ledger is less than the start ledger, the server will stream indefinitely
     const endLedger = parseInt(args[1]);
+    
+    // Optional account IDs for filtering
+    const accountIds = args.slice(2);
 
     if (isNaN(startLedger) || isNaN(endLedger)) {
         console.error('Error: startLedger and endLedger must be numbers');
@@ -86,10 +90,15 @@ async function main() {
     const client = new EventServiceClient(serviceAddress);
     
     try {
-        console.log(`Requesting TTP events from ledger ${startLedger} to ${endLedger}`);
+        if (accountIds.length > 0) {
+            console.log(`Requesting TTP events from ledger ${startLedger} to ${endLedger} for accounts: ${accountIds.join(', ')}`);
+        } else {
+            console.log(`Requesting TTP events from ledger ${startLedger} to ${endLedger} (all accounts)`);
+        }
         client.getTTPEvents(
             startLedger,
             endLedger,
+            accountIds,
             (event) => {
                 // Start timing for metrics
                 const startTime = Date.now();

@@ -1,3 +1,6 @@
+// Copied from stellar/go/protos/ingest/processors/token_transfer/token_transfer_event.proto
+// Defines the event message this processor will PRODUCE.
+
 syntax = "proto3";
 
 package token_transfer;
@@ -6,6 +9,9 @@ import "google/protobuf/timestamp.proto";
 
 // Import are relative to the top level directory -  `/protos`
 import "ingest/asset/asset.proto";
+
+option go_package = "github.com/stellar/go/ingest/processors/token_transfer";
+
 
 // EventMeta message
 message EventMeta {

@@ -41,12 +41,20 @@ var globalClient *client.EventServiceClient
 // getTTPEvents is the WASM exported function to get TTP events
 func getTTPEvents(this js.Value, args []js.Value) interface{} {
 	if len(args) < 3 {
-		return js.ValueOf("Error: Expected 3 arguments: serverAddress, startLedger, endLedger")
+		return js.ValueOf("Error: Expected at least 3 arguments: serverAddress, startLedger, endLedger, [accountIds...]")
 	}
 
 	serverAddress := args[0].String()
 	startLedgerStr := args[1].String()
 	endLedgerStr := args[2].String()
+	
+	// Optional account IDs from remaining arguments
+	var accountIds []string
+	for i := 3; i < len(args); i++ {
+		if args[i].Type() == js.TypeString {
+			accountIds = append(accountIds, args[i].String())
+		}
+	}
 
 	startLedger, err := strconv.ParseUint(startLedgerStr, 10, 32)
 	if err != nil {
@@ -85,7 +93,7 @@ func getTTPEvents(this js.Value, args []js.Value) interface{} {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			err := globalClient.GetTTPEvents(ctx, uint32(startLedger), uint32(endLedger), func(event *ttpb.TokenTransferEvent) {
+			err := globalClient.GetTTPEvents(ctx, uint32(startLedger), uint32(endLedger), accountIds, func(event *ttpb.TokenTransferEvent) {
 				// Convert the event to a JavaScript object
 				jsEvent := convertEventToJS(event)
 				jsEvents.Call("push", jsEvent)

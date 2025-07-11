@@ -13,7 +13,7 @@ message RawLedger {
 // Request to start streaming
 message StreamLedgersRequest {
     uint32 start_ledger = 1;
-    // No end_ledger, assumes continuous streaming
+    uint32 end_ledger = 2;   // Optional end ledger. If 0 or < start_ledger, streams indefinitely from start
 }
 
 // The service definition

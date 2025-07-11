@@ -14,4 +14,5 @@ service EventService {
 message GetEventsRequest {
     uint32 start_ledger = 1;
     uint32 end_ledger = 2;
+    repeated string account_ids = 3; // Optional account IDs to filter events by. If empty, all events are returned.
 } 

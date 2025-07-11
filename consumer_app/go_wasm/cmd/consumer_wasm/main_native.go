@@ -17,7 +17,8 @@ import (
 func main() {
 	// For native execution, implement CLI behavior
 	if len(os.Args) < 4 {
-		fmt.Println("Usage: consumer_wasm <server_address> <start_ledger> <end_ledger>")
+		fmt.Println("Usage: consumer_wasm <server_address> <start_ledger> <end_ledger> [accountId1] [accountId2] ...")
+		fmt.Println("Example: consumer_wasm localhost:50051 100 200 GXXXXXXX GYYYYYY")
 		os.Exit(1)
 	}
 
@@ -33,6 +34,9 @@ func main() {
 		fmt.Printf("Error parsing endLedger: %v\n", err)
 		os.Exit(1)
 	}
+	
+	// Optional account IDs for filtering
+	accountIds := os.Args[4:]
 
 	// Create client
 	c, err := client.NewEventServiceClient(serverAddress)
@@ -44,7 +48,7 @@ func main() {
 
 	// Process events
 	ctx := context.Background()
-	err = c.GetTTPEvents(ctx, uint32(startLedger), uint32(endLedger), client.PrintEvent)
+	err = c.GetTTPEvents(ctx, uint32(startLedger), uint32(endLedger), accountIds, client.PrintEvent)
 	if err != nil {
 		fmt.Printf("Error getting events: %v\n", err)
 		os.Exit(1)

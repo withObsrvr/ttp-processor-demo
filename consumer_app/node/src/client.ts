@@ -17,11 +17,13 @@ export class EventServiceClient {
     getTTPEvents(
         startLedger: number, 
         endLedger: number, 
+        accountIds: string[], 
         onEvent: (event: token_transfer.TokenTransferEvent) => void
     ): void {
         const request = new token_transfer_service.GetEventsRequest({
             start_ledger: startLedger,
-            end_ledger: endLedger
+            end_ledger: endLedger,
+            account_ids: accountIds
         });
         const stream = this.client.GetTTPEvents(request);
 

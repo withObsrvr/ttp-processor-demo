@@ -35,6 +35,30 @@ impl EventClient {
     pub fn get_info(&self) -> String {
         format!("EventClient connected to: {}", self.server_address)
     }
+    
+    /// Get TTP events with account filtering support
+    /// This is a placeholder implementation - the full gRPC client will be added
+    /// when dependency issues are resolved
+    #[wasm_bindgen]
+    pub async fn get_ttp_events(&self, start_ledger: u32, end_ledger: u32, account_ids: Vec<String>) -> Result<String, JsValue> {
+        let filter_info = if account_ids.is_empty() {
+            "all accounts".to_string()
+        } else {
+            format!("accounts: {}", account_ids.join(", "))
+        };
+        
+        console_log!("Requesting events from ledger {} to {} for {}", start_ledger, end_ledger, filter_info);
+        
+        // TODO: Implement actual gRPC client call with account filtering
+        // let request = GetEventsRequest {
+        //     start_ledger,
+        //     end_ledger,
+        //     account_ids,
+        // };
+        // let response = self.grpc_client.get_ttp_events(request).await?;
+        
+        Ok(format!("Mock response: would request events from {} to {} for {}", start_ledger, end_ledger, filter_info))
+    }
 }
 
 // This is a temporary simplified version to test WASM compilation
