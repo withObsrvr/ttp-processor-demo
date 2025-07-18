@@ -5,13 +5,16 @@ go 1.23
 toolchain go1.23.7
 
 require (
-	github.com/stellar/go v0.0.0-20250716214416-01d16bf8185f // For xdr types if needed, and support/errors
+	github.com/stellar/go v0.0.0-20250718065357-be943c360056 // For xdr types if needed, and support/errors
 	google.golang.org/grpc v1.72.0
 	google.golang.org/protobuf v1.36.6
 )
 
 // Use replace directive for local development until stellar-live-source is published
 replace github.com/stellar/stellar-live-source => ../../stellar-live-source/go
+
+// Use protocol-23 branch for stellar-go
+replace github.com/stellar/go => github.com/stellar/go v0.0.0-20250716214416-01d16bf8185f
 
 // Comment out replace directives until code is generated
 replace github.com/stellar/ttp-processor/gen/event_service => ./gen/event_service

@@ -282,6 +282,24 @@ func (s *EventServer) GetTTPEvents(req *eventservice.GetEventsRequest, stream ev
 		var lcm xdr.LedgerCloseMeta
 		_, err = xdr.Unmarshal(bytes.NewReader(rawLedgerMsg.LedgerCloseMetaXdr), &lcm)
 		if err != nil {
+			// Check if this is the specific LedgerUpgradeType enum error for Protocol 23
+			if IsLedgerUpgradeTypeError(err) {
+				if value, isZero := GetLedgerUpgradeTypeErrorValue(err); isZero && value == 0 {
+					ledgerLogger.Warn("encountered Protocol 23 LedgerUpgradeType enum value 0 - skipping ledger",
+						zap.Error(err),
+						zap.Int32("invalid_enum_value", value))
+					// Update error metrics but continue processing
+					s.metrics.mu.Lock()
+					s.metrics.ErrorCount++
+					s.metrics.LastError = err
+					s.metrics.LastErrorTime = time.Now()
+					s.metrics.LastProcessedLedger = rawLedgerMsg.Sequence
+					s.metrics.mu.Unlock()
+					// Skip this ledger and continue with the next one
+					continue
+				}
+			}
+			
 			ledgerLogger.Error("failed to unmarshal XDR",
 				zap.Error(err))
 			// Update error metrics
