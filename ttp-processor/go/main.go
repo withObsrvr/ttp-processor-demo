@@ -58,14 +58,25 @@ func main() {
 		sourceServiceAddr = defaultSourceServiceAddress
 	}
 
+	// Check if unified events are enabled
+	enableUnifiedEvents := os.Getenv("ENABLE_UNIFIED_EVENTS")
+	isUnifiedEnabled := strings.ToLower(enableUnifiedEvents) == "true"
+
 	logger = logger.With(
 		zap.String("port", port),
 		zap.String("source_service", sourceServiceAddr),
 		zap.String("network", networkPassphrase),
+		zap.Bool("unified_events", isUnifiedEnabled),
 	)
 
 	s := grpc.NewServer()
-	eventServer, err := server.NewEventServer(networkPassphrase, sourceServiceAddr)
+	var eventServer *server.EventServer
+	if isUnifiedEnabled {
+		logger.Info("Creating event server with unified events support")
+		eventServer, err = server.NewEventServerWithUnified(networkPassphrase, sourceServiceAddr)
+	} else {
+		eventServer, err = server.NewEventServer(networkPassphrase, sourceServiceAddr)
+	}
 	if err != nil {
 		logger.Fatal("failed to create event server",
 			zap.Error(err))

@@ -3,7 +3,7 @@ syntax = "proto3";
 package raw_ledger_service;
 
 // Replace with your actual Go module path structure
-option go_package = "github.com/withObsrvr/ttp-processor/gen/raw_ledger_service";
+option go_package = "stellar-live-source/gen/go/raw_ledger_service";
 
 // Message containing raw ledger metadata
 message RawLedger {

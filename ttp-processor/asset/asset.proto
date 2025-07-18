@@ -1,12 +1,6 @@
-// Copied from stellar/go/protos/ingest/asset/asset.proto
-// Needed as a dependency for token_transfer_event.proto
-
 syntax = "proto3";
 
 package asset;
-
-option go_package = "github.com/stellar/go/ingest/asset";
-
 
 message IssuedAsset {
   string asset_code = 1;               // Asset code (e.g., USD, BTC)

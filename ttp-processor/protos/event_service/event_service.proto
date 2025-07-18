@@ -4,11 +4,11 @@ package token_transfer_service;
 
 // Import the definition of the event we will stream
 // Path is relative to the --proto_path specified in protoc command (./protos)
-import "ingest/processors/token_transfer/token_transfer_event.proto";
+import "processors/token_transfer/token_transfer_event.proto";
 
 // Define the Go package path where generated code will live
 // This should match the module path + /gen/event_service
-option go_package = "ttp-processor/gen/event_service";
+option go_package = "github.com/withObsrvr/ttp-processor/gen/event_service";
 
 // The service providing token transfer events
 service EventService {

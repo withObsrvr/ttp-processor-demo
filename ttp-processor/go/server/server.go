@@ -10,9 +10,9 @@ import (
 	// Import the generated protobuf code package for the service WE PROVIDE
 	eventservice "github.com/withObsrvr/ttp-processor/gen/event_service"
 	// Import the generated protobuf code package for the service WE CONSUME
-	rawledger "github.com/stellar/stellar-live-source/gen/raw_ledger_service"
+	rawledger "github.com/withObsrvr/ttp-processor/gen/raw_ledger_service"
 
-	"github.com/stellar/go/ingest/processors/token_transfer"
+	"github.com/stellar/go/processors/token_transfer"
 	"github.com/stellar/go/support/errors"
 	"github.com/stellar/go/xdr"
 	"go.uber.org/zap"
@@ -100,6 +100,7 @@ type EventServer struct {
 	rawLedgerConn   *grpc.ClientConn                 // Connection to the raw source service
 	logger          *zap.Logger                      // Structured logger
 	metrics         *ProcessorMetrics                // Metrics tracking
+	unifiedEvents   bool                             // Whether to use unified events stream
 }
 
 // NewEventServer creates a new instance of the TTP processor server
@@ -131,6 +132,40 @@ func NewEventServer(passphrase string, sourceServiceAddr string) (*EventServer, 
 		rawLedgerConn:   conn,
 		logger:          logger,
 		metrics:         NewProcessorMetrics(),
+		unifiedEvents:   false,
+	}, nil
+}
+
+// NewEventServerWithUnified creates a new instance of the TTP processor server with unified events support
+func NewEventServerWithUnified(passphrase string, sourceServiceAddr string) (*EventServer, error) {
+	// Initialize zap logger with production configuration
+	logger, err := zap.NewProduction()
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to initialize zap logger")
+	}
+
+	processor := token_transfer.NewEventsProcessorForUnifiedEvents(passphrase)
+
+	logger.Info("connecting to raw ledger source with unified events enabled",
+		zap.String("source_address", sourceServiceAddr))
+
+	// Set up a connection to the raw ledger source server.
+	// Using insecure credentials for this example. Use secure credentials in production.
+	conn, err := grpc.Dial(sourceServiceAddr, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
+	if err != nil {
+		return nil, errors.Wrapf(err, "did not connect to raw ledger source service at %s", sourceServiceAddr)
+	}
+	logger.Info("successfully connected to raw ledger source service")
+
+	client := rawledger.NewRawLedgerServiceClient(conn)
+
+	return &EventServer{
+		processor:       processor,
+		rawLedgerClient: client,
+		rawLedgerConn:   conn,
+		logger:          logger,
+		metrics:         NewProcessorMetrics(),
+		unifiedEvents:   true,
 	}, nil
 }
 

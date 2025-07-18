@@ -10,6 +10,118 @@ This project is based on the original work from the Stellar Development Foundati
 
 The core architecture and initial implementation were inspired by these sources, with additional features and improvements added to support multiple data sources and enhanced processing capabilities.
 
+## Protocol 23 Support
+
+This implementation includes support for **Stellar Protocol 23** features:
+
+- **Unified Events Stream**: Support for SEP-0041 Soroban Token Interface Events
+- **Event Ordering Changes**: New event ordering (fee events first, then operation events, then fee refunds)
+- **Multiplexed Account Support**: M-account support in Soroban and SAC
+- **Transaction Metadata Version 4**: Enhanced metadata processing capabilities
+
+The ttp-processor supports both traditional and unified events processing modes, configurable via the `ENABLE_UNIFIED_EVENTS` environment variable.
+
+## Build Dependencies
+
+### Prerequisites
+
+The following tools are required to build and run the services:
+
+- **Go 1.21+** (specified in go.work)
+- **Protocol Buffers compiler (protoc)** - For generating gRPC/protobuf code
+- **curl** - For downloading Protocol 23 proto files during build
+- **make** - For using the build system
+
+### Installation
+
+#### On Ubuntu/Debian:
+```bash
+# Install protoc
+sudo apt-get update
+sudo apt-get install -y protobuf-compiler
+
+# Install Go (if not already installed)
+# Download from https://golang.org/dl/
+```
+
+#### On macOS:
+```bash
+# Install protoc
+brew install protobuf
+
+# Install Go (if not already installed)
+brew install go
+```
+
+#### On NixOS:
+```bash
+# Use the provided flake for a complete development environment
+nix develop
+
+# Or for a minimal environment
+nix develop .#minimal
+
+# Or install tools individually
+nix-shell -p protobuf go
+```
+
+### Go Dependencies
+
+The Makefile will automatically install the required Go protoc plugins:
+- `protoc-gen-go`
+- `protoc-gen-go-grpc`
+
+These are installed automatically during the build process via `go install`.
+
+### Quick Dependency Check
+
+You can verify your build environment is ready by running:
+```bash
+make check-deps
+```
+
+This will check for all required tools and show their versions/locations.
+
+## Nix Development Environment
+
+For NixOS users, this repository includes a development flake that provides all necessary tools:
+
+### Available Development Shells
+
+```bash
+# Full development environment (default)
+nix develop
+
+# Minimal environment (Go + protobuf only)
+nix develop .#minimal
+
+# Frontend development (Node.js + Rust WASM)
+nix develop .#frontend
+```
+
+### With direnv (Recommended)
+
+If you have `direnv` installed:
+
+```bash
+# Allow the .envrc file (one time setup)
+direnv allow
+
+# Environment will automatically load when entering the directory
+cd ttp-processor-demo
+# Development environment is now active
+```
+
+### Service-Specific Nix Builds
+
+The `stellar-live-source-datalake` service has its own Nix flake for production builds:
+
+```bash
+cd stellar-live-source-datalake
+nix build      # Build the service
+nix run        # Build and run
+```
+
 ## Architecture
 
 The system is split into several components that work together:
