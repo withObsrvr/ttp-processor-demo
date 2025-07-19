@@ -94,17 +94,22 @@ const (
 	BucketLocationConstraintApSoutheast1 BucketLocationConstraint = "ap-southeast-1"
 	BucketLocationConstraintApSoutheast2 BucketLocationConstraint = "ap-southeast-2"
 	BucketLocationConstraintApSoutheast3 BucketLocationConstraint = "ap-southeast-3"
+	BucketLocationConstraintApSoutheast4 BucketLocationConstraint = "ap-southeast-4"
+	BucketLocationConstraintApSoutheast5 BucketLocationConstraint = "ap-southeast-5"
 	BucketLocationConstraintCaCentral1   BucketLocationConstraint = "ca-central-1"
 	BucketLocationConstraintCnNorth1     BucketLocationConstraint = "cn-north-1"
 	BucketLocationConstraintCnNorthwest1 BucketLocationConstraint = "cn-northwest-1"
 	BucketLocationConstraintEu           BucketLocationConstraint = "EU"
 	BucketLocationConstraintEuCentral1   BucketLocationConstraint = "eu-central-1"
+	BucketLocationConstraintEuCentral2   BucketLocationConstraint = "eu-central-2"
 	BucketLocationConstraintEuNorth1     BucketLocationConstraint = "eu-north-1"
 	BucketLocationConstraintEuSouth1     BucketLocationConstraint = "eu-south-1"
 	BucketLocationConstraintEuSouth2     BucketLocationConstraint = "eu-south-2"
 	BucketLocationConstraintEuWest1      BucketLocationConstraint = "eu-west-1"
 	BucketLocationConstraintEuWest2      BucketLocationConstraint = "eu-west-2"
 	BucketLocationConstraintEuWest3      BucketLocationConstraint = "eu-west-3"
+	BucketLocationConstraintIlCentral1   BucketLocationConstraint = "il-central-1"
+	BucketLocationConstraintMeCentral1   BucketLocationConstraint = "me-central-1"
 	BucketLocationConstraintMeSouth1     BucketLocationConstraint = "me-south-1"
 	BucketLocationConstraintSaEast1      BucketLocationConstraint = "sa-east-1"
 	BucketLocationConstraintUsEast2      BucketLocationConstraint = "us-east-2"
@@ -130,17 +135,22 @@ func (BucketLocationConstraint) Values() []BucketLocationConstraint {
 		"ap-southeast-1",
 		"ap-southeast-2",
 		"ap-southeast-3",
+		"ap-southeast-4",
+		"ap-southeast-5",
 		"ca-central-1",
 		"cn-north-1",
 		"cn-northwest-1",
 		"EU",
 		"eu-central-1",
+		"eu-central-2",
 		"eu-north-1",
 		"eu-south-1",
 		"eu-south-2",
 		"eu-west-1",
 		"eu-west-2",
 		"eu-west-3",
+		"il-central-1",
+		"me-central-1",
 		"me-south-1",
 		"sa-east-1",
 		"us-east-2",
@@ -933,6 +943,7 @@ const (
 	ObjectStorageClassGlacierIr          ObjectStorageClass = "GLACIER_IR"
 	ObjectStorageClassSnow               ObjectStorageClass = "SNOW"
 	ObjectStorageClassExpressOnezone     ObjectStorageClass = "EXPRESS_ONEZONE"
+	ObjectStorageClassFsxOpenzfs         ObjectStorageClass = "FSX_OPENZFS"
 )
 
 // Values returns all known values for ObjectStorageClass. Note that this can be
@@ -952,6 +963,7 @@ func (ObjectStorageClass) Values() []ObjectStorageClass {
 		"GLACIER_IR",
 		"SNOW",
 		"EXPRESS_ONEZONE",
+		"FSX_OPENZFS",
 	}
 }
 
@@ -1245,6 +1257,7 @@ type ServerSideEncryption string
 // Enum values for ServerSideEncryption
 const (
 	ServerSideEncryptionAes256     ServerSideEncryption = "AES256"
+	ServerSideEncryptionAwsFsx     ServerSideEncryption = "aws:fsx"
 	ServerSideEncryptionAwsKms     ServerSideEncryption = "aws:kms"
 	ServerSideEncryptionAwsKmsDsse ServerSideEncryption = "aws:kms:dsse"
 )
@@ -1256,6 +1269,7 @@ const (
 func (ServerSideEncryption) Values() []ServerSideEncryption {
 	return []ServerSideEncryption{
 		"AES256",
+		"aws:fsx",
 		"aws:kms",
 		"aws:kms:dsse",
 	}
@@ -1315,6 +1329,7 @@ const (
 	StorageClassGlacierIr          StorageClass = "GLACIER_IR"
 	StorageClassSnow               StorageClass = "SNOW"
 	StorageClassExpressOnezone     StorageClass = "EXPRESS_ONEZONE"
+	StorageClassFsxOpenzfs         StorageClass = "FSX_OPENZFS"
 )
 
 // Values returns all known values for StorageClass. Note that this can be
@@ -1334,6 +1349,7 @@ func (StorageClass) Values() []StorageClass {
 		"GLACIER_IR",
 		"SNOW",
 		"EXPRESS_ONEZONE",
+		"FSX_OPENZFS",
 	}
 }
 

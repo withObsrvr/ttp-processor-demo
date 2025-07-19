@@ -23,9 +23,9 @@ init:
 	rm -rf protos/ingest/asset > /dev/null 2>&1
 	mkdir -p protos/ingest/asset > /dev/null 2>&1
 
-	curl -s -o protos/ingest/processors/token_transfer/token_transfer_event.proto $(PROTOS_BASE_URL)/ingest/processors/token_transfer/token_transfer_event.proto
-	curl -s -o protos/ingest/asset/asset.proto $(PROTOS_BASE_URL)/ingest/asset/asset.proto
-	cp ../cli_tool/protos/event_service/event_service.proto protos/event_service/event_service.proto > /dev/null 2>&1
+	cp ../ttp-processor/protos/ingest/processors/token_transfer/token_transfer_event.proto protos/ingest/processors/token_transfer/token_transfer_event.proto
+	cp ../ttp-processor/protos/ingest/asset/asset.proto protos/ingest/asset/asset.proto
+	cp ../ttp-processor/protos/event_service/event_service.proto protos/event_service/event_service.proto
 	cd ./node; npm install > /dev/null
 	echo "✓ Init completed"
 
