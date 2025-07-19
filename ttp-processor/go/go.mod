@@ -22,7 +22,6 @@ replace github.com/stellar/ttp-processor/server => ./server
 replace github.com/withObsrvr/ttp-processor => ../
 
 require (
-	github.com/golang/protobuf v1.5.4
 	github.com/stellar/stellar-live-source v0.0.0-00010101000000-000000000000
 	github.com/withobsrvr/flowctl v0.0.1
 	go.uber.org/zap v1.27.0
@@ -48,6 +47,7 @@ require (
 	github.com/go-logr/logr v1.4.2 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
+	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/s2a-go v0.1.7 // indirect
 	github.com/google/uuid v1.6.0 // indirect

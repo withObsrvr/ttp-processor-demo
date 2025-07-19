@@ -143,6 +143,7 @@ type LedgerBackendConfig struct {
 	// Archive specific  
 	ArchiveStorageType string
 	ArchiveBucketName  string
+	ArchivePath        string
 }
 
 type RawLedgerServer struct {
@@ -201,6 +202,7 @@ func loadConfiguration() (*LedgerBackendConfig, error) {
 	case "ARCHIVE":
 		config.ArchiveStorageType = os.Getenv("ARCHIVE_STORAGE_TYPE")
 		config.ArchiveBucketName = os.Getenv("ARCHIVE_BUCKET_NAME")
+		config.ArchivePath = os.Getenv("ARCHIVE_PATH")
 		
 		// Handle backward compatibility
 		if config.ArchiveStorageType == "" {
@@ -229,10 +231,14 @@ func (s *RawLedgerServer) migrateOldConfiguration() {
 			if bucketName := os.Getenv("BUCKET_NAME"); bucketName != "" {
 				s.config.ArchiveBucketName = bucketName
 			}
+			if archivePath := os.Getenv("ARCHIVE_PATH"); archivePath != "" {
+				s.config.ArchivePath = archivePath
+			}
 			s.logger.Warn("Migrated deprecated STORAGE_TYPE configuration",
 				zap.String("old_storage_type", oldStorageType),
 				zap.String("new_backend_type", "ARCHIVE"),
 				zap.String("bucket_name", s.config.ArchiveBucketName),
+				zap.String("archive_path", s.config.ArchivePath),
 			)
 		case "FS":
 			// FS storage type is not supported in official datastore, fallback to RPC
@@ -349,7 +355,12 @@ func (s *RawLedgerServer) createArchiveBackend() (ledgerbackend.LedgerBackend, e
 
 	switch s.config.ArchiveStorageType {
 	case "GCS":
-		dsParams["destination_bucket_path"] = s.config.ArchiveBucketName
+		// Construct full path including archive path
+		fullPath := s.config.ArchiveBucketName
+		if s.config.ArchivePath != "" {
+			fullPath = s.config.ArchiveBucketName + "/" + s.config.ArchivePath
+		}
+		dsParams["destination_bucket_path"] = fullPath
 		dsConfig = datastore.DataStoreConfig{Type: "GCS", Schema: schema, Params: dsParams}
 	case "S3":
 		dsParams["bucket_name"] = s.config.ArchiveBucketName
@@ -364,10 +375,25 @@ func (s *RawLedgerServer) createArchiveBackend() (ledgerbackend.LedgerBackend, e
 	}
 
 	// Create the datastore
+	s.logger.Info("Creating datastore for archive backend",
+		zap.String("storage_type", s.config.ArchiveStorageType),
+		zap.String("bucket_name", s.config.ArchiveBucketName),
+	)
+	
 	dataStore, err := datastore.NewDataStore(context.Background(), dsConfig)
 	if err != nil {
+		s.logger.Error("Failed to create datastore - check credentials and permissions",
+			zap.String("storage_type", s.config.ArchiveStorageType),
+			zap.String("bucket_name", s.config.ArchiveBucketName),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("failed to create datastore: %w", err)
 	}
+	
+	s.logger.Info("Successfully created datastore connection",
+		zap.String("storage_type", s.config.ArchiveStorageType),
+		zap.String("bucket_name", s.config.ArchiveBucketName),
+	)
 
 	// Create BufferedStorageBackend configuration
 	bufferedConfig := ledgerbackend.BufferedStorageBackendConfig{
@@ -387,6 +413,7 @@ func (s *RawLedgerServer) createArchiveBackend() (ledgerbackend.LedgerBackend, e
 	s.logger.Info("Created archive backend",
 		zap.String("storage_type", s.config.ArchiveStorageType),
 		zap.String("bucket_name", s.config.ArchiveBucketName),
+		zap.String("archive_path", s.config.ArchivePath),
 		zap.Uint32("ledgers_per_file", schema.LedgersPerFile),
 		zap.Uint32("files_per_partition", schema.FilesPerPartition),
 	)
@@ -465,6 +492,11 @@ func (s *RawLedgerServer) streamLedgersFromBackend(ctx context.Context, backend 
 		ledgerStartTime := time.Now()
 
 		// Get ledger from backend
+		s.logger.Debug("Attempting to retrieve ledger from backend",
+			zap.Uint32("sequence", seq),
+			zap.String("backend_type", s.config.BackendType),
+		)
+		
 		lcm, err := backend.GetLedger(ctx, seq)
 		if err != nil {
 			s.logger.Error("Failed to get ledger from backend",
@@ -475,6 +507,12 @@ func (s *RawLedgerServer) streamLedgersFromBackend(ctx context.Context, backend 
 			s.handleLedgerError(err, seq)
 			continue
 		}
+		
+		s.logger.Debug("Successfully retrieved ledger from backend",
+			zap.Uint32("sequence", seq),
+			zap.Uint32("ledger_sequence", lcm.LedgerSequence()),
+			zap.Duration("fetch_duration", time.Since(ledgerStartTime)),
+		)
 
 		// Process Protocol 23 specific changes
 		if err := s.validateProtocol23Compatibility(lcm); err != nil {
@@ -521,6 +559,13 @@ func (s *RawLedgerServer) streamLedgersFromBackend(ctx context.Context, backend 
 }
 
 func (s *RawLedgerServer) handleLedgerError(err error, seq uint32) {
+	s.logger.Error("Ledger retrieval failed - detailed error",
+		zap.Uint32("sequence", seq),
+		zap.Error(err),
+		zap.String("error_type", fmt.Sprintf("%T", err)),
+		zap.String("backend_type", s.config.BackendType),
+	)
+	
 	s.metrics.mu.Lock()
 	s.metrics.ErrorCount++
 	s.metrics.ErrorTypes["ledger_fetch"]++
