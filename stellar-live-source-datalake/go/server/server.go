@@ -7,13 +7,13 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/stellar/go/historyarchive"
+	"github.com/stellar/go/support/storage"
 	"github.com/stellar/go/xdr"
-	cdp "github.com/withObsrvr/stellar-cdp"
-	datastore "github.com/withObsrvr/stellar-datastore"
-	ledgerbackend "github.com/withObsrvr/stellar-ledgerbackend"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -94,9 +94,9 @@ func (cb *CircuitBreaker) Allow() bool {
 	}
 
 	if cb.state == "open" && time.Since(cb.lastFailureTime) > cb.resetTimeout {
-		cb.mu.Lock()
+		cb.mu.RLock()
 		cb.state = "half-open"
-		cb.mu.Unlock()
+		cb.mu.RUnlock()
 		return true
 	}
 
@@ -127,11 +127,183 @@ func (cb *CircuitBreaker) RecordFailure() {
 	}
 }
 
+// StellarArchiveReader provides an interface for reading ledger data using stellar-go
+type StellarArchiveReader struct {
+	archive historyarchive.ArchiveInterface
+	logger  *zap.Logger
+}
+
+// NewStellarArchiveReader creates a new archive reader
+func NewStellarArchiveReader(storageType, bucketName, archivePath, region, endpoint string, logger *zap.Logger) (*StellarArchiveReader, error) {
+	ctx := context.Background()
+
+	// Construct proper archive URL format
+	var archiveURL string
+	switch strings.ToLower(storageType) {
+	case "gcs":
+		archiveURL = fmt.Sprintf("gcs://%s/%s", bucketName, archivePath)
+	case "s3":
+		archiveURL = fmt.Sprintf("s3://%s/%s", bucketName, archivePath)
+	case "fs", "file":
+		archiveURL = fmt.Sprintf("file://%s", bucketName) // bucketName is the file path for filesystem
+	default:
+		return nil, fmt.Errorf("unsupported storage type: %s", storageType)
+	}
+
+	logger.Info("Connecting to Stellar archive",
+		zap.String("archive_url", archiveURL),
+		zap.String("storage_type", storageType),
+	)
+
+	// Create archive using historyarchive.Connect with proper options
+	archive, err := historyarchive.Connect(archiveURL, historyarchive.ArchiveOptions{
+		ConnectOptions: storage.ConnectOptions{
+			Context: ctx,
+			S3Region: region,
+			S3Endpoint: endpoint,
+			GCSEndpoint: endpoint,
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to archive %s: %w", archiveURL, err)
+	}
+
+	return &StellarArchiveReader{
+		archive: archive,
+		logger:  logger,
+	}, nil
+}
+
+// GetLedgerCloseMeta retrieves a ledger close meta for a specific sequence using stellar-go methods
+func (sar *StellarArchiveReader) GetLedgerCloseMeta(sequence uint32) (*xdr.LedgerCloseMeta, error) {
+	sar.logger.Debug("Getting ledger close meta",
+		zap.Uint32("sequence", sequence))
+
+	// Use stellar-go's GetLedgers method for proper checkpoint handling
+	ledgers, err := sar.archive.GetLedgers(sequence, sequence)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get ledger %d from archive: %w", sequence, err)
+	}
+
+	ledger, exists := ledgers[sequence]
+	if !exists {
+		return nil, fmt.Errorf("ledger %d not found in checkpoint", sequence)
+	}
+
+	// Convert historyarchive.Ledger to LedgerCloseMeta
+	lcm := sar.convertToLedgerCloseMeta(ledger)
+
+	sar.logger.Debug("Successfully retrieved ledger close meta",
+		zap.Uint32("sequence", sequence),
+		zap.Uint32("ledger_seq", uint32(ledger.Header.Header.LedgerSeq)))
+
+	return lcm, nil
+}
+
+// StreamLedgerCloseMeta streams ledger close meta for a range of sequences using efficient batch processing
+func (sar *StellarArchiveReader) StreamLedgerCloseMeta(startSeq, endSeq uint32, output chan<- *xdr.LedgerCloseMeta) error {
+	defer close(output)
+
+	sar.logger.Info("Starting to stream ledger close meta",
+		zap.Uint32("start_seq", startSeq),
+		zap.Uint32("end_seq", endSeq))
+
+	// Process in checkpoint-sized chunks for efficiency
+	checkpointManager := sar.archive.GetCheckpointManager()
+	
+	for seq := startSeq; seq <= endSeq; {
+		// Get the checkpoint range for this sequence
+		checkpointRange := checkpointManager.GetCheckpointRange(seq)
+		endRange := checkpointRange.High
+		if endRange > endSeq {
+			endRange = endSeq
+		}
+
+		sar.logger.Debug("Processing checkpoint range",
+			zap.Uint32("start", seq),
+			zap.Uint32("end", endRange),
+			zap.Uint32("checkpoint_low", checkpointRange.Low),
+			zap.Uint32("checkpoint_high", checkpointRange.High))
+
+		// Get all ledgers in this range efficiently
+		ledgers, err := sar.archive.GetLedgers(seq, endRange)
+		if err != nil {
+			sar.logger.Error("Failed to get ledgers from archive",
+				zap.Uint32("start", seq),
+				zap.Uint32("end", endRange),
+				zap.Error(err))
+			return fmt.Errorf("failed to get ledgers %d-%d: %w", seq, endRange, err)
+		}
+
+		// Stream each ledger in the range
+		for i := seq; i <= endRange; i++ {
+			ledger, exists := ledgers[i]
+			if !exists {
+				sar.logger.Debug("Ledger not found in checkpoint, skipping",
+					zap.Uint32("sequence", i))
+				continue
+			}
+
+			// Convert to LedgerCloseMeta
+			lcm := sar.convertToLedgerCloseMeta(ledger)
+
+			select {
+			case output <- lcm:
+				sar.logger.Debug("Sent ledger to output",
+					zap.Uint32("sequence", i))
+			case <-time.After(5 * time.Second):
+				return fmt.Errorf("timeout sending ledger %d to output channel", i)
+			}
+		}
+
+		seq = endRange + 1
+	}
+
+	sar.logger.Info("Finished streaming ledger close meta",
+		zap.Uint32("start_seq", startSeq),
+		zap.Uint32("end_seq", endSeq))
+
+	return nil
+}
+
+// convertToLedgerCloseMeta converts a historyarchive.Ledger to xdr.LedgerCloseMeta
+func (sar *StellarArchiveReader) convertToLedgerCloseMeta(ledger *historyarchive.Ledger) *xdr.LedgerCloseMeta {
+	// For now, create a basic LedgerCloseMeta V1 structure
+	// This can be enhanced to include transaction and result data as needed
+	lcm := &xdr.LedgerCloseMeta{
+		V: 1,
+		V1: &xdr.LedgerCloseMetaV1{
+			LedgerHeader: ledger.Header,
+			// Initialize empty transaction set for now
+			TxSet: xdr.GeneralizedTransactionSet{
+				V: 1,
+				V1TxSet: &xdr.TransactionSetV1{
+					PreviousLedgerHash: ledger.Header.Header.PreviousLedgerHash,
+					Phases: []xdr.TransactionPhase{},
+				},
+			},
+			// Initialize empty transaction processing results
+			TxProcessing: []xdr.TransactionResultMeta{},
+			// Initialize empty upgrade processing
+			UpgradesProcessing: []xdr.UpgradeEntryMeta{},
+			// Initialize empty SCP info
+			ScpInfo: []xdr.ScpHistoryEntry{},
+		},
+	}
+
+	sar.logger.Debug("Converted ledger to LedgerCloseMeta",
+		zap.Uint32("ledger_seq", uint32(ledger.Header.Header.LedgerSeq)),
+		zap.String("ledger_hash", ledger.Header.Hash.HexString()))
+
+	return lcm
+}
+
 type RawLedgerServer struct {
 	pb.UnimplementedRawLedgerServiceServer
 	logger         *zap.Logger
 	metrics        *EnterpriseMetrics
 	circuitBreaker *CircuitBreaker
+	archiveReader  *GalexieDatalakeReader
 }
 
 func NewRawLedgerServer() (*RawLedgerServer, error) {
@@ -152,10 +324,10 @@ func NewRawLedgerServer() (*RawLedgerServer, error) {
 	}, nil
 }
 
-// StreamRawLedgers implements the gRPC StreamRawLedgers method with enterprise-grade reliability
+// StreamRawLedgers implements the gRPC StreamRawLedgers method using stellar-go
 func (s *RawLedgerServer) StreamRawLedgers(req *pb.StreamLedgersRequest, stream pb.RawLedgerService_StreamRawLedgersServer) error {
 	ctx := stream.Context()
-	s.logger.Info("Starting enterprise ledger stream",
+	s.logger.Info("Starting stellar-go based ledger stream",
 		zap.Uint32("start_sequence", req.StartLedger),
 		zap.Duration("max_latency_p99", MaxLatencyP99),
 	)
@@ -166,10 +338,6 @@ func (s *RawLedgerServer) StreamRawLedgers(req *pb.StreamLedgersRequest, stream 
 	region := os.Getenv("AWS_REGION")
 	endpoint := os.Getenv("S3_ENDPOINT_URL")
 
-	// Schema config
-	ledgersPerFile := uint32(getEnvAsUint("LEDGERS_PER_FILE", 64))
-	filesPerPartition := uint32(getEnvAsUint("FILES_PER_PARTITION", 10))
-
 	if storageType == "" || bucketName == "" {
 		s.logger.Error("Missing required environment variables",
 			zap.String("storage_type", storageType),
@@ -178,149 +346,147 @@ func (s *RawLedgerServer) StreamRawLedgers(req *pb.StreamLedgersRequest, stream 
 		return status.Error(codes.InvalidArgument, "STORAGE_TYPE and BUCKET_NAME environment variables are required")
 	}
 
-	s.logger.Info("Using storage configuration",
+	s.logger.Info("Using stellar-go storage configuration",
 		zap.String("storage_type", storageType),
 		zap.String("bucket_path", bucketName),
-		zap.Uint32("ledgers_per_file", ledgersPerFile),
-		zap.Uint32("files_per_partition", filesPerPartition),
 	)
 
-	// --- Setup Storage Backend ---
-	schema := datastore.DataStoreSchema{
-		LedgersPerFile:    ledgersPerFile,
-		FilesPerPartition: filesPerPartition,
-	}
-
-	dsParams := map[string]string{}
-	var dsConfig datastore.DataStoreConfig
-
-	switch storageType {
-	case "GCS":
-		dsParams["destination_bucket_path"] = bucketName
-		dsConfig = datastore.DataStoreConfig{Type: "GCS", Schema: schema, Params: dsParams}
-	case "S3":
-		dsParams["bucket_name"] = bucketName
-		dsParams["region"] = region
-		if endpoint != "" {
-			dsParams["endpoint"] = endpoint
-			dsParams["force_path_style"] = os.Getenv("S3_FORCE_PATH_STYLE")
+	// Get archive path from environment or use default
+	archivePath := os.Getenv("ARCHIVE_PATH")
+	if archivePath == "" {
+		// Default path structure for common archive layouts
+		switch storageType {
+		case "GCS":
+			archivePath = "landing/ledgers/testnet" // Default for GCS
+		case "S3":
+			archivePath = "archive" // Default for S3
+		default:
+			archivePath = "" // No path for filesystem
 		}
-		dsConfig = datastore.DataStoreConfig{Type: "S3", Schema: schema, Params: dsParams}
-	case "FS":
-		dsParams["base_path"] = bucketName
-		dsConfig = datastore.DataStoreConfig{Type: "FS", Schema: schema, Params: dsParams}
-	default:
-		s.logger.Error("Unsupported storage type",
-			zap.String("storage_type", storageType),
-		)
-		return status.Error(codes.InvalidArgument, fmt.Sprintf("unsupported STORAGE_TYPE: %s", storageType))
 	}
 
-	// --- Setup CDP Publisher Config ---
-	bufferedConfig := cdp.DefaultBufferedStorageBackendConfig(schema.LedgersPerFile)
-	publisherConfig := cdp.PublisherConfig{
-		DataStoreConfig:       dsConfig,
-		BufferedStorageConfig: bufferedConfig,
+	// Initialize the stellar archive reader
+	archiveReader, err := NewGalexieDatalakeReader(storageType, bucketName, archivePath, region, endpoint, s.logger)
+	if err != nil {
+		s.logger.Error("Failed to initialize stellar archive reader",
+			zap.Error(err))
+		return status.Errorf(codes.Internal, "failed to initialize stellar archive reader: %v", err)
 	}
-
-	// --- Define Ledger Range ---
-	ledgerRange := ledgerbackend.UnboundedRange(uint32(req.StartLedger))
-	s.logger.Info("Processing ledger range",
-		zap.Uint32("start_ledger", req.StartLedger),
-	)
+	s.archiveReader = archiveReader
 
 	// --- Process Ledgers from Storage ---
 	processedCount := 0
 	startTime := time.Now()
+	
+	// Calculate end ledger (for bounded requests)
+	endLedger := req.StartLedger + 1000 // Process up to 1000 ledgers by default
+	// Note: StreamLedgersRequest doesn't have EndLedger field, so we use a default range
 
-	err := cdp.ApplyLedgerMetadata(
-		ledgerRange,
-		publisherConfig,
-		ctx,
-		func(lcm xdr.LedgerCloseMeta) error {
-			// Check for context cancellation
-			select {
-			case <-ctx.Done():
-				s.logger.Info("Context cancelled during processing",
-					zap.Uint32("ledger_sequence", lcm.LedgerSequence()),
-				)
-				return ctx.Err()
-			default:
-			}
-
-			// Check circuit breaker
-			if !s.circuitBreaker.Allow() {
-				s.logger.Warn("Circuit breaker open - service temporarily unavailable",
-					zap.String("state", s.circuitBreaker.state),
-					zap.Int("failure_count", s.circuitBreaker.failureCount),
-				)
-				return status.Error(codes.Unavailable, "service temporarily unavailable")
-			}
-
-			ledgerStartTime := time.Now()
-			s.logger.Debug("Processing ledger",
-				zap.Uint32("sequence", lcm.LedgerSequence()),
-			)
-
-			// Convert LedgerCloseMeta to raw bytes
-			rawBytes, err := lcm.MarshalBinary()
-			if err != nil {
-				s.logger.Error("Failed to marshal ledger",
-					zap.Uint32("sequence", lcm.LedgerSequence()),
-					zap.Error(err),
-				)
-				s.metrics.mu.Lock()
-				s.metrics.ErrorCount++
-				s.metrics.ErrorTypes["marshal"]++
-				s.metrics.LastError = err
-				s.metrics.LastErrorTime = time.Now()
-				s.metrics.mu.Unlock()
-				s.circuitBreaker.RecordFailure()
-				return fmt.Errorf("error marshaling ledger %d: %w", lcm.LedgerSequence(), err)
-			}
-
-			// Create and send the RawLedger message
-			rawLedger := &pb.RawLedger{
-				Sequence:           uint32(lcm.LedgerSequence()),
-				LedgerCloseMetaXdr: rawBytes,
-			}
-
-			if err := stream.Send(rawLedger); err != nil {
-				s.logger.Error("Failed to send ledger",
-					zap.Uint32("sequence", lcm.LedgerSequence()),
-					zap.Error(err),
-				)
-				s.metrics.mu.Lock()
-				s.metrics.ErrorCount++
-				s.metrics.ErrorTypes["stream"]++
-				s.metrics.LastError = err
-				s.metrics.LastErrorTime = time.Now()
-				s.metrics.mu.Unlock()
-				s.circuitBreaker.RecordFailure()
-				return fmt.Errorf("error sending ledger to stream: %w", err)
-			}
-
-			// Update metrics
-			latency := time.Since(ledgerStartTime)
-			s.metrics.mu.Lock()
-			s.metrics.SuccessCount++
-			s.metrics.TotalProcessed++
-			s.metrics.TotalBytesProcessed += int64(len(rawBytes))
-			s.metrics.LatencyHistogram = append(s.metrics.LatencyHistogram, latency)
-			s.metrics.LastSuccessfulSeq = lcm.LedgerSequence()
-			s.metrics.mu.Unlock()
-			s.circuitBreaker.RecordSuccess()
-
-			processedCount++
-			if processedCount%100 == 0 {
-				s.logger.Info("Processing progress",
-					zap.Int("processed_count", processedCount),
-					zap.Uint32("last_sequence", lcm.LedgerSequence()),
-				)
-			}
-			return nil
-		},
+	s.logger.Info("Processing ledger range",
+		zap.Uint32("start_ledger", req.StartLedger),
+		zap.Uint32("end_ledger", endLedger),
 	)
+
+	// Process ledgers sequentially
+	for sequence := req.StartLedger; sequence <= endLedger; sequence++ {
+		// Check for context cancellation
+		select {
+		case <-ctx.Done():
+			s.logger.Info("Context cancelled during processing",
+				zap.Uint32("ledger_sequence", sequence),
+			)
+			return ctx.Err()
+		default:
+		}
+
+		// Check circuit breaker
+		if !s.circuitBreaker.Allow() {
+			s.logger.Warn("Circuit breaker open - service temporarily unavailable",
+				zap.String("state", s.circuitBreaker.state),
+				zap.Int("failure_count", s.circuitBreaker.failureCount),
+			)
+			return status.Error(codes.Unavailable, "service temporarily unavailable")
+		}
+
+		ledgerStartTime := time.Now()
+		s.logger.Debug("Processing ledger",
+			zap.Uint32("sequence", sequence),
+		)
+
+		// Get ledger close meta using stellar-go
+		lcm, err := s.archiveReader.GetLedgerCloseMeta(sequence)
+		if err != nil {
+			s.logger.Error("Failed to get ledger close meta",
+				zap.Uint32("sequence", sequence),
+				zap.Error(err),
+			)
+			s.metrics.mu.Lock()
+			s.metrics.ErrorCount++
+			s.metrics.ErrorTypes["ledger_read"]++
+			s.metrics.LastError = err
+			s.metrics.LastErrorTime = time.Now()
+			s.metrics.mu.Unlock()
+			s.circuitBreaker.RecordFailure()
+			return status.Errorf(codes.Internal, "failed to get ledger %d: %v", sequence, err)
+		}
+
+		// Convert LedgerCloseMeta to raw bytes
+		rawBytes, err := lcm.MarshalBinary()
+		if err != nil {
+			s.logger.Error("Failed to marshal ledger",
+				zap.Uint32("sequence", sequence),
+				zap.Error(err),
+			)
+			s.metrics.mu.Lock()
+			s.metrics.ErrorCount++
+			s.metrics.ErrorTypes["marshal"]++
+			s.metrics.LastError = err
+			s.metrics.LastErrorTime = time.Now()
+			s.metrics.mu.Unlock()
+			s.circuitBreaker.RecordFailure()
+			return status.Errorf(codes.Internal, "failed to marshal ledger %d: %v", sequence, err)
+		}
+
+		// Create and send the RawLedger message
+		rawLedger := &pb.RawLedger{
+			Sequence:           sequence,
+			LedgerCloseMetaXdr: rawBytes,
+		}
+
+		if err := stream.Send(rawLedger); err != nil {
+			s.logger.Error("Failed to send ledger",
+				zap.Uint32("sequence", sequence),
+				zap.Error(err),
+			)
+			s.metrics.mu.Lock()
+			s.metrics.ErrorCount++
+			s.metrics.ErrorTypes["stream"]++
+			s.metrics.LastError = err
+			s.metrics.LastErrorTime = time.Now()
+			s.metrics.mu.Unlock()
+			s.circuitBreaker.RecordFailure()
+			return status.Errorf(codes.Internal, "failed to send ledger %d: %v", sequence, err)
+		}
+
+		// Update metrics
+		latency := time.Since(ledgerStartTime)
+		s.metrics.mu.Lock()
+		s.metrics.SuccessCount++
+		s.metrics.TotalProcessed++
+		s.metrics.TotalBytesProcessed += int64(len(rawBytes))
+		s.metrics.LatencyHistogram = append(s.metrics.LatencyHistogram, latency)
+		s.metrics.LastSuccessfulSeq = sequence
+		s.metrics.mu.Unlock()
+		s.circuitBreaker.RecordSuccess()
+
+		processedCount++
+		if processedCount%10 == 0 {
+			s.logger.Info("Processing progress",
+				zap.Int("processed_count", processedCount),
+				zap.Uint32("last_sequence", sequence),
+			)
+		}
+	}
 
 	elapsed := time.Since(startTime)
 	s.logger.Info("Finished processing",
@@ -328,20 +494,7 @@ func (s *RawLedgerServer) StreamRawLedgers(req *pb.StreamLedgersRequest, stream 
 		zap.Duration("elapsed_time", elapsed),
 	)
 
-	if err != nil {
-		if err == context.Canceled || err == context.DeadlineExceeded {
-			s.logger.Info("Processing stopped due to context cancellation",
-				zap.Error(err),
-			)
-			return nil
-		}
-		s.logger.Error("Error during ledger processing",
-			zap.Error(err),
-		)
-		return err
-	}
-
-	s.logger.Info("Successfully completed ledger processing")
+	s.logger.Info("Successfully completed stellar-go based ledger processing")
 	return nil
 }
 
@@ -391,6 +544,7 @@ func (s *RawLedgerServer) StartHealthCheckServer(port int) error {
 
 		response := map[string]interface{}{
 			"status": status,
+			"implementation": "stellar-go",
 			"metrics": map[string]interface{}{
 				"retry_count":           metrics.RetryCount,
 				"error_count":           metrics.ErrorCount,
@@ -418,7 +572,7 @@ func (s *RawLedgerServer) StartHealthCheckServer(port int) error {
 	})
 
 	addr := fmt.Sprintf(":%d", port)
-	s.logger.Info("Starting enterprise health check server",
+	s.logger.Info("Starting stellar-go based health check server",
 		zap.String("address", addr),
 	)
 	return http.ListenAndServe(addr, nil)

@@ -1,4 +1,4 @@
-module github.com/stellar/stellar-live-source
+module github.com/withObsrvr/ttp-processor-demo/stellar-live-source
 
 go 1.23
 
@@ -31,4 +31,9 @@ require github.com/withobsrvr/flowctl v0.0.1
 require (
 	github.com/golang/protobuf v1.5.4 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
+)
+
+replace (
+	github.com/withObsrvr/ttp-processor-demo/stellar-live-source/gen/raw_ledger_service => ./gen/raw_ledger_service
+	github.com/withObsrvr/ttp-processor-demo/stellar-live-source/server => ./server
 )

@@ -8,9 +8,9 @@ import (
 	"strings"
 
 	// Import the generated protobuf code package
-	rawledger "github.com/stellar/stellar-live-source/gen/raw_ledger_service"
+	rawledger "github.com/withObsrvr/ttp-processor-demo/stellar-live-source/gen/raw_ledger_service"
 	// Import the server implementation package
-	"github.com/stellar/stellar-live-source/server"
+	"github.com/withObsrvr/ttp-processor-demo/stellar-live-source/server"
 
 	"google.golang.org/grpc"
 )

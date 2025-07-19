@@ -23,22 +23,119 @@ The repository is organized as a Go workspace with multiple services:
 
 ## Build Commands
 
-### Go Services
-Each Go service has a Makefile with consistent targets:
-
+### Datalake Service (stellar-live-source-datalake)
+**Build:**
 ```bash
-# Build any Go service
-cd <service-directory>
-make build
+cd stellar-live-source-datalake
+nix develop -c make build-server
+```
 
-# Generate protobuf code
-make gen-proto
+**Run:**
+```bash
+# Source environment variables and run
+source .secrets
+./stellar_live_source_datalake
 
-# Run the service
-make run
+# Or run in background
+source .secrets && ./stellar_live_source_datalake &
+```
 
-# Clean build artifacts
-make clean
+**Test:**
+```bash
+# Check health endpoint
+curl -s localhost:8088/health | jq .
+
+# Expected response:
+# {
+#   "status": "healthy",
+#   "implementation": "stellar-go",
+#   "metrics": { ... }
+# }
+```
+
+### TTP Processor
+**Build:**
+```bash
+cd ttp-processor
+nix develop ../ -c make build-processor
+```
+
+**Run:**
+```bash
+# Set environment variables and run
+NETWORK_PASSPHRASE="Test SDF Network ; September 2015" \
+SOURCE_SERVICE_ADDRESS=localhost:50052 \
+ENABLE_UNIFIED_EVENTS=true \
+ENABLE_FLOWCTL=true \
+PORT=50051 \
+HEALTH_PORT=8089 \
+./ttp_processor_server
+
+# Or run in background
+NETWORK_PASSPHRASE="Test SDF Network ; September 2015" \
+SOURCE_SERVICE_ADDRESS=localhost:50052 \
+ENABLE_UNIFIED_EVENTS=true \
+ENABLE_FLOWCTL=true \
+PORT=50051 \
+HEALTH_PORT=8089 \
+./ttp_processor_server &
+```
+
+**Test:**
+```bash
+# Check health endpoint
+curl -s localhost:8089/health | jq .
+
+# Expected response:
+# {
+#   "status": "healthy",
+#   "metrics": {
+#     "success_count": 0,
+#     "error_count": 0,
+#     "total_processed": 0,
+#     ...
+#   }
+# }
+```
+
+### Consumer App (Node.js)
+**Build:**
+```bash
+cd consumer_app/node
+npm install
+npm run build
+```
+
+**Run:**
+```bash
+# Basic run
+npm start -- <start_ledger> <end_ledger>
+
+# With flowctl integration and custom service address
+TTP_SERVICE_ADDRESS=localhost:50051 \
+ENABLE_FLOWCTL=true \
+HEALTH_PORT=8091 \
+npm start -- <start_ledger> <end_ledger>
+
+# Using nix develop (recommended)
+nix develop ../../ -c bash -c '
+TTP_SERVICE_ADDRESS=localhost:50051 \
+ENABLE_FLOWCTL=true \
+HEALTH_PORT=8091 \
+npm start -- <start_ledger> <end_ledger>
+'
+```
+
+**Test:**
+```bash
+# Check health endpoint
+curl -s localhost:8091/health | jq .
+
+# Expected response:
+# {
+#   "status": "healthy",
+#   "metrics": { ... }
+# }
 ```
 
 ### Testing
@@ -49,17 +146,6 @@ go test ./...
 
 # Individual test files
 go test -v ./path/to/package
-```
-
-### Consumer App (Node.js)
-```bash
-cd consumer_app/node
-npm install
-npm run build
-npm start -- <start_ledger> <end_ledger>
-
-# With flowctl integration
-ENABLE_FLOWCTL=true npm start -- <start_ledger> <end_ledger>
 ```
 
 ### Consumer App (Go WASM)
@@ -234,10 +320,108 @@ The `stellar-live-source-datalake` service uses Nix for reproducible builds:
 
 ## Service Startup Order
 
-1. Start data source service (stellar-live-source or stellar-live-source-datalake)
-2. Start processor service (ttp-processor or ledger-jsonrpc-processor)  
-3. Start consumer applications
-4. Optional: Start flowctl control plane for monitoring
+### Complete System Test
+
+**1. Start Datalake Service:**
+```bash
+cd stellar-live-source-datalake
+nix develop -c make build-server
+source .secrets && ./stellar_live_source_datalake &
+
+# Verify it's running
+curl -s localhost:8088/health | jq .
+```
+
+**2. Start TTP Processor:**
+```bash
+cd ttp-processor
+nix develop ../ -c make build-processor
+NETWORK_PASSPHRASE="Test SDF Network ; September 2015" \
+SOURCE_SERVICE_ADDRESS=localhost:50052 \
+ENABLE_UNIFIED_EVENTS=true \
+ENABLE_FLOWCTL=true \
+PORT=50051 \
+HEALTH_PORT=8089 \
+./ttp_processor_server &
+
+# Verify it's running
+curl -s localhost:8089/health | jq .
+```
+
+**3. Start Consumer App:**
+```bash
+cd consumer_app/node
+nix develop ../../ -c bash -c '
+TTP_SERVICE_ADDRESS=localhost:50051 \
+ENABLE_FLOWCTL=true \
+HEALTH_PORT=8091 \
+npm start -- 409907 409948
+'
+
+# Verify it's running in another terminal
+curl -s localhost:8091/health | jq .
+```
+
+**4. Verify Communication:**
+- Datalake service: `localhost:8088/health` (stellar-go implementation)
+- TTP processor: `localhost:8089/health` (processing metrics)
+- Consumer app: `localhost:8091/health` (consumption metrics)
+
+**5. Kill Processes:**
+```bash
+# Kill all components
+pkill -f stellar_live_source_datalake
+pkill -f ttp_processor_server
+pkill -f "npm start"
+```
+
+### Port Configuration
+
+**Default Ports:**
+- Datalake gRPC: `:50052`
+- Datalake health: `:8088`
+- TTP processor gRPC: `:50051`
+- TTP processor health: `:8089`
+- Consumer health: `:8091`
+
+**Note:** Adjust ports if they conflict with existing services.
+
+### Environment Variables
+
+**Required .secrets file for datalake:**
+```bash
+export STORAGE_TYPE=GCS
+export BUCKET_NAME=obsrvr-stellar-ledger-data-testnet-data
+export ARCHIVE_PATH=landing/ledgers/testnet
+export NETWORK_PASSPHRASE="Test SDF Network ; September 2015"
+export ENABLE_FLOWCTL=true
+export FLOWCTL_ENDPOINT=localhost:8080
+export HEALTH_PORT=8088
+```
+
+**Required environment for TTP processor:**
+```bash
+NETWORK_PASSPHRASE="Test SDF Network ; September 2015"
+SOURCE_SERVICE_ADDRESS=localhost:50052
+ENABLE_UNIFIED_EVENTS=true
+ENABLE_FLOWCTL=true
+PORT=50051
+HEALTH_PORT=8089
+```
+
+**Required environment for consumer app:**
+```bash
+TTP_SERVICE_ADDRESS=localhost:50051
+ENABLE_FLOWCTL=true
+HEALTH_PORT=8091
+```
+
+### Common Issues and Solutions
+
+1. **Port conflicts:** Adjust PORT and HEALTH_PORT variables
+2. **Archive access errors:** Verify .secrets file has correct GCS credentials
+3. **Connection refused:** Ensure services start in correct order
+4. **Process cleanup:** Use `pkill` to stop all related processes
 
 Each service will wait for dependencies and handle reconnection automatically.
 

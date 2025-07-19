@@ -5,15 +5,12 @@ BINARY_NAME=stellar_live_source_server
 GO_SRC_DIR=./go
 GEN_DIR=$(GO_SRC_DIR)/gen
 PROTO_DIR=./protos
-GO_PACKAGE_BASE=github.com/stellar/stellar-live-source
+GO_PACKAGE_BASE=github.com/withObsrvr/ttp-processor-demo/stellar-live-source
 
 all: build-server
 
 init:
 	set -e
-	# Ensure Go module exists, create if not
-	cd $(GO_SRC_DIR) && go mod init $(GO_PACKAGE_BASE) > /dev/null 2>&1 || true
-	cd $(GO_SRC_DIR) && go mod tidy
 	rm -rf $(GEN_DIR) > /dev/null 2>&1
 	mkdir -p $(GEN_DIR) > /dev/null 2>&1
 	echo "✓ Init completed for stellar-live-source"
@@ -30,11 +27,12 @@ gen-proto: init
 		--go-grpc_opt=paths=source_relative \
 		--go-grpc_opt=Mraw_ledger_service/raw_ledger_service.proto=$(GO_PACKAGE_BASE)/gen/raw_ledger_service \
 		raw_ledger_service/raw_ledger_service.proto
+	cd $(GO_SRC_DIR) && go mod tidy
 	echo "✓ Proto generation completed for stellar-live-source"
 
 build-server: gen-proto
 	set -e
-	cd $(GO_SRC_DIR) && go build -o ../$(BINARY_NAME) main.go
+	cd $(GO_SRC_DIR) && GOWORK=off go build -o ../$(BINARY_NAME) main.go
 	echo "✓ Server build completed: $(BINARY_NAME)"
 
 run: build-server

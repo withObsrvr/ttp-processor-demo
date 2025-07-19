@@ -95,12 +95,13 @@ type EventServer struct {
 	// Embed the unimplemented server type for forward compatibility
 	eventservice.UnimplementedEventServiceServer
 
-	processor       *token_transfer.EventsProcessor  // The core TTP logic
-	rawLedgerClient rawledger.RawLedgerServiceClient // gRPC client for the raw source service
-	rawLedgerConn   *grpc.ClientConn                 // Connection to the raw source service
-	logger          *zap.Logger                      // Structured logger
-	metrics         *ProcessorMetrics                // Metrics tracking
-	unifiedEvents   bool                             // Whether to use unified events stream
+	processor           *token_transfer.EventsProcessor  // The core TTP logic for traditional processing
+	unifiedProcessor    *token_transfer.EventsProcessor  // The core TTP logic for unified events
+	rawLedgerClient     rawledger.RawLedgerServiceClient // gRPC client for the raw source service
+	rawLedgerConn       *grpc.ClientConn                 // Connection to the raw source service
+	logger              *zap.Logger                      // Structured logger
+	metrics             *ProcessorMetrics                // Metrics tracking
+	unifiedEvents       bool                             // Whether to use unified events stream
 }
 
 // NewEventServer creates a new instance of the TTP processor server
@@ -112,6 +113,7 @@ func NewEventServer(passphrase string, sourceServiceAddr string) (*EventServer, 
 	}
 
 	processor := token_transfer.NewEventsProcessor(passphrase)
+	unifiedProcessor := token_transfer.NewEventsProcessorForUnifiedEvents(passphrase)
 
 	logger.Info("connecting to raw ledger source",
 		zap.String("source_address", sourceServiceAddr))
@@ -127,12 +129,13 @@ func NewEventServer(passphrase string, sourceServiceAddr string) (*EventServer, 
 	client := rawledger.NewRawLedgerServiceClient(conn)
 
 	return &EventServer{
-		processor:       processor,
-		rawLedgerClient: client,
-		rawLedgerConn:   conn,
-		logger:          logger,
-		metrics:         NewProcessorMetrics(),
-		unifiedEvents:   false,
+		processor:        processor,
+		unifiedProcessor: unifiedProcessor,
+		rawLedgerClient:  client,
+		rawLedgerConn:    conn,
+		logger:           logger,
+		metrics:          NewProcessorMetrics(),
+		unifiedEvents:    false,
 	}, nil
 }
 
@@ -144,7 +147,8 @@ func NewEventServerWithUnified(passphrase string, sourceServiceAddr string) (*Ev
 		return nil, errors.Wrap(err, "failed to initialize zap logger")
 	}
 
-	processor := token_transfer.NewEventsProcessorForUnifiedEvents(passphrase)
+	processor := token_transfer.NewEventsProcessor(passphrase)
+	unifiedProcessor := token_transfer.NewEventsProcessorForUnifiedEvents(passphrase)
 
 	logger.Info("connecting to raw ledger source with unified events enabled",
 		zap.String("source_address", sourceServiceAddr))
@@ -160,12 +164,13 @@ func NewEventServerWithUnified(passphrase string, sourceServiceAddr string) (*Ev
 	client := rawledger.NewRawLedgerServiceClient(conn)
 
 	return &EventServer{
-		processor:       processor,
-		rawLedgerClient: client,
-		rawLedgerConn:   conn,
-		logger:          logger,
-		metrics:         NewProcessorMetrics(),
-		unifiedEvents:   true,
+		processor:        processor,
+		unifiedProcessor: unifiedProcessor,
+		rawLedgerClient:  client,
+		rawLedgerConn:    conn,
+		logger:           logger,
+		metrics:          NewProcessorMetrics(),
+		unifiedEvents:    true,
 	}, nil
 }
 
@@ -183,6 +188,58 @@ func (s *EventServer) GetMetrics() ProcessorMetrics {
 	s.metrics.mu.RLock()
 	defer s.metrics.mu.RUnlock()
 	return *s.metrics
+}
+
+// processLedgerWithVersionDetection handles both version 3 and version 4 transaction metadata
+func (s *EventServer) processLedgerWithVersionDetection(lcm xdr.LedgerCloseMeta) ([]*token_transfer.TokenTransferEvent, error) {
+	// Check if any transactions have version 4 metadata (unified events)
+	hasVersion4 := false
+	hasVersion3 := false
+	
+	// Scan through transactions to detect metadata versions
+	switch lcm.V {
+	case 0:
+		// V0 ledgers don't have transaction metadata, use traditional processing
+		hasVersion3 = true
+	case 1:
+		for _, tx := range lcm.MustV1().TxProcessing {
+			if tx.TxApplyProcessing.V == 4 {
+				hasVersion4 = true
+			} else {
+				hasVersion3 = true
+			}
+			// If we find mixed versions, we need to be careful
+			if hasVersion3 && hasVersion4 {
+				break
+			}
+		}
+	case 2:
+		for _, tx := range lcm.MustV2().TxProcessing {
+			if tx.TxApplyProcessing.V == 4 {
+				hasVersion4 = true
+			} else {
+				hasVersion3 = true
+			}
+			// If we find mixed versions, we need to be careful
+			if hasVersion3 && hasVersion4 {
+				break
+			}
+		}
+	}
+	
+	// Use unified processor if we have version 4 metadata and no version 3 conflicts
+	if hasVersion4 && !hasVersion3 {
+		s.logger.Debug("Using unified events processor for version 4 metadata",
+			zap.Uint32("ledger_sequence", lcm.LedgerSequence()))
+		return s.unifiedProcessor.EventsFromLedger(lcm)
+	}
+	
+	// Use traditional processor for version 3 or mixed versions
+	s.logger.Debug("Using traditional processor for version 3 or mixed metadata",
+		zap.Uint32("ledger_sequence", lcm.LedgerSequence()),
+		zap.Bool("has_version_3", hasVersion3),
+		zap.Bool("has_version_4", hasVersion4))
+	return s.processor.EventsFromLedger(lcm)
 }
 
 // GetTTPEvents implements the gRPC GetTTPEvents method
@@ -318,7 +375,8 @@ func (s *EventServer) GetTTPEvents(req *eventservice.GetEventsRequest, stream ev
 		processingStart := time.Now()
 		
 		// Now use the TTP processor to get events from this ledger
-		events, err := s.processor.EventsFromLedger(lcm)
+		// Dynamically detect if we need to use unified events or traditional processing
+		events, err := s.processLedgerWithVersionDetection(lcm)
 		
 		// Calculate processing time
 		processingTime := time.Since(processingStart)

@@ -7,11 +7,12 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	// Import the generated protobuf code package
-	rawledger "github.com/stellar/stellar-live-source/gen/raw_ledger_service"
+	rawledger "github.com/withObsrvr/ttp-processor-demo/stellar-live-source/gen/raw_ledger_service"
 
 	"github.com/stellar/stellar-rpc/client"
 	"github.com/stellar/stellar-rpc/protocol"
@@ -250,11 +251,22 @@ func (s *RawLedgerServer) StreamRawLedgers(req *rawledger.StreamLedgersRequest, 
 		s.metrics.TotalLatency += latency
 		s.metrics.LatencyHistogram = append(s.metrics.LatencyHistogram, latency)
 		if err != nil {
-			s.metrics.ErrorCount++
-			s.metrics.ErrorTypes[err.Error()]++
-			s.metrics.LastError = err
-			s.metrics.LastErrorTime = time.Now()
-			s.circuitBreaker.RecordFailure()
+			// Check if this is a cursor boundary error (not a real failure)
+			if isCursorBoundaryError(err) {
+				s.logger.Debug("Cursor at boundary, will reset and retry",
+					zap.String("cursor", getLedgersReq.Pagination.Cursor),
+					zap.Error(err),
+				)
+				// Don't record as failure, but track for monitoring
+				s.metrics.ErrorTypes["boundary_"+err.Error()]++
+			} else {
+				// Only record actual failures
+				s.metrics.ErrorCount++
+				s.metrics.ErrorTypes[err.Error()]++
+				s.metrics.LastError = err
+				s.metrics.LastErrorTime = time.Now()
+				s.circuitBreaker.RecordFailure()
+			}
 		} else {
 			s.metrics.SuccessCount++
 			s.circuitBreaker.RecordSuccess()
@@ -265,6 +277,27 @@ func (s *RawLedgerServer) StreamRawLedgers(req *rawledger.StreamLedgersRequest, 
 			if status.Code(err) == codes.Canceled {
 				return err
 			}
+			
+			// Handle cursor boundary errors gracefully
+			if isCursorBoundaryError(err) {
+				s.logger.Info("Resetting cursor due to boundary condition",
+					zap.String("current_cursor", getLedgersReq.Pagination.Cursor),
+					zap.Uint32("start_ledger", getLedgersReq.StartLedger),
+				)
+				
+				// Reset cursor and start from latest available ledger
+				getLedgersReq.Pagination.Cursor = ""
+				if resp != nil && resp.LatestLedger > 0 {
+					getLedgersReq.StartLedger = resp.LatestLedger
+				}
+				
+				// Reset retry state and wait before retrying
+				retryCount = 0
+				backoff = initialBackoff
+				time.Sleep(2 * time.Second) // Wait for new ledgers
+				continue
+			}
+			
 			if retryCount >= maxRetries {
 				s.logger.Error("Max retries exceeded",
 					zap.Int("retry_count", retryCount),
@@ -283,7 +316,7 @@ func (s *RawLedgerServer) StreamRawLedgers(req *rawledger.StreamLedgersRequest, 
 			s.logger.Debug("No new ledgers",
 				zap.Uint32("latest_ledger", resp.LatestLedger),
 			)
-			time.Sleep(5 * time.Second)
+			time.Sleep(2 * time.Second)
 			continue
 		}
 
@@ -344,7 +377,7 @@ func (s *RawLedgerServer) StreamRawLedgers(req *rawledger.StreamLedgersRequest, 
 				zap.Uint32("processed", lastProcessedSeq),
 				zap.Uint32("latest", resp.LatestLedger),
 			)
-			time.Sleep(5 * time.Second)
+			time.Sleep(2 * time.Second)
 		}
 	}
 }
@@ -364,6 +397,19 @@ func (s *RawLedgerServer) getLedgersWithRetry(
 			resp, err := s.rpcClient.GetLedgers(ctx, req)
 			if err == nil {
 				return &resp, nil
+			}
+
+			// Handle cursor boundary errors immediately without retrying
+			if isCursorBoundaryError(err) {
+				// Try to get latest ledger info for cursor reset
+				if resp.LatestLedger == 0 {
+					// If we don't have latest ledger info, try to get it
+					latestResp, latestErr := s.rpcClient.GetLatestLedger(ctx)
+					if latestErr == nil {
+						resp.LatestLedger = latestResp.Sequence
+					}
+				}
+				return &resp, err // Return error to trigger boundary handling in main loop
 			}
 
 			if !shouldRetry(err) {
@@ -507,4 +553,15 @@ func (s *RawLedgerServer) StartHealthCheckServer(port int) error {
 		zap.String("address", addr),
 	)
 	return http.ListenAndServe(addr, nil)
+}
+
+// isCursorBoundaryError detects cursor boundary validation errors from Stellar RPC
+func isCursorBoundaryError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "cursor") && 
+		   strings.Contains(errStr, "must be between") &&
+		   strings.Contains(errStr, "latest ledger")
 }

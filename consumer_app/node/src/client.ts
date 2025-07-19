@@ -1,6 +1,6 @@
 import * as grpc from '@grpc/grpc-js';
 import { token_transfer_service } from '../gen/event_service/event_service';
-import { token_transfer } from '../gen/ingest/processors/token_transfer/token_transfer_event';
+import { token_transfer } from '../gen/processors/token_transfer/token_transfer_event';
 
 // Create a gRPC client
 export class EventServiceClient {
@@ -25,11 +25,11 @@ export class EventServiceClient {
         });
         const stream = this.client.GetTTPEvents(request);
 
-        stream.on('data', (event) => {
+        stream.on('data', (event: token_transfer.TokenTransferEvent) => {
             onEvent(event);
         });
 
-        stream.on('error', (error) => {
+        stream.on('error', (error: Error) => {
             console.error('Error in getTTPEvents stream:', error);
             throw error;
         });
