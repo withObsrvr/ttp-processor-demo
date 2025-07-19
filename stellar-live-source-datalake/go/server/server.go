@@ -359,6 +359,9 @@ func (s *RawLedgerServer) createArchiveBackend() (ledgerbackend.LedgerBackend, e
 		fullPath := s.config.ArchiveBucketName
 		if s.config.ArchivePath != "" {
 			fullPath = s.config.ArchiveBucketName + "/" + s.config.ArchivePath
+		} else {
+			// Default to the known data location in this bucket
+			fullPath = s.config.ArchiveBucketName + "/landing/ledgers/testnet"
 		}
 		dsParams["destination_bucket_path"] = fullPath
 		dsConfig = datastore.DataStoreConfig{Type: "GCS", Schema: schema, Params: dsParams}
