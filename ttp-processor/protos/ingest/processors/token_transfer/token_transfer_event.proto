@@ -10,7 +10,7 @@ import "google/protobuf/timestamp.proto";
 // Import are relative to the top level directory -  `/protos`
 import "ingest/asset/asset.proto";
 
-option go_package = "github.com/stellar/go/ingest/processors/token_transfer";
+option go_package = "github.com/stellar/go/processors/token_transfer";
 
 
 // EventMeta message

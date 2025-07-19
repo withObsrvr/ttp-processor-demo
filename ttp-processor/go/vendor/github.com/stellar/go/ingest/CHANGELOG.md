@@ -4,12 +4,23 @@ All notable changes to this project will be documented in this file. This projec
 
 ## Pending
 
+### Protocol 23 Support
+* Added support for the new `RESTORE` ledger entry change type [5587](https://github.com/stellar/go/pull/5587).
+* Added new captive core toml config parameters to `CaptiveCoreTomlParams`:
+  * `EmitUnifiedEventsBeforeProtocol22` , defaults to false, when true, sets `ENABLE_BACKFILL_STELLAR_ASSET_EVENTS` will enable emission of classic events in the transaction metadata for ledgers that were created prior to Protocol 22. 
+  * `EmitVerboseMeta` is convenience flag, when set to true it will enable all config flags related to emitting more verbose transaction metadata: `ENABLE_SOROBAN_DIAGNOSTIC_EVENTS`, `ENABLE_DIAGNOSTICS_FOR_TX_SUBMISSION`, `ENABLE_EMIT_SOROBAN_TRANSACTION_META_EXT_V1`, `ENABLE_EMIT_LEDGER_CLOSE_META_EXT_V1`, `ENABLE_EMIT_CLASSIC_EVENTS`, `ENABLE_EMIT_CLASSIC_EVENTS`
+### Breaking Changes
+In Protocol 23, Stellar Core removes in-memory mode and requires on-disk mode (using BucketListDB) for captive core ([5627](https://github.com/stellar/go/pull/5627)). As a result, the following configurations are no longer supported and have been removed:
+- `CAPTIVE_CORE_USE_DB`
+- `DEPRECATED_SQL_LEDGER_STATE`
+
 ### Bug Fixes
 * Update the boundary check in `BufferedStorageBackend` to queue ledgers up to the end boundary, resolving skipped final batch when the `from` ledger doesn't align with file boundary [5563](https://github.com/stellar/go/pull/5563).
 
 ### New Features
 * Create new package `ingest/cdp` for new components which will assist towards writing data transformation pipelines as part of [Composable Data Platform](https://stellar.org/blog/developers/composable-data-platform). 
 * Add new functional producer, `cdp.ApplyLedgerMetadata`. A new function which enables a private instance of `BufferedStorageBackend` to perfrom the role of a producer operator in streaming pipeline designs.  It will emit pre-computed `LedgerCloseMeta` from a chosen `DataStore`. The stream can use `ApplyLedgerMetadata` as the origin of `LedgerCloseMeta`, providing a callback function which acts as the next operator in the stream, receiving the `LedgerCloseMeta`. [5462](https://github.com/stellar/go/pull/5462).
+* Add new RPCLedgerBackend. [5571](https://github.com/stellar/go/issues/5571) - `ledgerbackend.RPCLedgerBackend` implements the stadard `ledgerbackend.LedgerBackend` interface. Provide the URL of the RPC server as configuration and this new ledger backend will proxy to the RPC to retrieve ledger metadata.
 
 ### Stellar Core Protocol 21 Configuration Update:
 * BucketlistDB is now the default database for stellar-core, replacing the experimental option. As a result, the `EXPERIMENTAL_BUCKETLIST_DB` configuration parameter has been deprecated.
