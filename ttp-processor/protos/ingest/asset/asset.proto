@@ -5,7 +5,7 @@ syntax = "proto3";
 
 package asset;
 
-option go_package = "github.com/stellar/go/ingest/asset";
+option go_package = "github.com/stellar/go/asset";
 
 
 message IssuedAsset {

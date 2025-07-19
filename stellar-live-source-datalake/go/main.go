@@ -13,21 +13,13 @@ import (
 )
 
 func main() {
-	// Check required environment variables
-	storageType := os.Getenv("STORAGE_TYPE")
-	bucketName := os.Getenv("BUCKET_NAME")
-
-	if storageType == "" || bucketName == "" {
-		log.Fatalf("STORAGE_TYPE and BUCKET_NAME environment variables are required")
-	}
-
 	// Create gRPC server
-	lis, err := net.Listen("tcp", ":50052")
+	lis, err := net.Listen("tcp", ":50053")
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
 	}
 
-	// Initialize the raw ledger server
+	// Initialize the raw ledger server (handles all configuration validation)
 	rawLedgerServer, err := server.NewRawLedgerServer()
 	if err != nil {
 		log.Fatalf("failed to create raw ledger server: %v", err)
@@ -66,7 +58,8 @@ func main() {
 
 	log.Printf("Server listening at %v", lis.Addr())
 	log.Printf("Health check server listening at :%d", healthPort)
-	log.Printf("Reading ledgers from %s: %s", storageType, bucketName)
+	// Note: After migration, BACKEND_TYPE env var might not be set, so we can't rely on it
+	log.Printf("Server initialized successfully with configured backend")
 	if err := s.Serve(lis); err != nil {
 		log.Fatalf("failed to serve: %v", err)
 	}
