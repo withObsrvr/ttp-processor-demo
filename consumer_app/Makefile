@@ -20,10 +20,16 @@ init:
 	mkdir -p protos/ingest/processors/token_transfer > /dev/null 2>&1
 	mkdir -p protos/ingest/asset > /dev/null 2>&1
 
+<<<<<<< HEAD
 	# Copy proto files from updated sources instead of downloading
 	cp ../cli_tool/protos/event_service/event_service.proto protos/event_service/event_service.proto
 	cp ../cli_tool/protos/ingest/processors/token_transfer/token_transfer_event.proto protos/ingest/processors/token_transfer/token_transfer_event.proto
 	cp ../cli_tool/protos/ingest/asset/asset.proto protos/ingest/asset/asset.proto
+=======
+	cp ../ttp-processor/protos/ingest/processors/token_transfer/token_transfer_event.proto protos/ingest/processors/token_transfer/token_transfer_event.proto
+	cp ../ttp-processor/protos/ingest/asset/asset.proto protos/ingest/asset/asset.proto
+	cp ../ttp-processor/protos/event_service/event_service.proto protos/event_service/event_service.proto
+>>>>>>> 269e4d361a466f223fbec72dc0faf98c80995f81
 	cd ./node; npm install > /dev/null
 	echo "✓ Init completed"
 

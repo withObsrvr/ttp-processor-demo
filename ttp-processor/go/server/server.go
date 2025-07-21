@@ -12,7 +12,7 @@ import (
 	// Import the generated protobuf code package for the service WE CONSUME
 	rawledger "github.com/stellar/stellar-live-source/gen/raw_ledger_service"
 
-	"github.com/stellar/go/ingest/processors/token_transfer"
+	"github.com/stellar/go/processors/token_transfer"
 	"github.com/stellar/go/support/errors"
 	"github.com/stellar/go/xdr"
 	"go.uber.org/zap"
