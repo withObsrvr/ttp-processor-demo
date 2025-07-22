@@ -1,0 +1,188 @@
+// Contract Invocation Event definitions for Stellar Protocol 23
+// This file defines the event structures for contract invocations, including
+// all Soroban operations: InvokeHostFunction, CreateContract, and UploadWasm
+
+syntax = "proto3";
+
+package contract_invocation;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/withobsrvr/contract-invocation-processor/gen/contract_invocation";
+
+// Main contract invocation event message
+message ContractInvocationEvent {
+  EventMeta meta = 1;
+  oneof invocation_type {
+    ContractCall contract_call = 2;
+    CreateContract create_contract = 3;
+    UploadWasm upload_wasm = 4;
+  }
+}
+
+// Event metadata containing ledger and transaction information
+message EventMeta {
+  uint32 ledger_sequence = 1;                              // Ledger sequence number
+  google.protobuf.Timestamp closed_at = 2;                 // Ledger close time
+  string tx_hash = 3;                                      // Transaction hash
+  uint32 tx_index = 4;                                     // Transaction index within ledger (1-indexed)
+  uint32 op_index = 5;                                     // Operation index within transaction (0-indexed)
+  bool successful = 6;                                     // Whether the operation was successful
+  
+  // Protocol 23 specific fields
+  string data_source = 7;                                  // "live" or "archive" - source of contract data
+  repeated ArchiveRestoration archive_restorations = 8;    // Automatic archive restorations that occurred
+}
+
+// Main contract call invocation (InvokeHostFunction with InvokeContract)
+message ContractCall {
+  string contract_id = 1;                                  // Contract address (C...)
+  string invoking_account = 2;                             // Account that invoked the contract (G...)
+  string function_name = 3;                                // Function name being called
+  repeated ScValue arguments = 4;                          // Function arguments
+  repeated DiagnosticEvent diagnostic_events = 5;          // Events emitted during execution
+  repeated ContractToContractCall contract_calls = 6;      // Sub-contract calls made
+  repeated StateChange state_changes = 7;                  // State changes made
+  repeated TtlExtension ttl_extensions = 8;                // TTL extensions performed
+}
+
+// Create contract operation (InvokeHostFunction with CreateContract)
+message CreateContract {
+  string contract_id = 1;                                  // New contract address (C...)
+  string creator_account = 2;                              // Account that created the contract (G...)
+  oneof source {
+    string source_account = 3;                             // For create_stellar_asset (G...)
+    bytes wasm_hash = 4;                                   // For create_contract (32 bytes)
+  }
+  repeated ScValue constructor_args = 5;                   // Constructor arguments if any
+}
+
+// Upload WASM operation (InvokeHostFunction with UploadContractWasm)
+message UploadWasm {
+  string uploader_account = 1;                             // Account that uploaded the WASM (G...)
+  bytes wasm_hash = 2;                                     // Hash of the uploaded WASM (32 bytes)
+  uint32 wasm_size = 3;                                    // Size of the WASM code in bytes
+}
+
+// Soroban ScVal representation for contract data
+message ScValue {
+  ScValueType type = 1;
+  oneof value {
+    bool bool_value = 2;                                   // Boolean value
+    uint32 u32_value = 3;                                  // 32-bit unsigned integer
+    int32 i32_value = 4;                                   // 32-bit signed integer
+    uint64 u64_value = 5;                                  // 64-bit unsigned integer
+    int64 i64_value = 6;                                   // 64-bit signed integer
+    string string_value = 7;                               // String value
+    bytes bytes_value = 8;                                 // Byte array
+    ScValueVector vec_value = 9;                           // Vector/array value
+    ScValueMap map_value = 10;                             // Map value
+    string address_value = 11;                             // Stellar address (G..., C...)
+    ScValueInstance instance_value = 12;                   // Instance value
+    string symbol_value = 13;                              // Symbol value
+  }
+}
+
+// ScValue type enumeration
+enum ScValueType {
+  SC_VALUE_TYPE_VOID = 0;                                  // Void/null value
+  SC_VALUE_TYPE_BOOL = 1;                                  // Boolean
+  SC_VALUE_TYPE_U32 = 2;                                   // 32-bit unsigned integer
+  SC_VALUE_TYPE_I32 = 3;                                   // 32-bit signed integer
+  SC_VALUE_TYPE_U64 = 4;                                   // 64-bit unsigned integer
+  SC_VALUE_TYPE_I64 = 5;                                   // 64-bit signed integer
+  SC_VALUE_TYPE_STRING = 6;                                // String
+  SC_VALUE_TYPE_BYTES = 7;                                 // Byte array
+  SC_VALUE_TYPE_VEC = 8;                                   // Vector/array
+  SC_VALUE_TYPE_MAP = 9;                                   // Map
+  SC_VALUE_TYPE_ADDRESS = 10;                              // Stellar address
+  SC_VALUE_TYPE_INSTANCE = 11;                             // Instance
+  SC_VALUE_TYPE_SYMBOL = 12;                               // Symbol
+}
+
+// Vector of ScValues
+message ScValueVector {
+  repeated ScValue values = 1;
+}
+
+// Map of ScValues
+message ScValueMap {
+  repeated ScValueMapEntry entries = 1;
+}
+
+// Map entry with key-value pair
+message ScValueMapEntry {
+  ScValue key = 1;
+  ScValue value = 2;
+}
+
+// Instance value for complex types
+message ScValueInstance {
+  string instance_type = 1;                                // Type identifier
+  repeated ScValue fields = 2;                             // Instance fields
+}
+
+// Diagnostic event emitted during contract execution
+message DiagnosticEvent {
+  string contract_id = 1;                                  // Contract that emitted the event (C...)
+  repeated ScValue topics = 2;                             // Event topics (indexed data)
+  ScValue data = 3;                                        // Event data (non-indexed)
+  bool in_successful_contract_call = 4;                    // Whether event was in successful call
+  uint32 event_index = 5;                                  // Index of event within transaction
+}
+
+// Contract-to-contract call information
+message ContractToContractCall {
+  string from_contract = 1;                                // Calling contract (C...)
+  string to_contract = 2;                                  // Called contract (C...)
+  string function = 3;                                     // Function name called
+  bool successful = 4;                                     // Whether the call was successful
+  repeated ScValue arguments = 5;                          // Arguments passed to the call
+}
+
+// State change in contract storage
+message StateChange {
+  string contract_id = 1;                                  // Contract whose state changed (C...)
+  ScValue key = 2;                                         // Storage key
+  ScValue old_value = 3;                                   // Previous value (empty for creates)
+  ScValue new_value = 4;                                   // New value (empty for deletes)
+  StateChangeOperation operation = 5;                      // Type of change
+  ContractDataDurability durability = 6;                   // Data durability type
+}
+
+// State change operation type
+enum StateChangeOperation {
+  STATE_CHANGE_OPERATION_CREATE = 0;                       // New storage entry created
+  STATE_CHANGE_OPERATION_UPDATE = 1;                       // Existing storage entry updated
+  STATE_CHANGE_OPERATION_DELETE = 2;                       // Storage entry deleted
+}
+
+// Contract data durability (Protocol 20+ feature)
+enum ContractDataDurability {
+  CONTRACT_DATA_DURABILITY_TEMPORARY = 0;                  // Temporary storage (lower cost, auto-cleanup)
+  CONTRACT_DATA_DURABILITY_PERSISTENT = 1;                 // Persistent storage (higher cost, manual cleanup)
+}
+
+// TTL extension for contract data
+message TtlExtension {
+  string contract_id = 1;                                  // Contract whose TTL was extended (C...)
+  uint32 old_ttl = 2;                                      // Previous TTL value
+  uint32 new_ttl = 3;                                      // New TTL value
+  ScValue key = 4;                                         // Storage key whose TTL was extended
+  ContractDataDurability durability = 5;                   // Durability type of the data
+}
+
+// Protocol 23 specific: Archive restoration information
+message ArchiveRestoration {
+  string contract_id = 1;                                  // Contract whose data was restored (C...)
+  ScValue key = 2;                                         // Storage key that was restored
+  uint32 restored_at_ledger = 3;                           // Ledger sequence where restoration occurred
+  ContractDataDurability durability = 4;                   // Durability type of restored data
+  RestorationReason reason = 5;                            // Why the restoration happened
+}
+
+// Reason for archive restoration
+enum RestorationReason {
+  RESTORATION_REASON_AUTOMATIC = 0;                        // Automatically restored during execution
+  RESTORATION_REASON_EXPLICIT = 1;                         // Explicitly restored via RestoreFootprint
+}

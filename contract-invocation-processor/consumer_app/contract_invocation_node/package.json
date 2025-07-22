@@ -1,0 +1,63 @@
+{
+  "name": "@withobsrvr/contract-invocation-consumer",
+  "version": "1.0.0",
+  "description": "Node.js TypeScript consumer for Contract Invocation Processor events",
+  "main": "dist/client.js",
+  "types": "dist/client.d.ts",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/examples/basic-streaming.ts",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "gen-proto": "grpc_tools_node_protoc --plugin=protoc-gen-ts=./node_modules/.bin/protoc-gen-ts --ts_out=grpc_js:./gen --js_out=import_style=commonjs,binary:./gen --grpc_out=grpc_js:./gen --proto_path=../../protos ../../protos/contract_invocation/*.proto ../../protos/contract_invocation_service/*.proto",
+    "lint": "eslint src/**/*.ts",
+    "format": "prettier --write src/**/*.ts"
+  },
+  "keywords": [
+    "stellar",
+    "soroban",
+    "contract",
+    "invocation",
+    "grpc",
+    "streaming",
+    "blockchain",
+    "ttp-processor"
+  ],
+  "author": "obsrvr.dev",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@grpc/grpc-js": "^1.10.1",
+    "@grpc/proto-loader": "^0.7.10",
+    "protobufjs": "^7.2.6",
+    "long": "^5.2.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/jest": "^29.5.12",
+    "@typescript-eslint/eslint-plugin": "^7.14.1",
+    "@typescript-eslint/parser": "^7.14.1",
+    "eslint": "^8.57.0",
+    "grpc-tools": "^1.12.4",
+    "grpc_tools_node_protoc_ts": "^5.3.3",
+    "jest": "^29.7.0",
+    "prettier": "^3.3.2",
+    "ts-jest": "^29.1.5",
+    "ts-proto": "^1.181.1",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/withobsrvr/ttp-processor-demo.git",
+    "directory": "contract-invocation-processor/consumer_app/contract_invocation_node"
+  },
+  "files": [
+    "dist/",
+    "gen/",
+    "src/",
+    "README.md"
+  ]
+}

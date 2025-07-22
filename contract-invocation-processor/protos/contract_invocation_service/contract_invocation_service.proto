@@ -1,0 +1,142 @@
+// Contract Invocation Service gRPC definition
+// This file defines the gRPC service for streaming contract invocation events
+// with comprehensive filtering capabilities
+
+syntax = "proto3";
+
+package contract_invocation_service;
+
+import "contract_invocation/contract_invocation_event.proto";
+
+option go_package = "github.com/withobsrvr/contract-invocation-processor/gen/contract_invocation_service";
+
+// Service for streaming contract invocation events from Stellar blockchain
+service ContractInvocationService {
+  // Stream contract invocation events with filtering capabilities
+  // Supports both bounded (historical) and unbounded (live) streaming
+  rpc GetContractInvocations(GetInvocationsRequest) returns (stream contract_invocation.ContractInvocationEvent);
+}
+
+// Request message for GetContractInvocations with comprehensive filtering
+message GetInvocationsRequest {
+  // Ledger range (required)
+  uint32 start_ledger = 1;                                 // First ledger to include
+  uint32 end_ledger = 2;                                   // Last ledger to include (0 = live stream)
+  
+  // Basic filters
+  repeated string contract_ids = 3;                        // Filter by specific contracts (C...)
+  repeated string function_names = 4;                      // Filter by function names
+  repeated string invoking_accounts = 5;                   // Filter by invoking accounts (G...)
+  bool successful_only = 6;                                // Only successful invocations
+  InvocationTypeFilter type_filter = 7;                    // Filter by invocation type
+  
+  // Advanced filters
+  EventContentFilter content_filter = 8;                   // Filter by event content
+  TimeFilter time_filter = 9;                              // Time-based filtering
+  StateChangeFilter state_filter = 10;                     // Filter by state changes
+  
+  // Response options
+  ResponseOptions options = 11;                            // Control response format and content
+}
+
+// Filter by invocation type
+enum InvocationTypeFilter {
+  INVOCATION_TYPE_FILTER_ALL = 0;                          // All invocation types
+  INVOCATION_TYPE_FILTER_CONTRACT_CALL = 1;                // Only contract calls
+  INVOCATION_TYPE_FILTER_CREATE_CONTRACT = 2;              // Only contract creation
+  INVOCATION_TYPE_FILTER_UPLOAD_WASM = 3;                  // Only WASM uploads
+}
+
+// Filter by event content (topics, data patterns)
+message EventContentFilter {
+  repeated TopicFilter topic_filters = 1;                  // Filter by diagnostic event topics
+  repeated DataPatternFilter data_patterns = 2;            // Filter by data patterns
+  bool has_diagnostic_events = 3;                          // Only invocations with events
+  bool has_state_changes = 4;                              // Only invocations with state changes
+}
+
+// Filter for diagnostic event topics
+message TopicFilter {
+  uint32 topic_index = 1;                                  // Topic index (0-3)
+  oneof filter_type {
+    string exact_match = 2;                                 // Exact string match
+    bytes bytes_match = 3;                                  // Exact bytes match
+    string pattern = 4;                                     // Regex pattern
+  }
+}
+
+// Filter for data patterns in events or arguments
+message DataPatternFilter {
+  DataLocation location = 1;                               // Where to look for pattern
+  oneof pattern_type {
+    string string_pattern = 2;                              // String pattern (regex)
+    bytes bytes_pattern = 3;                               // Bytes pattern
+    ScValueTypeFilter type_filter = 4;                     // Filter by ScValue type
+  }
+}
+
+// Location where to apply data pattern filter
+enum DataLocation {
+  DATA_LOCATION_ARGUMENTS = 0;                             // Function arguments
+  DATA_LOCATION_EVENT_DATA = 1;                            // Diagnostic event data
+  DATA_LOCATION_STATE_VALUES = 2;                          // State change values
+}
+
+// Filter by ScValue type
+enum ScValueTypeFilter {
+  SC_VALUE_TYPE_FILTER_ANY = 0;                            // Any type
+  SC_VALUE_TYPE_FILTER_STRING = 1;                         // String values only
+  SC_VALUE_TYPE_FILTER_NUMERIC = 2;                        // Numeric values only
+  SC_VALUE_TYPE_FILTER_ADDRESS = 3;                        // Address values only
+  SC_VALUE_TYPE_FILTER_BYTES = 4;                          // Bytes values only
+}
+
+// Time-based filtering
+message TimeFilter {
+  google.protobuf.Timestamp start_time = 1;                // Earliest event time
+  google.protobuf.Timestamp end_time = 2;                  // Latest event time
+  bool recent_only = 3;                                     // Only events from last hour
+}
+
+// Filter by state changes
+message StateChangeFilter {
+  repeated StateChangeOperation operations = 1;            // Filter by operation types
+  repeated ContractDataDurability durabilities = 2;        // Filter by durability
+  repeated string affected_contracts = 3;                  // Contracts with state changes
+  bool has_ttl_extensions = 4;                              // Only invocations with TTL extensions
+}
+
+// Control response format and content
+message ResponseOptions {
+  bool include_raw_xdr = 1;                                 // Include raw XDR data
+  bool include_decoded_only = 2;                            // Only decoded data (no raw)
+  bool compress_response = 3;                               // Compress large responses
+  uint32 max_events_per_response = 4;                      // Batch events (0 = no batching)
+  
+  // Content inclusion options
+  ContentInclusion inclusion = 5;                          // What to include in response
+}
+
+// Control what content to include in responses
+message ContentInclusion {
+  bool include_diagnostic_events = 1;                       // Include diagnostic events
+  bool include_state_changes = 2;                          // Include state changes
+  bool include_contract_calls = 3;                         // Include sub-contract calls
+  bool include_ttl_extensions = 4;                         // Include TTL extensions
+  bool include_archive_info = 5;                           // Include Protocol 23 archive info
+}
+
+// Import types from contract_invocation_event.proto
+import "google/protobuf/timestamp.proto";
+
+// Re-export types for convenience
+enum StateChangeOperation {
+  STATE_CHANGE_OPERATION_CREATE = 0;
+  STATE_CHANGE_OPERATION_UPDATE = 1;
+  STATE_CHANGE_OPERATION_DELETE = 2;
+}
+
+enum ContractDataDurability {
+  CONTRACT_DATA_DURABILITY_TEMPORARY = 0;
+  CONTRACT_DATA_DURABILITY_PERSISTENT = 1;
+}
