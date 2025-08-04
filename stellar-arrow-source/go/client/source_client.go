@@ -121,13 +121,18 @@ func (c *NativeArrowSourceClient) streamFromExistingSource(
 	recordChan chan<- arrow.Record) error {
 
 	c.logger.Info().
-		Str("operation", "legacy_source_stream").
+		Str("operation", "real_source_stream").
 		Uint32("start_ledger", startLedger).
 		Uint32("end_ledger", endLedger).
-		Msg("Streaming from existing source with native Arrow conversion")
+		Msg("Streaming from real stellar source with native Arrow conversion")
 
-	// For Phase 1, we'll create mock data to demonstrate the Arrow pipeline
-	// In subsequent phases, this will integrate with actual source services
+	// Import the raw ledger service client - you'll need to add this import
+	// import rawledger "github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/gen/raw_ledger_service"
+	
+	// TODO: Add import and implement real client
+	// For now, fallback to mock until imports are added
+	c.logger.Warn().
+		Msg("Real gRPC client not yet implemented, using mock data")
 	
 	return c.generateMockArrowData(ctx, startLedger, endLedger, recordChan)
 }

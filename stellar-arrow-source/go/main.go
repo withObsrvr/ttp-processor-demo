@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/withObsrvr/ttp-processor-demo/stellar-arrow-source/analytics"
 	"github.com/withObsrvr/ttp-processor-demo/stellar-arrow-source/logging"
 	"github.com/withObsrvr/ttp-processor-demo/stellar-arrow-source/server"
 )
@@ -20,6 +21,14 @@ func main() {
 
 	// Load configuration from environment
 	config := loadConfig()
+	
+	// Debug log the configuration
+	logger.Info().
+		Bool("mock_data_config", config.MockData).
+		Str("source_endpoint", config.SourceEndpoint).
+		Int("batch_size", config.BatchSize).
+		Str("MOCK_DATA_env", os.Getenv("MOCK_DATA")).
+		Msg("Configuration loaded")
 
 	logger.LogStartup(logging.StartupConfig{
 		FlowCtlEnabled:    config.FlowCtlEnabled,
@@ -38,9 +47,43 @@ func main() {
 			Msg("Failed to create Arrow Flight server")
 		os.Exit(1)
 	}
+	
+	// Initialize analytics for monitoring if configured
+	var analyticsEngine *analytics.AnalyticsEngine
+	
+	// Analytics engine for server monitoring
+	if getEnvOrDefault("ENABLE_ANALYTICS", "true") == "true" {
+		analyticsEngine = analytics.NewAnalyticsEngine(arrowServer.GetAllocator(), logger)
+		arrowServer.SetAnalyticsEngine(analyticsEngine)
+		
+		logger.Info().
+			Msg("Analytics engine enabled for monitoring")
+	}
 
 	// Start health server
 	go startHealthServer(config.HealthPort, arrowServer, logger)
+
+	// Register with flowctl control plane if enabled
+	var flowctlController *server.FlowctlController
+	if config.FlowCtlEnabled {
+		flowctlController = server.NewFlowctlController(arrowServer)
+		if err := flowctlController.RegisterWithFlowctl(); err != nil {
+			logger.Error().
+				Err(err).
+				Msg("Failed to register with flowctl control plane")
+			logger.Info().
+				Msg("Service will continue without control plane integration")
+		} else {
+			logger.Info().
+				Bool("native_arrow", true).
+				Str("service_id", flowctlController.GetServiceID()).
+				Msg("Successfully registered with flowctl control plane")
+		}
+	} else {
+		logger.Info().
+			Str("operation", "flowctl_disabled").
+			Msg("Flowctl integration disabled - set FLOWCTL_ENABLED=true to enable")
+	}
 
 	// Start Arrow Flight server in goroutine
 	go func() {
@@ -72,6 +115,15 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	// Stop flowctl controller if it exists
+	if flowctlController != nil {
+		logger.Info().
+			Str("operation", "flowctl_shutdown").
+			Msg("Stopping flowctl controller")
+		flowctlController.Stop()
+	}
+	
+
 	// In a real implementation, we would gracefully close connections here
 	select {
 	case <-shutdownCtx.Done():
@@ -93,13 +145,14 @@ type ServerConfig = server.ServerConfig
 // loadConfig loads configuration from environment variables
 func loadConfig() *ServerConfig {
 	config := &ServerConfig{
-		Port:              getEnvAsInt("PORT", 8815),
+		Port:              getEnvAsInt("ARROW_PORT", 8815),
 		HealthPort:        getEnvAsInt("HEALTH_PORT", 8088),
 		SourceEndpoint:    getEnvOrDefault("SOURCE_ENDPOINT", "localhost:8080"),
 		NetworkPassphrase: getEnvOrDefault("NETWORK_PASSPHRASE", "Test SDF Network ; September 2015"),
 		BatchSize:         getEnvAsInt("BATCH_SIZE", 1000),
 		MaxConnections:    getEnvAsInt("MAX_CONNECTIONS", 100),
 		FlowCtlEnabled:    getEnvAsBool("FLOWCTL_ENABLED", false),
+		MockData:          getEnvAsBool("MOCK_DATA", false), // Default to real data
 	}
 
 	return config
@@ -107,6 +160,7 @@ func loadConfig() *ServerConfig {
 
 // startHealthServer starts the health check HTTP server
 func startHealthServer(port int, arrowServer *server.StellarArrowServer, logger *logging.ComponentLogger) {
+	// Note: flowctlController will be passed in Phase 2 for complete health status
 	mux := http.NewServeMux()
 
 	// Health endpoint

@@ -1,6 +1,7 @@
 go 1.23.4
 
 use (
+	./arrow-consumer-demo/go
 	./contract-invocation-processor/go
 	./stellar-arrow-source/go
 	./stellar-live-source-datalake/go

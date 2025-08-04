@@ -252,3 +252,6 @@ Each service will wait for dependencies and handle reconnection automatically.
 - Use `make vendor-all` to prepare dependencies for offline Nix builds
 - Go workspace mode is disabled (`GOWORK=off`) for consistent builds
 - Supports both development builds and containerized deployments
+
+## Testing Guidelines
+- Do not use mock data when testing functionality

@@ -14,17 +14,16 @@
         # Build inputs for Apache Arrow C++ libraries
         arrowInputs = with pkgs; [
           arrow-cpp
-          parquet-cpp
-          pkgconfig
+          pkg-config
         ];
 
         # Go development dependencies
         goInputs = with pkgs; [
           go_1_23
+          duckdb
           golangci-lint
           gopls
           delve
-          goimports
           protobuf
           protoc-gen-go
           protoc-gen-go-grpc
@@ -44,6 +43,7 @@
           buildInputs = arrowInputs ++ goInputs ++ systemInputs;
           
           shellHook = ''
+            export PS1="\[\033[1;32m\][nix:stellar-arrow-source]\[\033[0m\] \[\033[1;34m\]\w\[\033[0m\] \[\033[1;36m\]\$\[\033[0m\] "
             echo "🏹 Welcome to Stellar Arrow Source development environment"
             echo "📦 Apache Arrow C++: $(pkg-config --modversion arrow)"
             echo "🐹 Go version: $(go version)"
@@ -58,9 +58,8 @@
             
             # Set up environment variables for Arrow
             export CGO_ENABLED=1
-            export PKG_CONFIG_PATH="${pkgs.arrow-cpp}/lib/pkgconfig:${pkgs.parquet-cpp}/lib/pkgconfig:$PKG_CONFIG_PATH"
+            export PKG_CONFIG_PATH="${pkgs.arrow-cpp}/lib/pkgconfig:$PKG_CONFIG_PATH"
             export ARROW_HOME="${pkgs.arrow-cpp}"
-            export PARQUET_HOME="${pkgs.parquet-cpp}"
             
             # Go environment
             export GOPROXY=https://proxy.golang.org,direct
@@ -82,7 +81,7 @@
           buildInputs = arrowInputs;
           
           nativeBuildInputs = with pkgs; [
-            pkgconfig
+            pkg-config
             protobuf
             protoc-gen-go
             protoc-gen-go-grpc

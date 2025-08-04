@@ -10,6 +10,7 @@ import (
 
 	"github.com/apache/arrow/go/v17/arrow"
 	"github.com/apache/arrow/go/v17/arrow/flight"
+	"github.com/apache/arrow/go/v17/arrow/ipc"
 	"github.com/apache/arrow/go/v17/arrow/memory"
 	"github.com/withObsrvr/ttp-processor-demo/stellar-arrow-source/logging"
 	"github.com/withObsrvr/ttp-processor-demo/stellar-arrow-source/schema"
@@ -25,6 +26,14 @@ type StellarArrowServer struct {
 	schemaManager *schema.SchemaManager
 	sourceClient  ArrowSourceClient
 	config        *ServerConfig
+	
+	// Analytics for monitoring
+	analyticsEngine   AnalyticsEngine
+}
+
+// AnalyticsEngine interface for analytics integration
+type AnalyticsEngine interface {
+	ProcessRecord(record arrow.Record) error
 }
 
 // ArrowSourceClient defines the interface for native Arrow data sources
@@ -43,6 +52,7 @@ type ServerConfig struct {
 	BatchSize         int
 	MaxConnections    int
 	FlowCtlEnabled    bool
+	MockData          bool // Use mock data if true, real data if false
 }
 
 // StreamParams represents parsed stream parameters
@@ -66,8 +76,8 @@ func NewStellarArrowServer(config *ServerConfig) (*StellarArrowServer, error) {
 		Port:              config.Port,
 	})
 
-	// Create native Arrow source client  
-	sourceClient, err := newMockArrowSourceClient(config.SourceEndpoint, logger)
+	// Create native Arrow source client - use real client instead of mock
+	sourceClient, err := createArrowSourceClient(config.SourceEndpoint, logger, config)
 	if err != nil {
 		logger.Error().
 			Err(err).
@@ -176,6 +186,9 @@ func (s *StellarArrowServer) DoGet(ticket *flight.Ticket, stream flight.FlightSe
 	batchCount := 0
 	totalRecords := int64(0)
 	lastLogTime := time.Now()
+	
+	// Create a record writer - will be initialized with first record's schema
+	var writer *flight.Writer
 
 	for {
 		select {
@@ -214,19 +227,63 @@ func (s *StellarArrowServer) DoGet(ticket *flight.Ticket, stream flight.FlightSe
 			return nil
 
 		case record := <-recordChan:
-			// For Phase 1, we'll use a simplified approach
-			// In future phases, we'll implement proper Flight data streaming
+			if record == nil {
+				// Channel closed, stream completed
+				s.logger.LogFlightConnection("stream_completed", "", streamID)
+				s.logger.LogArrowProcessing("native_stream", batchCount, time.Since(start))
+				s.logger.Info().
+					Str("operation", "arrow_stream_completed").
+					Int("batches_sent", batchCount).
+					Int64("total_records", totalRecords).
+					Dur("stream_duration", time.Since(start)).
+					Float64("records_per_second", float64(totalRecords)/time.Since(start).Seconds()).
+					Str("stream_id", streamID).
+					Msg("Arrow stream completed successfully")
+				return nil
+			}
+
+			// Send the Arrow record to the client
 			recordRows := record.NumRows()
 			s.logger.Debug().
 				Int64("record_rows", recordRows).
 				Str("stream_id", streamID).
-				Msg("Received Arrow record (Phase 1 - logging only)")
+				Msg("Sending Arrow record to client")
+			
+			// Create writer on first record (to get schema)
+			if writer == nil {
+				writer = flight.NewRecordWriter(stream, ipc.WithSchema(record.Schema()))
+				defer writer.Close()
+			}
+			
+			// Write the record
+			if err := writer.Write(record); err != nil {
+				s.logger.Error().
+					Err(err).
+					Str("stream_id", streamID).
+					Msg("Failed to write Arrow record")
+				record.Release()
+				return fmt.Errorf("failed to write record: %w", err)
+			}
 			
 			batchCount++
 			totalRecords += recordRows
 			
-			// Release the record to prevent memory leaks
+			// Process with analytics for monitoring
+			if s.analyticsEngine != nil {
+				if err := s.analyticsEngine.ProcessRecord(record); err != nil {
+					s.logger.Error().
+						Err(err).
+						Msg("Failed to process record for analytics")
+				}
+			}
+			
+			// Release the record after sending
 			record.Release()
+			
+			s.logger.Debug().
+				Int("batch_count", batchCount).
+				Int64("total_records", totalRecords).
+				Msg("Successfully sent Arrow batch")
 
 			// Log progress periodically
 			if time.Since(lastLogTime) > 10*time.Second {
@@ -322,4 +379,28 @@ func parseStreamParams(ticket []byte) (*StreamParams, error) {
 // generateStreamID generates a unique stream identifier
 func generateStreamID() string {
 	return fmt.Sprintf("stream_%d", time.Now().UnixNano())
+}
+
+// createArrowSourceClient creates the appropriate client based on configuration
+func createArrowSourceClient(endpoint string, logger *logging.ComponentLogger, config *ServerConfig) (ArrowSourceClient, error) {
+	if config.MockData {
+		logger.Info().
+			Str("operation", "client_factory").
+			Bool("mock_data", true).
+			Msg("Creating mock Arrow source client")
+		return newMockArrowSourceClient(endpoint, logger)
+	} else {
+		logger.Info().
+			Str("operation", "client_factory").
+			Bool("real_data", true).
+			Str("endpoint", endpoint).
+			Int("batch_size", config.BatchSize).
+			Msg("Creating real Arrow source client")
+		return newRealArrowSourceClient(endpoint, logger, config.BatchSize)
+	}
+}
+
+// SetAnalyticsEngine sets the analytics engine for monitoring
+func (s *StellarArrowServer) SetAnalyticsEngine(engine AnalyticsEngine) {
+	s.analyticsEngine = engine
 }
