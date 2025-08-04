@@ -14,7 +14,7 @@ import (
 
 	"github.com/withObsrvr/ttp-processor-demo/contract-data-processor/config"
 	"github.com/withObsrvr/ttp-processor-demo/contract-data-processor/logging"
-	rawledger "github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/protos/raw_ledger_service"
+	rawledger "github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/gen/raw_ledger_service"
 )
 
 // DataSourceClient manages the connection to stellar-live-source-datalake

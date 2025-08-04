@@ -33,6 +33,9 @@ type ProcessingCoordinator struct {
 	
 	// Metrics
 	metrics       atomic.Value // ProcessingMetrics
+	
+	// Flowctl integration
+	flowctl       *FlowctlController
 }
 
 // MetricsCallback is called periodically with processing metrics
@@ -96,6 +99,11 @@ func (c *ProcessingCoordinator) ProcessLedgers(
 				if metricsCallback != nil {
 					metrics := c.metrics.Load().(ProcessingMetrics)
 					metricsCallback(metrics)
+				}
+				// Update flowctl metrics if enabled
+				if c.flowctl != nil && c.flowctl.IsEnabled() {
+					metrics := c.metrics.Load().(ProcessingMetrics)
+					c.flowctl.UpdateProcessingMetrics(metrics)
 				}
 			case <-ctx.Done():
 				return
@@ -198,6 +206,10 @@ func (c *ProcessingCoordinator) processWorker(
 					Int("worker_id", workerID).
 					Uint32("ledger", uint32(ledger.LedgerSequence())).
 					Msg("Failed to process ledger")
+				// Report error to flowctl
+				if c.flowctl != nil && c.flowctl.IsEnabled() {
+					c.flowctl.ReportError()
+				}
 				continue
 			}
 			
@@ -328,6 +340,11 @@ func (c *ProcessingCoordinator) UpdateFilters(cfg *config.Config) error {
 	c.processor = newProcessor
 	
 	return nil
+}
+
+// SetFlowctlController sets the flowctl controller for metrics reporting
+func (c *ProcessingCoordinator) SetFlowctlController(fc *FlowctlController) {
+	c.flowctl = fc
 }
 
 // estimateRecordSize estimates the size of an Arrow record

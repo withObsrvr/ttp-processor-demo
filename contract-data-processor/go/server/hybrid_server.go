@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -51,6 +52,12 @@ func NewHybridServer(cfg *config.Config, logger *logging.ComponentLogger) (*Hybr
 	coordinator := NewProcessingCoordinator(cfg, logger, dataSource, flightServer)
 	controlServer := NewControlServer(cfg, logger, dataSource, coordinator)
 	
+	// Create flowctl controller
+	flowctl := NewFlowctlController(cfg, logger)
+	
+	// Set flowctl on coordinator for metrics reporting
+	coordinator.SetFlowctlController(flowctl)
+	
 	// Create gRPC server
 	grpcServer := grpc.NewServer(
 		grpc.MaxRecvMsgSize(1024 * 1024 * 64), // 64MB
@@ -76,9 +83,6 @@ func NewHybridServer(cfg *config.Config, logger *logging.ComponentLogger) (*Hybr
 		Addr:    fmt.Sprintf(":%d", cfg.HealthPort),
 		Handler: mux,
 	}
-	
-	// Create flowctl controller
-	flowctl := NewFlowctlController(cfg, logger)
 	
 	return &HybridServer{
 		config:         cfg,
@@ -136,10 +140,17 @@ func (s *HybridServer) Start() error {
 	s.healthServer.SetServingStatus("contractdata.v1.ControlService", grpc_health_v1.HealthCheckResponse_SERVING)
 	s.healthServer.SetServingStatus("arrow.flight.protocol.FlightService", grpc_health_v1.HealthCheckResponse_SERVING)
 	
+	// Start flowctl integration
+	if err := s.flowctl.Start(s.ctx); err != nil {
+		s.logger.Error().Err(err).Msg("Failed to start flowctl integration")
+		// Don't fail startup if flowctl is unavailable
+	}
+	
 	s.logger.Info().
 		Str("grpc_address", s.config.GRPCAddress).
 		Str("flight_address", s.config.FlightAddress).
 		Int("health_port", s.config.HealthPort).
+		Bool("flowctl_enabled", s.config.FlowctlEnabled).
 		Msg("Hybrid server started successfully")
 	
 	return nil
@@ -163,6 +174,9 @@ func (s *HybridServer) Stop() error {
 	if err := s.httpServer.Shutdown(context.Background()); err != nil {
 		s.logger.Error().Err(err).Msg("Error shutting down HTTP server")
 	}
+	
+	// Stop flowctl integration
+	s.flowctl.Stop()
 	
 	// Disconnect from data source
 	s.dataSource.Disconnect()
@@ -208,7 +222,12 @@ func (s *HybridServer) startHTTP() error {
 
 // handleHealth handles HTTP health check requests
 func handleHealth(w http.ResponseWriter, r *http.Request) {
+	response := map[string]interface{}{
+		"status": "healthy",
+		"service": "contract-data-processor",
+	}
+	
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status":"healthy","service":"contract-data-processor"}`))
+	json.NewEncoder(w).Encode(response)
 }

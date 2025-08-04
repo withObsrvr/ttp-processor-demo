@@ -35,6 +35,11 @@ type Config struct {
 	
 	// Monitoring
 	MetricsPort int
+	
+	// Flowctl integration
+	FlowctlEnabled           bool
+	FlowctlEndpoint          string
+	FlowctlHeartbeatInterval time.Duration
 }
 
 func main() {
@@ -107,6 +112,11 @@ func loadConfig() *Config {
 		
 		// Monitoring
 		MetricsPort: getEnvAsIntOrDefault("METRICS_PORT", 9090),
+		
+		// Flowctl
+		FlowctlEnabled:           getEnvOrDefault("FLOWCTL_ENABLED", "false") == "true",
+		FlowctlEndpoint:          getEnvOrDefault("FLOWCTL_ENDPOINT", "localhost:8080"),
+		FlowctlHeartbeatInterval: getEnvAsDurationOrDefault("FLOWCTL_HEARTBEAT_INTERVAL", 10*time.Second),
 	}
 	
 	// Validate required fields

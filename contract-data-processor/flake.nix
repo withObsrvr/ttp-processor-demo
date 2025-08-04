@@ -14,20 +14,32 @@
         # Go module for the contract data processor
         contractDataProcessor = pkgs.buildGoModule {
           pname = "contract-data-processor";
-          version = "1.0.0";
+          version = "1.0.1";
           
           src = ./.;
           
-          # Use vendored dependencies
-          vendorHash = null;
-          modVendorDir = "./go/vendor";
+          # Go will download dependencies
+          vendorHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+          modRoot = "./go";
           
           # Disable Go workspace mode for reproducible builds
           GOWORK = "off";
           
-          buildFlags = [ "-mod=vendor" "-modcacherw" ];
+          buildFlags = [ "-mod=mod" "-modcacherw" ];
           
-          subPackages = [ "go" ];
+          # Pre-build: remove local replace directives for Nix build
+          preBuild = ''
+            # Remove the replace directives that point to local paths
+            sed -i '/^replace/,/^)/d' go.mod
+            
+            # Add proper module versions for the replaced modules
+            echo "" >> go.mod
+            echo "require (" >> go.mod
+            echo "    github.com/withObsrvr/flowctl v0.0.1" >> go.mod
+            echo ")" >> go.mod
+          '';
+          
+          subPackages = [ "." ];
           
           # Native build inputs
           nativeBuildInputs = with pkgs; [
@@ -42,36 +54,10 @@
           ];
           
           # Enable CGO for Apache Arrow
-          CGO_ENABLED = "1";
+          env.CGO_ENABLED = "1";
           
-          # Proto generation and build preparation
-          preBuild = ''
-            echo "Generating protobuf files..."
-            
-            # Create output directory for generated files
-            mkdir -p go/proto
-            
-            # Generate Go code from proto files
-            protoc \
-              --go_out=go \
-              --go_opt=paths=source_relative \
-              --go-grpc_out=go \
-              --go-grpc_opt=paths=source_relative \
-              proto/*.proto
-            
-            echo "Protobuf generation complete"
-            
-            # Add replace directive for local proto package
-            cd go
-            echo "" >> go.mod
-            echo "replace github.com/withObsrvr/ttp-processor-demo/contract-data-processor/proto => ./proto" >> go.mod
-            cd ..
-          '';
+          # No proto generation needed - files are pre-generated
           
-          # Post install - ensure binary has correct name
-          postInstall = ''
-            mv $out/bin/go $out/bin/contract-data-processor
-          '';
           
           meta = with pkgs.lib; {
             description = "Hybrid service processing Stellar contract data with Arrow Flight";
@@ -141,7 +127,7 @@
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
             # Go development
-            go_1_21
+            go_1_23
             gopls
             delve
             golangci-lint
