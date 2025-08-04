@@ -62,3 +62,4 @@ stellar-arrow-source/go/consumer_app/parquet/check_gcs.sh
 stellar-arrow-source/go/consumer_app/parquet/parquet-consumer
 stellar-live-source/go/stellar-live-source
 stellar-live-source-datalake/go/stellar-arrow-source
+stellar-arrow-source/stellar-arrow-source

@@ -49,6 +49,8 @@ type FileWriter struct {
 	rowsWritten  int64
 	bytesWritten int64
 	created      time.Time
+	lastSizeCheck time.Time
+	checkInterval int64 // Check size every N rows
 }
 
 // ParquetConfig configures the Parquet writer
@@ -115,6 +117,32 @@ func (pw *ParquetWriter) WriteRecord(ctx context.Context, record arrow.Record, m
 		return fmt.Errorf("failed to get writer: %w", err)
 	}
 	
+	// Check file size BEFORE writing to see if we need to rotate
+	// This prevents writing to a file that would exceed the limit
+	if writer.bytesWritten > 0 && writer.bytesWritten >= pw.maxFileSize {
+		pw.logger.Info().
+			Str("path", writer.path).
+			Int64("rows", writer.rowsWritten).
+			Int64("bytes", writer.bytesWritten).
+			Int64("max_size", pw.maxFileSize).
+			Msg("Rotating Parquet file due to size limit (pre-write check)")
+		
+		// Close the current writer
+		if err := pw.closeWriter(partitionPath); err != nil {
+			// Log the error but continue - we'll create a new writer
+			pw.logger.Warn().
+				Err(err).
+				Str("path", writer.path).
+				Msg("Error closing writer during rotation, continuing")
+		}
+		
+		// Get a new writer for the next file
+		writer, err = pw.getOrCreateWriter(partitionPath, record.Schema())
+		if err != nil {
+			return fmt.Errorf("failed to create new writer after rotation: %w", err)
+		}
+	}
+	
 	// Write the record
 	if err := writer.writer.Write(record); err != nil {
 		return fmt.Errorf("failed to write record: %w", err)
@@ -123,16 +151,59 @@ func (pw *ParquetWriter) WriteRecord(ctx context.Context, record arrow.Record, m
 	writer.rowsWritten += record.NumRows()
 	pw.recordsWritten += record.NumRows()
 	
-	// Check if we need to rotate the file
-	if writer.bytesWritten >= pw.maxFileSize {
-		pw.logger.Info().
-			Str("path", writer.path).
-			Int64("rows", writer.rowsWritten).
-			Int64("bytes", writer.bytesWritten).
-			Msg("Rotating Parquet file due to size limit")
-		
-		if err := pw.closeWriter(partitionPath); err != nil {
-			return fmt.Errorf("failed to rotate file: %w", err)
+	// Check file size periodically to avoid expensive sync on every write
+	shouldCheckSize := false
+	if writer.checkInterval <= 0 {
+		writer.checkInterval = 100 // Default: check every 100 rows
+	}
+	
+	// Check size based on rows written or time elapsed
+	if writer.rowsWritten%writer.checkInterval == 0 || 
+	   time.Since(writer.lastSizeCheck) > 5*time.Second ||
+	   writer.rowsWritten < 10 { // Always check for first few rows
+		shouldCheckSize = true
+	}
+	
+	if shouldCheckSize {
+		// Sync to ensure data is written to disk
+		if err := writer.file.Sync(); err != nil {
+			// If sync fails, it might be because the file is closed
+			// Just log and continue
+			pw.logger.Debug().
+				Err(err).
+				Str("path", writer.path).
+				Msg("Failed to sync file, may be closed")
+		} else {
+			// Update actual file size
+			if info, err := writer.file.Stat(); err == nil {
+				oldSize := writer.bytesWritten
+				writer.bytesWritten = info.Size()
+				writer.lastSizeCheck = time.Now()
+				
+				// Update global bytes written
+				if oldSize > 0 {
+					pw.bytesWritten += (writer.bytesWritten - oldSize)
+				} else {
+					// First time checking this file
+					pw.bytesWritten += writer.bytesWritten
+				}
+				
+				// Log progress periodically (every 10MB or when approaching limit)
+				if writer.bytesWritten-oldSize > 10*1024*1024 || writer.bytesWritten > pw.maxFileSize*9/10 {
+					pw.logger.Debug().
+						Str("path", writer.path).
+						Int64("bytes", writer.bytesWritten).
+						Int64("max_size", pw.maxFileSize).
+						Int64("rows", writer.rowsWritten).
+						Float64("percent_full", float64(writer.bytesWritten)*100/float64(pw.maxFileSize)).
+						Msg("Parquet file size update")
+				}
+			} else {
+				pw.logger.Debug().
+					Err(err).
+					Str("path", writer.path).
+					Msg("Failed to get file size, rotation may be delayed")
+			}
 		}
 	}
 	
@@ -215,11 +286,13 @@ func (pw *ParquetWriter) getOrCreateWriter(partitionPath string, schema *arrow.S
 	}
 	
 	fw := &FileWriter{
-		path:    filePath,
-		file:    file,
-		writer:  writer,
-		schema:  schema,
-		created: time.Now(),
+		path:          filePath,
+		file:          file,
+		writer:        writer,
+		schema:        schema,
+		created:       time.Now(),
+		lastSizeCheck: time.Now(),
+		checkInterval: 100, // Check every 100 rows
 	}
 	
 	pw.writers[partitionPath] = fw
@@ -241,24 +314,17 @@ func (pw *ParquetWriter) closeWriter(partitionPath string) error {
 		return nil
 	}
 	
-	// Close Parquet writer
-	if err := writer.writer.Close(); err != nil {
-		return fmt.Errorf("failed to close Parquet writer: %w", err)
-	}
-	
-	// Get file size
-	info, err := writer.file.Stat()
-	if err == nil {
-		writer.bytesWritten = info.Size()
-		pw.bytesWritten += info.Size()
-	}
-	
-	// Close file
-	if err := writer.file.Close(); err != nil {
-		return fmt.Errorf("failed to close file: %w", err)
-	}
-	
+	// Remove from map first to prevent any concurrent access
 	delete(pw.writers, partitionPath)
+	
+	// Close Parquet writer (this also closes the underlying file)
+	if err := writer.writer.Close(); err != nil {
+		// Log the error but don't fail - the writer is already removed from the map
+		pw.logger.Warn().
+			Err(err).
+			Str("path", writer.path).
+			Msg("Error closing Parquet writer, but continuing")
+	}
 	
 	pw.logger.Info().
 		Str("path", writer.path).
@@ -383,7 +449,15 @@ func (pa *ParquetArchiver) AddRecord(record arrow.Record) {
 	
 	// Flush if buffer is full
 	if len(pa.buffer) >= pa.bufferSize {
-		go pa.flush()
+		// Create a copy of the buffer to flush
+		recordsToFlush := make([]arrow.Record, len(pa.buffer))
+		copy(recordsToFlush, pa.buffer)
+		pa.buffer = make([]arrow.Record, 0, pa.bufferSize)
+		// Don't unlock here - defer will handle it
+		
+		// Flush synchronously (still holding the lock, but that's ok for small buffer)
+		pa.flushRecords(recordsToFlush)
+		return
 	}
 }
 
@@ -416,12 +490,18 @@ func (pa *ParquetArchiver) flush() {
 	pa.buffer = make([]arrow.Record, 0, pa.bufferSize)
 	pa.bufferMu.Unlock()
 	
+	pa.flushRecords(records)
+}
+
+// flushRecords writes a batch of records to Parquet
+func (pa *ParquetArchiver) flushRecords(records []arrow.Record) {
 	ctx := context.Background()
 	for _, record := range records {
 		if err := pa.writer.WriteRecord(ctx, record, nil); err != nil {
 			pa.logger.Error().
 				Err(err).
 				Msg("Failed to write record to Parquet")
+			// Continue with other records even if one fails
 		}
 		record.Release()
 	}
