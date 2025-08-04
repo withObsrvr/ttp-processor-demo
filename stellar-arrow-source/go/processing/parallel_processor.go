@@ -181,6 +181,9 @@ func (p *ParallelProcessor) SubmitTask(task *ProcessingTask) error {
 
 // GetResult retrieves a processing result
 func (p *ParallelProcessor) GetResult() (*ProcessingResult, error) {
+	timer := time.NewTimer(100 * time.Millisecond)
+	defer timer.Stop()
+	
 	select {
 	case result := <-p.outputChan:
 		if result.Error != nil {
@@ -191,7 +194,7 @@ func (p *ParallelProcessor) GetResult() (*ProcessingResult, error) {
 		return result, nil
 	case err := <-p.errorChan:
 		return nil, err
-	case <-time.After(100 * time.Millisecond):
+	case <-timer.C:
 		return nil, nil // No result available
 	}
 }
@@ -217,13 +220,14 @@ func (p *ParallelProcessor) ProcessBatch(ctx context.Context, ledgers []*rawledg
 	
 	// Collect results
 	received := 0
-	timeout := time.After(30 * time.Second)
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
 	
 	for received < numLedgers {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-timeout:
+		case <-timer.C:
 			return nil, fmt.Errorf("timeout processing batch")
 		default:
 			result, err := p.GetResult()

@@ -11,7 +11,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	// Import the flowctl proto
-	flowctlpb "github.com/withobsrvr/flowctl/proto"
+	flowctlpb "github.com/withObsrvr/flowctl/proto"
 	"github.com/withObsrvr/ttp-processor-demo/stellar-arrow-source/logging"
 )
 

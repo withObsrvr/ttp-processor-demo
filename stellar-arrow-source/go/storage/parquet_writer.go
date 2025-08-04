@@ -265,13 +265,31 @@ func (pw *ParquetWriter) getOrCreateWriter(partitionPath string, schema *arrow.S
 		return nil, fmt.Errorf("failed to create file: %w", err)
 	}
 	
-	// Create Parquet writer properties
-	// For now, use default compression until we figure out the exact API
-	props := parquet.NewWriterProperties(
+	// Create Parquet writer properties with compression
+	propsOptions := []parquet.WriterProperty{
 		parquet.WithDictionaryDefault(true),
 		parquet.WithDataPageSize(1024*1024), // 1MB data pages
 		parquet.WithCreatedBy("stellar-arrow-source"),
-	)
+	}
+	
+	// Apply compression based on configuration
+	switch pw.compression {
+	case "snappy":
+		propsOptions = append(propsOptions, parquet.WithCompression(parquet.Compression_SNAPPY))
+	case "gzip":
+		propsOptions = append(propsOptions, parquet.WithCompression(parquet.Compression_GZIP))
+	case "lz4":
+		propsOptions = append(propsOptions, parquet.WithCompression(parquet.Compression_LZ4))
+	case "zstd":
+		propsOptions = append(propsOptions, parquet.WithCompression(parquet.Compression_ZSTD))
+	case "none":
+		propsOptions = append(propsOptions, parquet.WithCompression(parquet.Compression_UNCOMPRESSED))
+	default:
+		// Default to snappy if not specified
+		propsOptions = append(propsOptions, parquet.WithCompression(parquet.Compression_SNAPPY))
+	}
+	
+	props := parquet.NewWriterProperties(propsOptions...)
 	
 	// Create Arrow writer properties
 	arrowProps := pqarrow.NewArrowWriterProperties(

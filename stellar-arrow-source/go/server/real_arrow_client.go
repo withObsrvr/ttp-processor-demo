@@ -81,10 +81,12 @@ func (r *realArrowSourceClient) connect() error {
 		Msg("Connecting to raw ledger service")
 
 	// Set up gRPC connection with insecure credentials for development
-	conn, err := grpc.Dial(r.endpoint, 
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	
+	conn, err := grpc.DialContext(ctx, r.endpoint, 
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
-		grpc.WithTimeout(10*time.Second))
+		grpc.WithBlock())
 	if err != nil {
 		r.recordError(fmt.Errorf("failed to dial raw ledger service: %w", err))
 		return err
