@@ -73,7 +73,8 @@ func (t *ArrowTransformer) initBuilders() {
 	t.builders.deleted = array.NewBooleanBuilder(t.allocator)
 	t.builders.ledgerSequence = array.NewUint32Builder(t.allocator)
 	t.builders.closedAt = array.NewTimestampBuilder(t.allocator, &arrow.TimestampType{
-		Unit: arrow.Microsecond,
+		Unit:     arrow.Microsecond,
+		TimeZone: "UTC",
 	})
 	t.builders.ledgerKeyHash = array.NewStringBuilder(t.allocator)
 	t.builders.keyXdr = array.NewStringBuilder(t.allocator)

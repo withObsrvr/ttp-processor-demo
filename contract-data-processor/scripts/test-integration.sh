@@ -88,7 +88,7 @@ echo "----------------------------------------"
 
 # Use a small range of ledgers that should contain contract data
 START_LEDGER=500000
-END_LEDGER=500050
+END_LEDGER=501000
 
 echo "Ledger range: $START_LEDGER to $END_LEDGER"
 

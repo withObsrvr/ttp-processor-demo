@@ -45,7 +45,7 @@ func NewContractDataSchema() *ContractDataSchema {
 		{Name: "last_modified_ledger", Type: arrow.PrimitiveTypes.Uint32, Nullable: false},
 		{Name: "deleted", Type: arrow.FixedWidthTypes.Boolean, Nullable: false},
 		{Name: "ledger_sequence", Type: arrow.PrimitiveTypes.Uint32, Nullable: false},
-		{Name: "closed_at", Type: arrow.FixedWidthTypes.Timestamp_us, Nullable: false}, // Microsecond precision
+		{Name: "closed_at", Type: &arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: "UTC"}, Nullable: false}, // Microsecond precision with UTC
 		{Name: "ledger_key_hash", Type: arrow.BinaryTypes.String, Nullable: true},
 		{Name: "key_xdr", Type: arrow.BinaryTypes.String, Nullable: true},
 		{Name: "val_xdr", Type: arrow.BinaryTypes.String, Nullable: true},
