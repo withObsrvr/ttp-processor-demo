@@ -3,15 +3,15 @@ package flight
 import (
 	"context"
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
 	"github.com/apache/arrow/go/v17/arrow"
-	"github.com/apache/arrow/go/v17/arrow/array"
 	"github.com/apache/arrow/go/v17/arrow/flight"
+	"github.com/apache/arrow/go/v17/arrow/ipc"
 	"github.com/apache/arrow/go/v17/arrow/memory"
 	"github.com/withObsrvr/ttp-processor-demo/contract-data-processor/logging"
-	"github.com/withObsrvr/ttp-processor-demo/contract-data-processor/processor"
 	"github.com/withObsrvr/ttp-processor-demo/contract-data-processor/schema"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -104,7 +104,7 @@ func (s *ContractDataFlightServer) DoGet(tkt *flight.Ticket, stream flight.Fligh
 	dataStream, exists := s.streams[streamID]
 	if !exists {
 		// Create new stream
-		ctx, cancel := context.WithCancel(context.Background())
+		_, cancel := context.WithCancel(context.Background())
 		dataStream = &DataStream{
 			ID:           streamID,
 			Schema:       s.schemaManager.GetContractDataSchema().Schema,
@@ -117,9 +117,8 @@ func (s *ContractDataFlightServer) DoGet(tkt *flight.Ticket, stream flight.Fligh
 	}
 	s.mu.Unlock()
 	
-	// Send schema as first message
-	writer := flight.NewRecordWriter(stream, flight.WithSchema(dataStream.Schema))
-	defer writer.Close()
+	// Create writer on first record to capture schema
+	var writer *flight.Writer
 	
 	// Stream data
 	for {
@@ -127,7 +126,16 @@ func (s *ContractDataFlightServer) DoGet(tkt *flight.Ticket, stream flight.Fligh
 		case record, ok := <-dataStream.BatchChannel:
 			if !ok {
 				// Channel closed, stream is done
+				s.logger.Debug().
+					Str("stream_id", streamID).
+					Msg("Stream channel closed")
 				return nil
+			}
+			
+			// Create writer on first record
+			if writer == nil {
+				writer = flight.NewRecordWriter(stream, ipc.WithSchema(record.Schema()))
+				defer writer.Close()
 			}
 			
 			// Write record
@@ -136,7 +144,7 @@ func (s *ContractDataFlightServer) DoGet(tkt *flight.Ticket, stream flight.Fligh
 					Err(err).
 					Str("stream_id", streamID).
 					Msg("Failed to write record")
-				return err
+				return status.Errorf(codes.Internal, "failed to write record: %v", err)
 			}
 			
 			// Update metrics
@@ -147,14 +155,18 @@ func (s *ContractDataFlightServer) DoGet(tkt *flight.Ticket, stream flight.Fligh
 			record.Release()
 			
 		case err := <-dataStream.ErrorChannel:
-			return err
+			s.logger.Error().
+				Err(err).
+				Str("stream_id", streamID).
+				Msg("Stream error")
+			return status.Errorf(codes.Internal, "stream error: %v", err)
 			
 		case <-stream.Context().Done():
 			// Client disconnected
 			s.logger.Info().
 				Str("stream_id", streamID).
 				Msg("Client disconnected from stream")
-			return nil
+			return stream.Context().Err()
 		}
 	}
 }
@@ -170,7 +182,7 @@ func (s *ContractDataFlightServer) ListFlights(criteria *flight.Criteria, stream
 	info := &flight.FlightInfo{
 		Schema: flight.SerializeSchema(contractSchema.Schema, s.allocator),
 		FlightDescriptor: &flight.FlightDescriptor{
-			Type: flight.FlightDescriptor_PATH,
+			Type: flight.DescriptorPATH,
 			Path: []string{"contract", "data"},
 		},
 		Endpoint: []*flight.FlightEndpoint{{
@@ -273,20 +285,19 @@ func (s *ContractDataFlightServer) GetStreamMetrics(streamID string) (map[string
 
 // Serve starts the Flight server
 func (s *ContractDataFlightServer) Serve(address string) error {
-	listener, err := flight.NewFlightServer(&flight.ServerOpts{
-		Address: address,
-	})
+	listener, err := net.Listen("tcp", address)
 	if err != nil {
-		return fmt.Errorf("failed to create flight server: %w", err)
+		return fmt.Errorf("failed to listen on %s: %w", address, err)
 	}
 	
-	listener.RegisterFlightService(s)
+	grpcServer := grpc.NewServer()
+	flight.RegisterFlightServiceServer(grpcServer, s)
 	
 	s.logger.Info().
 		Str("address", address).
 		Msg("Starting Arrow Flight server")
 	
-	return listener.Serve()
+	return grpcServer.Serve(listener)
 }
 
 // calculateRecordSize estimates the size of an Arrow record in bytes
@@ -312,6 +323,6 @@ func (s *ContractDataFlightServer) DoAction(action *flight.Action, stream flight
 	return status.Error(codes.Unimplemented, "DoAction not implemented")
 }
 
-func (s *ContractDataFlightServer) ListActions(stream flight.FlightService_ListActionsServer) error {
+func (s *ContractDataFlightServer) ListActions(empty *flight.Empty, stream flight.FlightService_ListActionsServer) error {
 	return status.Error(codes.Unimplemented, "ListActions not implemented")
 }

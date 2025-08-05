@@ -11,6 +11,7 @@ import (
 	"github.com/apache/arrow/go/v17/arrow/memory"
 	"github.com/stellar/go/xdr"
 	"github.com/withObsrvr/ttp-processor-demo/contract-data-processor/config"
+	rawledger "github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/gen/raw_ledger_service"
 	"github.com/withObsrvr/ttp-processor-demo/contract-data-processor/flight"
 	"github.com/withObsrvr/ttp-processor-demo/contract-data-processor/logging"
 	"github.com/withObsrvr/ttp-processor-demo/contract-data-processor/processor"
@@ -149,7 +150,13 @@ func (c *ProcessingCoordinator) streamLedgers(
 ) {
 	defer close(ledgerChan)
 	
-	err := c.dataSource.StreamLedgers(ctx, startLedger, func(ledger xdr.LedgerCloseMeta) error {
+	err := c.dataSource.StreamLedgers(ctx, startLedger, func(ctx context.Context, rawLedger *rawledger.RawLedger) error {
+		// Convert RawLedger to LedgerCloseMeta
+		var ledger xdr.LedgerCloseMeta
+		if err := ledger.UnmarshalBinary(rawLedger.LedgerCloseMetaXdr); err != nil {
+			return fmt.Errorf("failed to unmarshal ledger XDR: %w", err)
+		}
+		
 		// Check if we've reached the end
 		ledgerSeq := uint32(ledger.LedgerSequence())
 		if endLedger > 0 && ledgerSeq > endLedger {

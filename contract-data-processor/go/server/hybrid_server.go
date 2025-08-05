@@ -179,7 +179,7 @@ func (s *HybridServer) Stop() error {
 	s.flowctl.Stop()
 	
 	// Disconnect from data source
-	s.dataSource.Disconnect()
+	s.dataSource.Close()
 	
 	// Wait for all goroutines
 	s.wg.Wait()

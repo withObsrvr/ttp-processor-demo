@@ -6,12 +6,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rs/zerolog/log"
-	"github.com/withObsrvr/flowctl/proto"
+	pb "github.com/withObsrvr/flowctl/proto"
 	"github.com/withObsrvr/ttp-processor-demo/contract-data-processor/config"
 	"github.com/withObsrvr/ttp-processor-demo/contract-data-processor/logging"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // FlowctlController manages integration with the flowctl control plane
@@ -19,7 +19,7 @@ type FlowctlController struct {
 	config         *config.Config
 	logger         *logging.ComponentLogger
 	conn           *grpc.ClientConn
-	client         proto.ControlPlaneClient
+	client         pb.ControlPlaneClient
 	serviceID      string
 	
 	// Metrics tracking
@@ -92,18 +92,21 @@ func (fc *FlowctlController) Start(ctx context.Context) error {
 
 // connect establishes connection to flowctl control plane
 func (fc *FlowctlController) connect() error {
-	conn, err := grpc.Dial(
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	
+	conn, err := grpc.DialContext(
+		ctx,
 		fc.config.FlowctlEndpoint,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithBlock(),
-		grpc.WithTimeout(10*time.Second),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to dial flowctl: %w", err)
 	}
 	
 	fc.conn = conn
-	fc.client = proto.NewControlPlaneClient(conn)
+	fc.client = pb.NewControlPlaneClient(conn)
 	
 	fc.logger.Info().
 		Str("endpoint", fc.config.FlowctlEndpoint).
@@ -114,10 +117,8 @@ func (fc *FlowctlController) connect() error {
 
 // register registers the service with flowctl
 func (fc *FlowctlController) register(ctx context.Context) error {
-	req := &proto.RegisterServiceRequest{
-		ServiceName:    fc.config.ServiceName,
-		ServiceType:    proto.ServiceType_PROCESSOR,
-		ServiceVersion: fc.config.ServiceVersion,
+	info := &pb.ServiceInfo{
+		ServiceType: pb.ServiceType_SERVICE_TYPE_PROCESSOR,
 		InputEventTypes: []string{
 			"raw_ledger_service.RawLedgerChunk",
 			"stellar.LedgerCloseMeta",
@@ -127,36 +128,46 @@ func (fc *FlowctlController) register(ctx context.Context) error {
 			"stellar.ContractDataEntry",
 		},
 		HealthEndpoint: fmt.Sprintf("http://localhost:%d/health", fc.config.HealthPort),
+		MaxInflight: 1000,
 		Metadata: map[string]string{
 			"processor_type":     "contract_data",
 			"network_passphrase": fc.config.NetworkPassphrase,
-			"grpc_address":       fc.config.GRPCAddress,
-			"flight_address":     fc.config.FlightAddress,
-			"batch_size":         fmt.Sprintf("%d", fc.config.BatchSize),
-			"worker_count":       fmt.Sprintf("%d", fc.config.WorkerCount),
+			"service_name":       fc.config.ServiceName,
+			"version":           fc.config.ServiceVersion,
+			"grpc_address":      fc.config.GRPCAddress,
+			"flight_address":    fc.config.FlightAddress,
+			"batch_size":        fmt.Sprintf("%d", fc.config.BatchSize),
+			"worker_count":      fmt.Sprintf("%d", fc.config.WorkerCount),
 		},
 	}
 	
 	// Add filter information to metadata
 	if len(fc.config.FilterContractIDs) > 0 {
-		req.Metadata["filter_contracts"] = fmt.Sprintf("%d", len(fc.config.FilterContractIDs))
+		info.Metadata["filter_contracts"] = fmt.Sprintf("%d", len(fc.config.FilterContractIDs))
 	}
 	if len(fc.config.FilterAssetCodes) > 0 {
-		req.Metadata["filter_assets"] = fmt.Sprintf("%d", len(fc.config.FilterAssetCodes))
+		info.Metadata["filter_assets"] = fmt.Sprintf("%d", len(fc.config.FilterAssetCodes))
 	}
 	
-	resp, err := fc.client.RegisterService(ctx, req)
+	ack, err := fc.client.Register(ctx, info)
 	if err != nil {
-		return fmt.Errorf("registration failed: %w", err)
+		// Use simulated ID on registration failure
+		fc.serviceID = fmt.Sprintf("sim-%s-%d", fc.config.ServiceName, time.Now().Unix())
+		fc.logger.Warn().
+			Err(err).
+			Str("service_id", fc.serviceID).
+			Msg("Registration failed, using simulated service ID")
+		return nil // Don't fail startup
 	}
 	
-	fc.serviceID = resp.ServiceId
+	fc.serviceID = ack.ServiceId
 	
 	fc.logger.Info().
 		Str("service_id", fc.serviceID).
-		Bool("success", resp.Success).
-		Str("message", resp.Message).
 		Msg("Registered with flowctl control plane")
+	
+	// Update Prometheus metric
+	SetPrometheusFlowctlRegistered(true)
 	
 	return nil
 }
@@ -193,9 +204,9 @@ func (fc *FlowctlController) sendHeartbeat(ctx context.Context) {
 		uptime = 1
 	}
 	
-	req := &proto.HeartbeatRequest{
+	heartbeat := &pb.ServiceHeartbeat{
 		ServiceId: fc.serviceID,
-		Timestamp: time.Now().Unix(),
+		Timestamp: timestamppb.Now(),
 		Metrics: map[string]float64{
 			"contracts_processed":    float64(metrics.ContractsProcessed),
 			"entries_skipped":        float64(metrics.EntriesSkipped),
@@ -204,40 +215,27 @@ func (fc *FlowctlController) sendHeartbeat(ctx context.Context) {
 			"processing_rate":        metrics.ProcessingRate,
 			"current_ledger":         float64(metrics.CurrentLedger),
 			"error_count":            float64(metrics.ErrorCount),
+			"success_count":          float64(metrics.ContractsProcessed),
 			"contracts_per_second":   float64(metrics.ContractsProcessed) / uptime,
 			"bytes_per_second":       float64(metrics.BytesProcessed) / uptime,
 		},
-		Status: proto.ServiceStatus_HEALTHY,
-		Metadata: map[string]string{
-			"last_update": metrics.LastUpdateTime.Format(time.RFC3339),
-		},
 	}
 	
-	// Set status based on errors
-	errorRate := float64(metrics.ErrorCount) / float64(metrics.ContractsProcessed+1)
-	if errorRate > 0.1 { // More than 10% errors
-		req.Status = proto.ServiceStatus_DEGRADED
-		req.Metadata["error_rate"] = fmt.Sprintf("%.2f%%", errorRate*100)
-	}
-	
-	resp, err := fc.client.Heartbeat(ctx, req)
+	_, err := fc.client.Heartbeat(ctx, heartbeat)
 	if err != nil {
 		fc.logger.Error().
 			Err(err).
 			Msg("Failed to send heartbeat to flowctl")
+		IncrementPrometheusFlowctlHeartbeatErrors()
 		return
 	}
 	
-	if !resp.Success {
-		fc.logger.Warn().
-			Str("message", resp.Message).
-			Msg("Heartbeat not acknowledged by flowctl")
-	} else {
-		fc.logger.Debug().
-			Uint64("contracts", metrics.ContractsProcessed).
-			Uint32("ledger", metrics.CurrentLedger).
-			Msg("Heartbeat sent to flowctl")
-	}
+	fc.logger.Debug().
+		Uint64("contracts", metrics.ContractsProcessed).
+		Uint32("ledger", metrics.CurrentLedger).
+		Msg("Heartbeat sent to flowctl")
+	
+	IncrementPrometheusFlowctlHeartbeats()
 }
 
 // UpdateMetrics updates the metrics for flowctl reporting
@@ -287,20 +285,8 @@ func (fc *FlowctlController) Stop() {
 	// Wait for heartbeat loop to stop
 	fc.wg.Wait()
 	
-	// Send final heartbeat with shutdown status
-	if fc.client != nil && fc.serviceID != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		
-		req := &proto.HeartbeatRequest{
-			ServiceId: fc.serviceID,
-			Timestamp: time.Now().Unix(),
-			Status:    proto.ServiceStatus_SHUTTING_DOWN,
-			Metrics:   make(map[string]float64),
-		}
-		
-		fc.client.Heartbeat(ctx, req)
-	}
+	// Update Prometheus metric
+	SetPrometheusFlowctlRegistered(false)
 	
 	fc.Close()
 }

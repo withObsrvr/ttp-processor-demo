@@ -2,6 +2,8 @@ package processor
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io"
 
@@ -166,7 +168,7 @@ func (p *ContractDataProcessor) ProcessLedger(ctx context.Context, ledgerCloseMe
 			}
 			
 			// Convert to our entry format
-			entry := p.convertToEntry(contractData, change, ledgerSeq, closedAt)
+			entry := p.convertToEntry(contractData, change, ledgerSeq, uint64(closedAt))
 			entries = append(entries, entry)
 			p.contractsProcessed++
 		}
@@ -238,17 +240,72 @@ func (p *ContractDataProcessor) convertToEntry(
 		LedgerSequence:            ledgerSeq,
 		LedgerKeyHash:             data.LedgerKeyHash,
 		ClosedAt:                  int64(closedAt) * 1000000, // Convert to microseconds
+	}
+	
+	// Extract Key and Val from the raw ledger entry
+	if change.Post != nil && change.Post.Data.Type == xdr.LedgerEntryTypeContractData {
+		contractDataEntry := change.Post.Data.MustContractData()
+		entry.Key = contractDataEntry.Key
+		entry.Val = contractDataEntry.Val
 		
-		// Additional fields from raw data
-		Key:                      data.Key,
-		Val:                      data.Val,
-		KeyXdr:                   data.KeyXdr,
-		ValXdr:                   data.ValXdr,
-		ContractInstanceType:     data.ContractInstanceType,
-		ContractInstanceWasmHash: data.ContractCodeWasmHash,
-		ContractInstanceWasmRef:  data.ContractCodeWasmRef,
-		AssetContractId:          data.AssetContractId,
-		ExpirationLedgerSeq:      data.ExpirationLedgerSeq,
+		// Encode Key and Val to base64 XDR
+		keyBytes, err := contractDataEntry.Key.MarshalBinary()
+		if err == nil {
+			entry.KeyXdr = base64.StdEncoding.EncodeToString(keyBytes)
+		}
+		
+		valBytes, err := contractDataEntry.Val.MarshalBinary()
+		if err == nil {
+			entry.ValXdr = base64.StdEncoding.EncodeToString(valBytes)
+		}
+		
+		// Extract contract instance data if this is a contract instance entry
+		if contractDataEntry.Key.Type == xdr.ScValTypeScvLedgerKeyContractInstance {
+			if instance, ok := contractDataEntry.Val.GetInstance(); ok {
+				// Extract executable type
+				switch instance.Executable.Type {
+				case xdr.ContractExecutableTypeContractExecutableWasm:
+					entry.ContractInstanceType = "wasm"
+					if instance.Executable.WasmHash != nil {
+						entry.ContractInstanceWasmHash = hex.EncodeToString(instance.Executable.WasmHash[:])
+					}
+				case xdr.ContractExecutableTypeContractExecutableStellarAsset:
+					entry.ContractInstanceType = "stellar_asset"
+				}
+			}
+		}
+		
+		// Extract expiration for temporary entries
+		if contractDataEntry.Durability == xdr.ContractDataDurabilityTemporary {
+			// TODO: This requires TTL information from a separate ledger entry
+			// For now, we'll leave it as 0
+			entry.ExpirationLedgerSeq = 0
+		}
+	} else if change.Pre != nil && change.Pre.Data.Type == xdr.LedgerEntryTypeContractData && change.Post == nil {
+		// For deleted entries, extract from Pre
+		contractDataEntry := change.Pre.Data.MustContractData()
+		entry.Key = contractDataEntry.Key
+		entry.Val = contractDataEntry.Val
+		
+		// Encode Key and Val to base64 XDR
+		keyBytes, err := contractDataEntry.Key.MarshalBinary()
+		if err == nil {
+			entry.KeyXdr = base64.StdEncoding.EncodeToString(keyBytes)
+		}
+		
+		valBytes, err := contractDataEntry.Val.MarshalBinary()
+		if err == nil {
+			entry.ValXdr = base64.StdEncoding.EncodeToString(valBytes)
+		}
+	}
+	
+	// Calculate asset contract ID if this is an asset contract
+	if data.ContractDataAssetCode != "" && data.ContractDataAssetIssuer != "" {
+		asset := xdr.MustNewCreditAsset(data.ContractDataAssetCode, data.ContractDataAssetIssuer)
+		contractID, err := asset.ContractID(p.networkPassphrase)
+		if err == nil {
+			entry.AssetContractId = hex.EncodeToString(contractID[:])
+		}
 	}
 	
 	return entry
