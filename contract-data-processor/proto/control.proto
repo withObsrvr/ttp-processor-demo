@@ -1,0 +1,90 @@
+syntax = "proto3";
+
+package contractdata.v1;
+
+option go_package = "github.com/withObsrvr/ttp-processor-demo/contract-data-processor/proto;proto";
+
+// ControlService manages the contract data processing pipeline
+service ControlService {
+  // Start processing from a specific ledger
+  rpc StartProcessing(StartProcessingRequest) returns (StartProcessingResponse);
+  
+  // Stop processing
+  rpc StopProcessing(StopProcessingRequest) returns (StopProcessingResponse);
+  
+  // Get current processing status
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+  
+  // Configure processing filters
+  rpc ConfigureFilters(ConfigureFiltersRequest) returns (ConfigureFiltersResponse);
+  
+  // Get processing metrics
+  rpc GetMetrics(GetMetricsRequest) returns (GetMetricsResponse);
+}
+
+message StartProcessingRequest {
+  uint32 start_ledger = 1;
+  uint32 end_ledger = 2; // 0 means continuous processing
+  uint32 batch_size = 3; // Number of entries per Arrow batch
+}
+
+message StartProcessingResponse {
+  bool success = 1;
+  string message = 2;
+  string session_id = 3;
+}
+
+message StopProcessingRequest {
+  string session_id = 1;
+}
+
+message StopProcessingResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message GetStatusRequest {
+  string session_id = 1;
+}
+
+message GetStatusResponse {
+  enum Status {
+    UNKNOWN = 0;
+    STARTING = 1;
+    RUNNING = 2;
+    STOPPING = 3;
+    STOPPED = 4;
+    ERROR = 5;
+  }
+  
+  Status status = 1;
+  uint32 current_ledger = 2;
+  uint32 target_ledger = 3;
+  uint64 entries_processed = 4;
+  string error_message = 5;
+}
+
+message ConfigureFiltersRequest {
+  repeated string contract_ids = 1;
+  repeated string asset_codes = 2;
+  repeated string asset_issuers = 3;
+  bool include_deleted = 4;
+}
+
+message ConfigureFiltersResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message GetMetricsRequest {
+  string session_id = 1;
+}
+
+message GetMetricsResponse {
+  uint64 contracts_processed = 1;
+  uint64 entries_skipped = 2;
+  uint64 batches_created = 3;
+  uint64 bytes_processed = 4;
+  double processing_rate = 5; // entries per second
+  int64 last_update_time = 6; // Unix timestamp
+}

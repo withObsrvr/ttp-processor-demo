@@ -1,0 +1,21 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Contract data processor metrics
+  - job_name: 'contract-processor'
+    static_configs:
+      - targets: ['contract-processor:8089']
+    metrics_path: /metrics
+
+  # PostgreSQL consumer metrics
+  - job_name: 'postgresql-consumer'
+    static_configs:
+      - targets: ['postgresql-consumer:9090']
+    metrics_path: /metrics
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

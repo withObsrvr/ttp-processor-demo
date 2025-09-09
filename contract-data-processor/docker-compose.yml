@@ -1,0 +1,107 @@
+version: '3.8'
+
+services:
+  # PostgreSQL database
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: stellar_contracts
+      POSTGRES_USER: stellar
+      POSTGRES_PASSWORD: stellar_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stellar -d stellar_contracts"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Contract data processor (hybrid server)
+  contract-processor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
+      SOURCE_ENDPOINT: "stellar-live-source-datalake:50053"
+      GRPC_ADDRESS: ":50054"
+      FLIGHT_ADDRESS: ":8816"
+      HEALTH_PORT: "8089"
+      BATCH_SIZE: "1000"
+      WORKER_COUNT: "4"
+    ports:
+      - "50054:50054"  # gRPC control plane
+      - "8816:8816"    # Arrow Flight data plane
+      - "8089:8089"    # Health/metrics
+    depends_on:
+      - postgres
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8089/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # PostgreSQL consumer
+  postgresql-consumer:
+    build:
+      context: consumer/postgresql
+      dockerfile: Dockerfile
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: stellar_contracts
+      DB_USER: stellar
+      DB_PASSWORD: stellar_password
+      DB_SSLMODE: disable
+      FLIGHT_ENDPOINT: "contract-processor:8816"
+      BATCH_SIZE: "1000"
+      COMMIT_INTERVAL: "5s"
+      METRICS_PORT: "9090"
+    ports:
+      - "9090:9090"  # Prometheus metrics
+    depends_on:
+      postgres:
+        condition: service_healthy
+      contract-processor:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Prometheus for metrics collection
+  prometheus:
+    image: prom/prometheus:latest
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9091:9090"
+    depends_on:
+      - contract-processor
+      - postgresql-consumer
+
+  # Grafana for visualization
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  postgres_data:
+  prometheus_data:
+  grafana_data:

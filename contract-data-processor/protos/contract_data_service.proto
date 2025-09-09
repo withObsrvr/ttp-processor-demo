@@ -1,0 +1,81 @@
+syntax = "proto3";
+
+package contractdata;
+
+option go_package = "github.com/withObsrvr/ttp-processor-demo/contract-data-processor/protos/contractdata";
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+// ContractDataService provides control plane operations for the contract data processor
+// The actual data streaming is handled via Apache Arrow Flight protocol
+service ContractDataService {
+  // Get service information and capabilities
+  rpc GetServiceInfo(google.protobuf.Empty) returns (ServiceInfo);
+  
+  // Get current processing status
+  rpc GetStatus(google.protobuf.Empty) returns (ProcessingStatus);
+  
+  // Get filter configuration
+  rpc GetFilterConfig(google.protobuf.Empty) returns (FilterConfig);
+  
+  // Update filter configuration
+  rpc UpdateFilterConfig(FilterConfig) returns (google.protobuf.Empty);
+}
+
+// ServiceInfo describes the service capabilities
+message ServiceInfo {
+  string name = 1;
+  string version = 2;
+  string network = 3;
+  repeated string supported_features = 4;
+  string arrow_flight_endpoint = 5; // Where to connect for data streaming
+  google.protobuf.Timestamp started_at = 6;
+}
+
+// ProcessingStatus provides current processing metrics
+message ProcessingStatus {
+  uint32 current_ledger = 1;
+  uint64 contracts_processed = 2;
+  uint64 records_streamed = 3;
+  double processing_rate_per_second = 4;
+  google.protobuf.Timestamp last_update = 5;
+  bool is_healthy = 6;
+  string error_message = 7;
+  uint64 bytes_processed = 8;
+}
+
+// FilterConfig allows filtering contract data by various criteria
+message FilterConfig {
+  // Filter by specific contract IDs
+  repeated string contract_ids = 1;
+  
+  // Filter by asset code (for SAC contracts)
+  repeated string asset_codes = 2;
+  
+  // Filter by asset issuer
+  repeated string asset_issuers = 3;
+  
+  // Filter by balance holder addresses
+  repeated string balance_holders = 4;
+  
+  // Include deleted entries
+  bool include_deleted = 5;
+  
+  // Minimum balance threshold (0 = no minimum)
+  int64 min_balance = 6;
+  
+  // Only include contracts modified after this ledger
+  uint32 modified_after_ledger = 7;
+}
+
+// StreamingConfig defines Arrow Flight streaming parameters
+message StreamingConfig {
+  uint32 batch_size = 1;
+  uint32 buffer_size = 2;
+  bool enable_compression = 3;
+}
+
+// For data streaming via Arrow Flight, tickets will use this format:
+// ticket = "contract_data:<start_ledger>:<end_ledger>:<filter_json>"
+// Example: "contract_data:1000:2000:{\"contract_ids\":[\"CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE\"]}"

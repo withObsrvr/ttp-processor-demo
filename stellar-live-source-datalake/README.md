@@ -2,6 +2,8 @@
 
 This service reads Stellar ledger data from a data lake (GCS, S3, or local filesystem) and streams it via gRPC to consumers. It uses the `stellar-datastore` and `stellar-cdp` packages to efficiently read and process ledger data from storage.
 
+> **Note**: This service reads from **storage backends** (data lakes). If you need to stream data from **Stellar RPC endpoints**, use the `stellar-live-source` service instead, which connects directly to Stellar RPC nodes.
+
 ## Features
 
 - Reads ledger data from various storage backends (GCS, S3, FS)
@@ -102,10 +104,15 @@ See [FLOWCTL_INTEGRATION.md](./FLOWCTL_INTEGRATION.md) for detailed integration 
 
 ## Running
 
+The service can be run in several ways depending on your environment and needs:
+
+### Method 1: Direct Execution with Make
+
 1. Set required environment variables:
    ```bash
    export STORAGE_TYPE="GCS"
    export BUCKET_NAME="my-stellar-ledgers"
+   export NETWORK_PASSPHRASE="Test SDF Network ; September 2015"
    ```
 
 2. Run the service:
@@ -113,7 +120,112 @@ See [FLOWCTL_INTEGRATION.md](./FLOWCTL_INTEGRATION.md) for detailed integration 
    make run
    ```
 
-The service will start listening on port 50052 and begin streaming ledger data when requested.
+### Method 2: Using Nix
+
+For a reproducible environment with all dependencies:
+
+```bash
+# Run with Nix (loads flake.nix environment)
+make nix-run
+
+# Or enter Nix shell and run manually
+nix develop
+make run
+```
+
+### Method 3: Docker Container
+
+Run the service in a containerized environment:
+
+```bash
+# Build and run with Docker
+make docker-build
+make docker-run
+
+# Or use Nix-built Docker image
+make nix-docker
+make nix-docker-load
+docker run -e STORAGE_TYPE=GCS -e BUCKET_NAME=my-bucket stellar-live-source-datalake
+```
+
+### Method 4: Direct Go Execution
+
+For development and debugging:
+
+```bash
+cd go
+# Set environment variables
+export STORAGE_TYPE="FS"
+export BUCKET_NAME="./test-data"
+export NETWORK_PASSPHRASE="Test SDF Network ; September 2015"
+
+# Run directly
+go run main.go
+```
+
+### Storage Backend Examples
+
+#### Google Cloud Storage (GCS)
+```bash
+export STORAGE_TYPE="GCS"
+export BUCKET_NAME="stellar-ledgers-prod"
+export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account.json"
+```
+
+#### Amazon S3
+```bash
+export STORAGE_TYPE="S3"
+export BUCKET_NAME="stellar-ledgers"
+export AWS_REGION="us-east-1"
+export AWS_ACCESS_KEY_ID="your-access-key"
+export AWS_SECRET_ACCESS_KEY="your-secret-key"
+```
+
+#### Local Filesystem
+```bash
+export STORAGE_TYPE="FS"
+export BUCKET_NAME="/path/to/ledger/data"
+```
+
+#### MinIO or S3-Compatible Storage
+```bash
+export STORAGE_TYPE="S3"
+export BUCKET_NAME="stellar-ledgers"
+export S3_ENDPOINT_URL="http://localhost:9000"
+export S3_FORCE_PATH_STYLE="true"
+export AWS_ACCESS_KEY_ID="minioadmin"
+export AWS_SECRET_ACCESS_KEY="minioadmin"
+```
+
+### Running with Flowctl Integration
+
+To enable control plane integration:
+
+```bash
+export ENABLE_FLOWCTL="true"
+export FLOWCTL_ENDPOINT="localhost:8080"
+export SERVICE_ID="datalake-source-1"
+make run
+```
+
+### Environment Variable Reference
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `STORAGE_TYPE` | Yes | - | Storage backend type: "GCS", "S3", or "FS" |
+| `BUCKET_NAME` | Yes | - | Bucket name or filesystem path |
+| `NETWORK_PASSPHRASE` | Yes | - | Stellar network passphrase |
+| `PORT` | No | 50052 | gRPC service port |
+| `HEALTH_PORT` | No | 8088 | Health check HTTP port |
+| `AWS_REGION` | If S3 | - | AWS region for S3 storage |
+| `S3_ENDPOINT_URL` | No | - | Custom S3 endpoint (e.g., MinIO) |
+| `S3_FORCE_PATH_STYLE` | No | false | Use path-style S3 URLs |
+| `LEDGERS_PER_FILE` | No | 64 | Ledgers per storage file |
+| `FILES_PER_PARTITION` | No | 10 | Files per storage partition |
+| `ENABLE_FLOWCTL` | No | false | Enable flowctl integration |
+| `FLOWCTL_ENDPOINT` | If flowctl | - | Control plane endpoint |
+
+The service will start listening on port 50052 (or configured PORT) and begin streaming ledger data when requested.
 
 ## gRPC Interface
 
