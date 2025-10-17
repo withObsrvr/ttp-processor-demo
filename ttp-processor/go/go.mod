@@ -1,11 +1,11 @@
 module github.com/withObsrvr/ttp-processor
 
-go 1.23
+go 1.24
 
-toolchain go1.23.7
+toolchain go1.24.8
 
 require (
-	github.com/stellar/go v0.0.0-20250716214416-01d16bf8185f // For xdr types if needed, and support/errors
+	github.com/stellar/go v0.0.0-20251009202746-7bc49336ce8b // For xdr types if needed, and support/errors
 	google.golang.org/grpc v1.72.0
 	google.golang.org/protobuf v1.36.6
 )
@@ -87,7 +87,7 @@ require (
 	github.com/segmentio/go-loggly v0.5.1-0.20171222203950-eb91657e62b2 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/stellar/go-xdr v0.0.0-20231122183749-b53fb00bcac2 // indirect
-	github.com/stellar/stellar-rpc v0.9.6-0.20250130160539-be7702aa01ba // indirect
+	github.com/stellar/stellar-rpc v0.9.6-0.20251007212330-3095aa4d2c52 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/stretchr/testify v1.10.0 // indirect
 	go.opencensus.io v0.24.0 // indirect

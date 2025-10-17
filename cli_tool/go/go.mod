@@ -1,12 +1,12 @@
 module cli_tool
 
-go 1.23
+go 1.24
 
-toolchain go1.23.7
+toolchain go1.24.8
 
 require (
-	github.com/stellar/go v0.0.0-20250322075617-5ccaef04a539
-	github.com/stellar/stellar-rpc v0.9.6-0.20250130160539-be7702aa01ba
+	github.com/stellar/go v0.0.0-20251009202746-7bc49336ce8b
+	github.com/stellar/stellar-rpc v0.9.6-0.20251007212330-3095aa4d2c52
 	google.golang.org/grpc v1.71.0
 )
 

@@ -131,28 +131,46 @@ type RawLedgerServer struct {
 	// Embed the unimplemented server type for forward compatibility
 	rawledger.UnimplementedRawLedgerServiceServer
 	rpcClient      *client.Client
-	metrics        *EnterpriseMetrics
+	config         *Config
+	metrics        *DataSourceMetrics
 	circuitBreaker *CircuitBreaker
 	logger         *zap.Logger
+	cache          *HistoricalCache
+	prefetchMgr    *PrefetchManager
+	accessPattern  *AccessPattern
 }
 
 // NewRawLedgerServer creates a new instance of the server with enterprise-grade configuration
 func NewRawLedgerServer(rpcEndpoint string) (*RawLedgerServer, error) {
+	// Load configuration
+	config, err := LoadConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load config: %v", err)
+	}
+	
+	// Override RPC endpoint if provided
+	if rpcEndpoint != "" {
+		config.RPCEndpoint = rpcEndpoint
+	}
+
 	// Initialize structured logging
 	logger, err := zap.NewProduction()
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize logger: %v", err)
 	}
 
-	rpcClient := client.NewClient(rpcEndpoint, nil)
+	rpcClient := client.NewClient(config.RPCEndpoint, nil)
 
-	// Initialize metrics and circuit breaker
-	metrics := NewEnterpriseMetrics()
-	circuitBreaker := NewCircuitBreaker(5, 30*time.Second)
+	// Initialize enhanced metrics and circuit breaker
+	metrics := NewDataSourceMetrics()
+	circuitBreaker := NewCircuitBreaker(config.CircuitBreakerThreshold, config.CircuitBreakerTimeout)
 
 	// Enterprise-grade connection test
 	logger.Info("Initializing enterprise-grade ledger source",
-		zap.String("endpoint", rpcEndpoint),
+		zap.String("endpoint", config.RPCEndpoint),
+		zap.Bool("serve_from_datastore", config.ServeFromDatastore),
+		zap.String("datastore_type", config.DatastoreType),
+		zap.String("bucket_path", config.BucketPath),
 		zap.Float64("uptime_guarantee", MinProcessorUptime),
 		zap.Duration("max_latency_p99", MaxLatencyP99),
 	)
@@ -176,7 +194,7 @@ func NewRawLedgerServer(rpcEndpoint string) (*RawLedgerServer, error) {
 		circuitBreaker.RecordFailure()
 	} else {
 		logger.Info("Successfully initialized enterprise ledger source",
-			zap.String("endpoint", rpcEndpoint),
+			zap.String("endpoint", config.RPCEndpoint),
 			zap.Duration("max_retry_latency", MaxRetryLatency),
 		)
 		metrics.mu.Lock()
@@ -185,12 +203,98 @@ func NewRawLedgerServer(rpcEndpoint string) (*RawLedgerServer, error) {
 		circuitBreaker.RecordSuccess()
 	}
 
-	return &RawLedgerServer{
+	// Initialize cache if datastore access is enabled
+	var cache *HistoricalCache
+	var prefetchMgr *PrefetchManager
+	
+	if config.ServeFromDatastore && config.CacheHistoricalResponses {
+		cache = NewHistoricalCache(config.HistoricalCacheDuration, 10000) // 10k entries max
+		logger.Info("Historical cache initialized for datastore access",
+			zap.Duration("ttl", config.HistoricalCacheDuration),
+			zap.Int("max_size", 10000),
+		)
+	}
+
+	// Initialize access pattern tracker
+	accessPattern := NewAccessPattern(100) // Track last 100 accesses
+
+	// Create the server instance
+	server := &RawLedgerServer{
 		rpcClient:      rpcClient,
+		config:         config,
 		metrics:        metrics,
 		circuitBreaker: circuitBreaker,
 		logger:         logger,
-	}, nil
+		cache:          cache,
+		accessPattern:  accessPattern,
+	}
+
+	// Initialize prefetch manager if enabled
+	if config.EnablePredictivePrefetch && cache != nil {
+		prefetchMgr = NewPrefetchManager(cache, config.PrefetchConcurrency, server.fetchLedgerForCache)
+		prefetchMgr.Start()
+		server.prefetchMgr = prefetchMgr
+		
+		logger.Info("Predictive prefetch enabled",
+			zap.Int("concurrency", config.PrefetchConcurrency),
+		)
+	}
+
+	return server, nil
+}
+
+// fetchLedgerForCache fetches a single ledger for caching
+func (s *RawLedgerServer) fetchLedgerForCache(sequence uint32) ([]byte, string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), s.config.RetryWait)
+	defer cancel()
+
+	// Build request with historical options
+	getLedgersReq := s.buildGetLedgersRequest(sequence)
+
+	resp, err := s.rpcClient.GetLedgers(ctx, getLedgersReq)
+	if err != nil {
+		return nil, "", err
+	}
+
+	if len(resp.Ledgers) == 0 {
+		return nil, "", fmt.Errorf("no ledger found for sequence %d", sequence)
+	}
+
+	ledger := resp.Ledgers[0]
+	source := "local"
+
+	// Protocol 23: Determine if this came from external datastore
+	if s.config.ServeFromDatastore {
+		retentionWindow := uint32(7 * 24 * 60 * 6) // ~7 days in ledgers
+		latestLedger, err := s.rpcClient.GetLatestLedger(ctx)
+		if err == nil && sequence < latestLedger.Sequence-retentionWindow {
+			source = "historical" // From external datastore
+		}
+	}
+
+	// Decode base64 string to bytes
+	decodedBytes, err := base64.StdEncoding.DecodeString(ledger.LedgerMetadata)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to decode ledger metadata: %w", err)
+	}
+
+	return decodedBytes, source, nil
+}
+
+// buildGetLedgersRequest builds a GetLedgers request
+func (s *RawLedgerServer) buildGetLedgersRequest(startLedger uint32) protocol.GetLedgersRequest {
+	req := protocol.GetLedgersRequest{
+		StartLedger: startLedger,
+		Pagination: &protocol.LedgerPaginationOptions{
+			Limit: uint(s.config.BatchSize),
+		},
+	}
+
+	// Protocol 23: The RPC server handles external datastore access transparently
+	// based on its own SERVE_LEDGERS_FROM_DATASTORE configuration.
+	// No special request parameters needed from the client side.
+
+	return req
 }
 
 // StreamRawLedgers implements the gRPC StreamRawLedgers method with enterprise-grade reliability
@@ -203,15 +307,10 @@ func (s *RawLedgerServer) StreamRawLedgers(req *rawledger.StreamLedgersRequest, 
 
 	// Initialize retry state with enterprise-grade backoff
 	retryCount := 0
-	backoff := initialBackoff
+	backoff := s.config.InitialBackoff
 
-	// Create initial GetLedgers request with enterprise-grade batch size
-	getLedgersReq := protocol.GetLedgersRequest{
-		StartLedger: uint32(req.StartLedger),
-		Pagination: &protocol.LedgerPaginationOptions{
-			Limit: 100, // Enterprise-grade batch size
-		},
-	}
+	// Create initial GetLedgers request using our enhanced builder
+	getLedgersReq := s.buildGetLedgersRequest(req.StartLedger)
 
 	// --- Enterprise-Grade Continuous Polling Loop ---
 	for {
@@ -265,19 +364,19 @@ func (s *RawLedgerServer) StreamRawLedgers(req *rawledger.StreamLedgersRequest, 
 			if status.Code(err) == codes.Canceled {
 				return err
 			}
-			if retryCount >= maxRetries {
+			if retryCount >= s.config.MaxRetries {
 				s.logger.Error("Max retries exceeded",
 					zap.Int("retry_count", retryCount),
 					zap.Error(err),
 				)
-				return fmt.Errorf("failed to get ledgers after %d retries: %v", maxRetries, err)
+				return fmt.Errorf("failed to get ledgers after %d retries: %v", s.config.MaxRetries, err)
 			}
 			continue
 		}
 
 		// Reset retry state on success
 		retryCount = 0
-		backoff = initialBackoff
+		backoff = s.config.InitialBackoff
 
 		if len(resp.Ledgers) == 0 {
 			s.logger.Debug("No new ledgers",
@@ -298,18 +397,60 @@ func (s *RawLedgerServer) StreamRawLedgers(req *rawledger.StreamLedgersRequest, 
 				continue
 			}
 
-			s.logger.Debug("Processing ledger",
-				zap.Uint32("sequence", ledgerInfo.Sequence),
-			)
+			// Check cache first if enabled
+			var rawXdrBytes []byte
+			var source string = "local" // default source
+			fromCache := false
+			
+			if s.cache != nil {
+				if cachedData, cachedSource, exists := s.cache.Get(ledgerInfo.Sequence); exists {
+					rawXdrBytes = cachedData
+					source = cachedSource
+					fromCache = true
+					s.metrics.CacheHits++
+					s.logger.Debug("Ledger found in cache",
+						zap.Uint32("sequence", ledgerInfo.Sequence),
+						zap.String("source", source),
+					)
+				}
+			}
 
-			// Decode with enterprise-grade error handling
-			rawXdrBytes, err := base64.StdEncoding.DecodeString(ledgerInfo.LedgerMetadata)
-			if err != nil {
-				s.logger.Error("Failed to decode ledger metadata",
+			// If not in cache, decode from response
+			if !fromCache {
+				s.logger.Debug("Processing ledger",
 					zap.Uint32("sequence", ledgerInfo.Sequence),
-					zap.Error(err),
 				)
-				return status.Errorf(codes.Internal, "failed to decode ledger metadata for sequence %d: %v", ledgerInfo.Sequence, err)
+
+				// Decode with enterprise-grade error handling
+				var err error
+				rawXdrBytes, err = base64.StdEncoding.DecodeString(ledgerInfo.LedgerMetadata)
+				if err != nil {
+					s.logger.Error("Failed to decode ledger metadata",
+						zap.Uint32("sequence", ledgerInfo.Sequence),
+						zap.Error(err),
+					)
+					return status.Errorf(codes.Internal, "failed to decode ledger metadata for sequence %d: %v", ledgerInfo.Sequence, err)
+				}
+
+				// Determine if this is from external datastore
+				// Protocol 23: RPC automatically serves from datastore if:
+				// 1. SERVE_LEDGERS_FROM_DATASTORE is true on the RPC server
+				// 2. The requested ledger is outside the retention window
+				// The RPC handles this transparently, but we can infer based on:
+				if s.config.ServeFromDatastore {
+					// Get the RPC's retention window (typically 7 days)
+					retentionWindow := uint32(7 * 24 * 60 * 6) // ~7 days in ledgers (assuming 10s per ledger)
+					if latestResp, err := s.rpcClient.GetLatestLedger(ctx); err == nil {
+						if ledgerInfo.Sequence < latestResp.Sequence-retentionWindow {
+							source = "historical" // From external datastore
+						}
+					}
+				}
+
+				// Cache the ledger if caching is enabled
+				if s.cache != nil {
+					s.cache.Put(ledgerInfo.Sequence, rawXdrBytes, source)
+				}
 			}
 
 			// Create and send message with enterprise-grade metrics
@@ -318,11 +459,28 @@ func (s *RawLedgerServer) StreamRawLedgers(req *rawledger.StreamLedgersRequest, 
 				LedgerCloseMetaXdr: rawXdrBytes,
 			}
 
+			// Update metrics with data source information
 			s.metrics.mu.Lock()
 			s.metrics.TotalProcessed++
 			s.metrics.TotalBytesProcessed += int64(len(rawXdrBytes))
 			s.metrics.LastSuccessfulSeq = ledgerInfo.Sequence
 			s.metrics.mu.Unlock()
+			
+			// Update data source specific metrics
+			s.metrics.UpdateDataSourceMetrics(source, latency)
+			
+			// Track access pattern for predictive prefetching
+			if s.accessPattern != nil {
+				s.accessPattern.Record(ledgerInfo.Sequence)
+				
+				// Queue prefetch for predicted sequences
+				if s.prefetchMgr != nil {
+					predictions := s.accessPattern.PredictNext(5)
+					for _, predictedSeq := range predictions {
+						s.prefetchMgr.QueuePrefetch(predictedSeq)
+					}
+				}
+			}
 
 			if err := stream.Send(rawLedgerMsg); err != nil {
 				s.logger.Error("Failed to send ledger",
@@ -374,7 +532,7 @@ func (s *RawLedgerServer) getLedgersWithRetry(
 			s.metrics.RetryCount++
 			s.metrics.mu.Unlock()
 
-			*backoff = calculateBackoff(*backoff, *retryCount)
+			*backoff = s.calculateBackoff(*backoff, *retryCount)
 			*retryCount++
 
 			select {
@@ -431,10 +589,10 @@ func isServerError(err error) bool {
 }
 
 // calculateBackoff calculates the next backoff duration with jitter
-func calculateBackoff(currentBackoff time.Duration, retryCount int) time.Duration {
+func (s *RawLedgerServer) calculateBackoff(currentBackoff time.Duration, retryCount int) time.Duration {
 	nextBackoff := currentBackoff * 2
-	if nextBackoff > maxBackoff {
-		nextBackoff = maxBackoff
+	if nextBackoff > s.config.MaxBackoff {
+		nextBackoff = s.config.MaxBackoff
 	}
 
 	jitter := time.Duration(rand.Float64() * float64(nextBackoff) * 0.1)
@@ -444,10 +602,8 @@ func calculateBackoff(currentBackoff time.Duration, retryCount int) time.Duratio
 }
 
 // GetMetrics returns the current metrics
-func (s *RawLedgerServer) GetMetrics() EnterpriseMetrics {
-	s.metrics.mu.RLock()
-	defer s.metrics.mu.RUnlock()
-	return *s.metrics
+func (s *RawLedgerServer) GetMetrics() *DataSourceMetrics {
+	return s.metrics
 }
 
 // StartHealthCheckServer starts an enterprise-grade health check server
@@ -474,8 +630,22 @@ func (s *RawLedgerServer) StartHealthCheckServer(port int) error {
 			avgLatency = total / time.Duration(len(metrics.LatencyHistogram))
 		}
 
+		// Get comprehensive metrics
+		dataSourceMetrics := metrics.GetMetricsSummary()
+		
 		response := map[string]interface{}{
 			"status": status,
+			"service": "stellar-live-source",
+			"protocol": 23,
+			"config": map[string]interface{}{
+				"serve_from_datastore": s.config.ServeFromDatastore,
+				"datastore_type":       s.config.DatastoreType,
+				"bucket_path":          s.config.BucketPath,
+				"cache_enabled":        s.config.CacheHistoricalResponses,
+				"prefetch_enabled":     s.config.EnablePredictivePrefetch,
+				"buffer_size":          s.config.BufferSize,
+				"num_workers":          s.config.NumWorkers,
+			},
 			"metrics": map[string]interface{}{
 				"retry_count":           metrics.RetryCount,
 				"error_count":           metrics.ErrorCount,
@@ -491,6 +661,13 @@ func (s *RawLedgerServer) StartHealthCheckServer(port int) error {
 				"last_sequence":         metrics.LastSuccessfulSeq,
 				"error_types":           metrics.ErrorTypes,
 			},
+			"data_source_metrics": dataSourceMetrics,
+			"cache_stats": func() interface{} {
+				if s.cache != nil {
+					return s.cache.Stats()
+				}
+				return nil
+			}(),
 			"guarantees": map[string]interface{}{
 				"min_uptime":        MinProcessorUptime,
 				"max_latency_p99":   MaxLatencyP99.String(),

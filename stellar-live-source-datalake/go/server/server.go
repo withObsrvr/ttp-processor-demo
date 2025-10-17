@@ -407,7 +407,7 @@ func (s *RawLedgerServer) createArchiveBackend() (ledgerbackend.LedgerBackend, e
 	}
 
 	// Create the BufferedStorageBackend
-	backend, err := ledgerbackend.NewBufferedStorageBackend(bufferedConfig, dataStore)
+	backend, err := ledgerbackend.NewBufferedStorageBackend(bufferedConfig, dataStore, schema)
 	if err != nil {
 		dataStore.Close()
 		return nil, fmt.Errorf("failed to create buffered storage backend: %w", err)
