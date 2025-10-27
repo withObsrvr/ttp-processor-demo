@@ -28,7 +28,8 @@ type Config struct {
 	BufferSize  int           // Default: 100
 	NumWorkers  int           // Default: 10
 	RetryLimit  int           // Default: 3
-	RetryWait   time.Duration // Default: 5s
+	RetryWait   time.Duration // Default: 5s (delay between retries)
+	OperationTimeout time.Duration // Default: 10s (timeout for individual operations)
 
 	// Cache configuration (our enhancement)
 	CacheHistoricalResponses  bool
@@ -67,6 +68,7 @@ func LoadConfig() (*Config, error) {
 		NumWorkers:  getIntEnv("NUM_WORKERS", 10),
 		RetryLimit:  getIntEnv("RETRY_LIMIT", 3),
 		RetryWait:   getDurationEnv("RETRY_WAIT", 5*time.Second),
+		OperationTimeout: getDurationEnv("OPERATION_TIMEOUT", 10*time.Second),
 
 		// Cache configuration (our enhancement)
 		CacheHistoricalResponses:  getBoolEnv("CACHE_HISTORICAL_RESPONSES", true),

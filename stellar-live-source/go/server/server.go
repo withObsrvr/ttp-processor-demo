@@ -30,6 +30,15 @@ const (
 	MinProcessorUptime = 99.99 // 99.99% uptime guarantee
 	MaxLatencyP99      = 100 * time.Millisecond
 	MaxRetryLatency    = 1 * time.Second
+
+	// Ledger retention and timing constants
+	// Average ledger close time on Stellar network (seconds)
+	AvgLedgerInterval = 10
+	// Default retention window in days for local RPC storage
+	DefaultRetentionDays = 7
+	// Calculated retention window in number of ledgers
+	// Formula: days * hours/day * minutes/hour * seconds/minute / seconds/ledger
+	DefaultRetentionLedgers = DefaultRetentionDays * 24 * 60 * 60 / AvgLedgerInterval // ~60,480 ledgers
 )
 
 // EnterpriseMetrics tracks comprehensive metrics for enterprise monitoring
@@ -245,7 +254,7 @@ func NewRawLedgerServer(rpcEndpoint string) (*RawLedgerServer, error) {
 
 // fetchLedgerForCache fetches a single ledger for caching
 func (s *RawLedgerServer) fetchLedgerForCache(sequence uint32) ([]byte, string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), s.config.RetryWait)
+	ctx, cancel := context.WithTimeout(context.Background(), s.config.OperationTimeout)
 	defer cancel()
 
 	// Build request with historical options
@@ -265,9 +274,8 @@ func (s *RawLedgerServer) fetchLedgerForCache(sequence uint32) ([]byte, string, 
 
 	// Protocol 23: Determine if this came from external datastore
 	if s.config.ServeFromDatastore {
-		retentionWindow := uint32(7 * 24 * 60 * 6) // ~7 days in ledgers
 		latestLedger, err := s.rpcClient.GetLatestLedger(ctx)
-		if err == nil && sequence < latestLedger.Sequence-retentionWindow {
+		if err == nil && sequence < latestLedger.Sequence-DefaultRetentionLedgers {
 			source = "historical" // From external datastore
 		}
 	}
@@ -439,9 +447,9 @@ func (s *RawLedgerServer) StreamRawLedgers(req *rawledger.StreamLedgersRequest, 
 				// The RPC handles this transparently, but we can infer based on:
 				if s.config.ServeFromDatastore {
 					// Get the RPC's retention window (typically 7 days)
-					retentionWindow := uint32(7 * 24 * 60 * 6) // ~7 days in ledgers (assuming 10s per ledger)
+					// Use constant instead of magic number
 					if latestResp, err := s.rpcClient.GetLatestLedger(ctx); err == nil {
-						if ledgerInfo.Sequence < latestResp.Sequence-retentionWindow {
+						if ledgerInfo.Sequence < latestResp.Sequence-DefaultRetentionLedgers {
 							source = "historical" // From external datastore
 						}
 					}

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"sort"
 	"sync"
 	"time"
 )
@@ -67,18 +68,14 @@ func (lt *LatencyTracker) P99() time.Duration {
 		return 0
 	}
 
-	// Simple P99 calculation (could be optimized)
+	// Calculate P99 using efficient sort (O(n log n))
 	sorted := make([]time.Duration, len(lt.latencies))
 	copy(sorted, lt.latencies)
-	
-	// Sort latencies
-	for i := 0; i < len(sorted); i++ {
-		for j := i + 1; j < len(sorted); j++ {
-			if sorted[i] > sorted[j] {
-				sorted[i], sorted[j] = sorted[j], sorted[i]
-			}
-		}
-	}
+
+	// Sort latencies efficiently
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i] < sorted[j]
+	})
 
 	index := int(float64(len(sorted)) * 0.99)
 	if index >= len(sorted) {
