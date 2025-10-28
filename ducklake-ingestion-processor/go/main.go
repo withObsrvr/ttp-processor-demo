@@ -1094,23 +1094,14 @@ func (ing *Ingester) extractBalances(lcm *xdr.LedgerCloseMeta, ledgerSeq uint32)
 			}
 
 			// Extract trustline data from the change
-			var trustline *xdr.TrustLineEntry
-			var lastModifiedLedger uint32
-
-			switch change.Type {
-			case xdr.LedgerEntryTypeTrustline:
-				if change.Post != nil {
-					trustline = change.Post.Data.TrustLine
-					lastModifiedLedger = uint32(change.Post.LastModifiedLedgerSeq)
-				} else if change.Pre != nil {
-					trustline = change.Pre.Data.TrustLine
-					lastModifiedLedger = uint32(change.Pre.LastModifiedLedgerSeq)
-				}
+			// Only process Post state (current/new state after change)
+			// Skip deletions (Post == nil) for Cycle 2 - deletions can be tracked in future cycles
+			if change.Post == nil {
+				continue // Skip deletions
 			}
 
-			if trustline == nil {
-				continue
-			}
+			trustline := change.Post.Data.TrustLine
+			lastModifiedLedger := uint32(change.Post.LastModifiedLedgerSeq)
 
 			// Extract asset information
 			var assetCode, assetIssuer string
