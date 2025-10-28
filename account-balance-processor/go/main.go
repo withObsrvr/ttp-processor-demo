@@ -59,7 +59,7 @@ func main() {
 		port = fmt.Sprintf(":%d", cfg.Spec.Processor.GRPCPort)
 		healthPort = strconv.Itoa(cfg.Spec.Processor.HealthPort)
 		networkPassphrase = cfg.GetNetworkPassphrase()
-		sourceServiceAddr = defaultSourceServiceAddress // Still hardcoded for now
+		sourceServiceAddr = defaultSourceServiceAddress // Intentionally hardcoded until source address configuration is added
 
 		logger.Info("Configuration loaded successfully",
 			zap.String("pipeline_name", cfg.Metadata.Name),

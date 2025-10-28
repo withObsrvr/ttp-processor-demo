@@ -63,7 +63,7 @@ func main() {
 		}
 
 		// Use config values
-		balanceServiceAddr = defaultBalanceServiceAddress // Still hardcoded
+		balanceServiceAddr = defaultBalanceServiceAddress // Intentionally hardcoded until source address configuration is added
 		dbPath = cfg.Spec.Consumer.Database.Path
 		batchSize = cfg.Spec.Consumer.BatchSize
 		healthPort = strconv.Itoa(cfg.Spec.Consumer.HealthPort)

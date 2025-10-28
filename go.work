@@ -3,8 +3,10 @@ go 1.24.0
 toolchain go1.24.8
 
 use (
+	./account-balance-processor/go
 	./arrow-consumer-demo/go
 	./contract-invocation-processor/go
+	./duckdb-consumer/go
 	./ducklake-ingestion-processor/go
 	./stellar-arrow-source/go
 	./stellar-live-source-datalake/go
