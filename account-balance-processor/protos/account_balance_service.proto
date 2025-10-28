@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package account_balance_service;
+
+option go_package = "github.com/withobsrvr/account-balance-processor/gen/account_balance_service";
+
+// AccountBalance represents a single account's balance for a specific asset
+message AccountBalance {
+  string account_id = 1;       // Stellar account ID (G...)
+  string asset_code = 2;       // Asset code (e.g., "USDC", empty for XLM)
+  string asset_issuer = 3;     // Asset issuer account ID (empty for XLM)
+  int64 balance = 4;           // Balance in stroops (1 XLM = 10^7 stroops)
+  uint32 last_modified_ledger = 5;  // Ledger sequence when balance was last modified
+}
+
+// Request to stream account balances from a ledger range
+message StreamAccountBalancesRequest {
+  uint32 start_ledger = 1;     // Starting ledger sequence (inclusive)
+  uint32 end_ledger = 2;       // Ending ledger sequence (inclusive, 0 = no limit)
+
+  // Optional filters
+  string filter_asset_code = 3;    // Filter by asset code (empty = all assets)
+  string filter_asset_issuer = 4;  // Filter by asset issuer (empty = all issuers)
+}
+
+// Service for streaming account balance data
+service AccountBalanceService {
+  // Stream account balances from ledger data
+  // Each AccountBalance message represents a balance change for an account/asset pair
+  rpc StreamAccountBalances(StreamAccountBalancesRequest) returns (stream AccountBalance);
+}
