@@ -58,10 +58,14 @@
             
             # Database tools (for testing/development)
             postgresql_16
-            
+            duckdb
+
             # Monitoring tools
             prometheus
             grafana
+
+            # gRPC tools
+            grpcurl
           ];
           
           # Environment variables from .envrc
@@ -106,9 +110,11 @@
             echo ""
             echo "Available services:"
             echo "  - stellar-live-source: RPC-based ledger data source"
-            echo "  - stellar-live-source-datalake: Storage-based ledger data source"
+            echo "  - stellar-live-source-datalake: Storage-based ledger data source (GCS)"
             echo "  - stellar-arrow-source: Arrow-based data source"
             echo "  - ttp-processor: Processes raw ledgers into TTP events"
+            echo "  - account-balance-processor: Processes ledgers into account balances"
+            echo "  - duckdb-consumer: Consumes account balances to DuckDB"
             echo "  - contract-invocation-processor: Processes contract invocations"
             echo "  - contract-data-processor: Hybrid Arrow Flight/gRPC service"
             echo "  - arrow-consumer-demo: Demo consumer for Arrow data"
@@ -120,7 +126,7 @@
             echo "  go test ./...  - Run tests"
             echo ""
             echo "Service directories:"
-            for service in stellar-live-source stellar-live-source-datalake stellar-arrow-source ttp-processor contract-invocation-processor contract-data-processor arrow-consumer-demo; do
+            for service in stellar-live-source stellar-live-source-datalake stellar-arrow-source ttp-processor account-balance-processor duckdb-consumer contract-invocation-processor contract-data-processor arrow-consumer-demo; do
               if [ -d "$service" ]; then
                 echo "  - $service/"
               fi
@@ -135,7 +141,7 @@
             # Helper functions
             build-all() {
               echo "Building all Go services..."
-              for dir in stellar-live-source stellar-live-source-datalake stellar-arrow-source ttp-processor contract-invocation-processor contract-data-processor arrow-consumer-demo; do
+              for dir in stellar-live-source stellar-live-source-datalake stellar-arrow-source ttp-processor account-balance-processor duckdb-consumer contract-invocation-processor contract-data-processor arrow-consumer-demo; do
                 if [ -d "$dir/go" ] || [ -d "$dir" ]; then
                   echo "Building $dir..."
                   (cd $dir && make build) || echo "Failed to build $dir"
@@ -145,10 +151,10 @@
             
             gen-all-protos() {
               echo "Generating all protobuf files..."
-              for dir in stellar-live-source stellar-live-source-datalake stellar-arrow-source ttp-processor contract-invocation-processor contract-data-processor; do
-                if [ -f "$dir/Makefile" ] && grep -q "gen-proto" "$dir/Makefile"; then
+              for dir in stellar-live-source stellar-live-source-datalake stellar-arrow-source ttp-processor account-balance-processor duckdb-consumer contract-invocation-processor contract-data-processor; do
+                if [ -f "$dir/Makefile" ] && grep -q "proto" "$dir/Makefile"; then
                   echo "Generating protos for $dir..."
-                  (cd $dir && make gen-proto) || echo "Failed to generate protos for $dir"
+                  (cd $dir && make proto) || echo "Failed to generate protos for $dir"
                 fi
               done
             }

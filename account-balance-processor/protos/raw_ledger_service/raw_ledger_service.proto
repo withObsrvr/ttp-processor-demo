@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package raw_ledger_service;
+
+option go_package = "github.com/withobsrvr/account-balance-processor/gen/raw_ledger_service";
+
+// Message to stream raw ledger data
+message RawLedger {
+    uint32 sequence = 1;
+    bytes ledger_close_meta_xdr = 2; // Raw XDR bytes of LedgerCloseMeta
+}
+
+// Request to start streaming
+message StreamLedgersRequest {
+    uint32 start_ledger = 1;
+    // No end_ledger, assumes continuous streaming
+}
+
+// The service definition
+service RawLedgerService {
+    // Streams raw ledgers starting from a specific sequence indefinitely
+    rpc StreamRawLedgers(StreamLedgersRequest) returns (stream RawLedger) {}
+} 
