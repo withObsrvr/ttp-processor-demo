@@ -181,10 +181,14 @@ github.com/sirupsen/logrus v1.9.3 h1:dueUQJ1C2q9oE3F7wvmSGAaVtTmUizReu6fjN8uqzbQ
 github.com/sirupsen/logrus v1.9.3/go.mod h1:naHLuLoDiP4jHNo9R0sCBMtWGeIprob74mVsIT4qYEQ=
 github.com/stellar/go v0.0.0-20250322075617-5ccaef04a539 h1:RphWUdeWcQQlkX+kx8hhj7H+m8ae1YJJwrpp0Du2TiE=
 github.com/stellar/go v0.0.0-20250322075617-5ccaef04a539/go.mod h1:wE/ZDmjys55VprPR5qx5Ojx0cUi3f7MJ+dc5gzM+03k=
+github.com/stellar/go v0.0.0-20251009202746-7bc49336ce8b h1:ltsoVigvG4SoUTrWL9BpMMhCTKLFyFseomCokw7l3UA=
+github.com/stellar/go v0.0.0-20251009202746-7bc49336ce8b/go.mod h1:ac8hwpljbFXC3Sf9nGfqBXXEvAEdnNRqQHGqP7QN8oY=
 github.com/stellar/go-xdr v0.0.0-20231122183749-b53fb00bcac2 h1:OzCVd0SV5qE3ZcDeSFCmOWLZfEWZ3Oe8KtmSOYKEVWE=
 github.com/stellar/go-xdr v0.0.0-20231122183749-b53fb00bcac2/go.mod h1:yoxyU/M8nl9LKeWIoBrbDPQ7Cy+4jxRcWcOayZ4BMps=
 github.com/stellar/stellar-rpc v0.9.6-0.20250130160539-be7702aa01ba h1:fCKETMnEBI2CDo2cUDoZsJUpTnpK5H2aDFoCfozyzIM=
 github.com/stellar/stellar-rpc v0.9.6-0.20250130160539-be7702aa01ba/go.mod h1:V5NPV4kvf2VGU8iRm8l6cAP3kWA/9B2NGKRkrbKBmpA=
+github.com/stellar/stellar-rpc v0.9.6-0.20251007212330-3095aa4d2c52 h1:LPhl/iwmFINB7I5i3lsJgvDtncLl2QTGa59nDZNOcIo=
+github.com/stellar/stellar-rpc v0.9.6-0.20251007212330-3095aa4d2c52/go.mod h1:899/NU2DMtGG62JJp/BrNl+6xqp/nkjIG88tmUIIYk0=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
 github.com/stretchr/objx v0.4.0/go.mod h1:YvHI0jy2hoMjB+UWwv71VJQ9isScKT/TqJzVSSt89Yw=
 github.com/stretchr/objx v0.5.0/go.mod h1:Yh+to48EsGEfYuaHDzXPcE3xhTkx73EhmCGUpEOglKo=

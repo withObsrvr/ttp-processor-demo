@@ -1,8 +1,8 @@
-# Stellar Live Source (RPC)
+# Stellar Live Source (RPC with Protocol 23)
 
-This service connects to Stellar RPC endpoints and streams ledger data via gRPC to consumers. It provides real-time access to Stellar blockchain data through RPC nodes.
+This service connects to Stellar RPC endpoints and streams ledger data via gRPC to consumers. With **Protocol 23**, the RPC can transparently access both recent ledgers (from local storage) and historical ledgers (from external datastores like GCS or S3).
 
-> **Note**: This service connects to **Stellar RPC endpoints**. If you need to read from storage backends (GCS, S3, filesystem), use the `stellar-live-source-datalake` service instead.
+> **Protocol 23 Enhancement**: Stellar RPC nodes can now automatically fetch historical data from external datastores when requested ledgers are beyond their local retention window. This provides unified access to the entire blockchain history through a single RPC endpoint.
 
 ## Features
 
@@ -48,6 +48,34 @@ The service is configured via environment variables:
 
 - `RPC_ENDPOINT`: Stellar RPC endpoint URL (e.g., "https://soroban-testnet.stellar.org")
 - `NETWORK_PASSPHRASE`: Stellar network passphrase
+
+### Protocol 23: External Datastore Configuration
+
+Configure these on your RPC server (not this client) to enable historical access:
+
+- `SERVE_LEDGERS_FROM_DATASTORE`: Enable external datastore access (default: true)
+- `DATASTORE_TYPE`: Storage backend type: "GCS" or "S3"
+- `DATASTORE_BUCKET_PATH`: Path to ledger data in the bucket
+- `DATASTORE_REGION`: AWS region (S3 only, default: us-east-1)
+
+### Protocol 23: Datastore Schema Configuration
+
+- `LEDGERS_PER_FILE`: Number of ledgers per file (default: 1)
+- `FILES_PER_PARTITION`: Files per partition (default: 64000)
+
+### Protocol 23: Buffered Storage Backend
+
+- `BUFFER_SIZE`: Buffer size for batch processing (default: 100)
+- `NUM_WORKERS`: Number of parallel workers (default: 10)
+- `RETRY_LIMIT`: Max retries for failed requests (default: 3)
+- `RETRY_WAIT`: Wait time between retries (default: 5s)
+
+### Caching Configuration (Client Enhancement)
+
+- `CACHE_HISTORICAL_RESPONSES`: Cache historical ledgers locally (default: true)
+- `HISTORICAL_CACHE_DURATION`: Cache TTL (default: 1h)
+- `ENABLE_PREDICTIVE_PREFETCH`: Enable predictive prefetching (default: true)
+- `PREFETCH_CONCURRENCY`: Number of concurrent prefetch workers (default: 10)
 
 ### Optional Configuration
 
@@ -113,14 +141,37 @@ docker run -e RPC_ENDPOINT="https://soroban-testnet.stellar.org" \
            stellar-live-source
 ```
 
+## Protocol 23: How It Works
+
+When you request ledgers from a Protocol 23-enabled RPC:
+
+1. **Recent Ledgers (within retention window)**
+   - Served directly from RPC's local storage
+   - Fastest response time
+   - Typically last 7 days of ledgers
+
+2. **Historical Ledgers (beyond retention window)**
+   - RPC automatically fetches from configured external datastore
+   - Transparent to the client - same API, same response format
+   - May have slightly higher latency for first access
+   - Our client caches these for improved performance
+
+3. **Unified Access Pattern**
+   ```go
+   // Same code works for both recent and historical ledgers!
+   resp, err := client.StreamRawLedgers(ctx, &StreamLedgersRequest{
+       StartLedger: 1,  // Can be from genesis or recent - RPC handles it
+   })
+   ```
+
 ## Available RPC Endpoints
 
 ### Testnet
-- https://soroban-testnet.stellar.org
+- https://soroban-testnet.stellar.org (Protocol 23 enabled)
 - https://horizon-testnet.stellar.org
 
 ### Mainnet
-- https://soroban.stellar.org
+- https://soroban.stellar.org (Protocol 23 enabled)
 - https://horizon.stellar.org
 
 ### Futurenet

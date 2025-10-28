@@ -31,6 +31,8 @@ result-*
 .cache/
 .gopath/
 
+ai_docs/
+
 # Binary files
 stellar_live_source_datalake
 stellar_live_source
@@ -63,3 +65,7 @@ stellar-arrow-source/go/consumer_app/parquet/parquet-consumer
 stellar-live-source/go/stellar-live-source
 stellar-live-source-datalake/go/stellar-arrow-source
 stellar-arrow-source/stellar-arrow-source
+ducklake-ingestion-processor/ducklake-ingestion
+ducklake-ingestion-processor/cycle1_test.db
+ducklake-ingestion-processor/query-ducklake.sql
+ducklake-ingestion-processor/config/testnet.yaml

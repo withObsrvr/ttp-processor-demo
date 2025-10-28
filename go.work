@@ -1,8 +1,11 @@
-go 1.23.4
+go 1.24.0
+
+toolchain go1.24.8
 
 use (
 	./arrow-consumer-demo/go
 	./contract-invocation-processor/go
+	./ducklake-ingestion-processor/go
 	./stellar-arrow-source/go
 	./stellar-live-source-datalake/go
 	./stellar-live-source/go

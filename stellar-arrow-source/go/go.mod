@@ -1,16 +1,16 @@
 module github.com/withObsrvr/ttp-processor-demo/stellar-arrow-source
 
-go 1.23.4
+go 1.24
 
-toolchain go1.24.3
+toolchain go1.24.8
 
 require (
 	github.com/apache/arrow/go/v17 v17.0.0
 	github.com/klauspost/compress v1.17.9
 	github.com/pierrec/lz4/v4 v4.1.21
-	github.com/prometheus/client_golang v1.19.0
+	github.com/prometheus/client_golang v1.20.5
 	github.com/rs/zerolog v1.33.0
-	github.com/stellar/go v0.0.0-20250716214416-01d16bf8185f
+	github.com/stellar/go v0.0.0-20251009202746-7bc49336ce8b
 	github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake v0.0.0-00010101000000-000000000000
 	github.com/withobsrvr/flowctl v0.0.0-00010101000000-000000000000
 	google.golang.org/grpc v1.72.0
@@ -19,7 +19,7 @@ require (
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
-	github.com/cespare/xxhash/v2 v2.2.0 // indirect
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/goccy/go-json v0.10.3 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/flatbuffers v24.3.25+incompatible // indirect
@@ -27,9 +27,9 @@ require (
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.19 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	github.com/prometheus/client_model v0.5.0 // indirect
-	github.com/prometheus/common v0.48.0 // indirect
-	github.com/prometheus/procfs v0.12.0 // indirect
+	github.com/prometheus/client_model v0.6.1 // indirect
+	github.com/prometheus/common v0.55.0 // indirect
+	github.com/prometheus/procfs v0.15.1 // indirect
 	github.com/stellar/go-xdr v0.0.0-20231122183749-b53fb00bcac2 // indirect
 	github.com/zeebo/xxh3 v1.0.2 // indirect
 	golang.org/x/exp v0.0.0-20240506185415-9bf2ced13842 // indirect
