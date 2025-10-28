@@ -2,13 +2,16 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 
 	accountbalance "github.com/withobsrvr/account-balance-processor/gen/account_balance_service"
+	"github.com/withobsrvr/account-balance-processor/config"
 	"github.com/withobsrvr/account-balance-processor/server"
 
 	"go.uber.org/zap"
@@ -29,13 +32,67 @@ func main() {
 	}
 	defer logger.Sync()
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = defaultPort
-	}
-	// Ensure port starts with ":"
-	if !strings.HasPrefix(port, ":") {
-		port = ":" + port
+	// Parse command-line flags
+	configPath := flag.String("config", "", "Path to quickstart.yaml config file")
+	flag.Parse()
+
+	var (
+		port              string
+		healthPort        string
+		networkPassphrase string
+		sourceServiceAddr string
+	)
+
+	// Try to load config file if provided
+	if *configPath != "" {
+		logger.Info("Loading configuration from file",
+			zap.String("config_path", *configPath))
+
+		cfg, err := config.LoadConfig(*configPath)
+		if err != nil {
+			logger.Fatal("Failed to load config file",
+				zap.String("config_path", *configPath),
+				zap.Error(err))
+		}
+
+		// Use config values
+		port = fmt.Sprintf(":%d", cfg.Spec.Processor.GRPCPort)
+		healthPort = strconv.Itoa(cfg.Spec.Processor.HealthPort)
+		networkPassphrase = cfg.GetNetworkPassphrase()
+		sourceServiceAddr = defaultSourceServiceAddress // Still hardcoded for now
+
+		logger.Info("Configuration loaded successfully",
+			zap.String("pipeline_name", cfg.Metadata.Name),
+			zap.String("network", cfg.Spec.Source.Network),
+			zap.Uint32("start_ledger", cfg.Spec.Source.Ledgers.Start),
+			zap.Uint32("end_ledger", cfg.Spec.Source.Ledgers.End))
+	} else {
+		// Backward compatibility: use environment variables
+		logger.Info("No config file provided, using environment variables")
+
+		port = os.Getenv("PORT")
+		if port == "" {
+			port = defaultPort
+		}
+		// Ensure port starts with ":"
+		if !strings.HasPrefix(port, ":") {
+			port = ":" + port
+		}
+
+		networkPassphrase = os.Getenv("NETWORK_PASSPHRASE")
+		if networkPassphrase == "" {
+			logger.Fatal("NETWORK_PASSPHRASE environment variable not set")
+		}
+
+		sourceServiceAddr = os.Getenv("SOURCE_SERVICE_ADDRESS")
+		if sourceServiceAddr == "" {
+			sourceServiceAddr = defaultSourceServiceAddress
+		}
+
+		healthPort = os.Getenv("HEALTH_PORT")
+		if healthPort == "" {
+			healthPort = defaultHealthPort
+		}
 	}
 
 	lis, err := net.Listen("tcp", port)
@@ -45,16 +102,6 @@ func main() {
 			zap.Error(err))
 	}
 
-	networkPassphrase := os.Getenv("NETWORK_PASSPHRASE")
-	if networkPassphrase == "" {
-		logger.Fatal("NETWORK_PASSPHRASE environment variable not set")
-	}
-
-	sourceServiceAddr := os.Getenv("SOURCE_SERVICE_ADDRESS")
-	if sourceServiceAddr == "" {
-		sourceServiceAddr = defaultSourceServiceAddress
-	}
-
 	logger = logger.With(
 		zap.String("port", port),
 		zap.String("source_service", sourceServiceAddr),
@@ -62,7 +109,7 @@ func main() {
 	)
 
 	s := grpc.NewServer()
-	balanceServer, err := server.NewAccountBalanceServer(networkPassphrase, sourceServiceAddr)
+	balanceServer, err := server.NewAccountBalanceServer(networkPassphrase, sourceServiceAddr, *configPath)
 	if err != nil {
 		logger.Fatal("failed to create account balance server",
 			zap.Error(err))
@@ -74,12 +121,6 @@ func main() {
 
 	logger.Info("Account Balance Processor Server starting",
 		zap.String("address", lis.Addr().String()))
-
-	// Set up health check endpoint
-	healthPort := os.Getenv("HEALTH_PORT")
-	if healthPort == "" {
-		healthPort = defaultHealthPort
-	}
 
 	// Start health check server
 	go func() {

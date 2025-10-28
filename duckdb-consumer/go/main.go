@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"net/http"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	accountbalance "github.com/withobsrvr/duckdb-consumer/gen/account_balance_service"
+	"github.com/withobsrvr/duckdb-consumer/config"
 	"github.com/withobsrvr/duckdb-consumer/consumer"
 
 	"go.uber.org/zap"
@@ -33,42 +35,100 @@ func main() {
 	}
 	defer logger.Sync()
 
-	// Get configuration from environment
-	balanceServiceAddr := getEnv("BALANCE_SERVICE_ADDRESS", defaultBalanceServiceAddress)
-	dbPath := getEnv("DUCKDB_PATH", defaultDuckDBPath)
-	batchSizeStr := getEnv("BATCH_SIZE", strconv.Itoa(defaultBatchSize))
-	healthPort := getEnv("HEALTH_PORT", defaultHealthPort)
+	// Parse command-line flags
+	configPath := flag.String("config", "", "Path to quickstart.yaml config file")
+	flag.Parse()
 
-	batchSize, err := strconv.Atoi(batchSizeStr)
-	if err != nil {
-		logger.Fatal("invalid BATCH_SIZE", zap.String("value", batchSizeStr))
-	}
+	var (
+		balanceServiceAddr string
+		dbPath             string
+		batchSize          int
+		healthPort         string
+		startLedger        uint32
+		endLedger          uint32
+		filterAssetCode    string
+		filterAssetIssuer  string
+	)
 
-	// Get request parameters
-	startLedgerStr := getEnv("START_LEDGER", "")
-	if startLedgerStr == "" {
-		logger.Fatal("START_LEDGER environment variable is required")
-	}
-	startLedger, err := strconv.ParseUint(startLedgerStr, 10, 32)
-	if err != nil {
-		logger.Fatal("invalid START_LEDGER", zap.String("value", startLedgerStr))
-	}
+	// Try to load config file if provided
+	if *configPath != "" {
+		logger.Info("Loading configuration from file",
+			zap.String("config_path", *configPath))
 
-	endLedgerStr := getEnv("END_LEDGER", "0")
-	endLedger, err := strconv.ParseUint(endLedgerStr, 10, 32)
-	if err != nil {
-		logger.Fatal("invalid END_LEDGER", zap.String("value", endLedgerStr))
-	}
+		cfg, err := config.LoadConfig(*configPath)
+		if err != nil {
+			logger.Fatal("Failed to load config file",
+				zap.String("config_path", *configPath),
+				zap.Error(err))
+		}
 
-	filterAssetCode := getEnv("FILTER_ASSET_CODE", "")
-	filterAssetIssuer := getEnv("FILTER_ASSET_ISSUER", "")
+		// Use config values
+		balanceServiceAddr = defaultBalanceServiceAddress // Still hardcoded
+		dbPath = cfg.Spec.Consumer.Database.Path
+		batchSize = cfg.Spec.Consumer.BatchSize
+		healthPort = strconv.Itoa(cfg.Spec.Consumer.HealthPort)
+		startLedger = cfg.Spec.Source.Ledgers.Start
+		endLedger = cfg.Spec.Source.Ledgers.End
+
+		// Handle filtering from config
+		if len(cfg.Spec.Filters.Assets) > 0 {
+			// Use first asset for now (multi-asset support can be added later)
+			filterAssetCode = cfg.Spec.Filters.Assets[0].Code
+			filterAssetIssuer = cfg.Spec.Filters.Assets[0].Issuer
+		} else if len(cfg.Spec.Filters.AssetCodeOnly) > 0 {
+			filterAssetCode = cfg.Spec.Filters.AssetCodeOnly[0]
+			filterAssetIssuer = "" // Any issuer
+		} else if cfg.Spec.Filters.IndexAll {
+			filterAssetCode = ""
+			filterAssetIssuer = ""
+		}
+
+		logger.Info("Configuration loaded successfully",
+			zap.String("pipeline_name", cfg.Metadata.Name),
+			zap.String("database_path", dbPath),
+			zap.Int("batch_size", batchSize))
+	} else {
+		// Backward compatibility: use environment variables
+		logger.Info("No config file provided, using environment variables")
+
+		balanceServiceAddr = getEnv("BALANCE_SERVICE_ADDRESS", defaultBalanceServiceAddress)
+		dbPath = getEnv("DUCKDB_PATH", defaultDuckDBPath)
+		batchSizeStr := getEnv("BATCH_SIZE", strconv.Itoa(defaultBatchSize))
+		healthPort = getEnv("HEALTH_PORT", defaultHealthPort)
+
+		batchSize, err = strconv.Atoi(batchSizeStr)
+		if err != nil {
+			logger.Fatal("invalid BATCH_SIZE", zap.String("value", batchSizeStr))
+		}
+
+		// Get request parameters
+		startLedgerStr := getEnv("START_LEDGER", "")
+		if startLedgerStr == "" {
+			logger.Fatal("START_LEDGER environment variable is required")
+		}
+		startLedger64, err := strconv.ParseUint(startLedgerStr, 10, 32)
+		if err != nil {
+			logger.Fatal("invalid START_LEDGER", zap.String("value", startLedgerStr))
+		}
+		startLedger = uint32(startLedger64)
+
+		endLedgerStr := getEnv("END_LEDGER", "0")
+		endLedger64, err := strconv.ParseUint(endLedgerStr, 10, 32)
+		if err != nil {
+			logger.Fatal("invalid END_LEDGER", zap.String("value", endLedgerStr))
+		}
+		endLedger = uint32(endLedger64)
+
+		filterAssetCode = getEnv("FILTER_ASSET_CODE", "")
+		filterAssetIssuer = getEnv("FILTER_ASSET_ISSUER", "")
+	}
 
 	logger = logger.With(
 		zap.String("balance_service", balanceServiceAddr),
 		zap.String("duckdb_path", dbPath),
 		zap.Int("batch_size", batchSize),
-		zap.Uint64("start_ledger", startLedger),
-		zap.Uint64("end_ledger", endLedger),
+		zap.Uint32("start_ledger", startLedger),
+		zap.Uint32("end_ledger", endLedger),
 		zap.String("filter_asset_code", filterAssetCode),
 		zap.String("filter_asset_issuer", filterAssetIssuer),
 	)
@@ -97,10 +157,10 @@ func main() {
 	errChan := make(chan error, 1)
 	go func() {
 		req := &accountbalance.StreamAccountBalancesRequest{
-			StartLedger:        uint32(startLedger),
-			EndLedger:          uint32(endLedger),
-			FilterAssetCode:    filterAssetCode,
-			FilterAssetIssuer:  filterAssetIssuer,
+			StartLedger:       startLedger,
+			EndLedger:         endLedger,
+			FilterAssetCode:   filterAssetCode,
+			FilterAssetIssuer: filterAssetIssuer,
 		}
 		logger.Info("starting balance consumption")
 		err := duckdbConsumer.ConsumeBalances(ctx, req)

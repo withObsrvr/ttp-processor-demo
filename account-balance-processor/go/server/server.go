@@ -81,10 +81,11 @@ type AccountBalanceServer struct {
 	rawLedgerConn     *grpc.ClientConn
 	logger            *zap.Logger
 	metrics           *ProcessorMetrics
+	configPath        string // Path to config file (if used)
 }
 
 // NewAccountBalanceServer creates a new instance of the account balance processor server
-func NewAccountBalanceServer(passphrase string, sourceServiceAddr string) (*AccountBalanceServer, error) {
+func NewAccountBalanceServer(passphrase string, sourceServiceAddr string, configPath string) (*AccountBalanceServer, error) {
 	// Initialize zap logger with production configuration
 	logger, err := zap.NewProduction()
 	if err != nil {
@@ -109,6 +110,7 @@ func NewAccountBalanceServer(passphrase string, sourceServiceAddr string) (*Acco
 		rawLedgerConn:     conn,
 		logger:            logger,
 		metrics:           NewProcessorMetrics(),
+		configPath:        configPath,
 	}, nil
 }
 
