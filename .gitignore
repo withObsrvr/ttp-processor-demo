@@ -76,3 +76,4 @@ quickstart.yaml
 account-balance-processor/bin/account-balance-processor
 duckdb-consumer/bin/duckdb-consumer
 
+ducklake-ingestion-processor/go/ducklake-ingestion

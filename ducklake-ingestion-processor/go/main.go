@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"flag"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	_ "github.com/marcboeker/go-duckdb/v2"
+	"github.com/stellar/go/strkey"
 	"github.com/stellar/go/xdr"
 	pb "github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/go/gen/raw_ledger_service"
 	"google.golang.org/grpc"
@@ -60,6 +62,7 @@ type Config struct {
 
 // LedgerData represents the ledger data we extract
 type LedgerData struct {
+	// Core metadata (existing 13 fields)
 	Sequence            uint32
 	LedgerHash          string
 	PreviousLedgerHash  string
@@ -73,6 +76,26 @@ type LedgerData struct {
 	SuccessfulTxCount   uint32
 	FailedTxCount       uint32
 	LedgerRange         uint32 // Partition key: (sequence / 10000) * 10000
+
+	// NEW: Operation counts (stellar-etl alignment)
+	TransactionCount    uint32 // successful_tx_count + failed_tx_count
+	OperationCount      uint32 // Operations in successful transactions only
+	TxSetOperationCount uint32 // All operations (including failed txs)
+
+	// NEW: Soroban (Protocol 20+)
+	SorobanFeeWrite1KB int64 // Cost per 1KB write
+
+	// NEW: Consensus metadata
+	NodeID       string // SCP validator node
+	Signature    string // SCP signature (base64)
+	LedgerHeader string // Full header XDR (base64)
+
+	// NEW: State tracking
+	BucketListSize       uint64 // Total bucket list bytes
+	LiveSorobanStateSize uint64 // Live Soroban state bytes
+
+	// NEW: Protocol 23 (CAP-62) - Hot Archive
+	EvictedKeysCount uint32 // Number of evicted keys
 }
 
 // Ingester handles the ledger ingestion pipeline
@@ -310,8 +333,11 @@ func (ing *Ingester) initializeDuckLake() error {
 		INSERT INTO %s.%s.%s
 		(sequence, ledger_hash, previous_ledger_hash, closed_at, protocol_version,
 		 total_coins, fee_pool, base_fee, base_reserve, max_tx_set_size,
-		 successful_tx_count, failed_tx_count, ingestion_timestamp, ledger_range)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 successful_tx_count, failed_tx_count, ingestion_timestamp, ledger_range,
+		 transaction_count, operation_count, tx_set_operation_count,
+		 soroban_fee_write1kb, node_id, signature, ledger_header,
+		 bucket_list_size, live_soroban_state_size, evicted_keys_count)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		ing.config.DuckLake.CatalogName,
 		ing.config.DuckLake.SchemaName,
 		ing.config.DuckLake.TableName,
@@ -394,7 +420,27 @@ func (ing *Ingester) createTable() error {
 			successful_tx_count INT NOT NULL,
 			failed_tx_count INT NOT NULL,
 			ingestion_timestamp TIMESTAMP,
-			ledger_range BIGINT
+			ledger_range BIGINT,
+
+			-- NEW: Operation counts (stellar-etl alignment)
+			transaction_count INT,
+			operation_count INT,
+			tx_set_operation_count INT,
+
+			-- NEW: Soroban (Protocol 20+)
+			soroban_fee_write1kb BIGINT,
+
+			-- NEW: Consensus metadata
+			node_id VARCHAR,
+			signature VARCHAR,
+			ledger_header TEXT,
+
+			-- NEW: State tracking
+			bucket_list_size BIGINT,
+			live_soroban_state_size BIGINT,
+
+			-- NEW: Protocol 23 (CAP-62) - Hot Archive
+			evicted_keys_count INT
 		)`,
 		ing.config.DuckLake.CatalogName,
 		ing.config.DuckLake.SchemaName,
@@ -505,7 +551,7 @@ func (ing *Ingester) extractLedgerData(lcm *xdr.LedgerCloseMeta) LedgerData {
 		return data
 	}
 
-	// Extract fields
+	// Extract core fields
 	data.Sequence = uint32(header.Header.LedgerSeq)
 	data.LedgerHash = hex.EncodeToString(header.Hash[:])
 	data.PreviousLedgerHash = hex.EncodeToString(header.Header.PreviousLedgerHash[:])
@@ -517,33 +563,126 @@ func (ing *Ingester) extractLedgerData(lcm *xdr.LedgerCloseMeta) LedgerData {
 	data.BaseReserve = uint32(header.Header.BaseReserve)
 	data.MaxTxSetSize = uint32(header.Header.MaxTxSetSize)
 
-	// Count transactions
+	// Count transactions and operations
+	// NOTE: For V1/V2, we count operations from successful transaction results
+	// This approach works when TxSet phases are complex (GeneralizedTransactionSet)
 	var txCount uint32
 	var failedCount uint32
+	var operationCount uint32
+	var txSetOperationCount uint32
 
 	switch lcm.V {
 	case 0:
-		txCount = uint32(len(lcm.MustV0().TxSet.Txs))
+		v0 := lcm.MustV0()
+		txCount = uint32(len(v0.TxSet.Txs))
+		// V0 doesn't have tx processing results, count all ops from envelopes
+		for _, tx := range v0.TxSet.Txs {
+			opCount := uint32(len(tx.Operations()))
+			txSetOperationCount += opCount
+			operationCount += opCount // V0 doesn't track failures, count all
+		}
 	case 1:
 		v1 := lcm.MustV1()
 		txCount = uint32(len(v1.TxProcessing))
-		for _, tx := range v1.TxProcessing {
-			if tx.Result.Result.Result.Code.String() != "txSUCCESS" {
+
+		// Count operations from transaction results
+		// For each successful transaction, count the operation results
+		for _, txApply := range v1.TxProcessing {
+			// Try to get operation results (available for both successful and failed txs)
+			if opResults, ok := txApply.Result.Result.OperationResults(); ok {
+				opCount := uint32(len(opResults))
+				txSetOperationCount += opCount
+
+				// Check if transaction was successful using Successful() method
+				if txApply.Result.Result.Successful() {
+					operationCount += opCount
+				} else {
+					failedCount++
+				}
+			} else {
+				// No operation results - likely failed before any ops executed
 				failedCount++
 			}
 		}
 	case 2:
 		v2 := lcm.MustV2()
 		txCount = uint32(len(v2.TxProcessing))
-		for _, tx := range v2.TxProcessing {
-			if tx.Result.Result.Result.Code.String() != "txSUCCESS" {
+
+		// Count operations from transaction results
+		for _, txApply := range v2.TxProcessing {
+			// Try to get operation results (available for both successful and failed txs)
+			if opResults, ok := txApply.Result.Result.OperationResults(); ok {
+				opCount := uint32(len(opResults))
+				txSetOperationCount += opCount
+
+				// Check if transaction was successful using Successful() method
+				if txApply.Result.Result.Successful() {
+					operationCount += opCount
+				} else {
+					failedCount++
+				}
+			} else {
+				// No operation results - likely failed before any ops executed
 				failedCount++
 			}
 		}
 	}
 
+	data.TransactionCount = txCount
 	data.SuccessfulTxCount = txCount - failedCount
 	data.FailedTxCount = failedCount
+	data.OperationCount = operationCount
+	data.TxSetOperationCount = txSetOperationCount
+
+	// Extract Soroban fields (Protocol 20+)
+	// Soroban fee is available in both V1 and V2 via Ext.V1
+	if lcmV1, ok := lcm.GetV1(); ok {
+		if extV1, ok := lcmV1.Ext.GetV1(); ok {
+			data.SorobanFeeWrite1KB = int64(extV1.SorobanFeeWrite1Kb)
+		}
+	} else if lcmV2, ok := lcm.GetV2(); ok {
+		if extV1, ok := lcmV2.Ext.GetV1(); ok {
+			data.SorobanFeeWrite1KB = int64(extV1.SorobanFeeWrite1Kb)
+		}
+	}
+
+	// Extract consensus metadata (node_id and signature from SCP value)
+	if lcValueSig, ok := header.Header.ScpValue.Ext.GetLcValueSignature(); ok {
+		// Node ID - convert from AccountID to string address
+		nodeIDBytes := lcValueSig.NodeId.Ed25519
+		if nodeIDStr, err := strkey.Encode(strkey.VersionByteAccountID, nodeIDBytes[:]); err == nil {
+			data.NodeID = nodeIDStr
+		}
+		// Signature - base64 encode the signature bytes
+		data.Signature = base64.StdEncoding.EncodeToString(lcValueSig.Signature[:])
+	}
+
+	// Full ledger header as XDR (base64 encoded)
+	ledgerHeaderBytes, err := header.Header.MarshalBinary()
+	if err == nil {
+		data.LedgerHeader = base64.StdEncoding.EncodeToString(ledgerHeaderBytes)
+	}
+
+	// Extract state tracking (Protocol 20+)
+	// NOTE: Both fields use TotalByteSizeOfLiveSorobanState (matches stellar-etl behavior)
+	// stellar-etl assigns the same value to both bucket_list_size and live_soroban_state_size
+	if lcmV1, ok := lcm.GetV1(); ok {
+		sorobanStateSize := uint64(lcmV1.TotalByteSizeOfLiveSorobanState)
+		data.BucketListSize = sorobanStateSize
+		data.LiveSorobanStateSize = sorobanStateSize
+	} else if lcmV2, ok := lcm.GetV2(); ok {
+		sorobanStateSize := uint64(lcmV2.TotalByteSizeOfLiveSorobanState)
+		data.BucketListSize = sorobanStateSize
+		data.LiveSorobanStateSize = sorobanStateSize
+	}
+
+	// Extract Protocol 23 (CAP-62) eviction count
+	// Count of evicted ledger keys (renamed from EvictedTemporaryLedgerKeys to EvictedKeys)
+	if lcmV1, ok := lcm.GetV1(); ok {
+		data.EvictedKeysCount = uint32(len(lcmV1.EvictedKeys))
+	} else if lcmV2, ok := lcm.GetV2(); ok {
+		data.EvictedKeysCount = uint32(len(lcmV2.EvictedKeys))
+	}
 
 	// Compute partition key (10K ledger ranges)
 	data.LedgerRange = (data.Sequence / 10000) * 10000
@@ -585,6 +724,21 @@ func (ing *Ingester) flush(ctx context.Context) error {
 			ledger.FailedTxCount,
 			ingestionTime,
 			ledger.LedgerRange,
+			// NEW: Operation counts
+			ledger.TransactionCount,
+			ledger.OperationCount,
+			ledger.TxSetOperationCount,
+			// NEW: Soroban
+			ledger.SorobanFeeWrite1KB,
+			// NEW: Consensus
+			ledger.NodeID,
+			ledger.Signature,
+			ledger.LedgerHeader,
+			// NEW: State tracking
+			ledger.BucketListSize,
+			ledger.LiveSorobanStateSize,
+			// NEW: Protocol 23
+			ledger.EvictedKeysCount,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to insert ledger %d: %w", ledger.Sequence, err)
