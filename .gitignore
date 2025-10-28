@@ -72,3 +72,7 @@ ducklake-ingestion-processor/cycle1_test.db
 ducklake-ingestion-processor/query-ducklake.sql
 ducklake-ingestion-processor/config/testnet.yaml
 duckdb-consumer/asset_summary.csv
+quickstart.yaml
+account-balance-processor/bin/account-balance-processor
+duckdb-consumer/bin/duckdb-consumer
+

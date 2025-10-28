@@ -150,8 +150,8 @@ func (c *QuickstartConfig) ApplyDefaults() {
 	}
 	if c.Spec.Source.Storage.Bucket == "" {
 		if c.Spec.Source.Network == "mainnet" {
-			c.Spec.Source.Storage.Bucket = "obsrvr-stellar-ledger-data-mainnet-data"
-			c.Spec.Source.Storage.Path = "landing/ledgers/mainnet"
+			c.Spec.Source.Storage.Bucket = "obsrvr-stellar-ledger-data-pubnet-data"
+			c.Spec.Source.Storage.Path = "landing/ledgers/pubnet"
 		} else {
 			c.Spec.Source.Storage.Bucket = "obsrvr-stellar-ledger-data-testnet-data"
 			c.Spec.Source.Storage.Path = "landing/ledgers/testnet"
