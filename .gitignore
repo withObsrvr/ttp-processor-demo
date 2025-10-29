@@ -77,3 +77,8 @@ account-balance-processor/bin/account-balance-processor
 duckdb-consumer/bin/duckdb-consumer
 
 ducklake-ingestion-processor/go/ducklake-ingestion
+
+# Test/utility scripts with hardcoded credentials
+ducklake-ingestion-processor/*.sh
+ducklake-ingestion-processor/check_cycle3_data.go
+stellar-live-source-datalake/stellar-live-source-datalake

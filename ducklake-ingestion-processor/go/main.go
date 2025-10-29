@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -50,10 +51,16 @@ type Config struct {
 		AWSRegion             string `yaml:"aws_region"`
 		AWSEndpoint           string `yaml:"aws_endpoint"`
 		EnablePublicArchive   bool   `yaml:"enable_public_archive"`
-		BatchSize             int    `yaml:"batch_size"`
-		CommitIntervalSeconds int    `yaml:"commit_interval_seconds"`
-		UseUpsert             bool   `yaml:"use_upsert"`
-		CreateIndexes         bool   `yaml:"create_indexes"`
+		BatchSizes            struct {
+			Ledgers         int `yaml:"ledgers"`
+			Transactions    int `yaml:"transactions"`
+			Operations      int `yaml:"operations"`
+			NativeBalances  int `yaml:"native_balances"`
+			AccountBalances int `yaml:"account_balances"`
+		} `yaml:"batch_sizes"`
+		CommitIntervalSeconds int  `yaml:"commit_interval_seconds"`
+		UseUpsert             bool `yaml:"use_upsert"`
+		CreateIndexes         bool `yaml:"create_indexes"`
 	} `yaml:"ducklake"`
 
 	Logging struct {
@@ -132,6 +139,159 @@ type AccountBalanceData struct {
 	LedgerRange        uint32
 }
 
+// OperationData represents a single operation (Cycle 3)
+// Schema-complete with all 103 fields for all 24 operation types
+// Most fields will be NULL for any given operation
+type OperationData struct {
+	// Common fields (12 fields - all operations)
+	TransactionHash          string
+	OperationIndex           int32
+	LedgerSequence           uint32
+	SourceAccount            string
+	SourceAccountMuxed       string
+	Type                     int32
+	TypeString               string
+	CreatedAt                time.Time
+	TransactionSuccessful    bool
+	OperationResultCode      string
+	OperationTraceCode       string
+	LedgerRange              uint32
+
+	// Payment operations (14 fields)
+	PaymentAssetType    string
+	PaymentAssetCode    string
+	PaymentAssetIssuer  string
+	PaymentFrom         string
+	PaymentFromMuxed    string
+	PaymentTo           string
+	PaymentToMuxed      string
+	PaymentAmount       int64
+	SourceAssetType     string
+	SourceAssetCode     string
+	SourceAssetIssuer   string
+	SourceAmount        int64
+	SourceMax           int64
+	DestinationMin      int64
+	Path                string // JSON array
+
+	// DEX operations (12 fields)
+	OfferID             int64
+	SellingAssetType    string
+	SellingAssetCode    string
+	SellingAssetIssuer  string
+	BuyingAssetType     string
+	BuyingAssetCode     string
+	BuyingAssetIssuer   string
+	OfferAmount         int64
+	OfferPriceN         int32
+	OfferPriceD         int32
+	OfferPrice          string
+	Passive             bool
+
+	// Account operations (7 fields)
+	StartingBalance       int64
+	Funder                string
+	FunderMuxed           string
+	Account               string
+	AccountMuxed          string
+	MergeDestination      string
+	MergeDestinationMuxed string
+
+	// Trust operations (14 fields)
+	TrustAssetType                    string
+	TrustAssetCode                    string
+	TrustAssetIssuer                  string
+	Trustor                           string
+	TrustorMuxed                      string
+	Trustee                           string
+	TrusteeMuxed                      string
+	TrustLimit                        int64
+	Authorize                         bool
+	AuthorizeToMaintainLiabilities    bool
+	SetFlags                          int32
+	SetFlagsS                         string
+	ClearFlags                        int32
+	ClearFlagsS                       string
+
+	// Claimable balance operations (8 fields)
+	BalanceID      string
+	CBAssetType    string
+	CBAssetCode    string
+	CBAssetIssuer  string
+	CBAmount       int64
+	Claimant       string
+	ClaimantMuxed  string
+	Claimants      string // JSON array
+
+	// Soroban operations (11 fields)
+	Function              string
+	FunctionName          string
+	Parameters            string // JSON array
+	ContractID            string
+	ContractCodeHash      string
+	ContractCode          string
+	AssetBalanceChanges   string // JSON array
+	ExtendTo              int32
+	SorobanResources      string // JSON
+	SorobanData           string // JSON
+	SorobanAuth           string // JSON
+
+	// SetOptions (9 fields)
+	HomeDomain       string
+	InflationDest    string
+	MasterKeyWeight  int32
+	LowThreshold     int32
+	MedThreshold     int32
+	HighThreshold    int32
+	SignerKey        string
+	SignerWeight     int32
+	SignerType       string
+
+	// Data operations (2 fields)
+	DataName  string
+	DataValue string
+
+	// Sequence operations (1 field)
+	BumpTo int64
+
+	// Sponsorship operations (5 fields)
+	SponsoredID              string
+	BeginSponsor             string
+	BeginSponsorMuxed        string
+	RevokeSponsorshipType    string
+	RevokeSponsorshipData    string // JSON
+
+	// Liquidity pool operations (13 fields)
+	LiquidityPoolID     string
+	ReservesMax         string // JSON array
+	MinPrice            string
+	MinPriceN           int32
+	MinPriceD           int32
+	MaxPrice            string
+	MaxPriceN           int32
+	MaxPriceD           int32
+	ReservesDeposited   string // JSON array
+	SharesReceived      int64
+	ReservesMin         string // JSON array
+	Shares              int64
+	ReservesReceived    string // JSON array
+}
+
+// NativeBalanceData represents XLM balance changes (Cycle 3)
+type NativeBalanceData struct {
+	AccountID          string
+	Balance            int64
+	BuyingLiabilities  int64
+	SellingLiabilities int64
+	NumSubentries      int32
+	NumSponsoring      int32
+	NumSponsored       int32
+	SequenceNumber     int64
+	LastModifiedLedger uint32
+	LedgerSequence     uint32
+	LedgerRange        uint32
+}
+
 // Ingester handles the ledger ingestion pipeline
 type Ingester struct {
 	config             *Config
@@ -147,6 +307,11 @@ type Ingester struct {
 	balanceInsertStmt  *sql.Stmt
 	txBuffer           []TransactionData
 	balanceBuffer      []AccountBalanceData
+	// Cycle 3: Operations and native balances
+	operationInsertStmt      *sql.Stmt
+	nativeBalanceInsertStmt  *sql.Stmt
+	operationBuffer          []OperationData
+	nativeBalanceBuffer      []NativeBalanceData
 }
 
 func main() {
@@ -227,12 +392,15 @@ func loadConfig(path string) (*Config, error) {
 func NewIngester(config *Config) (*Ingester, error) {
 	ing := &Ingester{
 		config:            config,
-		buffer:            make([]LedgerData, 0, config.DuckLake.BatchSize),
+		buffer:            make([]LedgerData, 0, config.DuckLake.BatchSizes.Ledgers),
 		lastCommit:        time.Now(),
 		networkPassphrase: config.Source.NetworkPassphrase,
-		// Cycle 2: Initialize transaction and balance buffers
-		txBuffer:          make([]TransactionData, 0, config.DuckLake.BatchSize*10), // Estimate ~10 tx per ledger
-		balanceBuffer:     make([]AccountBalanceData, 0, config.DuckLake.BatchSize*20), // Estimate ~20 balance changes per ledger
+		// Cycle 2: Initialize transaction and balance buffers with independent batch sizes
+		txBuffer:          make([]TransactionData, 0, config.DuckLake.BatchSizes.Transactions),
+		balanceBuffer:     make([]AccountBalanceData, 0, config.DuckLake.BatchSizes.AccountBalances),
+		// Cycle 3: Initialize operation and native balance buffers with independent batch sizes
+		operationBuffer:      make([]OperationData, 0, config.DuckLake.BatchSizes.Operations),
+		nativeBalanceBuffer:  make([]NativeBalanceData, 0, config.DuckLake.BatchSizes.NativeBalances),
 	}
 
 	// Connect to stellar-live-source-datalake via gRPC
@@ -427,6 +595,59 @@ func (ing *Ingester) initializeDuckLake() error {
 	}
 	ing.balanceInsertStmt = balanceStmt
 
+	// Cycle 3: Prepare INSERT statement for operations
+	operationInsertSQL := fmt.Sprintf(`
+		INSERT INTO %s.%s.operations (
+			transaction_hash, operation_index, ledger_sequence, source_account, source_account_muxed,
+			type, type_string, created_at, transaction_successful, operation_result_code, operation_trace_code, ledger_range,
+			payment_asset_type, payment_asset_code, payment_asset_issuer, payment_from, payment_from_muxed,
+			payment_to, payment_to_muxed, payment_amount, source_asset_type, source_asset_code, source_asset_issuer,
+			source_amount, source_max, destination_min, path,
+			offer_id, selling_asset_type, selling_asset_code, selling_asset_issuer,
+			buying_asset_type, buying_asset_code, buying_asset_issuer, offer_amount,
+			offer_price_n, offer_price_d, offer_price, passive,
+			starting_balance, funder, funder_muxed, account, account_muxed, merge_destination, merge_destination_muxed,
+			trust_asset_type, trust_asset_code, trust_asset_issuer, liquidity_pool_id,
+			trustor, trustor_muxed, trustee, trustee_muxed, trust_limit, authorize, authorize_to_maintain_liabilities,
+			set_flags, set_flags_s, clear_flags, clear_flags_s,
+			balance_id, cb_asset_type, cb_asset_code, cb_asset_issuer, cb_amount, claimant, claimant_muxed, claimants,
+			function, function_name, parameters, contract_id, contract_code_hash, contract_code,
+			asset_balance_changes, extend_to, soroban_resources, soroban_data, soroban_auth,
+			home_domain, inflation_dest, master_key_weight, low_threshold, med_threshold, high_threshold,
+			signer_key, signer_weight, signer_type,
+			data_name, data_value,
+			bump_to,
+			sponsored_id, begin_sponsor, begin_sponsor_muxed, revoke_sponsorship_type, revoke_sponsorship_data,
+			reserves_max, min_price, min_price_n, min_price_d, max_price, max_price_n, max_price_d,
+			reserves_deposited, shares_received, reserves_min, shares, reserves_received
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName,
+	)
+
+	operationStmt, err := ing.db.Prepare(operationInsertSQL)
+	if err != nil {
+		return fmt.Errorf("failed to prepare operation INSERT: %w", err)
+	}
+	ing.operationInsertStmt = operationStmt
+
+	// Cycle 3: Prepare INSERT statement for native_balances
+	nativeBalanceInsertSQL := fmt.Sprintf(`
+		INSERT INTO %s.%s.native_balances
+		(account_id, balance, buying_liabilities, selling_liabilities, num_subentries,
+		 num_sponsoring, num_sponsored, sequence_number, last_modified_ledger,
+		 ledger_sequence, ledger_range)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName,
+	)
+
+	nativeBalanceStmt, err := ing.db.Prepare(nativeBalanceInsertSQL)
+	if err != nil {
+		return fmt.Errorf("failed to prepare native balance INSERT: %w", err)
+	}
+	ing.nativeBalanceInsertStmt = nativeBalanceStmt
+
 	return nil
 }
 
@@ -590,6 +811,181 @@ func (ing *Ingester) createTable() error {
 		ing.config.DuckLake.CatalogName,
 		ing.config.DuckLake.SchemaName)
 
+	// Cycle 3: Create operations table
+	createOperationsSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s.%s.operations (
+			-- Common fields (12)
+			transaction_hash VARCHAR NOT NULL,
+			operation_index INT NOT NULL,
+			ledger_sequence BIGINT NOT NULL,
+			source_account VARCHAR NOT NULL,
+			source_account_muxed VARCHAR,
+			type INT NOT NULL,
+			type_string VARCHAR NOT NULL,
+			created_at TIMESTAMP NOT NULL,
+			transaction_successful BOOLEAN NOT NULL,
+			operation_result_code VARCHAR,
+			operation_trace_code VARCHAR,
+			ledger_range BIGINT,
+
+			-- Payment operations (14 fields)
+			payment_asset_type VARCHAR,
+			payment_asset_code VARCHAR,
+			payment_asset_issuer VARCHAR,
+			payment_from VARCHAR,
+			payment_from_muxed VARCHAR,
+			payment_to VARCHAR,
+			payment_to_muxed VARCHAR,
+			payment_amount BIGINT,
+			source_asset_type VARCHAR,
+			source_asset_code VARCHAR,
+			source_asset_issuer VARCHAR,
+			source_amount BIGINT,
+			source_max BIGINT,
+			destination_min BIGINT,
+			path TEXT,
+
+			-- DEX operations (12 fields)
+			offer_id BIGINT,
+			selling_asset_type VARCHAR,
+			selling_asset_code VARCHAR,
+			selling_asset_issuer VARCHAR,
+			buying_asset_type VARCHAR,
+			buying_asset_code VARCHAR,
+			buying_asset_issuer VARCHAR,
+			offer_amount BIGINT,
+			offer_price_n INT,
+			offer_price_d INT,
+			offer_price VARCHAR,
+			passive BOOLEAN,
+
+			-- Account operations (7 fields)
+			starting_balance BIGINT,
+			funder VARCHAR,
+			funder_muxed VARCHAR,
+			account VARCHAR,
+			account_muxed VARCHAR,
+			merge_destination VARCHAR,
+			merge_destination_muxed VARCHAR,
+
+			-- Trust operations (14 fields)
+			trust_asset_type VARCHAR,
+			trust_asset_code VARCHAR,
+			trust_asset_issuer VARCHAR,
+			liquidity_pool_id VARCHAR,
+			trustor VARCHAR,
+			trustor_muxed VARCHAR,
+			trustee VARCHAR,
+			trustee_muxed VARCHAR,
+			trust_limit BIGINT,
+			authorize BOOLEAN,
+			authorize_to_maintain_liabilities BOOLEAN,
+			set_flags INT,
+			set_flags_s TEXT,
+			clear_flags INT,
+			clear_flags_s TEXT,
+
+			-- Claimable Balance operations (8 fields)
+			balance_id VARCHAR,
+			cb_asset_type VARCHAR,
+			cb_asset_code VARCHAR,
+			cb_asset_issuer VARCHAR,
+			cb_amount BIGINT,
+			claimant VARCHAR,
+			claimant_muxed VARCHAR,
+			claimants TEXT,
+
+			-- Soroban operations (11 fields)
+			function VARCHAR,
+			function_name VARCHAR,
+			parameters TEXT,
+			contract_id VARCHAR,
+			contract_code_hash VARCHAR,
+			contract_code VARCHAR,
+			asset_balance_changes TEXT,
+			extend_to INT,
+			soroban_resources TEXT,
+			soroban_data TEXT,
+			soroban_auth TEXT,
+
+			-- SetOptions (9 fields)
+			home_domain VARCHAR,
+			inflation_dest VARCHAR,
+			master_key_weight INT,
+			low_threshold INT,
+			med_threshold INT,
+			high_threshold INT,
+			signer_key VARCHAR,
+			signer_weight INT,
+			signer_type VARCHAR,
+
+			-- Data operations (2 fields)
+			data_name VARCHAR,
+			data_value TEXT,
+
+			-- Sequence operations (1 field)
+			bump_to BIGINT,
+
+			-- Sponsorship operations (5 fields)
+			sponsored_id VARCHAR,
+			begin_sponsor VARCHAR,
+			begin_sponsor_muxed VARCHAR,
+			revoke_sponsorship_type VARCHAR,
+			revoke_sponsorship_data TEXT,
+
+			-- Liquidity Pool operations (13 fields)
+			reserves_max TEXT,
+			min_price VARCHAR,
+			min_price_n INT,
+			min_price_d INT,
+			max_price VARCHAR,
+			max_price_n INT,
+			max_price_d INT,
+			reserves_deposited TEXT,
+			shares_received BIGINT,
+			reserves_min TEXT,
+			shares BIGINT,
+			reserves_received TEXT
+		)`,
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName,
+	)
+
+	if _, err := ing.db.Exec(createOperationsSQL); err != nil {
+		return fmt.Errorf("failed to create operations table: %w", err)
+	}
+
+	log.Printf("Table ready: %s.%s.operations",
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName)
+
+	// Cycle 3: Create native_balances table
+	createNativeBalancesSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s.%s.native_balances (
+			account_id VARCHAR NOT NULL,
+			balance BIGINT NOT NULL,
+			buying_liabilities BIGINT NOT NULL,
+			selling_liabilities BIGINT NOT NULL,
+			num_subentries INT NOT NULL,
+			num_sponsoring INT NOT NULL,
+			num_sponsored INT NOT NULL,
+			sequence_number BIGINT,
+			last_modified_ledger BIGINT NOT NULL,
+			ledger_sequence BIGINT NOT NULL,
+			ledger_range BIGINT
+		)`,
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName,
+	)
+
+	if _, err := ing.db.Exec(createNativeBalancesSQL); err != nil {
+		return fmt.Errorf("failed to create native_balances table: %w", err)
+	}
+
+	log.Printf("Table ready: %s.%s.native_balances",
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName)
+
 	return nil
 }
 
@@ -608,36 +1004,93 @@ func (ing *Ingester) Start(ctx context.Context) error {
 	processed := 0
 	startTime := time.Now()
 
+	// Create a ticker to check for timeout-based flushes every 5 seconds
+	flushTicker := time.NewTicker(5 * time.Second)
+	defer flushTicker.Stop()
+	log.Println("Created flush ticker (fires every 5 seconds)")
+
+	// Channel to receive ledgers from stream.Recv() (non-blocking)
+	ledgerChan := make(chan *pb.RawLedger)
+	errChan := make(chan error)
+
+	// Start goroutine to receive ledgers
+	go func() {
+		log.Println("Stream receiver goroutine started")
+		for {
+			rawLedger, err := stream.Recv()
+			if err != nil {
+				log.Printf("Stream receiver got error: %v", err)
+				errChan <- err
+				return
+			}
+			ledgerChan <- rawLedger
+		}
+	}()
+
+	log.Println("Entering select loop")
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		default:
-		}
 
-		// Receive ledger
-		rawLedger, err := stream.Recv()
-		if err == io.EOF {
-			log.Println("Stream ended")
-			return ing.flush(ctx)
-		}
-		if err != nil {
+		case <-flushTicker.C:
+			// Periodic check for both timeout-based and threshold-based flushes
+			elapsed := time.Since(ing.lastCommit)
+			threshold := time.Duration(ing.config.DuckLake.CommitIntervalSeconds) * time.Second
+
+			// Check per-table thresholds
+			flushLedgers := len(ing.buffer) >= ing.config.DuckLake.BatchSizes.Ledgers
+			flushTx := len(ing.txBuffer) >= ing.config.DuckLake.BatchSizes.Transactions
+			flushOps := len(ing.operationBuffer) >= ing.config.DuckLake.BatchSizes.Operations
+			flushNativeBalances := len(ing.nativeBalanceBuffer) >= ing.config.DuckLake.BatchSizes.NativeBalances
+			flushAccountBalances := len(ing.balanceBuffer) >= ing.config.DuckLake.BatchSizes.AccountBalances
+			timeoutFlush := elapsed > threshold
+
+			anyThresholdMet := flushLedgers || flushTx || flushOps || flushNativeBalances || flushAccountBalances
+
+			log.Printf("[FLUSH TICKER] Elapsed: %.1fs, Threshold: %.1fs, Buffers: L:%d/%d T:%d/%d AB:%d/%d O:%d/%d NB:%d/%d",
+				elapsed.Seconds(), threshold.Seconds(),
+				len(ing.buffer), ing.config.DuckLake.BatchSizes.Ledgers,
+				len(ing.txBuffer), ing.config.DuckLake.BatchSizes.Transactions,
+				len(ing.balanceBuffer), ing.config.DuckLake.BatchSizes.AccountBalances,
+				len(ing.operationBuffer), ing.config.DuckLake.BatchSizes.Operations,
+				len(ing.nativeBalanceBuffer), ing.config.DuckLake.BatchSizes.NativeBalances)
+
+			if timeoutFlush || anyThresholdMet {
+				if timeoutFlush {
+					log.Println("Commit interval timeout - flushing all buffered data")
+				}
+				if anyThresholdMet {
+					log.Printf("Threshold met - flushing (L:%v T:%v AB:%v O:%v NB:%v)",
+						flushLedgers, flushTx, flushAccountBalances, flushOps, flushNativeBalances)
+				}
+				if err := ing.flush(ctx, timeoutFlush); err != nil {
+					return fmt.Errorf("flush error: %w", err)
+				}
+			}
+
+		case err := <-errChan:
+			if err == io.EOF {
+				log.Println("Stream ended")
+				return ing.flush(ctx, true) // Force flush all tables at end of stream
+			}
 			return fmt.Errorf("stream error: %w", err)
-		}
 
-		// Process ledger
-		if err := ing.processLedger(ctx, rawLedger); err != nil {
-			log.Printf("Error processing ledger %d: %v", rawLedger.Sequence, err)
-			return err
-		}
+		case rawLedger := <-ledgerChan:
+			// Process ledger
+			if err := ing.processLedger(ctx, rawLedger); err != nil {
+				log.Printf("Error processing ledger %d: %v", rawLedger.Sequence, err)
+				return err
+			}
 
-		processed++
+			processed++
 
-		// Periodic logging
-		if processed%100 == 0 {
-			elapsed := time.Since(startTime)
-			rate := float64(processed) / elapsed.Seconds()
-			log.Printf("Processed %d ledgers (%.2f ledgers/sec)", processed, rate)
+			// Periodic logging
+			if processed%100 == 0 {
+				elapsed := time.Since(startTime)
+				rate := float64(processed) / elapsed.Seconds()
+				log.Printf("Processed %d ledgers (%.2f ledgers/sec)", processed, rate)
+			}
 		}
 	}
 }
@@ -671,12 +1124,35 @@ func (ing *Ingester) processLedger(ctx context.Context, rawLedger *pb.RawLedger)
 	}
 	ing.balanceBuffer = append(ing.balanceBuffer, balances...)
 
-	// Check if we should flush
-	shouldFlush := len(ing.buffer) >= ing.config.DuckLake.BatchSize ||
-		time.Since(ing.lastCommit) > time.Duration(ing.config.DuckLake.CommitIntervalSeconds)*time.Second
+	// Cycle 3: Extract operations
+	operations, err := ing.extractOperations(&lcm, ledgerSeq)
+	if err != nil {
+		return fmt.Errorf("failed to extract operations: %w", err)
+	}
+	ing.operationBuffer = append(ing.operationBuffer, operations...)
 
-	if shouldFlush {
-		return ing.flush(ctx)
+	// Cycle 3: Extract native balances
+	nativeBalances, err := ing.extractNativeBalances(&lcm, ledgerSeq)
+	if err != nil {
+		return fmt.Errorf("failed to extract native balances: %w", err)
+	}
+	ing.nativeBalanceBuffer = append(ing.nativeBalanceBuffer, nativeBalances...)
+
+	// Check per-table thresholds for selective flushing
+	// Each table flushes independently when its buffer reaches threshold
+	// This minimizes B2/S3 uploads by avoiding unnecessary flushes of empty tables
+	timeoutFlush := time.Since(ing.lastCommit) > time.Duration(ing.config.DuckLake.CommitIntervalSeconds)*time.Second
+
+	// Track which tables need flushing
+	flushLedgers := len(ing.buffer) >= ing.config.DuckLake.BatchSizes.Ledgers
+	flushTx := len(ing.txBuffer) >= ing.config.DuckLake.BatchSizes.Transactions
+	flushOps := len(ing.operationBuffer) >= ing.config.DuckLake.BatchSizes.Operations
+	flushNativeBalances := len(ing.nativeBalanceBuffer) >= ing.config.DuckLake.BatchSizes.NativeBalances
+	flushAccountBalances := len(ing.balanceBuffer) >= ing.config.DuckLake.BatchSizes.AccountBalances
+
+	// Flush if any table reaches threshold OR timeout occurs (flush all tables)
+	if flushLedgers || flushTx || flushOps || flushNativeBalances || flushAccountBalances || timeoutFlush {
+		return ing.flush(ctx, timeoutFlush)
 	}
 
 	return nil
@@ -840,13 +1316,24 @@ func (ing *Ingester) extractLedgerData(lcm *xdr.LedgerCloseMeta) LedgerData {
 }
 
 // flush writes buffered data to DuckLake
-func (ing *Ingester) flush(ctx context.Context) error {
-	if len(ing.buffer) == 0 {
+// forceAll=true flushes all tables regardless of buffer size (used for timeout-based flushes)
+// forceAll=false only flushes tables that have data (selective flushing for per-table batch thresholds)
+func (ing *Ingester) flush(ctx context.Context, forceAll bool) error {
+	// Skip if no data in any buffer
+	if len(ing.buffer) == 0 && len(ing.txBuffer) == 0 && len(ing.balanceBuffer) == 0 &&
+		len(ing.operationBuffer) == 0 && len(ing.nativeBalanceBuffer) == 0 {
 		return nil
 	}
 
-	// Begin transaction
-	tx, err := ing.db.BeginTx(ctx, nil)
+	// Create a separate context for the transaction with its own timeout
+	// This prevents parent context cancellation from invalidating the transaction mid-flight
+	// Increased to 900s (15 minutes) to accommodate DuckLake/S3 write latency for very large batches
+	// batch_size=500 with high transaction activity can exceed 300s (observed 302s at ledger 502)
+	txCtx, cancel := context.WithTimeout(context.Background(), 900*time.Second)
+	defer cancel()
+
+	// Begin transaction with independent context
+	tx, err := ing.db.BeginTx(txCtx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
@@ -938,18 +1425,101 @@ func (ing *Ingester) flush(ctx context.Context) error {
 		}
 	}
 
+	// Cycle 3: Insert operations
+	operationStmt := tx.Stmt(ing.operationInsertStmt)
+	for _, op := range ing.operationBuffer {
+		_, err := operationStmt.Exec(
+			// Common fields (12)
+			op.TransactionHash, op.OperationIndex, op.LedgerSequence,
+			op.SourceAccount, op.SourceAccountMuxed, op.Type, op.TypeString,
+			op.CreatedAt, op.TransactionSuccessful, op.OperationResultCode,
+			op.OperationTraceCode, op.LedgerRange,
+			// Payment operations (14)
+			op.PaymentAssetType, op.PaymentAssetCode, op.PaymentAssetIssuer,
+			op.PaymentFrom, op.PaymentFromMuxed, op.PaymentTo, op.PaymentToMuxed,
+			op.PaymentAmount, op.SourceAssetType, op.SourceAssetCode,
+			op.SourceAssetIssuer, op.SourceAmount, op.SourceMax, op.DestinationMin, op.Path,
+			// DEX operations (12)
+			op.OfferID, op.SellingAssetType, op.SellingAssetCode, op.SellingAssetIssuer,
+			op.BuyingAssetType, op.BuyingAssetCode, op.BuyingAssetIssuer,
+			op.OfferAmount, op.OfferPriceN, op.OfferPriceD, op.OfferPrice, op.Passive,
+			// Account operations (7)
+			op.StartingBalance, op.Funder, op.FunderMuxed, op.Account, op.AccountMuxed,
+			op.MergeDestination, op.MergeDestinationMuxed,
+			// Trust operations (14)
+			op.TrustAssetType, op.TrustAssetCode, op.TrustAssetIssuer, op.LiquidityPoolID,
+			op.Trustor, op.TrustorMuxed, op.Trustee, op.TrusteeMuxed,
+			op.TrustLimit, op.Authorize, op.AuthorizeToMaintainLiabilities,
+			op.SetFlags, op.SetFlagsS, op.ClearFlags, op.ClearFlagsS,
+			// Claimable Balance operations (8)
+			op.BalanceID, op.CBAssetType, op.CBAssetCode, op.CBAssetIssuer,
+			op.CBAmount, op.Claimant, op.ClaimantMuxed, op.Claimants,
+			// Soroban operations (11)
+			op.Function, op.FunctionName, op.Parameters, op.ContractID,
+			op.ContractCodeHash, op.ContractCode, op.AssetBalanceChanges,
+			op.ExtendTo, op.SorobanResources, op.SorobanData, op.SorobanAuth,
+			// SetOptions (9)
+			op.HomeDomain, op.InflationDest, op.MasterKeyWeight,
+			op.LowThreshold, op.MedThreshold, op.HighThreshold,
+			op.SignerKey, op.SignerWeight, op.SignerType,
+			// Data operations (2)
+			op.DataName, op.DataValue,
+			// Sequence operations (1)
+			op.BumpTo,
+			// Sponsorship operations (5)
+			op.SponsoredID, op.BeginSponsor, op.BeginSponsorMuxed,
+			op.RevokeSponsorshipType, op.RevokeSponsorshipData,
+			// Liquidity Pool operations (13)
+			op.ReservesMax, op.MinPrice, op.MinPriceN, op.MinPriceD,
+			op.MaxPrice, op.MaxPriceN, op.MaxPriceD,
+			op.ReservesDeposited, op.SharesReceived, op.ReservesMin,
+			op.Shares, op.ReservesReceived,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to insert operation %s:%d: %w", op.TransactionHash, op.OperationIndex, err)
+		}
+	}
+
+	// Cycle 3: Insert native balances
+	nativeBalanceStmt := tx.Stmt(ing.nativeBalanceInsertStmt)
+	for _, balance := range ing.nativeBalanceBuffer {
+		_, err := nativeBalanceStmt.Exec(
+			balance.AccountID,
+			balance.Balance,
+			balance.BuyingLiabilities,
+			balance.SellingLiabilities,
+			balance.NumSubentries,
+			balance.NumSponsoring,
+			balance.NumSponsored,
+			balance.SequenceNumber,
+			balance.LastModifiedLedger,
+			balance.LedgerSequence,
+			balance.LedgerRange,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to insert native balance for %s: %w", balance.AccountID, err)
+		}
+	}
+
 	// Commit transaction
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit: %w", err)
 	}
 
-	log.Printf("Flushed %d ledgers, %d transactions, %d balances to DuckLake",
-		len(ing.buffer), len(ing.txBuffer), len(ing.balanceBuffer))
+	// Build descriptive flush message
+	flushType := "selective"
+	if forceAll {
+		flushType = "timeout"
+	}
+	log.Printf("Flushed [%s] %d ledgers, %d transactions, %d account_balances, %d operations, %d native_balances to DuckLake",
+		flushType, len(ing.buffer), len(ing.txBuffer), len(ing.balanceBuffer), len(ing.operationBuffer), len(ing.nativeBalanceBuffer))
 
 	// Clear buffers
 	ing.buffer = ing.buffer[:0]
 	ing.txBuffer = ing.txBuffer[:0]
 	ing.balanceBuffer = ing.balanceBuffer[:0]
+	ing.operationBuffer = ing.operationBuffer[:0]
+	ing.nativeBalanceBuffer = ing.nativeBalanceBuffer[:0]
 	ing.lastCommit = time.Now()
 
 	return nil
@@ -959,12 +1529,21 @@ func (ing *Ingester) flush(ctx context.Context) error {
 func (ing *Ingester) Close() error {
 	log.Println("Closing ingester...")
 
-	// Flush remaining data
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	// Try to flush remaining data, but don't fail if it errors during shutdown
+	// The main processLedgers loop should have already flushed most data
+	totalBuffered := len(ing.buffer) + len(ing.txBuffer) + len(ing.balanceBuffer) +
+		len(ing.operationBuffer) + len(ing.nativeBalanceBuffer)
+	if totalBuffered > 0 {
+		log.Printf("Attempting final flush of buffered data (L:%d T:%d AB:%d O:%d NB:%d)...",
+			len(ing.buffer), len(ing.txBuffer), len(ing.balanceBuffer),
+			len(ing.operationBuffer), len(ing.nativeBalanceBuffer))
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
 
-	if err := ing.flush(ctx); err != nil {
-		log.Printf("Error flushing on close: %v", err)
+		if err := ing.flush(ctx, true); err != nil {
+			log.Printf("Warning: Final flush failed (this is expected during shutdown): %v", err)
+			// Don't return the error - we still want to close resources cleanly
+		}
 	}
 
 	// Close resources
@@ -976,6 +1555,12 @@ func (ing *Ingester) Close() error {
 	}
 	if ing.balanceInsertStmt != nil {
 		ing.balanceInsertStmt.Close()
+	}
+	if ing.operationInsertStmt != nil {
+		ing.operationInsertStmt.Close()
+	}
+	if ing.nativeBalanceInsertStmt != nil {
+		ing.nativeBalanceInsertStmt.Close()
 	}
 	if ing.db != nil {
 		ing.db.Close()
@@ -1136,6 +1721,464 @@ func (ing *Ingester) extractBalances(lcm *xdr.LedgerCloseMeta, ledgerSeq uint32)
 				LedgerSequence:     ledgerSeq,
 				LedgerRange:        ledgerRange,
 			}
+
+			balances = append(balances, balance)
+		}
+	}
+
+	return balances, nil
+}
+
+// Cycle 3: extractOperations extracts operations from transactions
+func (ing *Ingester) extractOperations(lcm *xdr.LedgerCloseMeta, ledgerSeq uint32) ([]OperationData, error) {
+	txReader, err := ingest.NewLedgerTransactionReaderFromLedgerCloseMeta(ing.networkPassphrase, *lcm)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create transaction reader: %w", err)
+	}
+	defer txReader.Close()
+
+	header := lcm.LedgerHeaderHistoryEntry()
+	closedAt := time.Unix(int64(header.Header.ScpValue.CloseTime), 0)
+	ledgerRange := (ledgerSeq / 10000) * 10000
+
+	var operations []OperationData
+
+	for {
+		tx, err := txReader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to read transaction: %w", err)
+		}
+
+		txHash := tx.Result.TransactionHash.HexString()
+		txSuccessful := tx.Result.Result.Successful()
+		txOps := tx.Envelope.Operations()
+
+		// Get operation results (returns results slice and success bool)
+		opResults, _ := tx.Result.Result.OperationResults()
+
+		for opIndex, op := range txOps {
+			// Common fields for all operations
+			opData := OperationData{
+				TransactionHash:       txHash,
+				OperationIndex:        int32(opIndex),
+				LedgerSequence:        ledgerSeq,
+				SourceAccount:         getOperationSourceAccount(op, tx.Envelope),
+				Type:                  int32(op.Body.Type),
+				TypeString:            op.Body.Type.String(),
+				CreatedAt:             closedAt,
+				TransactionSuccessful: txSuccessful,
+				LedgerRange:           ledgerRange,
+			}
+
+			// Extract muxed account if present
+			if op.SourceAccount != nil {
+				opData.SourceAccountMuxed = getMuxedAccount(*op.SourceAccount)
+			}
+
+			// Extract operation result code
+			if opIndex < len(opResults) {
+				opData.OperationResultCode = opResults[opIndex].Code.String()
+				// TODO: Extract trace code from specific result types in future cycles
+			}
+
+			// Extract type-specific fields based on operation type
+			switch op.Body.Type {
+			case xdr.OperationTypePayment:
+				ing.extractPaymentFields(&opData, op.Body.PaymentOp)
+			case xdr.OperationTypePathPaymentStrictReceive:
+				ing.extractPathPaymentStrictReceiveFields(&opData, op.Body.PathPaymentStrictReceiveOp)
+			case xdr.OperationTypePathPaymentStrictSend:
+				ing.extractPathPaymentStrictSendFields(&opData, op.Body.PathPaymentStrictSendOp)
+			case xdr.OperationTypeCreateAccount:
+				ing.extractCreateAccountFields(&opData, op.Body.CreateAccountOp)
+			case xdr.OperationTypeAccountMerge:
+				ing.extractAccountMergeFields(&opData, op.Body.Destination)
+			case xdr.OperationTypeManageBuyOffer:
+				ing.extractManageBuyOfferFields(&opData, op.Body.ManageBuyOfferOp)
+			case xdr.OperationTypeManageSellOffer:
+				ing.extractManageSellOfferFields(&opData, op.Body.ManageSellOfferOp)
+			case xdr.OperationTypeChangeTrust:
+				ing.extractChangeTrustFields(&opData, op.Body.ChangeTrustOp)
+			case xdr.OperationTypeAllowTrust:
+				ing.extractAllowTrustFields(&opData, op.Body.AllowTrustOp)
+			// TODO: Add other operation types in future cycles
+			default:
+				// For unimplemented operations, common fields are already populated
+			}
+
+			operations = append(operations, opData)
+		}
+	}
+
+	return operations, nil
+}
+
+// Helper: getOperationSourceAccount returns the source account for an operation
+// Uses operation source if present, otherwise falls back to transaction source
+func getOperationSourceAccount(op xdr.Operation, envelope xdr.TransactionEnvelope) string {
+	if op.SourceAccount != nil {
+		return op.SourceAccount.ToAccountId().Address()
+	}
+	return envelope.SourceAccount().ToAccountId().Address()
+}
+
+// Helper: getMuxedAccount returns muxed account address if present
+func getMuxedAccount(muxed xdr.MuxedAccount) string {
+	if muxed.Type == xdr.CryptoKeyTypeKeyTypeMuxedEd25519 {
+		if muxed.Med25519 != nil {
+			// Return muxed address in M... format
+			// For now, return the underlying account ID
+			// TODO: Format as M... address in future
+			return muxed.ToAccountId().Address()
+		}
+	}
+	return muxed.ToAccountId().Address()
+}
+
+// Helper: assetToStrings converts xdr.Asset to type, code, issuer strings
+func assetToStrings(asset xdr.Asset) (assetType, assetCode, assetIssuer string) {
+	switch asset.Type {
+	case xdr.AssetTypeAssetTypeNative:
+		return "native", "", ""
+	case xdr.AssetTypeAssetTypeCreditAlphanum4:
+		if asset.AlphaNum4 != nil {
+			return "credit_alphanum4",
+				strings.TrimRight(string(asset.AlphaNum4.AssetCode[:]), "\x00"),
+				asset.AlphaNum4.Issuer.Address()
+		}
+	case xdr.AssetTypeAssetTypeCreditAlphanum12:
+		if asset.AlphaNum12 != nil {
+			return "credit_alphanum12",
+				strings.TrimRight(string(asset.AlphaNum12.AssetCode[:]), "\x00"),
+				asset.AlphaNum12.Issuer.Address()
+		}
+	case xdr.AssetTypeAssetTypePoolShare:
+		// Pool shares - extract liquidity pool ID in future cycles
+		return "liquidity_pool_shares", "", ""
+	}
+	return "", "", ""
+}
+
+// Payment operation extraction
+func (ing *Ingester) extractPaymentFields(opData *OperationData, payment *xdr.PaymentOp) {
+	if payment == nil {
+		return
+	}
+
+	// Asset being sent
+	assetType, assetCode, assetIssuer := assetToStrings(payment.Asset)
+	opData.PaymentAssetType = assetType
+	opData.PaymentAssetCode = assetCode
+	opData.PaymentAssetIssuer = assetIssuer
+
+	// Sender (operation source account - already in SourceAccount)
+	opData.PaymentFrom = opData.SourceAccount
+	if opData.SourceAccountMuxed != "" {
+		opData.PaymentFromMuxed = opData.SourceAccountMuxed
+	}
+
+	// Recipient
+	opData.PaymentTo = payment.Destination.ToAccountId().Address()
+	opData.PaymentToMuxed = getMuxedAccount(payment.Destination)
+
+	// Amount in stroops
+	opData.PaymentAmount = int64(payment.Amount)
+}
+
+// PathPaymentStrictReceive operation extraction
+func (ing *Ingester) extractPathPaymentStrictReceiveFields(opData *OperationData, pathPayment *xdr.PathPaymentStrictReceiveOp) {
+	if pathPayment == nil {
+		return
+	}
+
+	// Source asset (what sender sends)
+	sourceType, sourceCode, sourceIssuer := assetToStrings(pathPayment.SendAsset)
+	opData.SourceAssetType = sourceType
+	opData.SourceAssetCode = sourceCode
+	opData.SourceAssetIssuer = sourceIssuer
+	opData.SourceMax = int64(pathPayment.SendMax)
+
+	// Destination asset (what recipient receives)
+	destType, destCode, destIssuer := assetToStrings(pathPayment.DestAsset)
+	opData.PaymentAssetType = destType
+	opData.PaymentAssetCode = destCode
+	opData.PaymentAssetIssuer = destIssuer
+	opData.DestinationMin = int64(pathPayment.DestAmount)
+
+	// Parties
+	opData.PaymentFrom = opData.SourceAccount
+	if opData.SourceAccountMuxed != "" {
+		opData.PaymentFromMuxed = opData.SourceAccountMuxed
+	}
+	opData.PaymentTo = pathPayment.Destination.ToAccountId().Address()
+	opData.PaymentToMuxed = getMuxedAccount(pathPayment.Destination)
+
+	// Path (intermediate assets) - encode as JSON
+	if len(pathPayment.Path) > 0 {
+		pathAssets := make([]map[string]string, len(pathPayment.Path))
+		for i, asset := range pathPayment.Path {
+			assetType, assetCode, assetIssuer := assetToStrings(asset)
+			pathAssets[i] = map[string]string{
+				"asset_type":   assetType,
+				"asset_code":   assetCode,
+				"asset_issuer": assetIssuer,
+			}
+		}
+		if pathJSON, err := json.Marshal(pathAssets); err == nil {
+			opData.Path = string(pathJSON)
+		}
+	}
+}
+
+// PathPaymentStrictSend operation extraction
+func (ing *Ingester) extractPathPaymentStrictSendFields(opData *OperationData, pathPayment *xdr.PathPaymentStrictSendOp) {
+	if pathPayment == nil {
+		return
+	}
+
+	// Source asset (what sender sends)
+	sourceType, sourceCode, sourceIssuer := assetToStrings(pathPayment.SendAsset)
+	opData.SourceAssetType = sourceType
+	opData.SourceAssetCode = sourceCode
+	opData.SourceAssetIssuer = sourceIssuer
+	opData.SourceAmount = int64(pathPayment.SendAmount)
+
+	// Destination asset (what recipient receives)
+	destType, destCode, destIssuer := assetToStrings(pathPayment.DestAsset)
+	opData.PaymentAssetType = destType
+	opData.PaymentAssetCode = destCode
+	opData.PaymentAssetIssuer = destIssuer
+	opData.DestinationMin = int64(pathPayment.DestMin)
+
+	// Parties
+	opData.PaymentFrom = opData.SourceAccount
+	if opData.SourceAccountMuxed != "" {
+		opData.PaymentFromMuxed = opData.SourceAccountMuxed
+	}
+	opData.PaymentTo = pathPayment.Destination.ToAccountId().Address()
+	opData.PaymentToMuxed = getMuxedAccount(pathPayment.Destination)
+
+	// Path (intermediate assets) - encode as JSON
+	if len(pathPayment.Path) > 0 {
+		pathAssets := make([]map[string]string, len(pathPayment.Path))
+		for i, asset := range pathPayment.Path {
+			assetType, assetCode, assetIssuer := assetToStrings(asset)
+			pathAssets[i] = map[string]string{
+				"asset_type":   assetType,
+				"asset_code":   assetCode,
+				"asset_issuer": assetIssuer,
+			}
+		}
+		if pathJSON, err := json.Marshal(pathAssets); err == nil {
+			opData.Path = string(pathJSON)
+		}
+	}
+}
+
+// CreateAccount operation extraction
+func (ing *Ingester) extractCreateAccountFields(opData *OperationData, createAccount *xdr.CreateAccountOp) {
+	if createAccount == nil {
+		return
+	}
+
+	opData.Funder = opData.SourceAccount
+	if opData.SourceAccountMuxed != "" {
+		opData.FunderMuxed = opData.SourceAccountMuxed
+	}
+	opData.Account = createAccount.Destination.Address()
+	opData.StartingBalance = int64(createAccount.StartingBalance)
+}
+
+// AccountMerge operation extraction
+func (ing *Ingester) extractAccountMergeFields(opData *OperationData, destination *xdr.MuxedAccount) {
+	if destination == nil {
+		return
+	}
+
+	opData.Account = opData.SourceAccount
+	if opData.SourceAccountMuxed != "" {
+		opData.AccountMuxed = opData.SourceAccountMuxed
+	}
+	opData.MergeDestination = destination.ToAccountId().Address()
+	opData.MergeDestinationMuxed = getMuxedAccount(*destination)
+}
+
+// ManageBuyOffer operation extraction
+func (ing *Ingester) extractManageBuyOfferFields(opData *OperationData, offer *xdr.ManageBuyOfferOp) {
+	if offer == nil {
+		return
+	}
+
+	// Selling asset
+	sellingType, sellingCode, sellingIssuer := assetToStrings(offer.Selling)
+	opData.SellingAssetType = sellingType
+	opData.SellingAssetCode = sellingCode
+	opData.SellingAssetIssuer = sellingIssuer
+
+	// Buying asset
+	buyingType, buyingCode, buyingIssuer := assetToStrings(offer.Buying)
+	opData.BuyingAssetType = buyingType
+	opData.BuyingAssetCode = buyingCode
+	opData.BuyingAssetIssuer = buyingIssuer
+
+	// Offer details
+	opData.OfferID = int64(offer.OfferId)
+	opData.OfferAmount = int64(offer.BuyAmount)
+	opData.OfferPriceN = int32(offer.Price.N)
+	opData.OfferPriceD = int32(offer.Price.D)
+	if offer.Price.D != 0 {
+		price := float64(offer.Price.N) / float64(offer.Price.D)
+		opData.OfferPrice = fmt.Sprintf("%.7f", price)
+	}
+	opData.Passive = false
+}
+
+// ManageSellOffer operation extraction
+func (ing *Ingester) extractManageSellOfferFields(opData *OperationData, offer *xdr.ManageSellOfferOp) {
+	if offer == nil {
+		return
+	}
+
+	// Selling asset
+	sellingType, sellingCode, sellingIssuer := assetToStrings(offer.Selling)
+	opData.SellingAssetType = sellingType
+	opData.SellingAssetCode = sellingCode
+	opData.SellingAssetIssuer = sellingIssuer
+
+	// Buying asset
+	buyingType, buyingCode, buyingIssuer := assetToStrings(offer.Buying)
+	opData.BuyingAssetType = buyingType
+	opData.BuyingAssetCode = buyingCode
+	opData.BuyingAssetIssuer = buyingIssuer
+
+	// Offer details
+	opData.OfferID = int64(offer.OfferId)
+	opData.OfferAmount = int64(offer.Amount)
+	opData.OfferPriceN = int32(offer.Price.N)
+	opData.OfferPriceD = int32(offer.Price.D)
+	if offer.Price.D != 0 {
+		price := float64(offer.Price.N) / float64(offer.Price.D)
+		opData.OfferPrice = fmt.Sprintf("%.7f", price)
+	}
+	opData.Passive = false
+}
+
+// ChangeTrust operation extraction
+func (ing *Ingester) extractChangeTrustFields(opData *OperationData, changeTrust *xdr.ChangeTrustOp) {
+	if changeTrust == nil {
+		return
+	}
+
+	// Handle both asset types and liquidity pool shares
+	switch changeTrust.Line.Type {
+	case xdr.AssetTypeAssetTypeCreditAlphanum4, xdr.AssetTypeAssetTypeCreditAlphanum12:
+		assetType, assetCode, assetIssuer := assetToStrings(changeTrust.Line.ToAsset())
+		opData.TrustAssetType = assetType
+		opData.TrustAssetCode = assetCode
+		opData.TrustAssetIssuer = assetIssuer
+	case xdr.AssetTypeAssetTypePoolShare:
+		opData.TrustAssetType = "liquidity_pool_shares"
+		// TODO: Extract liquidity pool ID in future cycles
+		// Requires accessing LiquidityPoolParameters from ChangeTrustAsset
+	}
+
+	opData.Trustor = opData.SourceAccount
+	if opData.SourceAccountMuxed != "" {
+		opData.TrustorMuxed = opData.SourceAccountMuxed
+	}
+	opData.TrustLimit = int64(changeTrust.Limit)
+}
+
+// AllowTrust operation extraction
+func (ing *Ingester) extractAllowTrustFields(opData *OperationData, allowTrust *xdr.AllowTrustOp) {
+	if allowTrust == nil {
+		return
+	}
+
+	opData.Trustee = opData.SourceAccount
+	if opData.SourceAccountMuxed != "" {
+		opData.TrusteeMuxed = opData.SourceAccountMuxed
+	}
+	opData.Trustor = allowTrust.Trustor.Address()
+
+	// Extract asset code
+	switch allowTrust.Asset.Type {
+	case xdr.AssetTypeAssetTypeCreditAlphanum4:
+		opData.TrustAssetCode = strings.TrimRight(string(allowTrust.Asset.AssetCode4[:]), "\x00")
+	case xdr.AssetTypeAssetTypeCreditAlphanum12:
+		opData.TrustAssetCode = strings.TrimRight(string(allowTrust.Asset.AssetCode12[:]), "\x00")
+	}
+	opData.TrustAssetType = "credit_alphanum4" // Default, can be either
+	opData.TrustAssetIssuer = opData.Trustee
+
+	// Authorization flags
+	opData.Authorize = (allowTrust.Authorize == xdr.Uint32(xdr.TrustLineFlagsAuthorizedFlag))
+	opData.AuthorizeToMaintainLiabilities = (allowTrust.Authorize == xdr.Uint32(xdr.TrustLineFlagsAuthorizedToMaintainLiabilitiesFlag))
+}
+
+// Cycle 3: extractNativeBalances extracts native XLM balance changes from LedgerCloseMeta
+func (ing *Ingester) extractNativeBalances(lcm *xdr.LedgerCloseMeta, ledgerSeq uint32) ([]NativeBalanceData, error) {
+	txReader, err := ingest.NewLedgerTransactionReaderFromLedgerCloseMeta(ing.networkPassphrase, *lcm)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create transaction reader: %w", err)
+	}
+	defer txReader.Close()
+
+	ledgerRange := (ledgerSeq / 10000) * 10000
+	var balances []NativeBalanceData
+
+	for {
+		tx, err := txReader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to read transaction: %w", err)
+		}
+
+		changes, err := tx.GetChanges()
+		if err != nil {
+			continue // Skip if we can't get changes
+		}
+
+		for _, change := range changes {
+			if change.Type != xdr.LedgerEntryTypeAccount {
+				continue // Only process account changes
+			}
+
+			// Only process Post state (current/new state after change)
+			// Skip deletions (Post == nil) and Pre-only states
+			if change.Post == nil {
+				continue
+			}
+
+			account := change.Post.Data.Account
+			lastModifiedLedger := uint32(change.Post.LastModifiedLedgerSeq)
+
+			balance := NativeBalanceData{
+				AccountID:          account.AccountId.Address(),
+				Balance:            int64(account.Balance),
+				BuyingLiabilities:  int64(account.Liabilities().Buying),
+				SellingLiabilities: int64(account.Liabilities().Selling),
+				NumSubentries:      int32(account.NumSubEntries),
+				LastModifiedLedger: lastModifiedLedger,
+				LedgerSequence:     ledgerSeq,
+				LedgerRange:        ledgerRange,
+			}
+
+			// Extract sponsorship fields (Protocol 14+)
+			// TODO: Find correct field names in AccountEntryExtensionV1/V2 for sponsorship counts
+			// For now, these will default to 0
+			// if account.Ext.V1 != nil {
+			// 	balance.NumSponsoring = int32(account.Ext.V1.???)
+			// 	balance.NumSponsored = int32(account.Ext.V1.???)
+			// }
+
+			// Extract sequence number
+			balance.SequenceNumber = int64(account.SeqNum)
 
 			balances = append(balances, balance)
 		}
