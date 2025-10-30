@@ -71,6 +71,7 @@ ducklake-ingestion-processor/ducklake-ingestion
 ducklake-ingestion-processor/cycle1_test.db
 ducklake-ingestion-processor/query-ducklake.sql
 ducklake-ingestion-processor/config/testnet.yaml
+ducklake-ingestion-processor/validation/
 duckdb-consumer/asset_summary.csv
 quickstart.yaml
 account-balance-processor/bin/account-balance-processor
@@ -91,3 +92,9 @@ ducklake-ingestion-processor/test_local_catalog.db
 ducklake-ingestion-processor/config/testnet-local-postgres.yaml
 ducklake-ingestion-processor/go/main.go
 ducklake-ingestion-processor/go/test_run.log
+ducklake-ingestion-processor/config/testnet-multitable.yaml
+ducklake-ingestion-processor/PHASE_5_HANDOFF.md
+ducklake-ingestion-processor/PITCH_MULTI_TABLE_INGESTION.md
+ducklake-ingestion-processor/PITCH_HYBRID_REALTIME_ARCHITECTURE.md
+ducklake-ingestion-processor/PITCH_HYBRID_REALTIME_SIMPLE.md
+ducklake-ingestion-processor/VALIDATION_PLAN_PG_DUCKDB.md

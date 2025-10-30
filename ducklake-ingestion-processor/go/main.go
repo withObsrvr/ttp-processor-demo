@@ -17,6 +17,7 @@ import (
 	"time"
 
 	_ "github.com/marcboeker/go-duckdb/v2"
+	"github.com/stellar/go/ingest"
 	"github.com/stellar/go/strkey"
 	"github.com/stellar/go/xdr"
 	pb "github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/go/gen/raw_ledger_service"
@@ -26,8 +27,11 @@ import (
 )
 
 const (
-	// ledgerColumnCount is the number of columns in the ledgers table
-	ledgerColumnCount = 24
+	// Column counts for multi-table ingestion
+	ledgerColumnCount      = 24
+	transactionColumnCount = 13
+	operationColumnCount   = 13  // 11 base fields + 2 payment fields (PaymentTo, PaymentAmount)
+	balanceColumnCount     = 11  // 11 fields: account_id, balance, buying/selling liabilities, subentries, sponsoring/sponsored, sequence, last_modified_ledger, ledger_sequence, ledger_range
 )
 
 // Config represents the application configuration
@@ -106,13 +110,73 @@ type LedgerData struct {
 	EvictedKeysCount uint32 // Number of evicted keys
 }
 
+// TransactionData represents transaction data for multi-table ingestion
+type TransactionData struct {
+	LedgerSequence        uint32
+	TransactionHash       string
+	SourceAccount         string
+	FeeCharged            int64
+	MaxFee                int64
+	Successful            bool
+	TransactionResultCode string
+	OperationCount        int32
+	CreatedAt             time.Time
+	AccountSequence       int64
+	MemoType              string
+	Memo                  string
+	LedgerRange           uint32
+}
+
+// OperationData represents operation data for multi-table ingestion (MVP: base fields only)
+type OperationData struct {
+	TransactionHash       string
+	OperationIndex        int32
+	LedgerSequence        uint32
+	SourceAccount         string
+	Type                  int32
+	TypeString            string
+	CreatedAt             time.Time
+	TransactionSuccessful bool
+	OperationResultCode   string
+	OperationTraceCode    string
+	LedgerRange           uint32
+
+	// Operation-specific fields (simplified for MVP)
+	PaymentTo     string
+	PaymentAmount int64
+}
+
+// NativeBalanceData represents native XLM balance changes
+type BalanceData struct {
+	AccountID            string
+	Balance              int64
+	BuyingLiabilities    int64
+	SellingLiabilities   int64
+	NumSubentries        int32
+	NumSponsoring        int32
+	NumSponsored         int32
+	SequenceNumber       int64
+	LastModifiedLedger   uint32
+	LedgerSequence       uint32
+	LedgerRange          uint32
+}
+
+// WorkerBuffers holds buffers for all tables for a single worker
+type WorkerBuffers struct {
+	ledgers       []LedgerData
+	transactions  []TransactionData
+	operations    []OperationData
+	balances      []BalanceData
+	lastCommit    time.Time
+}
+
 // Ingester handles the ledger ingestion pipeline
 type Ingester struct {
 	config      *Config
 	grpcConn    *grpc.ClientConn
 	grpcClient  pb.RawLedgerServiceClient
 	db          *sql.DB
-	buffer      []LedgerData
+	buffers     WorkerBuffers
 	lastCommit  time.Time
 }
 
@@ -340,7 +404,7 @@ func runWorker(ctx context.Context, workerID int, startLedger, endLedger uint32,
 func NewIngester(config *Config) (*Ingester, error) {
 	ing := &Ingester{
 		config:     config,
-		buffer:     make([]LedgerData, 0, config.DuckLake.BatchSize),
+		buffers:    WorkerBuffers{},
 		lastCommit: time.Now(),
 	}
 
@@ -478,7 +542,22 @@ func (ing *Ingester) initializeDuckLake() error {
 	// DuckLake manages file lifecycle - dropping the table removes catalog metadata
 	// but leaves files in storage, causing duplicates on next run
 	if err := ing.createTable(); err != nil {
-		return fmt.Errorf("failed to create table: %w", err)
+		return fmt.Errorf("failed to create ledgers table: %w", err)
+	}
+
+	// Create transactions table (Cycle 3)
+	if err := ing.createTransactionsTable(); err != nil {
+		return fmt.Errorf("failed to create transactions table: %w", err)
+	}
+
+	// Create operations table (Cycle 3)
+	if err := ing.createOperationsTable(); err != nil {
+		return fmt.Errorf("failed to create operations table: %w", err)
+	}
+
+	// Create native_balances table (Cycle 3)
+	if err := ing.createNativeBalancesTable(); err != nil {
+		return fmt.Errorf("failed to create native_balances table: %w", err)
 	}
 
 	// Note: We build INSERT SQL dynamically in flush() for multi-row optimization
@@ -592,6 +671,103 @@ func (ing *Ingester) createTable() error {
 	return nil
 }
 
+// createTransactionsTable creates the transactions table
+func (ing *Ingester) createTransactionsTable() error {
+	createSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s.%s.transactions (
+			ledger_sequence BIGINT NOT NULL,
+			transaction_hash VARCHAR NOT NULL,
+			source_account VARCHAR NOT NULL,
+			fee_charged BIGINT NOT NULL,
+			max_fee BIGINT NOT NULL,
+			successful BOOLEAN NOT NULL,
+			transaction_result_code VARCHAR NOT NULL,
+			operation_count INT NOT NULL,
+			memo_type VARCHAR,
+			memo VARCHAR,
+			created_at TIMESTAMP NOT NULL,
+			account_sequence BIGINT,
+			ledger_range BIGINT
+		)`,
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName,
+	)
+
+	if _, err := ing.db.Exec(createSQL); err != nil {
+		return fmt.Errorf("failed to create transactions table: %w", err)
+	}
+
+	log.Printf("Table ready: %s.%s.transactions",
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName)
+
+	return nil
+}
+
+// createOperationsTable creates the operations table (MVP with base fields only)
+func (ing *Ingester) createOperationsTable() error {
+	createSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s.%s.operations (
+			transaction_hash VARCHAR NOT NULL,
+			operation_index INT NOT NULL,
+			ledger_sequence BIGINT NOT NULL,
+			source_account VARCHAR NOT NULL,
+			type INT NOT NULL,
+			type_string VARCHAR NOT NULL,
+			created_at TIMESTAMP NOT NULL,
+			transaction_successful BOOLEAN NOT NULL,
+			operation_result_code VARCHAR,
+			operation_trace_code VARCHAR,
+			ledger_range BIGINT,
+			payment_to VARCHAR,
+			payment_amount BIGINT
+		)`,
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName,
+	)
+
+	if _, err := ing.db.Exec(createSQL); err != nil {
+		return fmt.Errorf("failed to create operations table: %w", err)
+	}
+
+	log.Printf("Table ready: %s.%s.operations",
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName)
+
+	return nil
+}
+
+// createNativeBalancesTable creates the native_balances table
+func (ing *Ingester) createNativeBalancesTable() error {
+	createSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s.%s.native_balances (
+			account_id VARCHAR NOT NULL,
+			balance BIGINT NOT NULL,
+			buying_liabilities BIGINT NOT NULL,
+			selling_liabilities BIGINT NOT NULL,
+			num_subentries INT NOT NULL,
+			num_sponsoring INT NOT NULL,
+			num_sponsored INT NOT NULL,
+			sequence_number BIGINT,
+			last_modified_ledger BIGINT NOT NULL,
+			ledger_sequence BIGINT NOT NULL,
+			ledger_range BIGINT
+		)`,
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName,
+	)
+
+	if _, err := ing.db.Exec(createSQL); err != nil {
+		return fmt.Errorf("failed to create native_balances table: %w", err)
+	}
+
+	log.Printf("Table ready: %s.%s.native_balances",
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName)
+
+	return nil
+}
+
 // Start begins the ingestion process
 func (ing *Ingester) Start(ctx context.Context) error {
 	// Start streaming ledgers
@@ -658,11 +834,30 @@ func (ing *Ingester) processLedger(ctx context.Context, rawLedger *pb.RawLedger)
 	// Extract ledger data
 	ledgerData := ing.extractLedgerData(&lcm)
 
-	// Add to buffer
-	ing.buffer = append(ing.buffer, ledgerData)
+	// Get closed_at timestamp for child tables
+	var closedAt time.Time
+	switch lcm.V {
+	case 0:
+		closedAt = time.Unix(int64(lcm.MustV0().LedgerHeader.Header.ScpValue.CloseTime), 0)
+	case 1:
+		closedAt = time.Unix(int64(lcm.MustV1().LedgerHeader.Header.ScpValue.CloseTime), 0)
+	case 2:
+		closedAt = time.Unix(int64(lcm.MustV2().LedgerHeader.Header.ScpValue.CloseTime), 0)
+	}
 
-	// Check if we should flush
-	shouldFlush := len(ing.buffer) >= ing.config.DuckLake.BatchSize ||
+	// Extract data for all tables
+	transactions := ing.extractTransactions(&lcm, closedAt)
+	operations := ing.extractOperations(&lcm, closedAt)
+	balances := ing.extractBalances(&lcm)
+
+	// Add to buffers
+	ing.buffers.ledgers = append(ing.buffers.ledgers, ledgerData)
+	ing.buffers.transactions = append(ing.buffers.transactions, transactions...)
+	ing.buffers.operations = append(ing.buffers.operations, operations...)
+	ing.buffers.balances = append(ing.buffers.balances, balances...)
+
+	// Check if we should flush (based on ledger count or time)
+	shouldFlush := len(ing.buffers.ledgers) >= ing.config.DuckLake.BatchSize ||
 		time.Since(ing.lastCommit) > time.Duration(ing.config.DuckLake.CommitIntervalSeconds)*time.Second
 
 	if shouldFlush {
@@ -829,95 +1024,599 @@ func (ing *Ingester) extractLedgerData(lcm *xdr.LedgerCloseMeta) LedgerData {
 	return data
 }
 
-// flush writes buffered data to DuckLake using multi-row INSERT
+// extractTransactions extracts transaction data from LedgerCloseMeta
+func (ing *Ingester) extractTransactions(lcm *xdr.LedgerCloseMeta, closedAt time.Time) []TransactionData {
+	var transactions []TransactionData
+
+	// Use ingest package to read transactions
+	reader, err := ingest.NewLedgerTransactionReaderFromLedgerCloseMeta(ing.config.Source.NetworkPassphrase, *lcm)
+	if err != nil {
+		log.Printf("Failed to create transaction reader: %v", err)
+		return transactions
+	}
+	defer reader.Close()
+
+	// Get ledger sequence for FK
+	var ledgerSeq uint32
+	switch lcm.V {
+	case 0:
+		ledgerSeq = uint32(lcm.MustV0().LedgerHeader.Header.LedgerSeq)
+	case 1:
+		ledgerSeq = uint32(lcm.MustV1().LedgerHeader.Header.LedgerSeq)
+	case 2:
+		ledgerSeq = uint32(lcm.MustV2().LedgerHeader.Header.LedgerSeq)
+	}
+
+	// Read all transactions
+	for {
+		tx, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Printf("Error reading transaction: %v", err)
+			continue
+		}
+
+		// Extract transaction data
+		txData := TransactionData{
+			LedgerSequence:        ledgerSeq,
+			TransactionHash:       hex.EncodeToString(tx.Result.TransactionHash[:]),
+			SourceAccount:         tx.Envelope.SourceAccount().ToAccountId().Address(),
+			FeeCharged:            int64(tx.Result.Result.FeeCharged),
+			MaxFee:                int64(tx.Envelope.Fee()),
+			Successful:            tx.Result.Successful(),
+			TransactionResultCode: tx.Result.Result.Result.Code.String(),
+			OperationCount:        int32(len(tx.Envelope.Operations())),
+			CreatedAt:             closedAt,
+			AccountSequence:       int64(tx.Envelope.SeqNum()),
+			LedgerRange:           (ledgerSeq / 10000) * 10000,
+		}
+
+		// Extract memo
+		memo := tx.Envelope.Memo()
+		switch memo.Type {
+		case xdr.MemoTypeMemoNone:
+			txData.MemoType = "none"
+		case xdr.MemoTypeMemoText:
+			txData.MemoType = "text"
+			if text, ok := memo.GetText(); ok {
+				txData.Memo = text
+			}
+		case xdr.MemoTypeMemoId:
+			txData.MemoType = "id"
+			if id, ok := memo.GetId(); ok {
+				txData.Memo = fmt.Sprintf("%d", id)
+			}
+		case xdr.MemoTypeMemoHash:
+			txData.MemoType = "hash"
+			if hash, ok := memo.GetHash(); ok {
+				txData.Memo = hex.EncodeToString(hash[:])
+			}
+		case xdr.MemoTypeMemoReturn:
+			txData.MemoType = "return"
+			if ret, ok := memo.GetRetHash(); ok {
+				txData.Memo = hex.EncodeToString(ret[:])
+			}
+		}
+
+		transactions = append(transactions, txData)
+	}
+
+	return transactions
+}
+
+// extractOperations extracts operation data from LedgerCloseMeta
+// MVP version: extracts base fields + simple payment data
+func (ing *Ingester) extractOperations(lcm *xdr.LedgerCloseMeta, closedAt time.Time) []OperationData {
+	var operations []OperationData
+
+	// Use ingest package to read transactions
+	reader, err := ingest.NewLedgerTransactionReaderFromLedgerCloseMeta(ing.config.Source.NetworkPassphrase, *lcm)
+	if err != nil {
+		log.Printf("Failed to create transaction reader for operations: %v", err)
+		return operations
+	}
+	defer reader.Close()
+
+	// Get ledger sequence for FK
+	var ledgerSeq uint32
+	switch lcm.V {
+	case 0:
+		ledgerSeq = uint32(lcm.MustV0().LedgerHeader.Header.LedgerSeq)
+	case 1:
+		ledgerSeq = uint32(lcm.MustV1().LedgerHeader.Header.LedgerSeq)
+	case 2:
+		ledgerSeq = uint32(lcm.MustV2().LedgerHeader.Header.LedgerSeq)
+	}
+
+	// Read all transactions and their operations
+	for {
+		tx, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Printf("Error reading transaction for operations: %v", err)
+			continue
+		}
+
+		txHash := hex.EncodeToString(tx.Result.TransactionHash[:])
+		txSuccessful := tx.Result.Successful()
+
+		// Extract each operation
+		for i, op := range tx.Envelope.Operations() {
+			// Get operation source account (use transaction's source if not specified)
+			var opSourceAccount string
+			if op.SourceAccount != nil {
+				opSourceAccount = op.SourceAccount.ToAccountId().Address()
+			} else {
+				opSourceAccount = tx.Envelope.SourceAccount().ToAccountId().Address()
+			}
+
+			opData := OperationData{
+				TransactionHash:       txHash,
+				OperationIndex:        int32(i),
+				LedgerSequence:        ledgerSeq,
+				SourceAccount:         opSourceAccount,
+				Type:                  int32(op.Body.Type),
+				TypeString:            op.Body.Type.String(),
+				CreatedAt:             closedAt,
+				TransactionSuccessful: txSuccessful,
+				LedgerRange:           (ledgerSeq / 10000) * 10000,
+			}
+
+			// Get operation result code if available
+			// TODO(Cycle 4): Differentiate OperationResultCode from OperationTraceCode
+			// Currently both fields hold the same value (opResults[i].Code.String()).
+			// For proper stellar-etl alignment:
+			// - OperationResultCode should be the category (e.g., "op_inner", "op_bad_auth")
+			// - OperationTraceCode should be the specific result (e.g., "PAYMENT_SUCCESS", "PAYMENT_UNDERFUNDED")
+			// Requires additional XDR parsing to extract both levels from OperationResult.
+			if opResults, ok := tx.Result.Result.OperationResults(); ok && i < len(opResults) {
+				opData.OperationResultCode = opResults[i].Code.String()
+				// Trace code is the specific operation result (e.g., PAYMENT_SUCCESS)
+				opData.OperationTraceCode = opResults[i].Code.String()
+			}
+
+			// MVP: Extract simple payment data (Payment, PathPaymentStrictSend, PathPaymentStrictReceive)
+			switch op.Body.Type {
+			case xdr.OperationTypePayment:
+				if payment, ok := op.Body.GetPaymentOp(); ok {
+					opData.PaymentTo = payment.Destination.ToAccountId().Address()
+					opData.PaymentAmount = int64(payment.Amount)
+				}
+			case xdr.OperationTypePathPaymentStrictSend, xdr.OperationTypePathPaymentStrictReceive:
+				// For MVP, we'll extract destination and amount similar to payment
+				// Full implementation would extract path, source/dest assets, etc.
+				// This is a simplified version for MVP
+			}
+
+			operations = append(operations, opData)
+		}
+	}
+
+	return operations
+}
+
+// extractBalances extracts native XLM balance data from LedgerCloseMeta
+func (ing *Ingester) extractBalances(lcm *xdr.LedgerCloseMeta) []BalanceData {
+	var balances []BalanceData
+
+	// Get ledger sequence for FK
+	var ledgerSeq uint32
+	switch lcm.V {
+	case 0:
+		ledgerSeq = uint32(lcm.MustV0().LedgerHeader.Header.LedgerSeq)
+	case 1:
+		ledgerSeq = uint32(lcm.MustV1().LedgerHeader.Header.LedgerSeq)
+	case 2:
+		ledgerSeq = uint32(lcm.MustV2().LedgerHeader.Header.LedgerSeq)
+	}
+
+	// Use ingest package to read ledger changes
+	reader, err := ingest.NewLedgerChangeReaderFromLedgerCloseMeta(ing.config.Source.NetworkPassphrase, *lcm)
+	if err != nil {
+		log.Printf("Failed to create change reader: %v", err)
+		return balances
+	}
+	defer reader.Close()
+
+	// Track unique accounts (to avoid duplicates within a ledger)
+	accountMap := make(map[string]*BalanceData)
+
+	// Read all changes
+	for {
+		change, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Printf("Error reading change: %v", err)
+			continue
+		}
+
+		// We only care about AccountEntry changes (native balances)
+		if change.Type != xdr.LedgerEntryTypeAccount {
+			continue
+		}
+
+		// Get the account entry after the change (post state)
+		var accountEntry *xdr.AccountEntry
+		if change.Post != nil {
+			if ae, ok := change.Post.Data.GetAccount(); ok {
+				accountEntry = &ae
+			}
+		}
+
+		if accountEntry == nil {
+			continue
+		}
+
+		// Extract account ID
+		accountID := accountEntry.AccountId.Address()
+
+		// Create or update balance data
+		balanceData := BalanceData{
+			AccountID:          accountID,
+			Balance:            int64(accountEntry.Balance),
+			BuyingLiabilities:  0,  // Default
+			SellingLiabilities: 0,  // Default
+			NumSubentries:      int32(accountEntry.NumSubEntries),
+			NumSponsoring:      0,  // Default
+			NumSponsored:       0,  // Default
+			SequenceNumber:     int64(accountEntry.SeqNum),
+			LastModifiedLedger: ledgerSeq,
+			LedgerSequence:     ledgerSeq,
+			LedgerRange:        (ledgerSeq / 10000) * 10000,
+		}
+
+		// Extract liabilities (Protocol 10+) and sponsorship counts (Protocol 14+)
+		if ext, ok := accountEntry.Ext.GetV1(); ok {
+			balanceData.BuyingLiabilities = int64(ext.Liabilities.Buying)
+			balanceData.SellingLiabilities = int64(ext.Liabilities.Selling)
+
+			// Extract sponsorship counts if available (Protocol 14+)
+			if ext2, ok := ext.Ext.GetV2(); ok {
+				balanceData.NumSponsoring = int32(ext2.NumSponsoring)
+				balanceData.NumSponsored = int32(ext2.NumSponsored)
+			}
+		}
+
+		// Store in map (overwrites if account appears multiple times)
+		accountMap[accountID] = &balanceData
+	}
+
+	// Convert map to slice
+	for _, balance := range accountMap {
+		balances = append(balances, *balance)
+	}
+
+	return balances
+}
+
+// flush writes buffered data to DuckLake using multi-row INSERT for all 4 tables
 func (ing *Ingester) flush(ctx context.Context) error {
-	if len(ing.buffer) == 0 {
+	if len(ing.buffers.ledgers) == 0 {
 		return nil
 	}
 
-	numRows := len(ing.buffer)
+	numLedgers := len(ing.buffers.ledgers)
+	numTransactions := len(ing.buffers.transactions)
+	numOperations := len(ing.buffers.operations)
+	numBalances := len(ing.buffers.balances)
 
-	// Begin transaction
-	tx, err := ing.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback()
+	log.Printf("[FLUSH] Starting multi-table flush (separate transactions): %d ledgers, %d transactions, %d operations, %d balances",
+		numLedgers, numTransactions, numOperations, numBalances)
+	flushStart := time.Now()
 
-	// Build multi-row INSERT statement
-	insertSQL := fmt.Sprintf(`
-		INSERT INTO %s.%s.%s (
-			sequence, ledger_hash, previous_ledger_hash, closed_at,
-			protocol_version, total_coins, fee_pool, base_fee, base_reserve,
-			max_tx_set_size, successful_tx_count, failed_tx_count,
-			ingestion_timestamp, ledger_range,
-			transaction_count, operation_count, tx_set_operation_count,
-			soroban_fee_write1kb, node_id, signature, ledger_header,
-			bucket_list_size, live_soroban_state_size, evicted_keys_count
-		) VALUES `,
-		ing.config.DuckLake.CatalogName,
-		ing.config.DuckLake.SchemaName,
-		ing.config.DuckLake.TableName,
-	)
+	// NOTE: Using separate transactions per table instead of atomic multi-table transaction
+	// This avoids DuckLake catalog synchronization hang when writing multiple tables atomically
+	// Trade-off: Loses atomicity, but enables multi-table ingestion to complete
 
-	// Build value placeholders and arguments
-	valuePlaceholders := make([]string, numRows)
-	args := make([]interface{}, 0, numRows*ledgerColumnCount)
+	// ========================================
+	// 1. INSERT INTO ledgers
+	// ========================================
+	if numLedgers > 0 {
+		log.Printf("[FLUSH] Preparing INSERT for %d ledgers...", numLedgers)
+		prepStart := time.Now()
 
-	for i, ledger := range ing.buffer {
-		// Create placeholder string for this row: (?,?,?,...) with ledgerColumnCount parameters
-		placeholders := make([]string, ledgerColumnCount)
-		for j := range placeholders {
-			placeholders[j] = "?"
-		}
-		valuePlaceholders[i] = "(" + strings.Join(placeholders, ",") + ")"
-
-		// Append all 24 values for this row
-		args = append(args,
-			ledger.Sequence,
-			ledger.LedgerHash,
-			ledger.PreviousLedgerHash,
-			ledger.ClosedAt,
-			ledger.ProtocolVersion,
-			ledger.TotalCoins,
-			ledger.FeePool,
-			ledger.BaseFee,
-			ledger.BaseReserve,
-			ledger.MaxTxSetSize,
-			ledger.SuccessfulTxCount,
-			ledger.FailedTxCount,
-			time.Now(),
-			ledger.LedgerRange,
-			ledger.TransactionCount,
-			ledger.OperationCount,
-			ledger.TxSetOperationCount,
-			ledger.SorobanFeeWrite1KB,
-			ledger.NodeID,
-			ledger.Signature,
-			ledger.LedgerHeader,
-			ledger.BucketListSize,
-			ledger.LiveSorobanStateSize,
-			ledger.EvictedKeysCount,
+		insertSQL := fmt.Sprintf(`
+			INSERT INTO %s.%s.%s (
+				sequence, ledger_hash, previous_ledger_hash, closed_at,
+				protocol_version, total_coins, fee_pool, base_fee, base_reserve,
+				max_tx_set_size, successful_tx_count, failed_tx_count,
+				ingestion_timestamp, ledger_range,
+				transaction_count, operation_count, tx_set_operation_count,
+				soroban_fee_write1kb, node_id, signature, ledger_header,
+				bucket_list_size, live_soroban_state_size, evicted_keys_count
+			) VALUES `,
+			ing.config.DuckLake.CatalogName,
+			ing.config.DuckLake.SchemaName,
+			ing.config.DuckLake.TableName,
 		)
+
+		valuePlaceholders := make([]string, numLedgers)
+		args := make([]interface{}, 0, numLedgers*ledgerColumnCount)
+
+		for i, ledger := range ing.buffers.ledgers {
+			placeholders := make([]string, ledgerColumnCount)
+			for j := range placeholders {
+				placeholders[j] = "?"
+			}
+			valuePlaceholders[i] = "(" + strings.Join(placeholders, ",") + ")"
+
+			args = append(args,
+				ledger.Sequence,
+				ledger.LedgerHash,
+				ledger.PreviousLedgerHash,
+				ledger.ClosedAt,
+				ledger.ProtocolVersion,
+				ledger.TotalCoins,
+				ledger.FeePool,
+				ledger.BaseFee,
+				ledger.BaseReserve,
+				ledger.MaxTxSetSize,
+				ledger.SuccessfulTxCount,
+				ledger.FailedTxCount,
+				time.Now(),
+				ledger.LedgerRange,
+				ledger.TransactionCount,
+				ledger.OperationCount,
+				ledger.TxSetOperationCount,
+				ledger.SorobanFeeWrite1KB,
+				ledger.NodeID,
+				ledger.Signature,
+				ledger.LedgerHeader,
+				ledger.BucketListSize,
+				ledger.LiveSorobanStateSize,
+				ledger.EvictedKeysCount,
+			)
+		}
+
+		insertSQL += strings.Join(valuePlaceholders, ",")
+		log.Printf("[FLUSH] Prepared ledgers INSERT in %v, executing...", time.Since(prepStart))
+
+		execStart := time.Now()
+		execCtx, execCancel := context.WithTimeout(ctx, 180*time.Second)
+		defer execCancel()
+
+		if _, err := ing.db.ExecContext(execCtx, insertSQL, args...); err != nil {
+			if execCtx.Err() == context.DeadlineExceeded {
+				return fmt.Errorf("TIMEOUT inserting %d ledgers after %v: %w", numLedgers, time.Since(execStart), err)
+			}
+			return fmt.Errorf("failed to insert %d ledgers after %v: %w", numLedgers, time.Since(execStart), err)
+		}
+		log.Printf("[FLUSH] ✓ Inserted %d ledgers in %v", numLedgers, time.Since(execStart))
 	}
 
-	// Complete the INSERT statement
-	insertSQL += strings.Join(valuePlaceholders, ",")
+	// ========================================
+	// 2. INSERT INTO transactions
+	// ========================================
+	if numTransactions > 0 {
+		log.Printf("[FLUSH] Preparing INSERT for %d transactions...", numTransactions)
+		prepStart := time.Now()
 
-	// Execute the multi-row INSERT
-	if _, err := tx.ExecContext(ctx, insertSQL, args...); err != nil {
-		return fmt.Errorf("failed to insert %d ledgers: %w", numRows, err)
+		insertSQL := fmt.Sprintf(`
+			INSERT INTO %s.%s.transactions (
+				ledger_sequence, transaction_hash, source_account,
+				fee_charged, max_fee, successful, transaction_result_code,
+				operation_count, memo_type, memo, created_at,
+				account_sequence, ledger_range
+			) VALUES `,
+			ing.config.DuckLake.CatalogName,
+			ing.config.DuckLake.SchemaName,
+		)
+
+		valuePlaceholders := make([]string, numTransactions)
+		args := make([]interface{}, 0, numTransactions*transactionColumnCount)
+
+		for i, tx := range ing.buffers.transactions {
+			placeholders := make([]string, transactionColumnCount)
+			for j := range placeholders {
+				placeholders[j] = "?"
+			}
+			valuePlaceholders[i] = "(" + strings.Join(placeholders, ",") + ")"
+
+			args = append(args,
+				tx.LedgerSequence,
+				tx.TransactionHash,
+				tx.SourceAccount,
+				tx.FeeCharged,
+				tx.MaxFee,
+				tx.Successful,
+				tx.TransactionResultCode,
+				tx.OperationCount,
+				tx.MemoType,
+				tx.Memo,
+				tx.CreatedAt,
+				tx.AccountSequence,
+				tx.LedgerRange,
+			)
+		}
+
+		insertSQL += strings.Join(valuePlaceholders, ",")
+		log.Printf("[FLUSH] Prepared transactions INSERT in %v, executing...", time.Since(prepStart))
+
+		execStart := time.Now()
+		execCtx, execCancel := context.WithTimeout(ctx, 180*time.Second)
+		defer execCancel()
+
+		if _, err := ing.db.ExecContext(execCtx, insertSQL, args...); err != nil {
+			if execCtx.Err() == context.DeadlineExceeded {
+				return fmt.Errorf("TIMEOUT inserting %d transactions after %v: %w", numTransactions, time.Since(execStart), err)
+			}
+			return fmt.Errorf("failed to insert %d transactions after %v: %w", numTransactions, time.Since(execStart), err)
+		}
+		log.Printf("[FLUSH] ✓ Inserted %d transactions in %v", numTransactions, time.Since(execStart))
 	}
 
-	// Commit transaction
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit: %w", err)
+	// ========================================
+	// 3. INSERT INTO operations (CHUNKED for large batches)
+	// ========================================
+	if numOperations > 0 {
+		log.Printf("[FLUSH] Preparing INSERT for %d operations...", numOperations)
+		chunkStart := time.Now()
+
+		// Split into chunks of 2000 to avoid large INSERT hangs
+		const chunkSize = 2000
+		totalInserted := 0
+
+		for chunkOffset := 0; chunkOffset < numOperations; chunkOffset += chunkSize {
+			chunkEnd := chunkOffset + chunkSize
+			if chunkEnd > numOperations {
+				chunkEnd = numOperations
+			}
+			chunkOps := ing.buffers.operations[chunkOffset:chunkEnd]
+			chunkLen := len(chunkOps)
+
+			log.Printf("[FLUSH] Preparing operations chunk %d-%d (%d rows)...", chunkOffset, chunkEnd-1, chunkLen)
+			prepStart := time.Now()
+
+			insertSQL := fmt.Sprintf(`
+				INSERT INTO %s.%s.operations (
+					transaction_hash, operation_index, ledger_sequence,
+					source_account, type, type_string, created_at,
+					transaction_successful, operation_result_code,
+					operation_trace_code, ledger_range,
+					payment_to, payment_amount
+				) VALUES `,
+				ing.config.DuckLake.CatalogName,
+				ing.config.DuckLake.SchemaName,
+			)
+
+			valuePlaceholders := make([]string, chunkLen)
+			args := make([]interface{}, 0, chunkLen*operationColumnCount)
+
+			for i, op := range chunkOps {
+				placeholders := make([]string, operationColumnCount)
+				for j := range placeholders {
+					placeholders[j] = "?"
+				}
+				valuePlaceholders[i] = "(" + strings.Join(placeholders, ",") + ")"
+
+				args = append(args,
+					op.TransactionHash,
+					op.OperationIndex,
+					op.LedgerSequence,
+					op.SourceAccount,
+					op.Type,
+					op.TypeString,
+					op.CreatedAt,
+					op.TransactionSuccessful,
+					op.OperationResultCode,
+					op.OperationTraceCode,
+					op.LedgerRange,
+					op.PaymentTo,
+					op.PaymentAmount,
+				)
+			}
+
+			insertSQL += strings.Join(valuePlaceholders, ",")
+			log.Printf("[FLUSH] Prepared operations chunk in %v, executing...", time.Since(prepStart))
+
+			execStart := time.Now()
+			execCtx, execCancel := context.WithTimeout(ctx, 180*time.Second)
+			defer execCancel()
+
+			if _, err := ing.db.ExecContext(execCtx, insertSQL, args...); err != nil {
+				if execCtx.Err() == context.DeadlineExceeded {
+					return fmt.Errorf("TIMEOUT inserting operations chunk %d-%d after %v: %w", chunkOffset, chunkEnd-1, time.Since(execStart), err)
+				}
+				return fmt.Errorf("failed to insert operations chunk %d-%d after %v: %w", chunkOffset, chunkEnd-1, time.Since(execStart), err)
+			}
+			totalInserted += chunkLen
+			log.Printf("[FLUSH] ✓ Inserted operations chunk %d-%d (%d rows) in %v", chunkOffset, chunkEnd-1, chunkLen, time.Since(execStart))
+		}
+
+		log.Printf("[FLUSH] ✅ Inserted %d total operations in %v", totalInserted, time.Since(chunkStart))
 	}
 
-	log.Printf("Flushed %d ledgers to DuckLake", len(ing.buffer))
+	// ========================================
+	// 4. INSERT INTO native_balances (CHUNKED for large batches)
+	// ========================================
+	if numBalances > 0 {
+		log.Printf("[FLUSH] Preparing INSERT for %d native_balances...", numBalances)
+		chunkStart := time.Now()
 
-	// Clear buffer
-	ing.buffer = ing.buffer[:0]
+		// Split into chunks of 2000 to avoid large INSERT hangs
+		const chunkSize = 2000
+		totalInserted := 0
+
+		for chunkOffset := 0; chunkOffset < numBalances; chunkOffset += chunkSize {
+			chunkEnd := chunkOffset + chunkSize
+			if chunkEnd > numBalances {
+				chunkEnd = numBalances
+			}
+			chunkBals := ing.buffers.balances[chunkOffset:chunkEnd]
+			chunkLen := len(chunkBals)
+
+			log.Printf("[FLUSH] Preparing native_balances chunk %d-%d (%d rows)...", chunkOffset, chunkEnd-1, chunkLen)
+			prepStart := time.Now()
+
+			insertSQL := fmt.Sprintf(`
+				INSERT INTO %s.%s.native_balances (
+					account_id, balance, buying_liabilities, selling_liabilities,
+					num_subentries, num_sponsoring, num_sponsored, sequence_number,
+					last_modified_ledger, ledger_sequence, ledger_range
+				) VALUES `,
+				ing.config.DuckLake.CatalogName,
+				ing.config.DuckLake.SchemaName,
+			)
+
+			valuePlaceholders := make([]string, chunkLen)
+			args := make([]interface{}, 0, chunkLen*balanceColumnCount)
+
+			for i, bal := range chunkBals {
+				placeholders := make([]string, balanceColumnCount)
+				for j := range placeholders {
+					placeholders[j] = "?"
+				}
+				valuePlaceholders[i] = "(" + strings.Join(placeholders, ",") + ")"
+
+				args = append(args,
+					bal.AccountID,
+					bal.Balance,
+					bal.BuyingLiabilities,
+					bal.SellingLiabilities,
+					bal.NumSubentries,
+					bal.NumSponsoring,
+					bal.NumSponsored,
+					bal.SequenceNumber,
+					bal.LastModifiedLedger,
+					bal.LedgerSequence,
+					bal.LedgerRange,
+				)
+			}
+
+			insertSQL += strings.Join(valuePlaceholders, ",")
+			log.Printf("[FLUSH] Prepared native_balances chunk in %v, executing...", time.Since(prepStart))
+
+			execStart := time.Now()
+			execCtx, execCancel := context.WithTimeout(ctx, 180*time.Second)
+			defer execCancel()
+
+			if _, err := ing.db.ExecContext(execCtx, insertSQL, args...); err != nil {
+				if execCtx.Err() == context.DeadlineExceeded {
+					return fmt.Errorf("TIMEOUT inserting native_balances chunk %d-%d after %v: %w", chunkOffset, chunkEnd-1, time.Since(execStart), err)
+				}
+				return fmt.Errorf("failed to insert native_balances chunk %d-%d after %v: %w", chunkOffset, chunkEnd-1, time.Since(execStart), err)
+			}
+			totalInserted += chunkLen
+			log.Printf("[FLUSH] ✓ Inserted native_balances chunk %d-%d (%d rows) in %v", chunkOffset, chunkEnd-1, chunkLen, time.Since(execStart))
+		}
+
+		log.Printf("[FLUSH] ✅ Inserted %d total native_balances in %v", totalInserted, time.Since(chunkStart))
+	}
+
+	log.Printf("[FLUSH] ✅ COMPLETE: Flushed %d ledgers, %d transactions, %d operations, %d balances in %v total",
+		numLedgers, numTransactions, numOperations, numBalances, time.Since(flushStart))
+
+	// Clear all buffers
+	ing.buffers.ledgers = ing.buffers.ledgers[:0]
+	ing.buffers.transactions = ing.buffers.transactions[:0]
+	ing.buffers.operations = ing.buffers.operations[:0]
+	ing.buffers.balances = ing.buffers.balances[:0]
 	ing.lastCommit = time.Now()
 
 	return nil
