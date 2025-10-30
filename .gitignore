@@ -77,3 +77,17 @@ account-balance-processor/bin/account-balance-processor
 duckdb-consumer/bin/duckdb-consumer
 
 ducklake-ingestion-processor/go/ducklake-ingestion
+ducklake-ingestion-processor/main_cycle3_backup.go
+
+# Test/utility scripts with hardcoded credentials
+ducklake-ingestion-processor/*.sh
+ducklake-ingestion-processor/check_cycle3_data.go
+stellar-live-source-datalake/stellar-live-source-datalake
+local_test.log
+ducklake-ingestion-processor/local_test_optimized.log
+ducklake-ingestion-processor/config/testnet-local-postgres-2workers.yaml
+ducklake-ingestion-processor/config/testnet-local-postgres-4workers.yaml
+ducklake-ingestion-processor/test_local_catalog.db
+ducklake-ingestion-processor/config/testnet-local-postgres.yaml
+ducklake-ingestion-processor/go/main.go
+ducklake-ingestion-processor/go/test_run.log

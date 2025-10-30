@@ -11,19 +11,23 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	_ "github.com/marcboeker/go-duckdb/v2"
-	"github.com/stellar/go/ingest"
 	"github.com/stellar/go/strkey"
 	"github.com/stellar/go/xdr"
 	pb "github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/go/gen/raw_ledger_service"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"gopkg.in/yaml.v3"
+)
+
+const (
+	// ledgerColumnCount is the number of columns in the ledgers table
+	ledgerColumnCount = 24
 )
 
 // Config represents the application configuration
@@ -37,6 +41,7 @@ type Config struct {
 		Endpoint         string `yaml:"endpoint"`
 		NetworkPassphrase string `yaml:"network_passphrase"`
 		StartLedger       uint32 `yaml:"start_ledger"`
+		EndLedger         uint32 `yaml:"end_ledger"`
 	} `yaml:"source"`
 
 	DuckLake struct {
@@ -54,6 +59,7 @@ type Config struct {
 		CommitIntervalSeconds int    `yaml:"commit_interval_seconds"`
 		UseUpsert             bool   `yaml:"use_upsert"`
 		CreateIndexes         bool   `yaml:"create_indexes"`
+		NumWorkers            int    `yaml:"num_workers"` // 1 = single-threaded (default), 2-8 = parallel
 	} `yaml:"ducklake"`
 
 	Logging struct {
@@ -100,53 +106,14 @@ type LedgerData struct {
 	EvictedKeysCount uint32 // Number of evicted keys
 }
 
-// TransactionData represents a single transaction (Cycle 2)
-type TransactionData struct {
-	LedgerSequence        uint32
-	Hash                  string
-	SourceAccount         string
-	FeeCharged            int64
-	MaxFee                int64
-	Successful            bool
-	TransactionResultCode string
-	OperationCount        int32
-	CreatedAt             time.Time
-	AccountSequence       int64
-	MemoType              string
-	Memo                  string
-	LedgerRange           uint32
-}
-
-// AccountBalanceData represents account balance changes (Cycle 2)
-type AccountBalanceData struct {
-	AccountID          string
-	AssetCode          string
-	AssetIssuer        string
-	Balance            int64
-	TrustLineLimit     int64
-	BuyingLiabilities  int64
-	SellingLiabilities int64
-	Flags              uint32
-	LastModifiedLedger uint32
-	LedgerSequence     uint32
-	LedgerRange        uint32
-}
-
 // Ingester handles the ledger ingestion pipeline
 type Ingester struct {
-	config             *Config
-	grpcConn           *grpc.ClientConn
-	grpcClient         pb.RawLedgerServiceClient
-	db                 *sql.DB
-	insertStmt         *sql.Stmt
-	buffer             []LedgerData
-	lastCommit         time.Time
-	networkPassphrase  string
-	// Cycle 2: Transaction and balance tracking
-	txInsertStmt       *sql.Stmt
-	balanceInsertStmt  *sql.Stmt
-	txBuffer           []TransactionData
-	balanceBuffer      []AccountBalanceData
+	config      *Config
+	grpcConn    *grpc.ClientConn
+	grpcClient  pb.RawLedgerServiceClient
+	db          *sql.DB
+	buffer      []LedgerData
+	lastCommit  time.Time
 }
 
 func main() {
@@ -167,15 +134,6 @@ func main() {
 		config.Source.StartLedger = uint32(*startLedger)
 	}
 
-	log.Printf("Starting ingestion from ledger %d", config.Source.StartLedger)
-
-	// Create ingester
-	ingester, err := NewIngester(config)
-	if err != nil {
-		log.Fatalf("Failed to create ingester: %v", err)
-	}
-	defer ingester.Close()
-
 	// Setup graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -183,11 +141,28 @@ func main() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// Start ingestion in goroutine
+	// Choose execution path based on num_workers
 	errChan := make(chan error, 1)
-	go func() {
-		errChan <- ingester.Start(ctx)
-	}()
+	if config.DuckLake.NumWorkers <= 1 {
+		// Single-threaded path (existing behavior)
+		log.Printf("Starting single-threaded ingestion from ledger %d", config.Source.StartLedger)
+		go func() {
+			ingester, err := NewIngester(config)
+			if err != nil {
+				errChan <- fmt.Errorf("failed to create ingester: %w", err)
+				return
+			}
+			defer ingester.Close()
+			errChan <- ingester.Start(ctx)
+		}()
+	} else {
+		// Parallel path
+		log.Printf("Starting parallel ingestion with %d workers from ledger %d to %d",
+			config.DuckLake.NumWorkers, config.Source.StartLedger, config.Source.EndLedger)
+		go func() {
+			errChan <- runParallelWorkers(ctx, config)
+		}()
+	}
 
 	// Wait for shutdown signal or error
 	select {
@@ -199,6 +174,7 @@ func main() {
 	case err := <-errChan:
 		if err != nil {
 			log.Printf("Ingestion error: %v", err)
+			os.Exit(1)
 		}
 	}
 
@@ -220,19 +196,152 @@ func loadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
 
+	// Apply defaults
+	if config.DuckLake.NumWorkers == 0 {
+		config.DuckLake.NumWorkers = 1
+	}
+
 	return &config, nil
+}
+
+// runParallelWorkers orchestrates multiple workers processing different ledger ranges
+func runParallelWorkers(ctx context.Context, config *Config) error {
+	numWorkers := config.DuckLake.NumWorkers
+
+	// Validate ledger range before calculating total (prevent uint32 underflow)
+	if config.Source.EndLedger <= config.Source.StartLedger {
+		return fmt.Errorf("end_ledger (%d) must be greater than start_ledger (%d)",
+			config.Source.EndLedger, config.Source.StartLedger)
+	}
+
+	totalLedgers := config.Source.EndLedger - config.Source.StartLedger
+	chunkSize := totalLedgers / uint32(numWorkers)
+
+	if chunkSize == 0 {
+		return fmt.Errorf("not enough ledgers to split among %d workers (total: %d)", numWorkers, totalLedgers)
+	}
+
+	log.Printf("Splitting %d ledgers into %d chunks of ~%d ledgers each",
+		totalLedgers, numWorkers, chunkSize)
+
+	var wg sync.WaitGroup
+	errChan := make(chan error, numWorkers)
+
+	// Create cancellable context for workers
+	workerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Spawn workers
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+
+		workerStart := config.Source.StartLedger + (uint32(i) * chunkSize)
+		workerEnd := workerStart + chunkSize
+		// NOTE: Load imbalance - last worker gets remainder when totalLedgers % numWorkers != 0
+		// This can result in the last worker processing up to (numWorkers-1) additional ledgers
+		if i == numWorkers-1 {
+			workerEnd = config.Source.EndLedger // Last worker gets remainder
+		}
+
+		go func(workerID int, start, end uint32) {
+			defer wg.Done()
+			log.Printf("[Worker %d] Starting: ledgers %d-%d (%d ledgers)",
+				workerID, start, end, end-start)
+
+			if err := runWorker(workerCtx, workerID, start, end, config); err != nil {
+				errChan <- fmt.Errorf("worker %d failed: %w", workerID, err)
+				cancel() // Cancel all workers on first error
+			} else {
+				log.Printf("[Worker %d] Completed successfully", workerID)
+			}
+		}(i, workerStart, workerEnd)
+	}
+
+	// Wait for all workers
+	wg.Wait()
+	close(errChan)
+
+	// Return first error (if any)
+	if err, ok := <-errChan; ok {
+		return err
+	}
+
+	log.Println("All workers completed successfully")
+	return nil
+}
+
+// runWorker processes a ledger range for one worker
+func runWorker(ctx context.Context, workerID int, startLedger, endLedger uint32, config *Config) error {
+	// Create worker-specific config
+	workerConfig := *config
+	workerConfig.Source.StartLedger = startLedger
+	workerConfig.Source.EndLedger = endLedger
+
+	// Create ingester for this worker
+	ingester, err := NewIngester(&workerConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create ingester: %w", err)
+	}
+	defer ingester.Close()
+
+	// Start processing with per-worker progress tracking
+	startTime := time.Now()
+	processed := 0
+
+	// Start streaming ledgers
+	stream, err := ingester.grpcClient.StreamRawLedgers(ctx, &pb.StreamLedgersRequest{
+		StartLedger: startLedger,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to start stream: %w", err)
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		// Receive ledger
+		rawLedger, err := stream.Recv()
+		if err == io.EOF {
+			log.Printf("[Worker %d] Stream ended", workerID)
+			return ingester.flush(ctx)
+		}
+		if err != nil {
+			return fmt.Errorf("stream error: %w", err)
+		}
+
+		// Check if we've reached the end ledger (use > to include endLedger in processing)
+		if rawLedger.Sequence > endLedger {
+			log.Printf("[Worker %d] Reached end ledger %d, stopping ingestion", workerID, endLedger)
+			return ingester.flush(ctx)
+		}
+
+		// Process ledger
+		if err := ingester.processLedger(ctx, rawLedger); err != nil {
+			log.Printf("[Worker %d] Error processing ledger %d: %v", workerID, rawLedger.Sequence, err)
+			return err
+		}
+
+		processed++
+
+		// Periodic logging with worker ID
+		if processed%100 == 0 {
+			elapsed := time.Since(startTime)
+			rate := float64(processed) / elapsed.Seconds()
+			log.Printf("[Worker %d] Processed %d ledgers (%.2f ledgers/sec)", workerID, processed, rate)
+		}
+	}
 }
 
 // NewIngester creates a new ingester
 func NewIngester(config *Config) (*Ingester, error) {
 	ing := &Ingester{
-		config:            config,
-		buffer:            make([]LedgerData, 0, config.DuckLake.BatchSize),
-		lastCommit:        time.Now(),
-		networkPassphrase: config.Source.NetworkPassphrase,
-		// Cycle 2: Initialize transaction and balance buffers
-		txBuffer:          make([]TransactionData, 0, config.DuckLake.BatchSize*10), // Estimate ~10 tx per ledger
-		balanceBuffer:     make([]AccountBalanceData, 0, config.DuckLake.BatchSize*20), // Estimate ~20 balance changes per ledger
+		config:     config,
+		buffer:     make([]LedgerData, 0, config.DuckLake.BatchSize),
+		lastCommit: time.Now(),
 	}
 
 	// Connect to stellar-live-source-datalake via gRPC
@@ -346,7 +455,7 @@ func (ing *Ingester) initializeDuckLake() error {
 		ing.configureS3()
 	}
 
-	// Create schema if not exists
+	// Create schema if it doesn't exist
 	createSchemaSQL := fmt.Sprintf(
 		"CREATE SCHEMA IF NOT EXISTS %s.%s",
 		ing.config.DuckLake.CatalogName,
@@ -372,61 +481,7 @@ func (ing *Ingester) initializeDuckLake() error {
 		return fmt.Errorf("failed to create table: %w", err)
 	}
 
-	// Prepare INSERT statement
-	insertSQL := fmt.Sprintf(`
-		INSERT INTO %s.%s.%s
-		(sequence, ledger_hash, previous_ledger_hash, closed_at, protocol_version,
-		 total_coins, fee_pool, base_fee, base_reserve, max_tx_set_size,
-		 successful_tx_count, failed_tx_count, ingestion_timestamp, ledger_range,
-		 transaction_count, operation_count, tx_set_operation_count,
-		 soroban_fee_write1kb, node_id, signature, ledger_header,
-		 bucket_list_size, live_soroban_state_size, evicted_keys_count)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ing.config.DuckLake.CatalogName,
-		ing.config.DuckLake.SchemaName,
-		ing.config.DuckLake.TableName,
-	)
-
-	stmt, err := ing.db.Prepare(insertSQL)
-	if err != nil {
-		return fmt.Errorf("failed to prepare INSERT: %w", err)
-	}
-	ing.insertStmt = stmt
-
-	// Cycle 2: Prepare INSERT statement for transactions
-	txInsertSQL := fmt.Sprintf(`
-		INSERT INTO %s.%s.transactions
-		(ledger_sequence, transaction_hash, source_account, fee_charged, max_fee,
-		 successful, transaction_result_code, operation_count, created_at, account_sequence,
-		 memo_type, memo, ledger_range)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ing.config.DuckLake.CatalogName,
-		ing.config.DuckLake.SchemaName,
-	)
-
-	txStmt, err := ing.db.Prepare(txInsertSQL)
-	if err != nil {
-		return fmt.Errorf("failed to prepare transaction INSERT: %w", err)
-	}
-	ing.txInsertStmt = txStmt
-
-	// Cycle 2: Prepare INSERT statement for account_balances
-	balanceInsertSQL := fmt.Sprintf(`
-		INSERT INTO %s.%s.account_balances
-		(account_id, asset_code, asset_issuer, balance, trust_line_limit,
-		 buying_liabilities, selling_liabilities, flags, last_modified_ledger,
-		 ledger_sequence, ledger_range)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ing.config.DuckLake.CatalogName,
-		ing.config.DuckLake.SchemaName,
-	)
-
-	balanceStmt, err := ing.db.Prepare(balanceInsertSQL)
-	if err != nil {
-		return fmt.Errorf("failed to prepare balance INSERT: %w", err)
-	}
-	ing.balanceInsertStmt = balanceStmt
-
+	// Note: We build INSERT SQL dynamically in flush() for multi-row optimization
 	return nil
 }
 
@@ -477,13 +532,13 @@ func (ing *Ingester) configureS3() {
 	}
 }
 
-// createTable creates the ledgers, transactions, and account_balances tables
+// createTable creates the ledgers table with partition column
 func (ing *Ingester) createTable() error {
-	// Create ledgers table with ledger_range column for partitioning
+	// Create table with ledger_range column for partitioning
 	// DuckLake will organize files based on this column's values
 	// We'll compute: ledger_range = (sequence / 10000) * 10000
 	// This creates logical partitions: 0, 10000, 20000, 160000, etc.
-	createLedgersSQL := fmt.Sprintf(`
+	createSQL := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s.%s.%s (
 			sequence BIGINT NOT NULL,
 			ledger_hash VARCHAR NOT NULL,
@@ -525,70 +580,14 @@ func (ing *Ingester) createTable() error {
 		ing.config.DuckLake.TableName,
 	)
 
-	if _, err := ing.db.Exec(createLedgersSQL); err != nil {
-		return fmt.Errorf("failed to create ledgers table: %w", err)
+	if _, err := ing.db.Exec(createSQL); err != nil {
+		return fmt.Errorf("failed to create table: %w", err)
 	}
 
 	log.Printf("Table ready: %s.%s.%s",
 		ing.config.DuckLake.CatalogName,
 		ing.config.DuckLake.SchemaName,
 		ing.config.DuckLake.TableName)
-
-	// Cycle 2: Create transactions table
-	createTransactionsSQL := fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS %s.%s.transactions (
-			ledger_sequence BIGINT NOT NULL,
-			transaction_hash VARCHAR NOT NULL,
-			source_account VARCHAR NOT NULL,
-			fee_charged BIGINT NOT NULL,
-			max_fee BIGINT NOT NULL,
-			successful BOOLEAN NOT NULL,
-			transaction_result_code VARCHAR,
-			operation_count INT NOT NULL,
-			created_at TIMESTAMP NOT NULL,
-			account_sequence BIGINT NOT NULL,
-			memo_type VARCHAR,
-			memo TEXT,
-			ledger_range BIGINT
-		)`,
-		ing.config.DuckLake.CatalogName,
-		ing.config.DuckLake.SchemaName,
-	)
-
-	if _, err := ing.db.Exec(createTransactionsSQL); err != nil {
-		return fmt.Errorf("failed to create transactions table: %w", err)
-	}
-
-	log.Printf("Table ready: %s.%s.transactions",
-		ing.config.DuckLake.CatalogName,
-		ing.config.DuckLake.SchemaName)
-
-	// Cycle 2: Create account_balances table
-	createBalancesSQL := fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS %s.%s.account_balances (
-			account_id VARCHAR NOT NULL,
-			asset_code VARCHAR NOT NULL,
-			asset_issuer VARCHAR NOT NULL,
-			balance BIGINT NOT NULL,
-			trust_line_limit BIGINT NOT NULL,
-			buying_liabilities BIGINT NOT NULL,
-			selling_liabilities BIGINT NOT NULL,
-			flags INT NOT NULL,
-			last_modified_ledger BIGINT NOT NULL,
-			ledger_sequence BIGINT NOT NULL,
-			ledger_range BIGINT
-		)`,
-		ing.config.DuckLake.CatalogName,
-		ing.config.DuckLake.SchemaName,
-	)
-
-	if _, err := ing.db.Exec(createBalancesSQL); err != nil {
-		return fmt.Errorf("failed to create account_balances table: %w", err)
-	}
-
-	log.Printf("Table ready: %s.%s.account_balances",
-		ing.config.DuckLake.CatalogName,
-		ing.config.DuckLake.SchemaName)
 
 	return nil
 }
@@ -625,6 +624,12 @@ func (ing *Ingester) Start(ctx context.Context) error {
 			return fmt.Errorf("stream error: %w", err)
 		}
 
+		// Check if we've reached the end ledger
+		if ing.config.Source.EndLedger > 0 && rawLedger.Sequence >= uint32(ing.config.Source.EndLedger) {
+			log.Printf("Reached end ledger %d, stopping ingestion", ing.config.Source.EndLedger)
+			return ing.flush(ctx)
+		}
+
 		// Process ledger
 		if err := ing.processLedger(ctx, rawLedger); err != nil {
 			log.Printf("Error processing ledger %d: %v", rawLedger.Sequence, err)
@@ -652,24 +657,9 @@ func (ing *Ingester) processLedger(ctx context.Context, rawLedger *pb.RawLedger)
 
 	// Extract ledger data
 	ledgerData := ing.extractLedgerData(&lcm)
-	ledgerSeq := ledgerData.Sequence
 
-	// Add ledger to buffer
+	// Add to buffer
 	ing.buffer = append(ing.buffer, ledgerData)
-
-	// Cycle 2: Extract transactions
-	transactions, err := ing.extractTransactions(&lcm, ledgerSeq)
-	if err != nil {
-		return fmt.Errorf("failed to extract transactions: %w", err)
-	}
-	ing.txBuffer = append(ing.txBuffer, transactions...)
-
-	// Cycle 2: Extract balance changes
-	balances, err := ing.extractBalances(&lcm, ledgerSeq)
-	if err != nil {
-		return fmt.Errorf("failed to extract balances: %w", err)
-	}
-	ing.balanceBuffer = append(ing.balanceBuffer, balances...)
 
 	// Check if we should flush
 	shouldFlush := len(ing.buffer) >= ing.config.DuckLake.BatchSize ||
@@ -839,11 +829,13 @@ func (ing *Ingester) extractLedgerData(lcm *xdr.LedgerCloseMeta) LedgerData {
 	return data
 }
 
-// flush writes buffered data to DuckLake
+// flush writes buffered data to DuckLake using multi-row INSERT
 func (ing *Ingester) flush(ctx context.Context) error {
 	if len(ing.buffer) == 0 {
 		return nil
 	}
+
+	numRows := len(ing.buffer)
 
 	// Begin transaction
 	tx, err := ing.db.BeginTx(ctx, nil)
@@ -852,13 +844,36 @@ func (ing *Ingester) flush(ctx context.Context) error {
 	}
 	defer tx.Rollback()
 
-	// Prepare statement in transaction
-	stmt := tx.Stmt(ing.insertStmt)
+	// Build multi-row INSERT statement
+	insertSQL := fmt.Sprintf(`
+		INSERT INTO %s.%s.%s (
+			sequence, ledger_hash, previous_ledger_hash, closed_at,
+			protocol_version, total_coins, fee_pool, base_fee, base_reserve,
+			max_tx_set_size, successful_tx_count, failed_tx_count,
+			ingestion_timestamp, ledger_range,
+			transaction_count, operation_count, tx_set_operation_count,
+			soroban_fee_write1kb, node_id, signature, ledger_header,
+			bucket_list_size, live_soroban_state_size, evicted_keys_count
+		) VALUES `,
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName,
+		ing.config.DuckLake.TableName,
+	)
 
-	// Insert all buffered records
-	ingestionTime := time.Now()
-	for _, ledger := range ing.buffer {
-		_, err := stmt.Exec(
+	// Build value placeholders and arguments
+	valuePlaceholders := make([]string, numRows)
+	args := make([]interface{}, 0, numRows*ledgerColumnCount)
+
+	for i, ledger := range ing.buffer {
+		// Create placeholder string for this row: (?,?,?,...) with ledgerColumnCount parameters
+		placeholders := make([]string, ledgerColumnCount)
+		for j := range placeholders {
+			placeholders[j] = "?"
+		}
+		valuePlaceholders[i] = "(" + strings.Join(placeholders, ",") + ")"
+
+		// Append all 24 values for this row
+		args = append(args,
 			ledger.Sequence,
 			ledger.LedgerHash,
 			ledger.PreviousLedgerHash,
@@ -871,71 +886,27 @@ func (ing *Ingester) flush(ctx context.Context) error {
 			ledger.MaxTxSetSize,
 			ledger.SuccessfulTxCount,
 			ledger.FailedTxCount,
-			ingestionTime,
+			time.Now(),
 			ledger.LedgerRange,
-			// NEW: Operation counts
 			ledger.TransactionCount,
 			ledger.OperationCount,
 			ledger.TxSetOperationCount,
-			// NEW: Soroban
 			ledger.SorobanFeeWrite1KB,
-			// NEW: Consensus
 			ledger.NodeID,
 			ledger.Signature,
 			ledger.LedgerHeader,
-			// NEW: State tracking
 			ledger.BucketListSize,
 			ledger.LiveSorobanStateSize,
-			// NEW: Protocol 23
 			ledger.EvictedKeysCount,
 		)
-		if err != nil {
-			return fmt.Errorf("failed to insert ledger %d: %w", ledger.Sequence, err)
-		}
 	}
 
-	// Cycle 2: Insert transactions
-	txStmt := tx.Stmt(ing.txInsertStmt)
-	for _, txData := range ing.txBuffer {
-		_, err := txStmt.Exec(
-			txData.LedgerSequence,
-			txData.Hash,
-			txData.SourceAccount,
-			txData.FeeCharged,
-			txData.MaxFee,
-			txData.Successful,
-			txData.TransactionResultCode,
-			txData.OperationCount,
-			txData.CreatedAt,
-			txData.AccountSequence,
-			txData.MemoType,
-			txData.Memo,
-			txData.LedgerRange,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to insert transaction %s: %w", txData.Hash, err)
-		}
-	}
+	// Complete the INSERT statement
+	insertSQL += strings.Join(valuePlaceholders, ",")
 
-	// Cycle 2: Insert balance changes
-	balanceStmt := tx.Stmt(ing.balanceInsertStmt)
-	for _, balance := range ing.balanceBuffer {
-		_, err := balanceStmt.Exec(
-			balance.AccountID,
-			balance.AssetCode,
-			balance.AssetIssuer,
-			balance.Balance,
-			balance.TrustLineLimit,
-			balance.BuyingLiabilities,
-			balance.SellingLiabilities,
-			balance.Flags,
-			balance.LastModifiedLedger,
-			balance.LedgerSequence,
-			balance.LedgerRange,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to insert balance for %s: %w", balance.AccountID, err)
-		}
+	// Execute the multi-row INSERT
+	if _, err := tx.ExecContext(ctx, insertSQL, args...); err != nil {
+		return fmt.Errorf("failed to insert %d ledgers: %w", numRows, err)
 	}
 
 	// Commit transaction
@@ -943,13 +914,10 @@ func (ing *Ingester) flush(ctx context.Context) error {
 		return fmt.Errorf("failed to commit: %w", err)
 	}
 
-	log.Printf("Flushed %d ledgers, %d transactions, %d balances to DuckLake",
-		len(ing.buffer), len(ing.txBuffer), len(ing.balanceBuffer))
+	log.Printf("Flushed %d ledgers to DuckLake", len(ing.buffer))
 
-	// Clear buffers
+	// Clear buffer
 	ing.buffer = ing.buffer[:0]
-	ing.txBuffer = ing.txBuffer[:0]
-	ing.balanceBuffer = ing.balanceBuffer[:0]
 	ing.lastCommit = time.Now()
 
 	return nil
@@ -968,15 +936,6 @@ func (ing *Ingester) Close() error {
 	}
 
 	// Close resources
-	if ing.insertStmt != nil {
-		ing.insertStmt.Close()
-	}
-	if ing.txInsertStmt != nil {
-		ing.txInsertStmt.Close()
-	}
-	if ing.balanceInsertStmt != nil {
-		ing.balanceInsertStmt.Close()
-	}
 	if ing.db != nil {
 		ing.db.Close()
 	}
@@ -986,160 +945,4 @@ func (ing *Ingester) Close() error {
 
 	log.Println("Ingester closed")
 	return nil
-}
-
-// Cycle 2: extractTransactions extracts transaction data from LedgerCloseMeta
-func (ing *Ingester) extractTransactions(lcm *xdr.LedgerCloseMeta, ledgerSeq uint32) ([]TransactionData, error) {
-	txReader, err := ingest.NewLedgerTransactionReaderFromLedgerCloseMeta(ing.networkPassphrase, *lcm)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create transaction reader: %w", err)
-	}
-	defer txReader.Close()
-
-	header := lcm.LedgerHeaderHistoryEntry()
-	closedAt := time.Unix(int64(header.Header.ScpValue.CloseTime), 0)
-	ledgerRange := (ledgerSeq / 10000) * 10000
-
-	var transactions []TransactionData
-
-	for {
-		tx, err := txReader.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("failed to read transaction: %w", err)
-		}
-
-		txData := TransactionData{
-			LedgerSequence:        ledgerSeq,
-			Hash:                  tx.Result.TransactionHash.HexString(),
-			SourceAccount:         tx.Envelope.SourceAccount().ToAccountId().Address(),
-			FeeCharged:            int64(tx.Result.Result.FeeCharged),
-			MaxFee:                int64(tx.Envelope.Fee()),
-			Successful:            tx.Result.Result.Successful(),
-			TransactionResultCode: tx.Result.Result.Result.Code.String(),
-			OperationCount:        int32(len(tx.Envelope.Operations())),
-			CreatedAt:             closedAt,
-			AccountSequence:       int64(tx.Envelope.SeqNum()),
-			MemoType:              tx.Envelope.Memo().Type.String(),
-			Memo:                  extractMemoValue(tx.Envelope.Memo()),
-			LedgerRange:           ledgerRange,
-		}
-
-		transactions = append(transactions, txData)
-	}
-
-	return transactions, nil
-}
-
-// extractMemoValue extracts the memo value based on memo type
-func extractMemoValue(memo xdr.Memo) string {
-	switch memo.Type {
-	case xdr.MemoTypeMemoText:
-		if memo.Text != nil {
-			return string(*memo.Text)
-		}
-		return ""
-	case xdr.MemoTypeMemoId:
-		if memo.Id != nil {
-			return strconv.FormatUint(uint64(*memo.Id), 10)
-		}
-		return ""
-	case xdr.MemoTypeMemoHash:
-		if memo.Hash != nil {
-			hash := *memo.Hash
-			return base64.StdEncoding.EncodeToString(hash[:])
-		}
-		return ""
-	case xdr.MemoTypeMemoReturn:
-		if memo.RetHash != nil {
-			ret := *memo.RetHash
-			return base64.StdEncoding.EncodeToString(ret[:])
-		}
-		return ""
-	default:
-		return ""
-	}
-}
-
-// Cycle 2: extractBalances extracts account balance changes from LedgerCloseMeta
-func (ing *Ingester) extractBalances(lcm *xdr.LedgerCloseMeta, ledgerSeq uint32) ([]AccountBalanceData, error) {
-	txReader, err := ingest.NewLedgerTransactionReaderFromLedgerCloseMeta(ing.networkPassphrase, *lcm)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create transaction reader: %w", err)
-	}
-	defer txReader.Close()
-
-	ledgerRange := (ledgerSeq / 10000) * 10000
-	var balances []AccountBalanceData
-
-	for {
-		tx, err := txReader.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("failed to read transaction: %w", err)
-		}
-
-		changes, err := tx.GetChanges()
-		if err != nil {
-			continue // Skip if we can't get changes
-		}
-
-		for _, change := range changes {
-			if change.Type != xdr.LedgerEntryTypeTrustline {
-				continue // Only process trustline changes for Cycle 2
-			}
-
-			// Extract trustline data from the change
-			// Only process Post state (current/new state after change)
-			// Skip deletions (Post == nil) for Cycle 2 - deletions can be tracked in future cycles
-			if change.Post == nil {
-				continue // Skip deletions
-			}
-
-			trustline := change.Post.Data.TrustLine
-			lastModifiedLedger := uint32(change.Post.LastModifiedLedgerSeq)
-
-			// Extract asset information
-			var assetCode, assetIssuer string
-			switch trustline.Asset.Type {
-			case xdr.AssetTypeAssetTypeCreditAlphanum4:
-				if trustline.Asset.AlphaNum4 != nil {
-					assetCode = strings.TrimRight(string(trustline.Asset.AlphaNum4.AssetCode[:]), "\x00")
-					assetIssuer = trustline.Asset.AlphaNum4.Issuer.Address()
-				}
-			case xdr.AssetTypeAssetTypeCreditAlphanum12:
-				if trustline.Asset.AlphaNum12 != nil {
-					assetCode = strings.TrimRight(string(trustline.Asset.AlphaNum12.AssetCode[:]), "\x00")
-					assetIssuer = trustline.Asset.AlphaNum12.Issuer.Address()
-				}
-			case xdr.AssetTypeAssetTypePoolShare:
-				// Skip liquidity pool shares for Cycle 2
-				continue
-			default:
-				continue
-			}
-
-			balance := AccountBalanceData{
-				AccountID:          trustline.AccountId.Address(),
-				AssetCode:          assetCode,
-				AssetIssuer:        assetIssuer,
-				Balance:            int64(trustline.Balance),
-				TrustLineLimit:     int64(trustline.Limit),
-				BuyingLiabilities:  int64(trustline.Liabilities().Buying),
-				SellingLiabilities: int64(trustline.Liabilities().Selling),
-				Flags:              uint32(trustline.Flags),
-				LastModifiedLedger: lastModifiedLedger,
-				LedgerSequence:     ledgerSeq,
-				LedgerRange:        ledgerRange,
-			}
-
-			balances = append(balances, balance)
-		}
-	}
-
-	return balances, nil
 }
