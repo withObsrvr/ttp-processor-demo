@@ -25,6 +25,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	// ledgerColumnCount is the number of columns in the ledgers table
+	ledgerColumnCount = 24
+)
+
 // Config represents the application configuration
 type Config struct {
 	Service struct {
@@ -129,11 +134,6 @@ func main() {
 		config.Source.StartLedger = uint32(*startLedger)
 	}
 
-	// Default num_workers to 1 if not set
-	if config.DuckLake.NumWorkers == 0 {
-		config.DuckLake.NumWorkers = 1
-	}
-
 	// Setup graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -196,12 +196,24 @@ func loadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
 
+	// Apply defaults
+	if config.DuckLake.NumWorkers == 0 {
+		config.DuckLake.NumWorkers = 1
+	}
+
 	return &config, nil
 }
 
 // runParallelWorkers orchestrates multiple workers processing different ledger ranges
 func runParallelWorkers(ctx context.Context, config *Config) error {
 	numWorkers := config.DuckLake.NumWorkers
+
+	// Validate ledger range before calculating total (prevent uint32 underflow)
+	if config.Source.EndLedger <= config.Source.StartLedger {
+		return fmt.Errorf("end_ledger (%d) must be greater than start_ledger (%d)",
+			config.Source.EndLedger, config.Source.StartLedger)
+	}
+
 	totalLedgers := config.Source.EndLedger - config.Source.StartLedger
 	chunkSize := totalLedgers / uint32(numWorkers)
 
@@ -225,6 +237,8 @@ func runParallelWorkers(ctx context.Context, config *Config) error {
 
 		workerStart := config.Source.StartLedger + (uint32(i) * chunkSize)
 		workerEnd := workerStart + chunkSize
+		// NOTE: Load imbalance - last worker gets remainder when totalLedgers % numWorkers != 0
+		// This can result in the last worker processing up to (numWorkers-1) additional ledgers
 		if i == numWorkers-1 {
 			workerEnd = config.Source.EndLedger // Last worker gets remainder
 		}
@@ -299,8 +313,8 @@ func runWorker(ctx context.Context, workerID int, startLedger, endLedger uint32,
 			return fmt.Errorf("stream error: %w", err)
 		}
 
-		// Check if we've reached the end ledger
-		if rawLedger.Sequence >= endLedger {
+		// Check if we've reached the end ledger (use > to include endLedger in processing)
+		if rawLedger.Sequence > endLedger {
 			log.Printf("[Worker %d] Reached end ledger %d, stopping ingestion", workerID, endLedger)
 			return ingester.flush(ctx)
 		}
@@ -846,13 +860,13 @@ func (ing *Ingester) flush(ctx context.Context) error {
 		ing.config.DuckLake.TableName,
 	)
 
-	// Build value placeholders and arguments (24 columns per row)
+	// Build value placeholders and arguments
 	valuePlaceholders := make([]string, numRows)
-	args := make([]interface{}, 0, numRows*24)
+	args := make([]interface{}, 0, numRows*ledgerColumnCount)
 
 	for i, ledger := range ing.buffer {
-		// Create placeholder string for this row: (?,?,?,...) with 24 parameters
-		placeholders := make([]string, 24)
+		// Create placeholder string for this row: (?,?,?,...) with ledgerColumnCount parameters
+		placeholders := make([]string, ledgerColumnCount)
 		for j := range placeholders {
 			placeholders[j] = "?"
 		}
