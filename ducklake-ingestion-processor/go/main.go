@@ -133,7 +133,6 @@ type OperationData struct {
 	OperationIndex        int32
 	LedgerSequence        uint32
 	SourceAccount         string
-	SourceAccountMuxed    string
 	Type                  int32
 	TypeString            string
 	CreatedAt             time.Time
@@ -145,7 +144,6 @@ type OperationData struct {
 	// Operation-specific fields (simplified for MVP)
 	PaymentTo     string
 	PaymentAmount int64
-	AssetCode     string
 }
 
 // NativeBalanceData represents native XLM balance changes
@@ -1169,6 +1167,12 @@ func (ing *Ingester) extractOperations(lcm *xdr.LedgerCloseMeta, closedAt time.T
 			}
 
 			// Get operation result code if available
+			// TODO(Cycle 4): Differentiate OperationResultCode from OperationTraceCode
+			// Currently both fields hold the same value (opResults[i].Code.String()).
+			// For proper stellar-etl alignment:
+			// - OperationResultCode should be the category (e.g., "op_inner", "op_bad_auth")
+			// - OperationTraceCode should be the specific result (e.g., "PAYMENT_SUCCESS", "PAYMENT_UNDERFUNDED")
+			// Requires additional XDR parsing to extract both levels from OperationResult.
 			if opResults, ok := tx.Result.Result.OperationResults(); ok && i < len(opResults) {
 				opData.OperationResultCode = opResults[i].Code.String()
 				// Trace code is the specific operation result (e.g., PAYMENT_SUCCESS)
@@ -1181,13 +1185,6 @@ func (ing *Ingester) extractOperations(lcm *xdr.LedgerCloseMeta, closedAt time.T
 				if payment, ok := op.Body.GetPaymentOp(); ok {
 					opData.PaymentTo = payment.Destination.ToAccountId().Address()
 					opData.PaymentAmount = int64(payment.Amount)
-					if payment.Asset.Type == xdr.AssetTypeAssetTypeNative {
-						opData.AssetCode = "XLM"
-					} else if alphaNum, ok := payment.Asset.GetAlphaNum4(); ok {
-						opData.AssetCode = strings.TrimRight(string(alphaNum.AssetCode[:]), "\x00")
-					} else if alphaNum, ok := payment.Asset.GetAlphaNum12(); ok {
-						opData.AssetCode = strings.TrimRight(string(alphaNum.AssetCode[:]), "\x00")
-					}
 				}
 			case xdr.OperationTypePathPaymentStrictSend, xdr.OperationTypePathPaymentStrictReceive:
 				// For MVP, we'll extract destination and amount similar to payment
@@ -1274,14 +1271,12 @@ func (ing *Ingester) extractBalances(lcm *xdr.LedgerCloseMeta) []BalanceData {
 			LedgerRange:        (ledgerSeq / 10000) * 10000,
 		}
 
-		// Extract liabilities if available (Protocol 10+)
+		// Extract liabilities (Protocol 10+) and sponsorship counts (Protocol 14+)
 		if ext, ok := accountEntry.Ext.GetV1(); ok {
 			balanceData.BuyingLiabilities = int64(ext.Liabilities.Buying)
 			balanceData.SellingLiabilities = int64(ext.Liabilities.Selling)
-		}
 
-		// Extract sponsorship counts if available (Protocol 14+)
-		if ext, ok := accountEntry.Ext.GetV1(); ok {
+			// Extract sponsorship counts if available (Protocol 14+)
 			if ext2, ok := ext.Ext.GetV2(); ok {
 				balanceData.NumSponsoring = int32(ext2.NumSponsoring)
 				balanceData.NumSponsored = int32(ext2.NumSponsored)
