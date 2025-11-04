@@ -27,6 +27,9 @@ const (
 	maxBackoff     = 30 * time.Second
 	maxRetries     = 5
 
+	// Per-ledger read timeout (prevents hanging on GCS reads)
+	ledgerReadTimeout = 30 * time.Second
+
 	// Stability guarantees
 	MinProcessorUptime = 99.99 // 99.99% uptime guarantee
 	MaxLatencyP99      = 100 * time.Millisecond
@@ -494,27 +497,52 @@ func (s *RawLedgerServer) streamLedgersFromBackend(ctx context.Context, backend 
 
 		ledgerStartTime := time.Now()
 
-		// Get ledger from backend
+		// Create timeout context for this ledger read (prevents hanging on GCS)
+		ledgerCtx, cancel := context.WithTimeout(ctx, ledgerReadTimeout)
+
+		// Get ledger from backend with timeout protection
 		s.logger.Debug("Attempting to retrieve ledger from backend",
 			zap.Uint32("sequence", seq),
 			zap.String("backend_type", s.config.BackendType),
 		)
-		
-		lcm, err := backend.GetLedger(ctx, seq)
+
+		lcm, err := backend.GetLedger(ledgerCtx, seq)
+		cancel() // Always cancel to release resources
+
 		if err != nil {
-			s.logger.Error("Failed to get ledger from backend",
-				zap.Uint32("sequence", seq),
-				zap.String("backend_type", s.config.BackendType),
-				zap.Error(err),
-			)
+			// Check if timeout occurred
+			if err == context.DeadlineExceeded {
+				s.logger.Error("Ledger read timeout - storage may be slow or hung",
+					zap.Uint32("sequence", seq),
+					zap.Duration("timeout", ledgerReadTimeout),
+					zap.String("backend_type", s.config.BackendType),
+					zap.Error(err),
+				)
+			} else {
+				s.logger.Error("Failed to get ledger from backend",
+					zap.Uint32("sequence", seq),
+					zap.String("backend_type", s.config.BackendType),
+					zap.Error(err),
+				)
+			}
 			s.handleLedgerError(err, seq)
 			continue
 		}
-		
+
+		// Monitor slow reads (> 10 seconds)
+		readDuration := time.Since(ledgerStartTime)
+		if readDuration > 10*time.Second {
+			s.logger.Warn("Slow ledger read detected",
+				zap.Uint32("sequence", seq),
+				zap.Duration("duration", readDuration),
+				zap.String("backend_type", s.config.BackendType),
+			)
+		}
+
 		s.logger.Debug("Successfully retrieved ledger from backend",
 			zap.Uint32("sequence", seq),
 			zap.Uint32("ledger_sequence", lcm.LedgerSequence()),
-			zap.Duration("fetch_duration", time.Since(ledgerStartTime)),
+			zap.Duration("fetch_duration", readDuration),
 		)
 
 		// Process Protocol 23 specific changes
