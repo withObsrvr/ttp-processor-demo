@@ -1477,7 +1477,7 @@ func (ing *Ingester) extractTransactions(lcm *xdr.LedgerCloseMeta, closedAt time
 			break
 		}
 		if err != nil {
-			log.Printf("Error reading transaction: %v", err)
+			log.Printf("Error reading transaction in ledger %d: %v", ledgerSeq, err)
 			continue
 		}
 
