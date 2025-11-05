@@ -98,3 +98,14 @@ ducklake-ingestion-processor/PITCH_MULTI_TABLE_INGESTION.md
 ducklake-ingestion-processor/PITCH_HYBRID_REALTIME_ARCHITECTURE.md
 ducklake-ingestion-processor/PITCH_HYBRID_REALTIME_SIMPLE.md
 ducklake-ingestion-processor/VALIDATION_PLAN_PG_DUCKDB.md
+ducklake-ingestion-processor/STELLAR_ETL_COMPARISON.md
+.gitignore
+ducklake-ingestion-processor/docs/obsrvr-data-culture-analysis.md
+ducklake-ingestion-processor/docs/shapes/ducklake-obsrvr-checklist.md
+ducklake-ingestion-processor/docs/shapes/ducklake-obsrvr-cooldown.md
+.gitignore
+ducklake-ingestion-processor/docs/OBSRVR_DATA_CULTURE.md
+ducklake-ingestion-processor/docs/shapes/ducklake-obsrvr-implementation.md
+ducklake-ingestion-obsrvr/ducklake-ingestion-obsrvr
+*.secret.yaml
+ducklake-ingestion-obsrvr/config/test-1000-ledgers.yaml
