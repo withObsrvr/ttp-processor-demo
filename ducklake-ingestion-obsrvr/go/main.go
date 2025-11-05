@@ -364,6 +364,11 @@ func runParallelWorkers(ctx context.Context, config *Config) error {
 		wg.Add(1)
 
 		workerStart := config.Source.StartLedger + (uint32(i) * chunkSize)
+		// Prevent overlapping ranges: each worker (except the first) starts at the next ledger
+		// after the previous worker's end, since workers process ranges inclusively
+		if i > 0 {
+			workerStart++ // Skip the boundary ledger (previous worker already processed it)
+		}
 		workerEnd := workerStart + chunkSize
 		// NOTE: Load imbalance - last worker gets remainder when totalLedgers % numWorkers != 0
 		// This can result in the last worker processing up to (numWorkers-1) additional ledgers
