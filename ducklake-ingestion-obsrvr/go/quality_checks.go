@@ -1259,7 +1259,7 @@ func (ing *Ingester) RunTransactionQualityChecks() []QualityCheckResult {
 
 // RunOperationQualityChecks executes all operation quality checks and returns results
 func (ing *Ingester) RunOperationQualityChecks() []QualityCheckResult {
-	dataset := "core.operations_row_v1"
+	dataset := "core.operations_row_v2"
 	results := []QualityCheckResult{}
 
 	// Run all 5 operation checks
