@@ -141,3 +141,17 @@ ducklake-ingestion-obsrvr-v2/docs/DAY1_POC_RESULTS.md
 ducklake-ingestion-obsrvr-v2/docs/DAY2-3_PERFORMANCE_RESULTS.md
 ducklake-ingestion-obsrvr-v2/docs/MAINNET_VALIDATION.md
 ducklake-ingestion-obsrvr-v2/docs/TECHNICAL_HANDOFF.md
+ducklake-ingestion-obsrvr-v2/ducklake-query
+ducklake-ingestion-obsrvr-v2/query-ducklake.sh
+ducklake-ingestion-obsrvr-v2/query.sh
+ducklake-ingestion-obsrvr-v2/QUERYING.md
+ducklake-ingestion-obsrvr-v2/go/query.go
+ducklake-ingestion-obsrvr-v2/ducklake-ingestion-obsrvr-v2
+ducklake-ingestion-obsrvr-v2/mainnet-cycle6-final-test.log
+ducklake-ingestion-obsrvr-v2/mainnet-cycle6-test.log
+ducklake-ingestion-obsrvr-v2/mainnet-cycle6-v2-test.log
+ducklake-ingestion-obsrvr-v2/test-cycle7-dex.log
+ducklake-ingestion-obsrvr-v2/test-cycle7-fresh.log
+ducklake-ingestion-obsrvr-v2/docs/CYCLE8_PROGRESS.md
+ducklake-ingestion-obsrvr-v2/docs/CYCLES_REMAINING.md
+ducklake-ingestion-obsrvr-v2/docs/PITCH_CYCLE8_EFFECTS_TRADES.md

@@ -41,6 +41,8 @@ run: build
 
 clean:
 	@echo "Cleaning build artifacts..."
-	rm -f appender_poc ducklake-ingestion-obsrvr-v2
+	rm -f appender_poc appender_simple_poc appender_ducklake_poc
+	rm -f ducklake-ingestion-obsrvr ducklake-ingestion-obsrvr-v2
+	rm -f ducklake-query
 	rm -rf poc_test_data
 	@echo "✓ Clean complete"

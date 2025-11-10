@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -30,24 +31,30 @@ import (
 const (
 	// Column counts for multi-table ingestion
 	ledgerColumnCount      = 24
-	transactionColumnCount = 40 // Cycle 4: Expanded from 13 to 40 (added 27 fields)
+	transactionColumnCount = 46 // Cycle 6: Expanded from 40 to 46 (added 4 XDR + 2 signer fields)
 	operationColumnCount   = 58 // Cycle 5: Expanded from 13 to 58 (complete operations schema)
 	balanceColumnCount     = 11 // 11 fields: account_id, balance, buying/selling liabilities, subentries, sponsoring/sponsored, sequence, last_modified_ledger, ledger_sequence, ledger_range
+	effectColumnCount      = 25 // Cycle 8: Effects table (state changes from operations)
+	tradeColumnCount       = 17 // Cycle 8: Trades table (DEX trade executions)
 
 	// Obsrvr Data Culture: Version Management
-	ProcessorVersion = "2.1.0" // Cycle 4: 40-field transactions schema
+	ProcessorVersion = "2.3.0" // Cycle 8: Effects & Trades tables
 
 	// Schema versions (major version from table names)
 	LedgersSchemaVersion      = "v2" // 24 fields
 	TransactionsSchemaVersion = "v2" // 40 fields (upgraded from v1's 13 fields)
 	OperationsSchemaVersion   = "v1" // 13 fields
 	BalancesSchemaVersion     = "v1" // 11 fields
+	EffectsSchemaVersion      = "v1" // Cycle 8: 25 fields
+	TradesSchemaVersion       = "v1" // Cycle 8: 17 fields
 
 	// Current minor versions (tracked in _meta_datasets)
 	LedgersMinorVersion      = 0
 	TransactionsMinorVersion = 0 // v2.0: Cycle 4 complete schema
 	OperationsMinorVersion   = 0
 	BalancesMinorVersion     = 0
+	EffectsMinorVersion      = 0 // Cycle 8: v1.0
+	TradesMinorVersion       = 0 // Cycle 8: v1.0
 )
 
 // Config represents the application configuration
@@ -181,6 +188,16 @@ type TransactionData struct {
 	// Metadata fields (2 fields)
 	SignaturesCount int32 // Number of signatures on transaction
 	NewAccount      bool  // True if transaction created a new account
+
+	// Cycle 6: XDR fields (4 fields) - Complete transaction reconstruction
+	TxEnvelope *string // Nullable: Full transaction envelope (base64 XDR)
+	TxResult   *string // Nullable: Transaction result (base64 XDR)
+	TxMeta     *string // Nullable: Transaction metadata (base64 XDR)
+	TxFeeMeta  *string // Nullable: Fee metadata (base64 XDR)
+
+	// Cycle 6: Signer fields (2 fields) - Multi-sig analysis
+	TxSigners    *string // Nullable: JSON array of all signer public keys
+	ExtraSigners *string // Nullable: JSON array of extra signers (not source account)
 }
 
 // OperationData represents operation data for multi-table ingestion (Cycle 5: Complete schema - 58 fields)
@@ -316,12 +333,87 @@ type BalanceData struct {
 	LedgerRange          uint32
 }
 
+// EffectData represents state changes from operations (Cycle 8)
+// Extracted from transaction meta - the "what actually happened" layer
+type EffectData struct {
+	// Identity (4 fields)
+	LedgerSequence  uint32
+	TransactionHash string
+	OperationIndex  int32
+	EffectIndex     int32 // Order within operation (0-based)
+
+	// Effect type (2 fields)
+	EffectType       int32  // Numeric type code (0-33)
+	EffectTypeString string // Human-readable (account_credited, account_debited, etc.)
+
+	// Account affected (1 field)
+	AccountID *string // Nullable: which account changed (not all effects have accounts)
+
+	// Amount changes (4 fields) - Nullable
+	Amount      *string // Amount changed (decimal string)
+	AssetCode   *string // Asset code (XLM, USDC, etc.) - NULL for native
+	AssetIssuer *string // Asset issuer - NULL for native
+	AssetType   *string // "native", "credit_alphanum4", "credit_alphanum12"
+
+	// Trustline effects (3 fields) - Nullable
+	TrustlineLimit *string // Trustline limit (decimal string)
+	AuthorizeFlag  *bool   // Authorized/deauthorized
+	ClawbackFlag   *bool   // Clawback enabled/disabled
+
+	// Signer effects (2 fields) - Nullable
+	SignerAccount *string // Signer added/removed
+	SignerWeight  *int32  // Signer weight
+
+	// Offer effects (3 fields) - Nullable
+	OfferID       *int64  // Offer created/removed/updated
+	SellerAccount *string // Offer seller
+
+	// Metadata (3 fields)
+	CreatedAt   time.Time // When ingested
+	LedgerRange uint32    // Data partition key
+}
+
+// TradeData represents DEX trade executions (Cycle 8)
+// Extracted from trade effects in transaction meta
+type TradeData struct {
+	// Identity (4 fields)
+	LedgerSequence  uint32
+	TransactionHash string
+	OperationIndex  int32
+	TradeIndex      int32 // Order within operation (0-based)
+
+	// Trade details (2 fields)
+	TradeType      string    // "orderbook", "liquidity_pool"
+	TradeTimestamp time.Time // ledger closed_at
+
+	// Seller side (4 fields)
+	SellerAccount      string  // Seller account ID
+	SellingAssetCode   *string // Asset sold - NULL for native
+	SellingAssetIssuer *string // Issuer of asset sold - NULL for native
+	SellingAmount      string  // Amount sold (decimal string)
+
+	// Buyer side (4 fields)
+	BuyerAccount      string  // Buyer account ID (or liquidity pool)
+	BuyingAssetCode   *string // Asset bought - NULL for native
+	BuyingAssetIssuer *string // Issuer of asset bought - NULL for native
+	BuyingAmount      string  // Amount bought (decimal string)
+
+	// Price (1 field)
+	Price string // selling_amount / buying_amount (decimal string)
+
+	// Metadata (2 fields)
+	CreatedAt   time.Time // When ingested
+	LedgerRange uint32    // Data partition key
+}
+
 // WorkerBuffers holds buffers for all tables for a single worker
 type WorkerBuffers struct {
 	ledgers       []LedgerData
 	transactions  []TransactionData
 	operations    []OperationData
 	balances      []BalanceData
+	effects       []EffectData // Cycle 8: Effects table
+	trades        []TradeData  // Cycle 8: Trades table
 	lastCommit    time.Time
 }
 
@@ -390,6 +482,8 @@ type Ingester struct {
 	transactionAppender *duckdb.Appender
 	operationAppender   *duckdb.Appender
 	balanceAppender     *duckdb.Appender
+	effectAppender      *duckdb.Appender // Cycle 8: Effects appender
+	tradeAppender       *duckdb.Appender // Cycle 8: Trades appender
 
 	buffers     WorkerBuffers
 	lastCommit  time.Time
@@ -1087,7 +1181,17 @@ func (ing *Ingester) createTransactionsTable() error {
 
 			-- Metadata (2)
 			signatures_count INT NOT NULL,
-			new_account BOOLEAN NOT NULL
+			new_account BOOLEAN NOT NULL,
+
+			-- Cycle 6: XDR fields (4) - Complete transaction reconstruction
+			tx_envelope TEXT,
+			tx_result TEXT,
+			tx_meta TEXT,
+			tx_fee_meta TEXT,
+
+			-- Cycle 6: Signer fields (2) - Multi-sig analysis
+			tx_signers TEXT,
+			extra_signers TEXT
 		)`,
 		ing.config.DuckLake.CatalogName,
 		ing.config.DuckLake.SchemaName,
@@ -2014,6 +2118,68 @@ func (ing *Ingester) extractTransactions(lcm *xdr.LedgerCloseMeta, closedAt time
 			}
 		}
 
+		// ========================================
+		// Cycle 6: XDR Fields (4 fields)
+		// ========================================
+
+		// 1. Transaction Envelope XDR
+		if envelopeBytes, err := tx.Envelope.MarshalBinary(); err == nil {
+			envelopeB64 := base64.StdEncoding.EncodeToString(envelopeBytes)
+			txData.TxEnvelope = &envelopeB64
+		}
+
+		// 2. Transaction Result XDR
+		if resultBytes, err := tx.Result.MarshalBinary(); err == nil {
+			resultB64 := base64.StdEncoding.EncodeToString(resultBytes)
+			txData.TxResult = &resultB64
+		}
+
+		// 3. Transaction Meta XDR (all versions: V1, V2, V3)
+		if metaBytes, err := tx.UnsafeMeta.MarshalBinary(); err == nil {
+			metaB64 := base64.StdEncoding.EncodeToString(metaBytes)
+			txData.TxMeta = &metaB64
+		}
+
+		// 4. Fee Meta XDR (fee changes from meta)
+		// Fee changes are in the soroban meta or operations meta
+		// For simplicity, we'll skip this for now and set to NULL
+		// TODO: Extract fee changes properly from meta
+		// txData.TxFeeMeta remains nil
+
+		// ========================================
+		// Cycle 6: Signer Fields (2 fields)
+		// ========================================
+
+		// Extract all signer public keys
+		signatures := tx.Envelope.Signatures()
+		if len(signatures) > 0 {
+			var signers []string
+
+			for _, sig := range signatures {
+				// Get the signer key from the signature
+				// Note: We can't directly get the public key from DecoratedSignature
+				// We'll need to extract it from the hint or use a different approach
+				// For now, store signature hints as hex
+				hint := hex.EncodeToString(sig.Hint[:])
+				signers = append(signers, hint)
+			}
+
+			// Convert to JSON arrays
+			if signersJSON, err := json.Marshal(signers); err == nil {
+				signersStr := string(signersJSON)
+				txData.TxSigners = &signersStr
+			}
+
+			// Extra signers (beyond source account) - for now, all non-source signatures
+			// This is a simplification; proper implementation would track pre-auth and hash signers
+			if len(signers) > 1 {
+				if extraSignersJSON, err := json.Marshal(signers[1:]); err == nil {
+					extraStr := string(extraSignersJSON)
+					txData.ExtraSigners = &extraStr
+				}
+			}
+		}
+
 		transactions = append(transactions, txData)
 	}
 
@@ -2377,13 +2543,154 @@ func (ing *Ingester) extractOperations(lcm *xdr.LedgerCloseMeta, closedAt time.T
 
 				// Note: Contract ID extraction is complex - skipping for MVP
 
+			// ========================================
+			// Cycle 7: DEX Operations (ManageOffer, PathPayment, etc.)
+			// ========================================
+
+			case xdr.OperationTypeManageSellOffer:
+				manageSell := op.Body.MustManageSellOfferOp()
+
+				// Selling asset
+				extractAsset(&opData, manageSell.Selling, "selling_asset")
+
+				// Buying asset
+				extractAsset(&opData, manageSell.Buying, "buying_asset")
+
+				// Amount to sell
+				amount := int64(manageSell.Amount)
+				opData.Amount = &amount
+
+				// Price (as string, e.g., "1.5")
+				priceFloat := float64(manageSell.Price.N) / float64(manageSell.Price.D)
+				priceStr := fmt.Sprintf("%.7f", priceFloat)
+				opData.Price = &priceStr
+
+				// Price ratio (N:D)
+				priceRatio := fmt.Sprintf("%d:%d", manageSell.Price.N, manageSell.Price.D)
+				opData.PriceR = &priceRatio
+
+				// Offer ID (0 = create new, >0 = update existing)
+				offerID := int64(manageSell.OfferId)
+				opData.OfferID = &offerID
+
+			case xdr.OperationTypeManageBuyOffer:
+				manageBuy := op.Body.MustManageBuyOfferOp()
+
+				// Selling asset
+				extractAsset(&opData, manageBuy.Selling, "selling_asset")
+
+				// Buying asset
+				extractAsset(&opData, manageBuy.Buying, "buying_asset")
+
+				// Amount to buy
+				amount := int64(manageBuy.BuyAmount)
+				opData.Amount = &amount
+
+				// Price (as string, e.g., "1.5")
+				priceFloat := float64(manageBuy.Price.N) / float64(manageBuy.Price.D)
+				priceStr := fmt.Sprintf("%.7f", priceFloat)
+				opData.Price = &priceStr
+
+				// Price ratio (N:D)
+				priceRatio := fmt.Sprintf("%d:%d", manageBuy.Price.N, manageBuy.Price.D)
+				opData.PriceR = &priceRatio
+
+				// Offer ID (0 = create new, >0 = update existing)
+				offerID := int64(manageBuy.OfferId)
+				opData.OfferID = &offerID
+
+			case xdr.OperationTypeCreatePassiveSellOffer:
+				passiveSell := op.Body.MustCreatePassiveSellOfferOp()
+
+				// Selling asset
+				extractAsset(&opData, passiveSell.Selling, "selling_asset")
+
+				// Buying asset
+				extractAsset(&opData, passiveSell.Buying, "buying_asset")
+
+				// Amount to sell
+				amount := int64(passiveSell.Amount)
+				opData.Amount = &amount
+
+				// Price (as string, e.g., "1.5")
+				priceFloat := float64(passiveSell.Price.N) / float64(passiveSell.Price.D)
+				priceStr := fmt.Sprintf("%.7f", priceFloat)
+				opData.Price = &priceStr
+
+				// Price ratio (N:D)
+				priceRatio := fmt.Sprintf("%d:%d", passiveSell.Price.N, passiveSell.Price.D)
+				opData.PriceR = &priceRatio
+
+			case xdr.OperationTypePathPaymentStrictReceive:
+				pathPayment := op.Body.MustPathPaymentStrictReceiveOp()
+
+				// Sending asset
+				extractAsset(&opData, pathPayment.SendAsset, "source_asset")
+
+				// Destination
+				dest := pathPayment.Destination.ToAccountId().Address()
+				opData.Destination = &dest
+
+				// Destination asset
+				extractAsset(&opData, pathPayment.DestAsset, "asset")
+
+				// Destination amount (what receiver gets)
+				destAmount := int64(pathPayment.DestAmount)
+				opData.Amount = &destAmount
+
+				// Send max (maximum willing to send)
+				sendMax := int64(pathPayment.SendMax)
+				opData.SourceAmount = &sendMax
+
+				// Note: Path is complex (array of assets) - skipping for now
+
+			case xdr.OperationTypePathPaymentStrictSend:
+				pathPayment := op.Body.MustPathPaymentStrictSendOp()
+
+				// Sending asset
+				extractAsset(&opData, pathPayment.SendAsset, "source_asset")
+
+				// Send amount (what sender pays)
+				sendAmount := int64(pathPayment.SendAmount)
+				opData.SourceAmount = &sendAmount
+
+				// Destination
+				dest := pathPayment.Destination.ToAccountId().Address()
+				opData.Destination = &dest
+
+				// Destination asset
+				extractAsset(&opData, pathPayment.DestAsset, "asset")
+
+				// Destination min (minimum receiver gets)
+				destMin := int64(pathPayment.DestMin)
+				opData.DestinationMin = &destMin
+
+				// Note: Path is complex (array of assets) - skipping for now
+
+			case xdr.OperationTypeBumpSequence:
+				bumpSeq := op.Body.MustBumpSequenceOp()
+
+				// Bump to sequence number
+				bumpTo := int64(bumpSeq.BumpTo)
+				opData.BumpTo = &bumpTo
+
+			case xdr.OperationTypeManageData:
+				manageData := op.Body.MustManageDataOp()
+
+				// Data name
+				dataName := string(manageData.DataName)
+				opData.DataName = &dataName
+
+				// Data value (nil = delete, non-nil = set)
+				if manageData.DataValue != nil {
+					dataValue := base64.StdEncoding.EncodeToString(*manageData.DataValue)
+					opData.DataValue = &dataValue
+				}
+
 			case xdr.OperationTypeAccountMerge:
 				// AccountMerge has destination as the operation body itself (not wrapped in a struct)
 				dest := op.Body.MustDestination().ToAccountId().Address()
 				opData.Destination = &dest
-
-			// Note: DEX operations (ManageSellOffer, ManageBuyOffer) are rare on testnet (0.3%)
-			// and can be added in a future cycle if needed
 			}
 
 			operations = append(operations, opData)
@@ -2636,6 +2943,14 @@ func (ing *Ingester) flush(ctx context.Context) error {
 				// Metadata (2) - no pointers
 				tx.SignaturesCount,
 				tx.NewAccount,
+				// Cycle 6: XDR fields (4) - nullable
+				ptrToInterface(tx.TxEnvelope),
+				ptrToInterface(tx.TxResult),
+				ptrToInterface(tx.TxMeta),
+				ptrToInterface(tx.TxFeeMeta),
+				// Cycle 6: Signer fields (2) - nullable
+				ptrToInterface(tx.TxSigners),
+				ptrToInterface(tx.ExtraSigners),
 			)
 			if err != nil {
 				return fmt.Errorf("failed to append transaction %s: %w", tx.TransactionHash, err)
