@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	duckdb "github.com/marcboeker/go-duckdb/v2"
 	_ "github.com/marcboeker/go-duckdb/v2"
 	"github.com/stellar/go/ingest"
 	"github.com/stellar/go/strkey"
@@ -378,7 +379,18 @@ type Ingester struct {
 	config      *Config
 	grpcConn    *grpc.ClientConn
 	grpcClient  pb.RawLedgerServiceClient
-	db          *sql.DB
+
+	// V2: Dual connection model - sql.DB for DDL/queries, native conn for Appender API
+	connector   *duckdb.Connector  // Shared connector for both connections
+	db          *sql.DB              // Keep for DDL, queries, and metadata operations
+	conn        *duckdb.Conn         // Native connection for Appender API
+
+	// V2: Appenders for high-performance inserts
+	ledgerAppender      *duckdb.Appender
+	transactionAppender *duckdb.Appender
+	operationAppender   *duckdb.Appender
+	balanceAppender     *duckdb.Appender
+
 	buffers     WorkerBuffers
 	lastCommit  time.Time
 }
@@ -694,12 +706,15 @@ func NewIngester(config *Config) (*Ingester, error) {
 
 // initializeDuckLake sets up DuckDB with DuckLake
 func (ing *Ingester) initializeDuckLake() error {
-	// Open DuckDB connection
-	db, err := sql.Open("duckdb", "")
+	// V2: Create shared connector for both sql.DB and native connection
+	connector, err := duckdb.NewConnector("", nil)
 	if err != nil {
-		return fmt.Errorf("failed to open DuckDB: %w", err)
+		return fmt.Errorf("failed to create DuckDB connector: %w", err)
 	}
-	ing.db = db
+	ing.connector = connector
+
+	// Create sql.DB from shared connector
+	ing.db = sql.OpenDB(connector)
 
 	// Install and load extensions
 	extensions := []string{
@@ -852,7 +867,54 @@ func (ing *Ingester) initializeDuckLake() error {
 		return fmt.Errorf("failed to register datasets: %w", err)
 	}
 
-	// Note: We build INSERT SQL dynamically in flush() for multi-row optimization
+	// V2: Get native connection from shared connector for Appender API
+	conn, err := ing.connector.Connect(context.Background())
+	if err != nil {
+		return fmt.Errorf("failed to get native connection: %w", err)
+	}
+	duckConn, ok := conn.(*duckdb.Conn)
+	if !ok {
+		return fmt.Errorf("failed to cast to *duckdb.Conn")
+	}
+	ing.conn = duckConn
+
+	// V2: CRITICAL - Execute USE statement on native connection
+	// Appender requires current catalog/schema to be set via USE statement
+	// Then pass empty string as schema parameter to Appender
+	_, err = ing.conn.ExecContext(
+		context.Background(),
+		useSQL, // Reuse the same USE statement from above
+		nil,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to set schema on native connection: %w", err)
+	}
+
+	// V2: Initialize Appenders for high-performance inserts
+	// Use empty string for schema since we set it with USE statement
+	// IMPORTANT: Use actual table names with version suffixes
+	ing.ledgerAppender, err = duckdb.NewAppenderFromConn(ing.conn, "", "ledgers_row_v2")
+	if err != nil {
+		return fmt.Errorf("failed to create ledger appender: %w", err)
+	}
+
+	ing.transactionAppender, err = duckdb.NewAppenderFromConn(ing.conn, "", "transactions_row_v2")
+	if err != nil {
+		return fmt.Errorf("failed to create transaction appender: %w", err)
+	}
+
+	ing.operationAppender, err = duckdb.NewAppenderFromConn(ing.conn, "", "operations_row_v2")
+	if err != nil {
+		return fmt.Errorf("failed to create operation appender: %w", err)
+	}
+
+	ing.balanceAppender, err = duckdb.NewAppenderFromConn(ing.conn, "", "native_balances_snapshot_v1")
+	if err != nil {
+		return fmt.Errorf("failed to create balance appender: %w", err)
+	}
+
+	log.Println("V2: Appenders initialized for all 4 tables (ledgers_row_v2, transactions_row_v2, operations_row_v2, native_balances_snapshot_v1)")
+
 	return nil
 }
 
@@ -2427,7 +2489,17 @@ func (ing *Ingester) extractBalances(lcm *xdr.LedgerCloseMeta) []BalanceData {
 	return balances
 }
 
-// flush writes buffered data to DuckLake using multi-row INSERT for all 4 tables
+// V2: Helper functions to safely handle nullable pointer fields for Appender API
+// DuckDB Appender expects either the value or nil, not a pointer to the value
+
+func ptrToInterface[T any](ptr *T) interface{} {
+	if ptr == nil {
+		return nil
+	}
+	return *ptr
+}
+
+// flush writes buffered data to DuckLake using Appender API for high-performance inserts (V2)
 func (ing *Ingester) flush(ctx context.Context) error {
 	if len(ing.buffers.ledgers) == 0 {
 		return nil
@@ -2462,37 +2534,14 @@ func (ing *Ingester) flush(ctx context.Context) error {
 	// Trade-off: Loses atomicity, but enables multi-table ingestion to complete
 
 	// ========================================
-	// 1. INSERT INTO ledgers
+	// 1. INSERT INTO ledgers (V2: Using Appender API)
 	// ========================================
 	if numLedgers > 0 {
-		log.Printf("[FLUSH] Preparing INSERT for %d ledgers...", numLedgers)
-		prepStart := time.Now()
+		log.Printf("[FLUSH] V2: Appending %d ledgers via Appender API...", numLedgers)
+		appendStart := time.Now()
 
-		insertSQL := fmt.Sprintf(`
-			INSERT INTO %s.%s.ledgers_row_v2 (
-				sequence, ledger_hash, previous_ledger_hash, closed_at,
-				protocol_version, total_coins, fee_pool, base_fee, base_reserve,
-				max_tx_set_size, successful_tx_count, failed_tx_count,
-				ingestion_timestamp, ledger_range,
-				transaction_count, operation_count, tx_set_operation_count,
-				soroban_fee_write1kb, node_id, signature, ledger_header,
-				bucket_list_size, live_soroban_state_size, evicted_keys_count
-			) VALUES `,
-			ing.config.DuckLake.CatalogName,
-			ing.config.DuckLake.SchemaName,
-		)
-
-		valuePlaceholders := make([]string, numLedgers)
-		args := make([]interface{}, 0, numLedgers*ledgerColumnCount)
-
-		for i, ledger := range ing.buffers.ledgers {
-			placeholders := make([]string, ledgerColumnCount)
-			for j := range placeholders {
-				placeholders[j] = "?"
-			}
-			valuePlaceholders[i] = "(" + strings.Join(placeholders, ",") + ")"
-
-			args = append(args,
+		for _, ledger := range ing.buffers.ledgers {
+			err := ing.ledgerAppender.AppendRow(
 				ledger.Sequence,
 				ledger.LedgerHash,
 				ledger.PreviousLedgerHash,
@@ -2505,7 +2554,7 @@ func (ing *Ingester) flush(ctx context.Context) error {
 				ledger.MaxTxSetSize,
 				ledger.SuccessfulTxCount,
 				ledger.FailedTxCount,
-				time.Now(),
+				time.Now(), // ingestion_timestamp
 				ledger.LedgerRange,
 				ledger.TransactionCount,
 				ledger.OperationCount,
@@ -2518,401 +2567,217 @@ func (ing *Ingester) flush(ctx context.Context) error {
 				ledger.LiveSorobanStateSize,
 				ledger.EvictedKeysCount,
 			)
-		}
-
-		insertSQL += strings.Join(valuePlaceholders, ",")
-		log.Printf("[FLUSH] Prepared ledgers INSERT in %v, executing...", time.Since(prepStart))
-
-		execStart := time.Now()
-		execCtx, execCancel := context.WithTimeout(ctx, 180*time.Second)
-		defer execCancel()
-
-		if _, err := ing.db.ExecContext(execCtx, insertSQL, args...); err != nil {
-			if execCtx.Err() == context.DeadlineExceeded {
-				return fmt.Errorf("TIMEOUT inserting %d ledgers after %v: %w", numLedgers, time.Since(execStart), err)
+			if err != nil {
+				return fmt.Errorf("failed to append ledger %d: %w", ledger.Sequence, err)
 			}
-			return fmt.Errorf("failed to insert %d ledgers after %v: %w", numLedgers, time.Since(execStart), err)
 		}
-		log.Printf("[FLUSH] ✓ Inserted %d ledgers in %v", numLedgers, time.Since(execStart))
+
+		// Flush appender to commit rows to DuckLake
+		flushStart := time.Now()
+		if err := ing.ledgerAppender.Flush(); err != nil {
+			return fmt.Errorf("failed to flush ledger appender: %w", err)
+		}
+		log.Printf("[FLUSH] ✓ V2: Appended and flushed %d ledgers in %v (append: %v, flush: %v)",
+			numLedgers, time.Since(appendStart), flushStart.Sub(appendStart), time.Since(flushStart))
 	}
 
 	// ========================================
-	// 2. INSERT INTO transactions
+	// 2. INSERT INTO transactions (V2: Using Appender API)
 	// ========================================
 	if numTransactions > 0 {
-		log.Printf("[FLUSH] Preparing INSERT for %d transactions...", numTransactions)
-		chunkStart := time.Now()
+		log.Printf("[FLUSH] V2: Appending %d transactions via Appender API...", numTransactions)
+		appendStart := time.Now()
 
-		// Split into chunks of 200 to avoid large INSERT hangs with 40-field schema
-		const chunkSize = 200  // 40 fields × 200 rows = 8,000 values per INSERT
-		totalInserted := 0
-
-		for chunkOffset := 0; chunkOffset < numTransactions; chunkOffset += chunkSize {
-			chunkEnd := chunkOffset + chunkSize
-			if chunkEnd > numTransactions {
-				chunkEnd = numTransactions
-			}
-			chunkTxs := ing.buffers.transactions[chunkOffset:chunkEnd]
-			chunkLen := len(chunkTxs)
-
-			log.Printf("[FLUSH] Preparing transactions chunk %d-%d (%d rows)...", chunkOffset, chunkEnd-1, chunkLen)
-			prepStart := time.Now()
-
-			insertSQL := fmt.Sprintf(`
-				INSERT INTO %s.%s.transactions_row_v2 (
-					ledger_sequence, transaction_hash, source_account,
-					fee_charged, max_fee, successful, transaction_result_code,
-					operation_count, memo_type, memo, created_at,
-					account_sequence, ledger_range,
-					source_account_muxed, fee_account_muxed,
-					inner_transaction_hash, fee_bump_fee, max_fee_bid, inner_source_account,
-					timebounds_min_time, timebounds_max_time, ledgerbounds_min, ledgerbounds_max,
-					min_sequence_number, min_sequence_age,
-					soroban_resources_instructions, soroban_resources_read_bytes, soroban_resources_write_bytes,
-					soroban_data_size_bytes, soroban_data_resources, soroban_fee_base, soroban_fee_resources,
-					soroban_fee_refund, soroban_fee_charged, soroban_fee_wasted, soroban_host_function_type,
-					soroban_contract_id, soroban_contract_events_count,
-					signatures_count, new_account
-				) VALUES `,
-				ing.config.DuckLake.CatalogName,
-				ing.config.DuckLake.SchemaName,
+		for _, tx := range ing.buffers.transactions {
+			err := ing.transactionAppender.AppendRow(
+				// Core fields (13) - no pointers
+				tx.LedgerSequence,
+				tx.TransactionHash,
+				tx.SourceAccount,
+				tx.FeeCharged,
+				tx.MaxFee,
+				tx.Successful,
+				tx.TransactionResultCode,
+				tx.OperationCount,
+				tx.MemoType,
+				tx.Memo,
+				tx.CreatedAt,
+				tx.AccountSequence,
+				tx.LedgerRange,
+				// Muxed accounts (2) - nullable
+				ptrToInterface(tx.SourceAccountMuxed),
+				ptrToInterface(tx.FeeAccountMuxed),
+				// Fee bump (4) - nullable
+				ptrToInterface(tx.InnerTransactionHash),
+				ptrToInterface(tx.FeeBumpFee),
+				ptrToInterface(tx.MaxFeeBid),
+				ptrToInterface(tx.InnerSourceAccount),
+				// Preconditions (6) - nullable
+				ptrToInterface(tx.TimeboundsMinTime),
+				ptrToInterface(tx.TimeboundsMaxTime),
+				ptrToInterface(tx.LedgerboundsMin),
+				ptrToInterface(tx.LedgerboundsMax),
+				ptrToInterface(tx.MinSequenceNumber),
+				ptrToInterface(tx.MinSequenceAge),
+				// Soroban (13) - nullable
+				ptrToInterface(tx.SorobanResourcesInstructions),
+				ptrToInterface(tx.SorobanResourcesReadBytes),
+				ptrToInterface(tx.SorobanResourcesWriteBytes),
+				ptrToInterface(tx.SorobanDataSizeBytes),
+				ptrToInterface(tx.SorobanDataResources),
+				ptrToInterface(tx.SorobanFeeBase),
+				ptrToInterface(tx.SorobanFeeResources),
+				ptrToInterface(tx.SorobanFeeRefund),
+				ptrToInterface(tx.SorobanFeeCharged),
+				ptrToInterface(tx.SorobanFeeWasted),
+				ptrToInterface(tx.SorobanHostFunctionType),
+				ptrToInterface(tx.SorobanContractID),
+				ptrToInterface(tx.SorobanContractEventsCount),
+				// Metadata (2) - no pointers
+				tx.SignaturesCount,
+				tx.NewAccount,
 			)
-
-			valuePlaceholders := make([]string, chunkLen)
-			args := make([]interface{}, 0, chunkLen*transactionColumnCount)
-
-			for i, tx := range chunkTxs {
-				placeholders := make([]string, transactionColumnCount)
-				for j := range placeholders {
-					placeholders[j] = "?"
-				}
-				valuePlaceholders[i] = "(" + strings.Join(placeholders, ",") + ")"
-
-				// Core fields (13)
-				args = append(args,
-					tx.LedgerSequence,
-					tx.TransactionHash,
-					tx.SourceAccount,
-					tx.FeeCharged,
-					tx.MaxFee,
-					tx.Successful,
-					tx.TransactionResultCode,
-					tx.OperationCount,
-					tx.MemoType,
-					tx.Memo,
-					tx.CreatedAt,
-					tx.AccountSequence,
-					tx.LedgerRange,
-				)
-
-				// Muxed accounts (2)
-				args = append(args,
-					tx.SourceAccountMuxed,
-					tx.FeeAccountMuxed,
-				)
-
-				// Fee bump (4)
-				args = append(args,
-					tx.InnerTransactionHash,
-					tx.FeeBumpFee,
-					tx.MaxFeeBid,
-					tx.InnerSourceAccount,
-				)
-
-				// Preconditions (6)
-				args = append(args,
-					tx.TimeboundsMinTime,
-					tx.TimeboundsMaxTime,
-					tx.LedgerboundsMin,
-					tx.LedgerboundsMax,
-					tx.MinSequenceNumber,
-					tx.MinSequenceAge,
-				)
-
-				// Soroban (13)
-				args = append(args,
-					tx.SorobanResourcesInstructions,
-					tx.SorobanResourcesReadBytes,
-					tx.SorobanResourcesWriteBytes,
-					tx.SorobanDataSizeBytes,
-					tx.SorobanDataResources,
-					tx.SorobanFeeBase,
-					tx.SorobanFeeResources,
-					tx.SorobanFeeRefund,
-					tx.SorobanFeeCharged,
-					tx.SorobanFeeWasted,
-					tx.SorobanHostFunctionType,
-					tx.SorobanContractID,
-					tx.SorobanContractEventsCount,
-				)
-
-				// Metadata (2)
-				args = append(args,
-					tx.SignaturesCount,
-					tx.NewAccount,
-				)
+			if err != nil {
+				return fmt.Errorf("failed to append transaction %s: %w", tx.TransactionHash, err)
 			}
-
-			insertSQL += strings.Join(valuePlaceholders, ",")
-			log.Printf("[FLUSH] Prepared transactions chunk in %v, executing...", time.Since(prepStart))
-
-			execStart := time.Now()
-			execCtx, execCancel := context.WithTimeout(ctx, 60*time.Second)
-			defer execCancel()
-
-			if _, err := ing.db.ExecContext(execCtx, insertSQL, args...); err != nil {
-				if execCtx.Err() == context.DeadlineExceeded {
-					return fmt.Errorf("TIMEOUT inserting transactions chunk %d-%d after %v: %w", chunkOffset, chunkEnd-1, time.Since(execStart), err)
-				}
-				return fmt.Errorf("failed to insert transactions chunk %d-%d after %v: %w", chunkOffset, chunkEnd-1, time.Since(execStart), err)
-			}
-			log.Printf("[FLUSH] ✓ Inserted transactions chunk %d-%d (%d rows) in %v", chunkOffset, chunkEnd-1, chunkLen, time.Since(execStart))
-			totalInserted += chunkLen
 		}
 
-		log.Printf("[FLUSH] ✅ Inserted %d total transactions in %v", totalInserted, time.Since(chunkStart))
+		// Flush appender to commit rows to DuckLake
+		flushStart := time.Now()
+		if err := ing.transactionAppender.Flush(); err != nil {
+			return fmt.Errorf("failed to flush transaction appender: %w", err)
+		}
+		log.Printf("[FLUSH] ✓ V2: Appended and flushed %d transactions in %v (append: %v, flush: %v)",
+			numTransactions, time.Since(appendStart), flushStart.Sub(appendStart), time.Since(flushStart))
 	}
 
 	// ========================================
-	// 3. INSERT INTO operations (CHUNKED for large batches)
+	// 3. INSERT INTO operations (V2: Using Appender API)
 	// ========================================
 	if numOperations > 0 {
-		log.Printf("[FLUSH] Preparing INSERT for %d operations...", numOperations)
-		chunkStart := time.Now()
+		log.Printf("[FLUSH] V2: Appending %d operations via Appender API...", numOperations)
+		appendStart := time.Now()
 
-		// Split into chunks of 200 to avoid large INSERT hangs with 58-field schema
-		const chunkSize = 200  // Reduced from 2000: With 58 fields, smaller chunks prevent timeouts
-		totalInserted := 0
-
-		for chunkOffset := 0; chunkOffset < numOperations; chunkOffset += chunkSize {
-			chunkEnd := chunkOffset + chunkSize
-			if chunkEnd > numOperations {
-				chunkEnd = numOperations
-			}
-			chunkOps := ing.buffers.operations[chunkOffset:chunkEnd]
-			chunkLen := len(chunkOps)
-
-			log.Printf("[FLUSH] Preparing operations chunk %d-%d (%d rows)...", chunkOffset, chunkEnd-1, chunkLen)
-			prepStart := time.Now()
-
-			insertSQL := fmt.Sprintf(`
-				INSERT INTO %s.%s.operations_row_v2 (
-					-- Core fields (11)
-					transaction_hash, operation_index, ledger_sequence,
-					source_account, type, type_string, created_at,
-					transaction_successful, operation_result_code,
-					operation_trace_code, ledger_range,
-					-- Muxed accounts (1)
-					source_account_muxed,
-					-- Asset fields (8)
-					asset, asset_type, asset_code, asset_issuer,
-					source_asset, source_asset_type, source_asset_code, source_asset_issuer,
-					-- Amount fields (4)
-					amount, source_amount, destination_min, starting_balance,
-					-- Destination (1)
-					destination,
-					-- Trustline (5)
-					trustline_limit, trustor, authorize, authorize_to_maintain_liabilities,
-					trust_line_flags,
-					-- Claimable balance (2)
-					balance_id, claimants_count,
-					-- Sponsorship (1)
-					sponsored_id,
-					-- DEX (11)
-					offer_id, price, price_r,
-					buying_asset, buying_asset_type, buying_asset_code, buying_asset_issuer,
-					selling_asset, selling_asset_type, selling_asset_code, selling_asset_issuer,
-					-- Soroban (4)
-					soroban_operation, soroban_function, soroban_contract_id, soroban_auth_required,
-					-- Account operations (8)
-					bump_to, set_flags, clear_flags, home_domain,
-					master_weight, low_threshold, medium_threshold, high_threshold,
-					-- Other (2)
-					data_name, data_value
-				) VALUES `,
-				ing.config.DuckLake.CatalogName,
-				ing.config.DuckLake.SchemaName,
+		for _, op := range ing.buffers.operations {
+			err := ing.operationAppender.AppendRow(
+				// Core fields (11) - no pointers
+				op.TransactionHash,
+				op.OperationIndex,
+				op.LedgerSequence,
+				op.SourceAccount,
+				op.Type,
+				op.TypeString,
+				op.CreatedAt,
+				op.TransactionSuccessful,
+				op.OperationResultCode,
+				op.OperationTraceCode,
+				op.LedgerRange,
+				// Muxed accounts (1) - nullable
+				ptrToInterface(op.SourceAccountMuxed),
+				// Asset fields (8) - nullable
+				ptrToInterface(op.Asset),
+				ptrToInterface(op.AssetType),
+				ptrToInterface(op.AssetCode),
+				ptrToInterface(op.AssetIssuer),
+				ptrToInterface(op.SourceAsset),
+				ptrToInterface(op.SourceAssetType),
+				ptrToInterface(op.SourceAssetCode),
+				ptrToInterface(op.SourceAssetIssuer),
+				// Amount fields (4) - nullable
+				ptrToInterface(op.Amount),
+				ptrToInterface(op.SourceAmount),
+				ptrToInterface(op.DestinationMin),
+				ptrToInterface(op.StartingBalance),
+				// Destination (1) - nullable
+				ptrToInterface(op.Destination),
+				// Trustline (5) - nullable
+				ptrToInterface(op.TrustlineLimit),
+				ptrToInterface(op.Trustor),
+				ptrToInterface(op.Authorize),
+				ptrToInterface(op.AuthorizeToMaintainLiabilities),
+				ptrToInterface(op.TrustLineFlags),
+				// Claimable balance (2) - nullable
+				ptrToInterface(op.BalanceID),
+				ptrToInterface(op.ClaimantsCount),
+				// Sponsorship (1) - nullable
+				ptrToInterface(op.SponsoredID),
+				// DEX (11) - nullable
+				ptrToInterface(op.OfferID),
+				ptrToInterface(op.Price),
+				ptrToInterface(op.PriceR),
+				ptrToInterface(op.BuyingAsset),
+				ptrToInterface(op.BuyingAssetType),
+				ptrToInterface(op.BuyingAssetCode),
+				ptrToInterface(op.BuyingAssetIssuer),
+				ptrToInterface(op.SellingAsset),
+				ptrToInterface(op.SellingAssetType),
+				ptrToInterface(op.SellingAssetCode),
+				ptrToInterface(op.SellingAssetIssuer),
+				// Soroban (4) - nullable
+				ptrToInterface(op.SorobanOperation),
+				ptrToInterface(op.SorobanFunction),
+				ptrToInterface(op.SorobanContractID),
+				ptrToInterface(op.SorobanAuthRequired),
+				// Account operations (8) - nullable
+				ptrToInterface(op.BumpTo),
+				ptrToInterface(op.SetFlags),
+				ptrToInterface(op.ClearFlags),
+				ptrToInterface(op.HomeDomain),
+				ptrToInterface(op.MasterWeight),
+				ptrToInterface(op.LowThreshold),
+				ptrToInterface(op.MediumThreshold),
+				ptrToInterface(op.HighThreshold),
+				// Other (2) - nullable
+				ptrToInterface(op.DataName),
+				ptrToInterface(op.DataValue),
 			)
-
-			valuePlaceholders := make([]string, chunkLen)
-			args := make([]interface{}, 0, chunkLen*operationColumnCount)
-
-			for i, op := range chunkOps {
-				placeholders := make([]string, operationColumnCount)
-				for j := range placeholders {
-					placeholders[j] = "?"
-				}
-				valuePlaceholders[i] = "(" + strings.Join(placeholders, ",") + ")"
-
-				args = append(args,
-					// Core fields (11)
-					op.TransactionHash,
-					op.OperationIndex,
-					op.LedgerSequence,
-					op.SourceAccount,
-					op.Type,
-					op.TypeString,
-					op.CreatedAt,
-					op.TransactionSuccessful,
-					op.OperationResultCode,
-					op.OperationTraceCode,
-					op.LedgerRange,
-					// Muxed accounts (1)
-					op.SourceAccountMuxed,
-					// Asset fields (8)
-					op.Asset,
-					op.AssetType,
-					op.AssetCode,
-					op.AssetIssuer,
-					op.SourceAsset,
-					op.SourceAssetType,
-					op.SourceAssetCode,
-					op.SourceAssetIssuer,
-					// Amount fields (4)
-					op.Amount,
-					op.SourceAmount,
-					op.DestinationMin,
-					op.StartingBalance,
-					// Destination (1)
-					op.Destination,
-					// Trustline (5)
-					op.TrustlineLimit,
-					op.Trustor,
-					op.Authorize,
-					op.AuthorizeToMaintainLiabilities,
-					op.TrustLineFlags,
-					// Claimable balance (2)
-					op.BalanceID,
-					op.ClaimantsCount,
-					// Sponsorship (1)
-					op.SponsoredID,
-					// DEX (11)
-					op.OfferID,
-					op.Price,
-					op.PriceR,
-					op.BuyingAsset,
-					op.BuyingAssetType,
-					op.BuyingAssetCode,
-					op.BuyingAssetIssuer,
-					op.SellingAsset,
-					op.SellingAssetType,
-					op.SellingAssetCode,
-					op.SellingAssetIssuer,
-					// Soroban (4)
-					op.SorobanOperation,
-					op.SorobanFunction,
-					op.SorobanContractID,
-					op.SorobanAuthRequired,
-					// Account operations (8)
-					op.BumpTo,
-					op.SetFlags,
-					op.ClearFlags,
-					op.HomeDomain,
-					op.MasterWeight,
-					op.LowThreshold,
-					op.MediumThreshold,
-					op.HighThreshold,
-					// Other (2)
-					op.DataName,
-					op.DataValue,
-				)
+			if err != nil {
+				return fmt.Errorf("failed to append operation %d: %w", op.OperationIndex, err)
 			}
-
-			insertSQL += strings.Join(valuePlaceholders, ",")
-			log.Printf("[FLUSH] Prepared operations chunk in %v, executing...", time.Since(prepStart))
-
-			execStart := time.Now()
-			execCtx, execCancel := context.WithTimeout(ctx, 180*time.Second)
-			defer execCancel()
-
-			if _, err := ing.db.ExecContext(execCtx, insertSQL, args...); err != nil {
-				if execCtx.Err() == context.DeadlineExceeded {
-					return fmt.Errorf("TIMEOUT inserting operations chunk %d-%d after %v: %w", chunkOffset, chunkEnd-1, time.Since(execStart), err)
-				}
-				return fmt.Errorf("failed to insert operations chunk %d-%d after %v: %w", chunkOffset, chunkEnd-1, time.Since(execStart), err)
-			}
-			totalInserted += chunkLen
-			log.Printf("[FLUSH] ✓ Inserted operations chunk %d-%d (%d rows) in %v", chunkOffset, chunkEnd-1, chunkLen, time.Since(execStart))
 		}
 
-		log.Printf("[FLUSH] ✅ Inserted %d total operations in %v", totalInserted, time.Since(chunkStart))
+		// Flush appender to commit rows to DuckLake
+		flushStart := time.Now()
+		if err := ing.operationAppender.Flush(); err != nil {
+			return fmt.Errorf("failed to flush operation appender: %w", err)
+		}
+		log.Printf("[FLUSH] ✓ V2: Appended and flushed %d operations in %v (append: %v, flush: %v)",
+			numOperations, time.Since(appendStart), flushStart.Sub(appendStart), time.Since(flushStart))
 	}
 
 	// ========================================
-	// 4. INSERT INTO native_balances (CHUNKED for large batches)
+	// 4. INSERT INTO native_balances (V2: Using Appender API)
 	// ========================================
 	if numBalances > 0 {
-		log.Printf("[FLUSH] Preparing INSERT for %d native_balances...", numBalances)
-		chunkStart := time.Now()
+		log.Printf("[FLUSH] V2: Appending %d native_balances via Appender API...", numBalances)
+		appendStart := time.Now()
 
-		// Split into chunks of 200 to avoid large INSERT hangs with 58-field schema
-		const chunkSize = 200  // Reduced from 2000: With 58 fields, smaller chunks prevent timeouts
-		totalInserted := 0
-
-		for chunkOffset := 0; chunkOffset < numBalances; chunkOffset += chunkSize {
-			chunkEnd := chunkOffset + chunkSize
-			if chunkEnd > numBalances {
-				chunkEnd = numBalances
-			}
-			chunkBals := ing.buffers.balances[chunkOffset:chunkEnd]
-			chunkLen := len(chunkBals)
-
-			log.Printf("[FLUSH] Preparing native_balances chunk %d-%d (%d rows)...", chunkOffset, chunkEnd-1, chunkLen)
-			prepStart := time.Now()
-
-			insertSQL := fmt.Sprintf(`
-				INSERT INTO %s.%s.native_balances_snapshot_v1 (
-					account_id, balance, buying_liabilities, selling_liabilities,
-					num_subentries, num_sponsoring, num_sponsored, sequence_number,
-					last_modified_ledger, ledger_sequence, ledger_range
-				) VALUES `,
-				ing.config.DuckLake.CatalogName,
-				ing.config.DuckLake.SchemaName,
+		for _, bal := range ing.buffers.balances {
+			err := ing.balanceAppender.AppendRow(
+				bal.AccountID,
+				bal.Balance,
+				bal.BuyingLiabilities,
+				bal.SellingLiabilities,
+				bal.NumSubentries,
+				bal.NumSponsoring,
+				bal.NumSponsored,
+				bal.SequenceNumber,
+				bal.LastModifiedLedger,
+				bal.LedgerSequence,
+				bal.LedgerRange,
 			)
-
-			valuePlaceholders := make([]string, chunkLen)
-			args := make([]interface{}, 0, chunkLen*balanceColumnCount)
-
-			for i, bal := range chunkBals {
-				placeholders := make([]string, balanceColumnCount)
-				for j := range placeholders {
-					placeholders[j] = "?"
-				}
-				valuePlaceholders[i] = "(" + strings.Join(placeholders, ",") + ")"
-
-				args = append(args,
-					bal.AccountID,
-					bal.Balance,
-					bal.BuyingLiabilities,
-					bal.SellingLiabilities,
-					bal.NumSubentries,
-					bal.NumSponsoring,
-					bal.NumSponsored,
-					bal.SequenceNumber,
-					bal.LastModifiedLedger,
-					bal.LedgerSequence,
-					bal.LedgerRange,
-				)
+			if err != nil {
+				return fmt.Errorf("failed to append balance for account %s: %w", bal.AccountID, err)
 			}
-
-			insertSQL += strings.Join(valuePlaceholders, ",")
-			log.Printf("[FLUSH] Prepared native_balances chunk in %v, executing...", time.Since(prepStart))
-
-			execStart := time.Now()
-			execCtx, execCancel := context.WithTimeout(ctx, 180*time.Second)
-			defer execCancel()
-
-			if _, err := ing.db.ExecContext(execCtx, insertSQL, args...); err != nil {
-				if execCtx.Err() == context.DeadlineExceeded {
-					return fmt.Errorf("TIMEOUT inserting native_balances chunk %d-%d after %v: %w", chunkOffset, chunkEnd-1, time.Since(execStart), err)
-				}
-				return fmt.Errorf("failed to insert native_balances chunk %d-%d after %v: %w", chunkOffset, chunkEnd-1, time.Since(execStart), err)
-			}
-			totalInserted += chunkLen
-			log.Printf("[FLUSH] ✓ Inserted native_balances chunk %d-%d (%d rows) in %v", chunkOffset, chunkEnd-1, chunkLen, time.Since(execStart))
 		}
 
-		log.Printf("[FLUSH] ✅ Inserted %d total native_balances in %v", totalInserted, time.Since(chunkStart))
+		// Flush appender to commit rows to DuckLake
+		flushStart := time.Now()
+		if err := ing.balanceAppender.Flush(); err != nil {
+			return fmt.Errorf("failed to flush balance appender: %w", err)
+		}
+		log.Printf("[FLUSH] ✓ V2: Appended and flushed %d native_balances in %v (append: %v, flush: %v)",
+			numBalances, time.Since(appendStart), flushStart.Sub(appendStart), time.Since(flushStart))
 	}
 
 	// ========================================
