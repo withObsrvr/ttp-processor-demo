@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 
 	"google.golang.org/grpc"
 
@@ -12,11 +13,25 @@ import (
 	"github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/server"
 )
 
+const (
+	defaultPort       = ":50053"
+	defaultHealthPort = "8088"
+)
+
 func main() {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = defaultPort
+	}
+	// Ensure port starts with ":"
+	if !strings.HasPrefix(port, ":") {
+		port = ":" + port
+	}
+
 	// Create gRPC server
-	lis, err := net.Listen("tcp", ":50053")
+	lis, err := net.Listen("tcp", port)
 	if err != nil {
-		log.Fatalf("failed to listen: %v", err)
+		log.Fatalf("failed to listen on port %s: %v", port, err)
 	}
 
 	// Initialize the raw ledger server (handles all configuration validation)
