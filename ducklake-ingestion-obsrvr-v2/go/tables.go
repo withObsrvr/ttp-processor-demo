@@ -1,0 +1,512 @@
+package main
+
+import (
+	"fmt"
+	"log"
+)
+
+// tables.go - DuckDB table DDL creation functions
+// Moved from main.go to keep files manageable (Cycle 8 refactoring)
+
+func (ing *Ingester) createTable() error {
+	// Create table with ledger_range column for partitioning
+	// DuckLake will organize files based on this column's values
+	// We'll compute: ledger_range = (sequence / 10000) * 10000
+	// This creates logical partitions: 0, 10000, 20000, 160000, etc.
+	createSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s.%s.ledgers_row_v2 (
+			sequence BIGINT NOT NULL,
+			ledger_hash VARCHAR NOT NULL,
+			previous_ledger_hash VARCHAR NOT NULL,
+			closed_at TIMESTAMP NOT NULL,
+			protocol_version INT NOT NULL,
+			total_coins BIGINT NOT NULL,
+			fee_pool BIGINT NOT NULL,
+			base_fee INT NOT NULL,
+			base_reserve INT NOT NULL,
+			max_tx_set_size INT NOT NULL,
+			successful_tx_count INT NOT NULL,
+			failed_tx_count INT NOT NULL,
+			ingestion_timestamp TIMESTAMP,
+			ledger_range BIGINT,
+
+			-- NEW: Operation counts (stellar-etl alignment)
+			transaction_count INT,
+			operation_count INT,
+			tx_set_operation_count INT,
+
+			-- NEW: Soroban (Protocol 20+)
+			soroban_fee_write1kb BIGINT,
+
+			-- NEW: Consensus metadata
+			node_id VARCHAR,
+			signature VARCHAR,
+			ledger_header TEXT,
+
+			-- NEW: State tracking
+			bucket_list_size BIGINT,
+			live_soroban_state_size BIGINT,
+
+			-- NEW: Protocol 23 (CAP-62) - Hot Archive
+			evicted_keys_count INT
+		)`,
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName,
+	)
+
+	if _, err := ing.db.Exec(createSQL); err != nil {
+		return fmt.Errorf("failed to create ledgers_row_v2 table: %w", err)
+	}
+
+	log.Printf("Table ready: %s.%s.ledgers_row_v2",
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName)
+
+	return nil
+}
+
+// createTransactionsTable creates the transactions table
+// Obsrvr playbook naming: core.transactions_row_v2
+// - Domain: core (blockchain infrastructure data)
+// - Subject: transactions
+// - Grain: row (one row per transaction)
+// - Version: v2 (40 fields - Cycle 4: stellar-etl alignment)
+func (ing *Ingester) createTransactionsTable() error {
+	createSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s.%s.transactions_row_v2 (
+			-- Core fields (13)
+			ledger_sequence BIGINT NOT NULL,
+			transaction_hash VARCHAR NOT NULL,
+			source_account VARCHAR NOT NULL,
+			fee_charged BIGINT NOT NULL,
+			max_fee BIGINT NOT NULL,
+			successful BOOLEAN NOT NULL,
+			transaction_result_code VARCHAR NOT NULL,
+			operation_count INT NOT NULL,
+			memo_type VARCHAR,
+			memo VARCHAR,
+			created_at TIMESTAMP NOT NULL,
+			account_sequence BIGINT,
+			ledger_range BIGINT,
+
+			-- Muxed accounts (2) - CAP-27
+			source_account_muxed VARCHAR,
+			fee_account_muxed VARCHAR,
+
+			-- Fee bump transactions (4) - CAP-15
+			inner_transaction_hash VARCHAR,
+			fee_bump_fee BIGINT,
+			max_fee_bid BIGINT,
+			inner_source_account VARCHAR,
+
+			-- Preconditions (6) - CAP-21
+			timebounds_min_time BIGINT,
+			timebounds_max_time BIGINT,
+			ledgerbounds_min BIGINT,
+			ledgerbounds_max BIGINT,
+			min_sequence_number BIGINT,
+			min_sequence_age BIGINT,
+
+			-- Soroban fields (13) - CAP-46/CAP-47
+			soroban_resources_instructions BIGINT,
+			soroban_resources_read_bytes BIGINT,
+			soroban_resources_write_bytes BIGINT,
+			soroban_data_size_bytes INT,
+			soroban_data_resources TEXT,
+			soroban_fee_base BIGINT,
+			soroban_fee_resources BIGINT,
+			soroban_fee_refund BIGINT,
+			soroban_fee_charged BIGINT,
+			soroban_fee_wasted BIGINT,
+			soroban_host_function_type VARCHAR,
+			soroban_contract_id VARCHAR,
+			soroban_contract_events_count INT,
+
+			-- Metadata (2)
+			signatures_count INT NOT NULL,
+			new_account BOOLEAN NOT NULL,
+
+			-- Cycle 6: XDR fields (4) - Complete transaction reconstruction
+			tx_envelope TEXT,
+			tx_result TEXT,
+			tx_meta TEXT,
+			tx_fee_meta TEXT,
+
+			-- Cycle 6: Signer fields (2) - Multi-sig analysis
+			tx_signers TEXT,
+			extra_signers TEXT
+		)`,
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName,
+	)
+
+	if _, err := ing.db.Exec(createSQL); err != nil {
+		return fmt.Errorf("failed to create transactions_row_v2 table: %w", err)
+	}
+
+	log.Printf("Table ready: %s.%s.transactions_row_v2",
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName)
+
+	return nil
+}
+
+// createOperationsTable creates the operations table (Cycle 5: Complete schema - 59 fields)
+// Obsrvr playbook naming: core.operations_row_v2
+// - Domain: core (blockchain infrastructure data)
+// - Subject: operations
+// - Grain: row (one row per operation)
+// - Version: v2 (59 fields - covers 12 operation types, 98%+ coverage)
+func (ing *Ingester) createOperationsTable() error {
+	createSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s.%s.operations_row_v2 (
+			-- Core fields (11)
+			transaction_hash VARCHAR NOT NULL,
+			operation_index INT NOT NULL,
+			ledger_sequence BIGINT NOT NULL,
+			source_account VARCHAR NOT NULL,
+			type INT NOT NULL,
+			type_string VARCHAR NOT NULL,
+			created_at TIMESTAMP NOT NULL,
+			transaction_successful BOOLEAN NOT NULL,
+			operation_result_code VARCHAR,
+			operation_trace_code VARCHAR,
+			ledger_range BIGINT,
+
+			-- Muxed accounts (1)
+			source_account_muxed VARCHAR,
+
+			-- Asset fields (8)
+			asset VARCHAR,
+			asset_type VARCHAR,
+			asset_code VARCHAR,
+			asset_issuer VARCHAR,
+			source_asset VARCHAR,
+			source_asset_type VARCHAR,
+			source_asset_code VARCHAR,
+			source_asset_issuer VARCHAR,
+
+			-- Amount/price fields (4)
+			amount BIGINT,
+			source_amount BIGINT,
+			destination_min BIGINT,
+			starting_balance BIGINT,
+
+			-- Destination (1)
+			destination VARCHAR,
+
+			-- Trustline (5)
+			trustline_limit BIGINT,
+			trustor VARCHAR,
+			authorize BOOLEAN,
+			authorize_to_maintain_liabilities BOOLEAN,
+			trust_line_flags INT,
+
+			-- Claimable balance (2)
+			balance_id VARCHAR,
+			claimants_count INT,
+
+			-- Sponsorship (1)
+			sponsored_id VARCHAR,
+
+			-- DEX fields (11)
+			offer_id BIGINT,
+			price VARCHAR,
+			price_r VARCHAR,
+			buying_asset VARCHAR,
+			buying_asset_type VARCHAR,
+			buying_asset_code VARCHAR,
+			buying_asset_issuer VARCHAR,
+			selling_asset VARCHAR,
+			selling_asset_type VARCHAR,
+			selling_asset_code VARCHAR,
+			selling_asset_issuer VARCHAR,
+
+			-- Soroban (4)
+			soroban_operation VARCHAR,
+			soroban_function VARCHAR,
+			soroban_contract_id VARCHAR,
+			soroban_auth_required BOOLEAN,
+
+			-- Account operations (8)
+			bump_to BIGINT,
+			set_flags INT,
+			clear_flags INT,
+			home_domain VARCHAR,
+			master_weight INT,
+			low_threshold INT,
+			medium_threshold INT,
+			high_threshold INT,
+
+			-- Other (2)
+			data_name VARCHAR,
+			data_value VARCHAR
+		)`,
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName,
+	)
+
+	if _, err := ing.db.Exec(createSQL); err != nil {
+		return fmt.Errorf("failed to create operations_row_v2 table: %w", err)
+	}
+
+	log.Printf("Table ready: %s.%s.operations_row_v2",
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName)
+
+	return nil
+}
+
+// createNativeBalancesTable creates the native_balances table
+// Obsrvr playbook naming: core.native_balances_snapshot_v1
+// - Domain: core (blockchain infrastructure data)
+// - Subject: native_balances
+// - Grain: snapshot (balance at specific ledger)
+// - Version: v1 (11 fields)
+func (ing *Ingester) createNativeBalancesTable() error {
+	createSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s.%s.native_balances_snapshot_v1 (
+			account_id VARCHAR NOT NULL,
+			balance BIGINT NOT NULL,
+			buying_liabilities BIGINT NOT NULL,
+			selling_liabilities BIGINT NOT NULL,
+			num_subentries INT NOT NULL,
+			num_sponsoring INT NOT NULL,
+			num_sponsored INT NOT NULL,
+			sequence_number BIGINT,
+			last_modified_ledger BIGINT NOT NULL,
+			ledger_sequence BIGINT NOT NULL,
+			ledger_range BIGINT
+		)`,
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName,
+	)
+
+	if _, err := ing.db.Exec(createSQL); err != nil {
+		return fmt.Errorf("failed to create native_balances_snapshot_v1 table: %w", err)
+	}
+
+	log.Printf("Table ready: %s.%s.native_balances_snapshot_v1",
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName)
+
+	return nil
+}
+
+// createEffectsTable creates the effects table (Cycle 8)
+// Obsrvr playbook naming: core.effects_row_v1
+// - Domain: core (blockchain infrastructure data)
+// - Subject: effects
+// - Grain: row (one row per effect, multiple effects per operation)
+// - Version: v1 (25 fields)
+func (ing *Ingester) createEffectsTable() error {
+	createSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s.%s.effects_row_v1 (
+			-- Identity (4 fields)
+			ledger_sequence BIGINT NOT NULL,
+			transaction_hash VARCHAR NOT NULL,
+			operation_index INT NOT NULL,
+			effect_index INT NOT NULL,
+
+			-- Effect type (2 fields)
+			effect_type INT NOT NULL,
+			effect_type_string VARCHAR NOT NULL,
+
+			-- Account affected (1 field)
+			account_id VARCHAR,
+
+			-- Amount changes (4 fields) - Nullable
+			amount VARCHAR,
+			asset_code VARCHAR,
+			asset_issuer VARCHAR,
+			asset_type VARCHAR,
+
+			-- Trustline effects (3 fields) - Nullable
+			trustline_limit VARCHAR,
+			authorize_flag BOOLEAN,
+			clawback_flag BOOLEAN,
+
+			-- Signer effects (2 fields) - Nullable
+			signer_account VARCHAR,
+			signer_weight INT,
+
+			-- Offer effects (3 fields) - Nullable
+			offer_id BIGINT,
+			seller_account VARCHAR,
+
+			-- Metadata (3 fields)
+			created_at TIMESTAMP NOT NULL,
+			ledger_range BIGINT
+		)`,
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName,
+	)
+
+	if _, err := ing.db.Exec(createSQL); err != nil {
+		return fmt.Errorf("failed to create effects_row_v1 table: %w", err)
+	}
+
+	log.Printf("Table ready: %s.%s.effects_row_v1",
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName)
+
+	return nil
+}
+
+// createTradesTable creates the trades table (Cycle 8)
+// Obsrvr playbook naming: core.trades_row_v1
+// - Domain: core (blockchain infrastructure data)
+// - Subject: trades
+// - Grain: row (one row per trade execution)
+// - Version: v1 (17 fields)
+func (ing *Ingester) createTradesTable() error {
+	createSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s.%s.trades_row_v1 (
+			-- Identity (4 fields)
+			ledger_sequence BIGINT NOT NULL,
+			transaction_hash VARCHAR NOT NULL,
+			operation_index INT NOT NULL,
+			trade_index INT NOT NULL,
+
+			-- Trade details (2 fields)
+			trade_type VARCHAR NOT NULL,
+			trade_timestamp TIMESTAMP NOT NULL,
+
+			-- Seller side (4 fields)
+			seller_account VARCHAR NOT NULL,
+			selling_asset_code VARCHAR,
+			selling_asset_issuer VARCHAR,
+			selling_amount VARCHAR NOT NULL,
+
+			-- Buyer side (4 fields)
+			buyer_account VARCHAR NOT NULL,
+			buying_asset_code VARCHAR,
+			buying_asset_issuer VARCHAR,
+			buying_amount VARCHAR NOT NULL,
+
+			-- Price (1 field)
+			price VARCHAR NOT NULL,
+
+			-- Metadata (2 fields)
+			created_at TIMESTAMP NOT NULL,
+			ledger_range BIGINT
+		)`,
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName,
+	)
+
+	if _, err := ing.db.Exec(createSQL); err != nil {
+		return fmt.Errorf("failed to create trades_row_v1 table: %w", err)
+	}
+
+	log.Printf("Table ready: %s.%s.trades_row_v1",
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName)
+
+	return nil
+}
+
+// createMetadataTables creates the 4 Obsrvr metadata tables
+// These tables track dataset registry, lineage, quality, and schema changes
+func (ing *Ingester) createMetadataTables() error {
+	// 1. _meta_datasets (Dataset Registry)
+	// Note: DuckLake doesn't support PRIMARY KEY constraints
+	datasetsSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s.%s._meta_datasets (
+			dataset TEXT NOT NULL,
+			tier TEXT NOT NULL,
+			domain TEXT NOT NULL,
+			major_version INT NOT NULL,
+			current_minor_version INT NOT NULL,
+			owner TEXT,
+			purpose TEXT,
+			grain TEXT,
+			created_at TIMESTAMP NOT NULL,
+			updated_at TIMESTAMP NOT NULL
+		)`,
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName,
+	)
+
+	if _, err := ing.db.Exec(datasetsSQL); err != nil {
+		return fmt.Errorf("failed to create _meta_datasets table: %w", err)
+	}
+	log.Printf("Metadata table ready: %s.%s._meta_datasets",
+		ing.config.DuckLake.CatalogName, ing.config.DuckLake.SchemaName)
+
+	// 2. _meta_lineage (Processing Provenance)
+	// Note: DuckLake doesn't support PRIMARY KEY constraints
+	lineageSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s.%s._meta_lineage (
+			id INTEGER NOT NULL,
+			dataset TEXT NOT NULL,
+			partition TEXT,
+			source_ledger_start INT NOT NULL,
+			source_ledger_end INT NOT NULL,
+			pipeline_version TEXT NOT NULL,
+			processor_name TEXT NOT NULL,
+			checksum TEXT,
+			row_count INT,
+			created_at TIMESTAMP NOT NULL
+		)`,
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName,
+	)
+
+	if _, err := ing.db.Exec(lineageSQL); err != nil {
+		return fmt.Errorf("failed to create _meta_lineage table: %w", err)
+	}
+	log.Printf("Metadata table ready: %s.%s._meta_lineage",
+		ing.config.DuckLake.CatalogName, ing.config.DuckLake.SchemaName)
+
+	// 3. _meta_quality (Data Quality Tracking)
+	// Note: DuckLake doesn't support PRIMARY KEY constraints
+	qualitySQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s.%s._meta_quality (
+			id BIGINT NOT NULL,
+			dataset TEXT NOT NULL,
+			partition TEXT,
+			check_name TEXT NOT NULL,
+			check_type TEXT NOT NULL,
+			passed BOOLEAN NOT NULL,
+			details TEXT,
+			row_count INT,
+			null_anomalies INT,
+			created_at TIMESTAMP NOT NULL
+		)`,
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName,
+	)
+
+	if _, err := ing.db.Exec(qualitySQL); err != nil {
+		return fmt.Errorf("failed to create _meta_quality table: %w", err)
+	}
+	log.Printf("Metadata table ready: %s.%s._meta_quality",
+		ing.config.DuckLake.CatalogName, ing.config.DuckLake.SchemaName)
+
+	// 4. _meta_changes (Schema Evolution Log)
+	// Note: DuckLake doesn't support PRIMARY KEY constraints
+	changesSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s.%s._meta_changes (
+			id INTEGER NOT NULL,
+			dataset TEXT NOT NULL,
+			from_version TEXT,
+			to_version TEXT NOT NULL,
+			change_type TEXT NOT NULL,
+			summary TEXT,
+			migration_sql TEXT,
+			applied_at TIMESTAMP NOT NULL
+		)`,
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName,
+	)
+
+	if _, err := ing.db.Exec(changesSQL); err != nil {
+		return fmt.Errorf("failed to create _meta_changes table: %w", err)
+	}
+	log.Printf("Metadata table ready: %s.%s._meta_changes",
+		ing.config.DuckLake.CatalogName, ing.config.DuckLake.SchemaName)
+
+	log.Println("✅ All Obsrvr metadata tables created successfully")
+	return nil
+}

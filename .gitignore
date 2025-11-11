@@ -155,3 +155,12 @@ ducklake-ingestion-obsrvr-v2/test-cycle7-fresh.log
 ducklake-ingestion-obsrvr-v2/docs/CYCLE8_PROGRESS.md
 ducklake-ingestion-obsrvr-v2/docs/CYCLES_REMAINING.md
 ducklake-ingestion-obsrvr-v2/docs/PITCH_CYCLE8_EFFECTS_TRADES.md
+ducklake-ingestion-obsrvr-v2/go/main.go
+query-effects-sample.sh
+ducklake-ingestion-obsrvr-v2/test-cycle8-10ledgers.log
+ducklake-ingestion-obsrvr-v2/test-cycle8-run.log
+ducklake-ingestion-obsrvr-v2/test-cycle8-run2.log
+ducklake-ingestion-obsrvr-v2/test-v4-meta.log
+ducklake-ingestion-obsrvr-v2/config/test-10-ledgers.yaml
+ducklake-ingestion-obsrvr-v2/config/test-cycle8-10ledgers.yaml
+ducklake-ingestion-obsrvr-v2/docs/CYCLE8_HANDOFF.md
