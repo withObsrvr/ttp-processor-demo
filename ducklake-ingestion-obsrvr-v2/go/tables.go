@@ -510,3 +510,112 @@ func (ing *Ingester) createMetadataTables() error {
 	log.Println("✅ All Obsrvr metadata tables created successfully")
 	return nil
 }
+
+// createAccountsTable creates the accounts snapshot table (Cycle 9)
+// Obsrvr playbook naming: core.accounts_snapshot_v1
+// - Domain: core (blockchain infrastructure data)
+// - Subject: accounts
+// - Grain: snapshot (point-in-time account state per ledger range)
+// - Version: v1 (23 fields)
+func (ing *Ingester) createAccountsTable() error {
+	accountsSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s.%s.accounts_snapshot_v1 (
+			-- Identity (3 fields) - PK
+			account_id VARCHAR NOT NULL,
+			ledger_sequence BIGINT NOT NULL,
+			closed_at TIMESTAMP NOT NULL,
+
+			-- Balance (1 field)
+			balance VARCHAR NOT NULL,
+
+			-- Account Settings (5 fields)
+			sequence_number BIGINT NOT NULL,
+			num_subentries INT NOT NULL,
+			num_sponsoring INT NOT NULL,
+			num_sponsored INT NOT NULL,
+			home_domain VARCHAR,
+
+			-- Thresholds (4 fields)
+			master_weight INT NOT NULL,
+			low_threshold INT NOT NULL,
+			med_threshold INT NOT NULL,
+			high_threshold INT NOT NULL,
+
+			-- Flags (5 fields)
+			flags INT NOT NULL,
+			auth_required BOOLEAN NOT NULL,
+			auth_revocable BOOLEAN NOT NULL,
+			auth_immutable BOOLEAN NOT NULL,
+			auth_clawback_enabled BOOLEAN NOT NULL,
+
+			-- Signers (1 field) - JSON array
+			signers VARCHAR,
+
+			-- Sponsorship (1 field)
+			sponsor_account VARCHAR,
+
+			-- Metadata (3 fields)
+			created_at TIMESTAMP NOT NULL,
+			updated_at TIMESTAMP NOT NULL,
+			ledger_range BIGINT NOT NULL
+		)`,
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName,
+	)
+
+	if _, err := ing.db.Exec(accountsSQL); err != nil {
+		return fmt.Errorf("failed to create accounts_snapshot_v1 table: %w", err)
+	}
+
+	log.Printf("Table ready: %s.%s.accounts_snapshot_v1",
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName)
+
+	return nil
+}
+
+// createTrustlinesTable creates the trustlines snapshot table (Cycle 9)
+// Obsrvr playbook naming: core.trustlines_snapshot_v1
+// - Domain: core (blockchain infrastructure data)
+// - Subject: trustlines
+// - Grain: snapshot (point-in-time trustline state per ledger range)
+// - Version: v1 (14 fields)
+func (ing *Ingester) createTrustlinesTable() error {
+	trustlinesSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s.%s.trustlines_snapshot_v1 (
+			-- Identity (4 fields) - PK
+			account_id VARCHAR NOT NULL,
+			asset_code VARCHAR NOT NULL,
+			asset_issuer VARCHAR NOT NULL,
+			asset_type VARCHAR NOT NULL,
+
+			-- Trust & Balance (4 fields)
+			balance VARCHAR NOT NULL,
+			trust_limit VARCHAR NOT NULL,
+			buying_liabilities VARCHAR NOT NULL,
+			selling_liabilities VARCHAR NOT NULL,
+
+			-- Authorization (3 fields)
+			authorized BOOLEAN NOT NULL,
+			authorized_to_maintain_liabilities BOOLEAN NOT NULL,
+			clawback_enabled BOOLEAN NOT NULL,
+
+			-- Metadata (3 fields)
+			ledger_sequence BIGINT NOT NULL,
+			created_at TIMESTAMP NOT NULL,
+			ledger_range BIGINT NOT NULL
+		)`,
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName,
+	)
+
+	if _, err := ing.db.Exec(trustlinesSQL); err != nil {
+		return fmt.Errorf("failed to create trustlines_snapshot_v1 table: %w", err)
+	}
+
+	log.Printf("Table ready: %s.%s.trustlines_snapshot_v1",
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName)
+
+	return nil
+}
