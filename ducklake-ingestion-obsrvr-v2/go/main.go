@@ -951,6 +951,16 @@ func (ing *Ingester) initializeDuckLake() error {
 		return fmt.Errorf("failed to create native_balances table: %w", err)
 	}
 
+	// Create effects table (Cycle 8)
+	if err := ing.createEffectsTable(); err != nil {
+		return fmt.Errorf("failed to create effects table: %w", err)
+	}
+
+	// Create trades table (Cycle 8)
+	if err := ing.createTradesTable(); err != nil {
+		return fmt.Errorf("failed to create trades table: %w", err)
+	}
+
 	// Create Obsrvr metadata tables (v2.0)
 	if err := ing.createMetadataTables(); err != nil {
 		return fmt.Errorf("failed to create metadata tables: %w", err)
@@ -1007,7 +1017,19 @@ func (ing *Ingester) initializeDuckLake() error {
 		return fmt.Errorf("failed to create balance appender: %w", err)
 	}
 
-	log.Println("V2: Appenders initialized for all 4 tables (ledgers_row_v2, transactions_row_v2, operations_row_v2, native_balances_snapshot_v1)")
+	// Cycle 8: Effects appender
+	ing.effectAppender, err = duckdb.NewAppenderFromConn(ing.conn, "", "effects_row_v1")
+	if err != nil {
+		return fmt.Errorf("failed to create effect appender: %w", err)
+	}
+
+	// Cycle 8: Trades appender
+	ing.tradeAppender, err = duckdb.NewAppenderFromConn(ing.conn, "", "trades_row_v1")
+	if err != nil {
+		return fmt.Errorf("failed to create trade appender: %w", err)
+	}
+
+	log.Println("V2: Appenders initialized for all 6 tables (ledgers_row_v2, transactions_row_v2, operations_row_v2, native_balances_snapshot_v1, effects_row_v1, trades_row_v1)")
 
 	return nil
 }
@@ -1059,401 +1081,6 @@ func (ing *Ingester) configureS3() {
 	}
 }
 
-// createTable creates the ledgers table with partition column
-// Obsrvr playbook naming: core.ledgers_row_v2
-// - Domain: core (blockchain infrastructure data)
-// - Subject: ledgers
-// - Grain: row (one row per ledger)
-// - Version: v2 (24 fields including Soroban metadata)
-func (ing *Ingester) createTable() error {
-	// Create table with ledger_range column for partitioning
-	// DuckLake will organize files based on this column's values
-	// We'll compute: ledger_range = (sequence / 10000) * 10000
-	// This creates logical partitions: 0, 10000, 20000, 160000, etc.
-	createSQL := fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS %s.%s.ledgers_row_v2 (
-			sequence BIGINT NOT NULL,
-			ledger_hash VARCHAR NOT NULL,
-			previous_ledger_hash VARCHAR NOT NULL,
-			closed_at TIMESTAMP NOT NULL,
-			protocol_version INT NOT NULL,
-			total_coins BIGINT NOT NULL,
-			fee_pool BIGINT NOT NULL,
-			base_fee INT NOT NULL,
-			base_reserve INT NOT NULL,
-			max_tx_set_size INT NOT NULL,
-			successful_tx_count INT NOT NULL,
-			failed_tx_count INT NOT NULL,
-			ingestion_timestamp TIMESTAMP,
-			ledger_range BIGINT,
-
-			-- NEW: Operation counts (stellar-etl alignment)
-			transaction_count INT,
-			operation_count INT,
-			tx_set_operation_count INT,
-
-			-- NEW: Soroban (Protocol 20+)
-			soroban_fee_write1kb BIGINT,
-
-			-- NEW: Consensus metadata
-			node_id VARCHAR,
-			signature VARCHAR,
-			ledger_header TEXT,
-
-			-- NEW: State tracking
-			bucket_list_size BIGINT,
-			live_soroban_state_size BIGINT,
-
-			-- NEW: Protocol 23 (CAP-62) - Hot Archive
-			evicted_keys_count INT
-		)`,
-		ing.config.DuckLake.CatalogName,
-		ing.config.DuckLake.SchemaName,
-	)
-
-	if _, err := ing.db.Exec(createSQL); err != nil {
-		return fmt.Errorf("failed to create ledgers_row_v2 table: %w", err)
-	}
-
-	log.Printf("Table ready: %s.%s.ledgers_row_v2",
-		ing.config.DuckLake.CatalogName,
-		ing.config.DuckLake.SchemaName)
-
-	return nil
-}
-
-// createTransactionsTable creates the transactions table
-// Obsrvr playbook naming: core.transactions_row_v2
-// - Domain: core (blockchain infrastructure data)
-// - Subject: transactions
-// - Grain: row (one row per transaction)
-// - Version: v2 (40 fields - Cycle 4: stellar-etl alignment)
-func (ing *Ingester) createTransactionsTable() error {
-	createSQL := fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS %s.%s.transactions_row_v2 (
-			-- Core fields (13)
-			ledger_sequence BIGINT NOT NULL,
-			transaction_hash VARCHAR NOT NULL,
-			source_account VARCHAR NOT NULL,
-			fee_charged BIGINT NOT NULL,
-			max_fee BIGINT NOT NULL,
-			successful BOOLEAN NOT NULL,
-			transaction_result_code VARCHAR NOT NULL,
-			operation_count INT NOT NULL,
-			memo_type VARCHAR,
-			memo VARCHAR,
-			created_at TIMESTAMP NOT NULL,
-			account_sequence BIGINT,
-			ledger_range BIGINT,
-
-			-- Muxed accounts (2) - CAP-27
-			source_account_muxed VARCHAR,
-			fee_account_muxed VARCHAR,
-
-			-- Fee bump transactions (4) - CAP-15
-			inner_transaction_hash VARCHAR,
-			fee_bump_fee BIGINT,
-			max_fee_bid BIGINT,
-			inner_source_account VARCHAR,
-
-			-- Preconditions (6) - CAP-21
-			timebounds_min_time BIGINT,
-			timebounds_max_time BIGINT,
-			ledgerbounds_min BIGINT,
-			ledgerbounds_max BIGINT,
-			min_sequence_number BIGINT,
-			min_sequence_age BIGINT,
-
-			-- Soroban fields (13) - CAP-46/CAP-47
-			soroban_resources_instructions BIGINT,
-			soroban_resources_read_bytes BIGINT,
-			soroban_resources_write_bytes BIGINT,
-			soroban_data_size_bytes INT,
-			soroban_data_resources TEXT,
-			soroban_fee_base BIGINT,
-			soroban_fee_resources BIGINT,
-			soroban_fee_refund BIGINT,
-			soroban_fee_charged BIGINT,
-			soroban_fee_wasted BIGINT,
-			soroban_host_function_type VARCHAR,
-			soroban_contract_id VARCHAR,
-			soroban_contract_events_count INT,
-
-			-- Metadata (2)
-			signatures_count INT NOT NULL,
-			new_account BOOLEAN NOT NULL,
-
-			-- Cycle 6: XDR fields (4) - Complete transaction reconstruction
-			tx_envelope TEXT,
-			tx_result TEXT,
-			tx_meta TEXT,
-			tx_fee_meta TEXT,
-
-			-- Cycle 6: Signer fields (2) - Multi-sig analysis
-			tx_signers TEXT,
-			extra_signers TEXT
-		)`,
-		ing.config.DuckLake.CatalogName,
-		ing.config.DuckLake.SchemaName,
-	)
-
-	if _, err := ing.db.Exec(createSQL); err != nil {
-		return fmt.Errorf("failed to create transactions_row_v2 table: %w", err)
-	}
-
-	log.Printf("Table ready: %s.%s.transactions_row_v2",
-		ing.config.DuckLake.CatalogName,
-		ing.config.DuckLake.SchemaName)
-
-	return nil
-}
-
-// createOperationsTable creates the operations table (Cycle 5: Complete schema - 59 fields)
-// Obsrvr playbook naming: core.operations_row_v2
-// - Domain: core (blockchain infrastructure data)
-// - Subject: operations
-// - Grain: row (one row per operation)
-// - Version: v2 (59 fields - covers 12 operation types, 98%+ coverage)
-func (ing *Ingester) createOperationsTable() error {
-	createSQL := fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS %s.%s.operations_row_v2 (
-			-- Core fields (11)
-			transaction_hash VARCHAR NOT NULL,
-			operation_index INT NOT NULL,
-			ledger_sequence BIGINT NOT NULL,
-			source_account VARCHAR NOT NULL,
-			type INT NOT NULL,
-			type_string VARCHAR NOT NULL,
-			created_at TIMESTAMP NOT NULL,
-			transaction_successful BOOLEAN NOT NULL,
-			operation_result_code VARCHAR,
-			operation_trace_code VARCHAR,
-			ledger_range BIGINT,
-
-			-- Muxed accounts (1)
-			source_account_muxed VARCHAR,
-
-			-- Asset fields (8)
-			asset VARCHAR,
-			asset_type VARCHAR,
-			asset_code VARCHAR,
-			asset_issuer VARCHAR,
-			source_asset VARCHAR,
-			source_asset_type VARCHAR,
-			source_asset_code VARCHAR,
-			source_asset_issuer VARCHAR,
-
-			-- Amount/price fields (4)
-			amount BIGINT,
-			source_amount BIGINT,
-			destination_min BIGINT,
-			starting_balance BIGINT,
-
-			-- Destination (1)
-			destination VARCHAR,
-
-			-- Trustline (5)
-			trustline_limit BIGINT,
-			trustor VARCHAR,
-			authorize BOOLEAN,
-			authorize_to_maintain_liabilities BOOLEAN,
-			trust_line_flags INT,
-
-			-- Claimable balance (2)
-			balance_id VARCHAR,
-			claimants_count INT,
-
-			-- Sponsorship (1)
-			sponsored_id VARCHAR,
-
-			-- DEX fields (11)
-			offer_id BIGINT,
-			price VARCHAR,
-			price_r VARCHAR,
-			buying_asset VARCHAR,
-			buying_asset_type VARCHAR,
-			buying_asset_code VARCHAR,
-			buying_asset_issuer VARCHAR,
-			selling_asset VARCHAR,
-			selling_asset_type VARCHAR,
-			selling_asset_code VARCHAR,
-			selling_asset_issuer VARCHAR,
-
-			-- Soroban (4)
-			soroban_operation VARCHAR,
-			soroban_function VARCHAR,
-			soroban_contract_id VARCHAR,
-			soroban_auth_required BOOLEAN,
-
-			-- Account operations (8)
-			bump_to BIGINT,
-			set_flags INT,
-			clear_flags INT,
-			home_domain VARCHAR,
-			master_weight INT,
-			low_threshold INT,
-			medium_threshold INT,
-			high_threshold INT,
-
-			-- Other (2)
-			data_name VARCHAR,
-			data_value VARCHAR
-		)`,
-		ing.config.DuckLake.CatalogName,
-		ing.config.DuckLake.SchemaName,
-	)
-
-	if _, err := ing.db.Exec(createSQL); err != nil {
-		return fmt.Errorf("failed to create operations_row_v2 table: %w", err)
-	}
-
-	log.Printf("Table ready: %s.%s.operations_row_v2",
-		ing.config.DuckLake.CatalogName,
-		ing.config.DuckLake.SchemaName)
-
-	return nil
-}
-
-// createNativeBalancesTable creates the native_balances table
-// Obsrvr playbook naming: core.native_balances_snapshot_v1
-// - Domain: core (blockchain infrastructure data)
-// - Subject: native_balances
-// - Grain: snapshot (balance at specific ledger)
-// - Version: v1 (11 fields)
-func (ing *Ingester) createNativeBalancesTable() error {
-	createSQL := fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS %s.%s.native_balances_snapshot_v1 (
-			account_id VARCHAR NOT NULL,
-			balance BIGINT NOT NULL,
-			buying_liabilities BIGINT NOT NULL,
-			selling_liabilities BIGINT NOT NULL,
-			num_subentries INT NOT NULL,
-			num_sponsoring INT NOT NULL,
-			num_sponsored INT NOT NULL,
-			sequence_number BIGINT,
-			last_modified_ledger BIGINT NOT NULL,
-			ledger_sequence BIGINT NOT NULL,
-			ledger_range BIGINT
-		)`,
-		ing.config.DuckLake.CatalogName,
-		ing.config.DuckLake.SchemaName,
-	)
-
-	if _, err := ing.db.Exec(createSQL); err != nil {
-		return fmt.Errorf("failed to create native_balances_snapshot_v1 table: %w", err)
-	}
-
-	log.Printf("Table ready: %s.%s.native_balances_snapshot_v1",
-		ing.config.DuckLake.CatalogName,
-		ing.config.DuckLake.SchemaName)
-
-	return nil
-}
-
-// createMetadataTables creates the 4 Obsrvr metadata tables
-// These tables track dataset registry, lineage, quality, and schema changes
-func (ing *Ingester) createMetadataTables() error {
-	// 1. _meta_datasets (Dataset Registry)
-	// Note: DuckLake doesn't support PRIMARY KEY constraints
-	datasetsSQL := fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS %s.%s._meta_datasets (
-			dataset TEXT NOT NULL,
-			tier TEXT NOT NULL,
-			domain TEXT NOT NULL,
-			major_version INT NOT NULL,
-			current_minor_version INT NOT NULL,
-			owner TEXT,
-			purpose TEXT,
-			grain TEXT,
-			created_at TIMESTAMP NOT NULL,
-			updated_at TIMESTAMP NOT NULL
-		)`,
-		ing.config.DuckLake.CatalogName,
-		ing.config.DuckLake.SchemaName,
-	)
-
-	if _, err := ing.db.Exec(datasetsSQL); err != nil {
-		return fmt.Errorf("failed to create _meta_datasets table: %w", err)
-	}
-	log.Printf("Metadata table ready: %s.%s._meta_datasets",
-		ing.config.DuckLake.CatalogName, ing.config.DuckLake.SchemaName)
-
-	// 2. _meta_lineage (Processing Provenance)
-	// Note: DuckLake doesn't support PRIMARY KEY constraints
-	lineageSQL := fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS %s.%s._meta_lineage (
-			id INTEGER NOT NULL,
-			dataset TEXT NOT NULL,
-			partition TEXT,
-			source_ledger_start INT NOT NULL,
-			source_ledger_end INT NOT NULL,
-			pipeline_version TEXT NOT NULL,
-			processor_name TEXT NOT NULL,
-			checksum TEXT,
-			row_count INT,
-			created_at TIMESTAMP NOT NULL
-		)`,
-		ing.config.DuckLake.CatalogName,
-		ing.config.DuckLake.SchemaName,
-	)
-
-	if _, err := ing.db.Exec(lineageSQL); err != nil {
-		return fmt.Errorf("failed to create _meta_lineage table: %w", err)
-	}
-	log.Printf("Metadata table ready: %s.%s._meta_lineage",
-		ing.config.DuckLake.CatalogName, ing.config.DuckLake.SchemaName)
-
-	// 3. _meta_quality (Data Quality Tracking)
-	// Note: DuckLake doesn't support PRIMARY KEY constraints
-	qualitySQL := fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS %s.%s._meta_quality (
-			id BIGINT NOT NULL,
-			dataset TEXT NOT NULL,
-			partition TEXT,
-			check_name TEXT NOT NULL,
-			check_type TEXT NOT NULL,
-			passed BOOLEAN NOT NULL,
-			details TEXT,
-			row_count INT,
-			null_anomalies INT,
-			created_at TIMESTAMP NOT NULL
-		)`,
-		ing.config.DuckLake.CatalogName,
-		ing.config.DuckLake.SchemaName,
-	)
-
-	if _, err := ing.db.Exec(qualitySQL); err != nil {
-		return fmt.Errorf("failed to create _meta_quality table: %w", err)
-	}
-	log.Printf("Metadata table ready: %s.%s._meta_quality",
-		ing.config.DuckLake.CatalogName, ing.config.DuckLake.SchemaName)
-
-	// 4. _meta_changes (Schema Evolution Log)
-	// Note: DuckLake doesn't support PRIMARY KEY constraints
-	changesSQL := fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS %s.%s._meta_changes (
-			id INTEGER NOT NULL,
-			dataset TEXT NOT NULL,
-			from_version TEXT,
-			to_version TEXT NOT NULL,
-			change_type TEXT NOT NULL,
-			summary TEXT,
-			migration_sql TEXT,
-			applied_at TIMESTAMP NOT NULL
-		)`,
-		ing.config.DuckLake.CatalogName,
-		ing.config.DuckLake.SchemaName,
-	)
-
-	if _, err := ing.db.Exec(changesSQL); err != nil {
-		return fmt.Errorf("failed to create _meta_changes table: %w", err)
-	}
-	log.Printf("Metadata table ready: %s.%s._meta_changes",
-		ing.config.DuckLake.CatalogName, ing.config.DuckLake.SchemaName)
-
-	log.Println("✅ All Obsrvr metadata tables created successfully")
-	return nil
-}
 
 // registerDatasets registers all datasets in the _meta_datasets table
 // This is idempotent - safe to call on every startup
@@ -1511,6 +1138,26 @@ func (ing *Ingester) registerDatasets() error {
 			Owner:        "stellar-ingestion",
 			Purpose:      "Native XLM balance snapshots by account",
 			Grain:        "snapshot",
+		},
+		{
+			Name:         "core.effects_row_v1",
+			Tier:         "silver",
+			Domain:       "core",
+			MajorVersion: 1,
+			MinorVersion: EffectsMinorVersion,
+			Owner:        "stellar-ingestion",
+			Purpose:      "State change effects from operations (15 effect types, supports V0-V4 meta)",
+			Grain:        "row",
+		},
+		{
+			Name:         "core.trades_row_v1",
+			Tier:         "silver",
+			Domain:       "core",
+			MajorVersion: 1,
+			MinorVersion: TradesMinorVersion,
+			Owner:        "stellar-ingestion",
+			Purpose:      "DEX trade executions from orderbook (5 operation types, supports V0-V4 meta)",
+			Grain:        "row",
 		},
 	}
 
@@ -1708,12 +1355,16 @@ func (ing *Ingester) processLedger(ctx context.Context, rawLedger *pb.RawLedger)
 	transactions := ing.extractTransactions(&lcm, closedAt)
 	operations := ing.extractOperations(&lcm, closedAt)
 	balances := ing.extractBalances(&lcm)
+	effects := ing.extractEffectsForLedger(&lcm, closedAt)   // Cycle 8
+	trades := ing.extractTradesForLedger(&lcm, closedAt)     // Cycle 8
 
 	// Add to buffers
 	ing.buffers.ledgers = append(ing.buffers.ledgers, ledgerData)
 	ing.buffers.transactions = append(ing.buffers.transactions, transactions...)
 	ing.buffers.operations = append(ing.buffers.operations, operations...)
 	ing.buffers.balances = append(ing.buffers.balances, balances...)
+	ing.buffers.effects = append(ing.buffers.effects, effects...)       // Cycle 8
+	ing.buffers.trades = append(ing.buffers.trades, trades...)           // Cycle 8
 
 	// Check if we should flush (based on ledger count or time)
 	shouldFlush := len(ing.buffers.ledgers) >= ing.config.DuckLake.BatchSize ||
@@ -2796,6 +2447,104 @@ func (ing *Ingester) extractBalances(lcm *xdr.LedgerCloseMeta) []BalanceData {
 	return balances
 }
 
+// extractEffectsForLedger extracts effects from all transactions in a ledger (Cycle 8)
+func (ing *Ingester) extractEffectsForLedger(lcm *xdr.LedgerCloseMeta, closedAt time.Time) []EffectData {
+	var allEffects []EffectData
+
+	// Use ingest package to read transactions
+	reader, err := ingest.NewLedgerTransactionReaderFromLedgerCloseMeta(ing.config.Source.NetworkPassphrase, *lcm)
+	if err != nil {
+		log.Printf("Failed to create transaction reader for effects: %v", err)
+		return allEffects
+	}
+	defer reader.Close()
+
+	// Get ledger sequence
+	var ledgerSeq uint32
+	switch lcm.V {
+	case 0:
+		ledgerSeq = uint32(lcm.MustV0().LedgerHeader.Header.LedgerSeq)
+	case 1:
+		ledgerSeq = uint32(lcm.MustV1().LedgerHeader.Header.LedgerSeq)
+	case 2:
+		ledgerSeq = uint32(lcm.MustV2().LedgerHeader.Header.LedgerSeq)
+	}
+
+	// Read all transactions and extract effects
+	for {
+		tx, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Printf("Error reading transaction for effects: %v", err)
+			continue
+		}
+
+		txHash := hex.EncodeToString(tx.Result.TransactionHash[:])
+
+		// Extract effects for this transaction
+		effects, err := extractEffects(&tx, ledgerSeq, closedAt, txHash)
+		if err != nil {
+			log.Printf("Failed to extract effects for tx %s: %v", txHash, err)
+			continue
+		}
+
+		allEffects = append(allEffects, effects...)
+	}
+
+	return allEffects
+}
+
+// extractTradesForLedger extracts trades from all transactions in a ledger (Cycle 8)
+func (ing *Ingester) extractTradesForLedger(lcm *xdr.LedgerCloseMeta, closedAt time.Time) []TradeData {
+	var allTrades []TradeData
+
+	// Use ingest package to read transactions
+	reader, err := ingest.NewLedgerTransactionReaderFromLedgerCloseMeta(ing.config.Source.NetworkPassphrase, *lcm)
+	if err != nil {
+		log.Printf("Failed to create transaction reader for trades: %v", err)
+		return allTrades
+	}
+	defer reader.Close()
+
+	// Get ledger sequence
+	var ledgerSeq uint32
+	switch lcm.V {
+	case 0:
+		ledgerSeq = uint32(lcm.MustV0().LedgerHeader.Header.LedgerSeq)
+	case 1:
+		ledgerSeq = uint32(lcm.MustV1().LedgerHeader.Header.LedgerSeq)
+	case 2:
+		ledgerSeq = uint32(lcm.MustV2().LedgerHeader.Header.LedgerSeq)
+	}
+
+	// Read all transactions and extract trades
+	for {
+		tx, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Printf("Error reading transaction for trades: %v", err)
+			continue
+		}
+
+		txHash := hex.EncodeToString(tx.Result.TransactionHash[:])
+
+		// Extract trades for this transaction
+		trades, err := extractTrades(&tx, ledgerSeq, closedAt, txHash)
+		if err != nil {
+			log.Printf("Failed to extract trades for tx %s: %v", txHash, err)
+			continue
+		}
+
+		allTrades = append(allTrades, trades...)
+	}
+
+	return allTrades
+}
+
 // V2: Helper functions to safely handle nullable pointer fields for Appender API
 // DuckDB Appender expects either the value or nil, not a pointer to the value
 
@@ -2816,9 +2565,11 @@ func (ing *Ingester) flush(ctx context.Context) error {
 	numTransactions := len(ing.buffers.transactions)
 	numOperations := len(ing.buffers.operations)
 	numBalances := len(ing.buffers.balances)
+	numEffects := len(ing.buffers.effects)   // Cycle 8
+	numTrades := len(ing.buffers.trades)     // Cycle 8
 
-	log.Printf("[FLUSH] Starting multi-table flush (separate transactions): %d ledgers, %d transactions, %d operations, %d balances",
-		numLedgers, numTransactions, numOperations, numBalances)
+	log.Printf("[FLUSH] Starting multi-table flush (separate transactions): %d ledgers, %d transactions, %d operations, %d balances, %d effects, %d trades",
+		numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades)
 	flushStart := time.Now()
 
 	// ========================================
@@ -3096,7 +2847,106 @@ func (ing *Ingester) flush(ctx context.Context) error {
 	}
 
 	// ========================================
-	// 5. RECORD QUALITY CHECK RESULTS (Obsrvr v2.0)
+	// 5. INSERT INTO effects (V2: Cycle 8)
+	// ========================================
+	if numEffects > 0 {
+		log.Printf("[FLUSH] V2: Appending %d effects via Appender API...", numEffects)
+		appendStart := time.Now()
+
+		for _, effect := range ing.buffers.effects {
+			err := ing.effectAppender.AppendRow(
+				// Identity (4 fields)
+				effect.LedgerSequence,
+				effect.TransactionHash,
+				effect.OperationIndex,
+				effect.EffectIndex,
+				// Effect type (2 fields)
+				effect.EffectType,
+				effect.EffectTypeString,
+				// Account (1 field)
+				ptrToInterface(effect.AccountID),
+				// Amount changes (4 fields)
+				ptrToInterface(effect.Amount),
+				ptrToInterface(effect.AssetCode),
+				ptrToInterface(effect.AssetIssuer),
+				ptrToInterface(effect.AssetType),
+				// Trustline (3 fields)
+				ptrToInterface(effect.TrustlineLimit),
+				ptrToInterface(effect.AuthorizeFlag),
+				ptrToInterface(effect.ClawbackFlag),
+				// Signer (2 fields)
+				ptrToInterface(effect.SignerAccount),
+				ptrToInterface(effect.SignerWeight),
+				// Offer (3 fields)
+				ptrToInterface(effect.OfferID),
+				ptrToInterface(effect.SellerAccount),
+				// Metadata (2 fields)
+				effect.CreatedAt,
+				effect.LedgerRange,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to append effect %d for operation %d: %w", effect.EffectIndex, effect.OperationIndex, err)
+			}
+		}
+
+		// Flush appender to commit rows to DuckLake
+		flushStart := time.Now()
+		if err := ing.effectAppender.Flush(); err != nil {
+			return fmt.Errorf("failed to flush effect appender: %w", err)
+		}
+		log.Printf("[FLUSH] ✓ V2: Appended and flushed %d effects in %v (append: %v, flush: %v)",
+			numEffects, time.Since(appendStart), flushStart.Sub(appendStart), time.Since(flushStart))
+	}
+
+	// ========================================
+	// 6. INSERT INTO trades (V2: Cycle 8)
+	// ========================================
+	if numTrades > 0 {
+		log.Printf("[FLUSH] V2: Appending %d trades via Appender API...", numTrades)
+		appendStart := time.Now()
+
+		for _, trade := range ing.buffers.trades {
+			err := ing.tradeAppender.AppendRow(
+				// Identity (4 fields)
+				trade.LedgerSequence,
+				trade.TransactionHash,
+				trade.OperationIndex,
+				trade.TradeIndex,
+				// Trade details (2 fields)
+				trade.TradeType,
+				trade.TradeTimestamp,
+				// Seller side (4 fields)
+				trade.SellerAccount,
+				ptrToInterface(trade.SellingAssetCode),
+				ptrToInterface(trade.SellingAssetIssuer),
+				trade.SellingAmount,
+				// Buyer side (4 fields)
+				trade.BuyerAccount,
+				ptrToInterface(trade.BuyingAssetCode),
+				ptrToInterface(trade.BuyingAssetIssuer),
+				trade.BuyingAmount,
+				// Price (1 field)
+				trade.Price,
+				// Metadata (2 fields)
+				trade.CreatedAt,
+				trade.LedgerRange,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to append trade %d for operation %d: %w", trade.TradeIndex, trade.OperationIndex, err)
+			}
+		}
+
+		// Flush appender to commit rows to DuckLake
+		flushStart := time.Now()
+		if err := ing.tradeAppender.Flush(); err != nil {
+			return fmt.Errorf("failed to flush trade appender: %w", err)
+		}
+		log.Printf("[FLUSH] ✓ V2: Appended and flushed %d trades in %v (append: %v, flush: %v)",
+			numTrades, time.Since(appendStart), flushStart.Sub(appendStart), time.Since(flushStart))
+	}
+
+	// ========================================
+	// 7. RECORD QUALITY CHECK RESULTS (Obsrvr v2.0)
 	// ========================================
 	if len(qualityResults) > 0 {
 		log.Printf("[QUALITY] Recording quality check results to _meta_quality...")
@@ -3107,22 +2957,24 @@ func (ing *Ingester) flush(ctx context.Context) error {
 	}
 
 	// ========================================
-	// 6. RECORD DATA LINEAGE (Obsrvr v2.0)
+	// 8. RECORD DATA LINEAGE (Obsrvr v2.0)
 	// ========================================
 	log.Printf("[LINEAGE] Recording data lineage to _meta_lineage...")
-	if err := ing.recordLineage(numLedgers, numTransactions, numOperations, numBalances); err != nil {
+	if err := ing.recordLineage(numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades); err != nil {
 		log.Printf("⚠️  Warning: Failed to record lineage: %v", err)
 		// Non-fatal: continue with flush completion
 	}
 
-	log.Printf("[FLUSH] ✅ COMPLETE: Flushed %d ledgers, %d transactions, %d operations, %d balances in %v total",
-		numLedgers, numTransactions, numOperations, numBalances, time.Since(flushStart))
+	log.Printf("[FLUSH] ✅ COMPLETE: Flushed %d ledgers, %d transactions, %d operations, %d balances, %d effects, %d trades in %v total",
+		numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades, time.Since(flushStart))
 
 	// Clear all buffers
 	ing.buffers.ledgers = ing.buffers.ledgers[:0]
 	ing.buffers.transactions = ing.buffers.transactions[:0]
 	ing.buffers.operations = ing.buffers.operations[:0]
 	ing.buffers.balances = ing.buffers.balances[:0]
+	ing.buffers.effects = ing.buffers.effects[:0]     // Cycle 8
+	ing.buffers.trades = ing.buffers.trades[:0]       // Cycle 8
 	ing.lastCommit = time.Now()
 
 	return nil
@@ -3130,7 +2982,7 @@ func (ing *Ingester) flush(ctx context.Context) error {
 
 // recordLineage records data lineage information for the current batch to _meta_lineage table
 // This tracks the source ledger range, processor version, and row counts for each dataset
-func (ing *Ingester) recordLineage(numLedgers, numTransactions, numOperations, numBalances int) error {
+func (ing *Ingester) recordLineage(numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades int) error {
 	if numLedgers == 0 {
 		return nil // No data to record
 	}
@@ -3184,7 +3036,23 @@ func (ing *Ingester) recordLineage(numLedgers, numTransactions, numOperations, n
 		})
 	}
 
-	// OPTIMIZED: Batched insert with single query instead of 4 individual inserts
+	// Record effects if present (Cycle 8)
+	if numEffects > 0 {
+		entries = append(entries, LineageEntry{
+			Dataset:  "core.effects_row_v1",
+			RowCount: numEffects,
+		})
+	}
+
+	// Record trades if present (Cycle 8)
+	if numTrades > 0 {
+		entries = append(entries, LineageEntry{
+			Dataset:  "core.trades_row_v1",
+			RowCount: numTrades,
+		})
+	}
+
+	// OPTIMIZED: Batched insert with single query instead of 6 individual inserts
 	// This reduces network roundtrips from 4 to 1 (critical for remote PostgreSQL)
 	createdAt := time.Now()
 
@@ -3242,6 +3110,31 @@ func (ing *Ingester) Close() error {
 
 	if err := ing.flush(ctx); err != nil {
 		log.Printf("Error flushing on close: %v", err)
+	}
+
+	// Close appenders
+	if ing.ledgerAppender != nil {
+		ing.ledgerAppender.Close()
+	}
+	if ing.transactionAppender != nil {
+		ing.transactionAppender.Close()
+	}
+	if ing.operationAppender != nil {
+		ing.operationAppender.Close()
+	}
+	if ing.balanceAppender != nil {
+		ing.balanceAppender.Close()
+	}
+	if ing.effectAppender != nil {
+		ing.effectAppender.Close()
+	}
+	if ing.tradeAppender != nil {
+		ing.tradeAppender.Close()
+	}
+
+	// Close native connection
+	if ing.conn != nil {
+		ing.conn.Close()
 	}
 
 	// Close resources
