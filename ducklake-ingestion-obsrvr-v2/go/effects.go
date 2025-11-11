@@ -243,7 +243,7 @@ func extractCreationEffects(
 			LedgerRange:      ledgerSequence / 10000 * 10000,
 		}
 		effects = append(effects, effect)
-		*effectIndex++
+		(*effectIndex)++
 
 	case xdr.LedgerEntryTypeTrustline:
 		// Trustline created
@@ -268,7 +268,7 @@ func extractCreationEffects(
 			LedgerRange:      ledgerSequence / 10000 * 10000,
 		}
 		effects = append(effects, effect)
-		*effectIndex++
+		(*effectIndex)++
 
 	case xdr.LedgerEntryTypeOffer:
 		// Offer created
@@ -289,7 +289,7 @@ func extractCreationEffects(
 			LedgerRange:      ledgerSequence / 10000 * 10000,
 		}
 		effects = append(effects, effect)
-		*effectIndex++
+		(*effectIndex)++
 
 	case xdr.LedgerEntryTypeClaimableBalance:
 		// Claimable balance created
@@ -343,7 +343,7 @@ func extractCreationEffects(
 			LedgerRange:      ledgerSequence / 10000 * 10000,
 		}
 		effects = append(effects, effect)
-		*effectIndex++
+		(*effectIndex)++
 	}
 
 	return effects
@@ -377,7 +377,7 @@ func extractRemovalEffects(
 			LedgerRange:      ledgerSequence / 10000 * 10000,
 		}
 		effects = append(effects, effect)
-		*effectIndex++
+		(*effectIndex)++
 
 	case xdr.LedgerEntryTypeTrustline:
 		// Trustline removed
@@ -400,7 +400,7 @@ func extractRemovalEffects(
 			LedgerRange:      ledgerSequence / 10000 * 10000,
 		}
 		effects = append(effects, effect)
-		*effectIndex++
+		(*effectIndex)++
 
 	case xdr.LedgerEntryTypeOffer:
 		// Offer removed
@@ -421,7 +421,7 @@ func extractRemovalEffects(
 			LedgerRange:      ledgerSequence / 10000 * 10000,
 		}
 		effects = append(effects, effect)
-		*effectIndex++
+		(*effectIndex)++
 	}
 
 	return effects
@@ -486,11 +486,11 @@ func extractAssetInfo(asset xdr.TrustLineAsset) (code string, issuer string) {
 	switch asset.Type {
 	case xdr.AssetTypeAssetTypeCreditAlphanum4:
 		a4 := asset.MustAlphaNum4()
-		code = string(a4.AssetCode[:])
+		code = trimNullBytes(string(a4.AssetCode[:]))
 		issuer = a4.Issuer.Address()
 	case xdr.AssetTypeAssetTypeCreditAlphanum12:
 		a12 := asset.MustAlphaNum12()
-		code = string(a12.AssetCode[:])
+		code = trimNullBytes(string(a12.AssetCode[:]))
 		issuer = a12.Issuer.Address()
 	}
 	return

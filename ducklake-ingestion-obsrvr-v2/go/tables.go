@@ -330,11 +330,11 @@ func (ing *Ingester) createEffectsTable() error {
 			signer_account VARCHAR,
 			signer_weight INT,
 
-			-- Offer effects (3 fields) - Nullable
+			-- Offer effects (2 fields) - Nullable
 			offer_id BIGINT,
 			seller_account VARCHAR,
 
-			-- Metadata (3 fields)
+			-- Metadata (2 fields)
 			created_at TIMESTAMP NOT NULL,
 			ledger_range BIGINT
 		)`,
