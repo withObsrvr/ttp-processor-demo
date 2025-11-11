@@ -164,3 +164,7 @@ ducklake-ingestion-obsrvr-v2/test-v4-meta.log
 ducklake-ingestion-obsrvr-v2/config/test-10-ledgers.yaml
 ducklake-ingestion-obsrvr-v2/config/test-cycle8-10ledgers.yaml
 ducklake-ingestion-obsrvr-v2/docs/CYCLE8_HANDOFF.md
+test-cycle9-run.log
+ducklake-ingestion-obsrvr-v2/config/test-cycle9-10ledgers.yaml
+ducklake-ingestion-obsrvr-v2/docs/CYCLE9_HANDOFF.md
+ducklake-ingestion-obsrvr-v2/docs/CYCLE9_SHAPE.md

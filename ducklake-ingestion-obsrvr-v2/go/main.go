@@ -55,6 +55,8 @@ const (
 	BalancesMinorVersion     = 0
 	EffectsMinorVersion      = 0 // Cycle 8: v1.0
 	TradesMinorVersion       = 0 // Cycle 8: v1.0
+	AccountsMinorVersion     = 0 // Cycle 9: v1.0
+	TrustlinesMinorVersion   = 0 // Cycle 9: v1.0
 )
 
 // Config represents the application configuration
@@ -406,14 +408,85 @@ type TradeData struct {
 	LedgerRange uint32    // Data partition key
 }
 
+// AccountData represents a single account snapshot (Cycle 9)
+// Obsrvr playbook: core.accounts_snapshot_v1
+type AccountData struct {
+	// Identity (3 fields)
+	AccountID       string    // Account public key
+	LedgerSequence  uint32    // Ledger when snapshot taken
+	ClosedAt        time.Time // Ledger close time
+
+	// Balance (1 field)
+	Balance string // Native XLM balance in stroops
+
+	// Account Settings (5 fields)
+	SequenceNumber uint64  // Account sequence number
+	NumSubentries  uint32  // Count of trustlines + offers + signers + data
+	NumSponsoring  uint32  // Number of entries this account sponsors
+	NumSponsored   uint32  // Number of entries sponsored for this account
+	HomeDomain     *string // Account home domain (nullable)
+
+	// Thresholds (4 fields)
+	MasterWeight  uint32 // Master key weight
+	LowThreshold  uint32 // Low threshold
+	MedThreshold  uint32 // Medium threshold
+	HighThreshold uint32 // High threshold
+
+	// Flags (5 fields)
+	Flags              uint32 // Raw flags bitmask
+	AuthRequired       bool   // Authorization required flag
+	AuthRevocable      bool   // Authorization revocable flag
+	AuthImmutable      bool   // Authorization immutable flag
+	AuthClawbackEnabled bool  // Clawback enabled flag
+
+	// Signers (1 field)
+	Signers *string // JSON array of signers: [{"key": "...", "weight": N}]
+
+	// Sponsorship (1 field)
+	SponsorAccount *string // Account that sponsors this account (nullable)
+
+	// Metadata (3 fields)
+	CreatedAt   time.Time // When ingested
+	UpdatedAt   time.Time // Last updated
+	LedgerRange uint32    // Data partition key (ledger / 10000 * 10000)
+}
+
+// TrustlineData represents a single trustline snapshot (Cycle 9)
+// Obsrvr playbook: core.trustlines_snapshot_v1
+type TrustlineData struct {
+	// Identity (4 fields)
+	AccountID   string // Account that trusts the asset
+	AssetCode   string // Asset code (e.g., "USDC")
+	AssetIssuer string // Asset issuer account
+	AssetType   string // Asset type (credit_alphanum4, credit_alphanum12)
+
+	// Trust & Balance (4 fields)
+	Balance            string // Current asset balance
+	TrustLimit         string // Maximum trusted amount
+	BuyingLiabilities  string // Liabilities for buying
+	SellingLiabilities string // Liabilities for selling
+
+	// Authorization (3 fields)
+	Authorized                        bool // Trustline is authorized
+	AuthorizedToMaintainLiabilities   bool // Can maintain liabilities
+	ClawbackEnabled                   bool // Clawback is enabled
+
+	// Metadata (3 fields)
+	LedgerSequence uint32    // Ledger when snapshot taken
+	CreatedAt      time.Time // When ingested
+	LedgerRange    uint32    // Data partition key
+}
+
 // WorkerBuffers holds buffers for all tables for a single worker
 type WorkerBuffers struct {
 	ledgers       []LedgerData
 	transactions  []TransactionData
 	operations    []OperationData
 	balances      []BalanceData
-	effects       []EffectData // Cycle 8: Effects table
-	trades        []TradeData  // Cycle 8: Trades table
+	effects       []EffectData    // Cycle 8: Effects table
+	trades        []TradeData     // Cycle 8: Trades table
+	accounts      []AccountData   // Cycle 9: Accounts snapshot
+	trustlines    []TrustlineData // Cycle 9: Trustlines snapshot
 	lastCommit    time.Time
 }
 
@@ -482,8 +555,10 @@ type Ingester struct {
 	transactionAppender *duckdb.Appender
 	operationAppender   *duckdb.Appender
 	balanceAppender     *duckdb.Appender
-	effectAppender      *duckdb.Appender // Cycle 8: Effects appender
-	tradeAppender       *duckdb.Appender // Cycle 8: Trades appender
+	effectAppender      *duckdb.Appender  // Cycle 8: Effects appender
+	tradeAppender       *duckdb.Appender  // Cycle 8: Trades appender
+	accountAppender     *duckdb.Appender  // Cycle 9: Accounts appender
+	trustlineAppender   *duckdb.Appender  // Cycle 9: Trustlines appender
 
 	buffers     WorkerBuffers
 	lastCommit  time.Time
@@ -961,6 +1036,16 @@ func (ing *Ingester) initializeDuckLake() error {
 		return fmt.Errorf("failed to create trades table: %w", err)
 	}
 
+	// Create accounts table (Cycle 9)
+	if err := ing.createAccountsTable(); err != nil {
+		return fmt.Errorf("failed to create accounts table: %w", err)
+	}
+
+	// Create trustlines table (Cycle 9)
+	if err := ing.createTrustlinesTable(); err != nil {
+		return fmt.Errorf("failed to create trustlines table: %w", err)
+	}
+
 	// Create Obsrvr metadata tables (v2.0)
 	if err := ing.createMetadataTables(); err != nil {
 		return fmt.Errorf("failed to create metadata tables: %w", err)
@@ -1029,7 +1114,19 @@ func (ing *Ingester) initializeDuckLake() error {
 		return fmt.Errorf("failed to create trade appender: %w", err)
 	}
 
-	log.Println("V2: Appenders initialized for all 6 tables (ledgers_row_v2, transactions_row_v2, operations_row_v2, native_balances_snapshot_v1, effects_row_v1, trades_row_v1)")
+	// Cycle 9: Accounts appender
+	ing.accountAppender, err = duckdb.NewAppenderFromConn(ing.conn, "", "accounts_snapshot_v1")
+	if err != nil {
+		return fmt.Errorf("failed to create account appender: %w", err)
+	}
+
+	// Cycle 9: Trustlines appender
+	ing.trustlineAppender, err = duckdb.NewAppenderFromConn(ing.conn, "", "trustlines_snapshot_v1")
+	if err != nil {
+		return fmt.Errorf("failed to create trustline appender: %w", err)
+	}
+
+	log.Println("V2: Appenders initialized for all 8 tables (ledgers_row_v2, transactions_row_v2, operations_row_v2, native_balances_snapshot_v1, effects_row_v1, trades_row_v1, accounts_snapshot_v1, trustlines_snapshot_v1)")
 
 	return nil
 }
@@ -1158,6 +1255,26 @@ func (ing *Ingester) registerDatasets() error {
 			Owner:        "stellar-ingestion",
 			Purpose:      "DEX trade executions from orderbook (5 operation types, supports V0-V4 meta)",
 			Grain:        "row",
+		},
+		{
+			Name:         "core.accounts_snapshot_v1",
+			Tier:         "silver",
+			Domain:       "core",
+			MajorVersion: 1,
+			MinorVersion: AccountsMinorVersion,
+			Owner:        "stellar-ingestion",
+			Purpose:      "Complete account state snapshots including flags, thresholds, signers, and sponsorship",
+			Grain:        "snapshot",
+		},
+		{
+			Name:         "core.trustlines_snapshot_v1",
+			Tier:         "silver",
+			Domain:       "core",
+			MajorVersion: 1,
+			MinorVersion: TrustlinesMinorVersion,
+			Owner:        "stellar-ingestion",
+			Purpose:      "Non-native asset holdings with trust limits, liabilities, and authorization flags",
+			Grain:        "snapshot",
 		},
 	}
 
@@ -1357,6 +1474,8 @@ func (ing *Ingester) processLedger(ctx context.Context, rawLedger *pb.RawLedger)
 	balances := ing.extractBalances(&lcm)
 	effects := ing.extractEffectsForLedger(&lcm, closedAt)   // Cycle 8
 	trades := ing.extractTradesForLedger(&lcm, closedAt)     // Cycle 8
+	accounts := ing.extractAccounts(&lcm)                     // Cycle 9
+	trustlines := ing.extractTrustlines(&lcm)                 // Cycle 9
 
 	// Add to buffers
 	ing.buffers.ledgers = append(ing.buffers.ledgers, ledgerData)
@@ -1365,6 +1484,8 @@ func (ing *Ingester) processLedger(ctx context.Context, rawLedger *pb.RawLedger)
 	ing.buffers.balances = append(ing.buffers.balances, balances...)
 	ing.buffers.effects = append(ing.buffers.effects, effects...)       // Cycle 8
 	ing.buffers.trades = append(ing.buffers.trades, trades...)           // Cycle 8
+	ing.buffers.accounts = append(ing.buffers.accounts, accounts...)     // Cycle 9
+	ing.buffers.trustlines = append(ing.buffers.trustlines, trustlines...) // Cycle 9
 
 	// Check if we should flush (based on ledger count or time)
 	shouldFlush := len(ing.buffers.ledgers) >= ing.config.DuckLake.BatchSize ||
@@ -2565,11 +2686,13 @@ func (ing *Ingester) flush(ctx context.Context) error {
 	numTransactions := len(ing.buffers.transactions)
 	numOperations := len(ing.buffers.operations)
 	numBalances := len(ing.buffers.balances)
-	numEffects := len(ing.buffers.effects)   // Cycle 8
-	numTrades := len(ing.buffers.trades)     // Cycle 8
+	numEffects := len(ing.buffers.effects)       // Cycle 8
+	numTrades := len(ing.buffers.trades)         // Cycle 8
+	numAccounts := len(ing.buffers.accounts)     // Cycle 9
+	numTrustlines := len(ing.buffers.trustlines) // Cycle 9
 
-	log.Printf("[FLUSH] Starting multi-table flush (separate transactions): %d ledgers, %d transactions, %d operations, %d balances, %d effects, %d trades",
-		numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades)
+	log.Printf("[FLUSH] Starting multi-table flush (separate transactions): %d ledgers, %d transactions, %d operations, %d balances, %d effects, %d trades, %d accounts, %d trustlines",
+		numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades, numAccounts, numTrustlines)
 	flushStart := time.Now()
 
 	// ========================================
@@ -2946,7 +3069,104 @@ func (ing *Ingester) flush(ctx context.Context) error {
 	}
 
 	// ========================================
-	// 7. RECORD QUALITY CHECK RESULTS (Obsrvr v2.0)
+	// 7. INSERT INTO accounts_snapshot_v1 (V2: Cycle 9)
+	// ========================================
+	if numAccounts > 0 {
+		log.Printf("[FLUSH] V2: Appending %d accounts via Appender API...", numAccounts)
+		appendStart := time.Now()
+
+		for _, account := range ing.buffers.accounts {
+			err := ing.accountAppender.AppendRow(
+				// Identity (3 fields)
+				account.AccountID,
+				account.LedgerSequence,
+				account.ClosedAt,
+				// Balance (1 field)
+				account.Balance,
+				// Account Settings (5 fields)
+				account.SequenceNumber,
+				account.NumSubentries,
+				account.NumSponsoring,
+				account.NumSponsored,
+				ptrToInterface(account.HomeDomain),
+				// Thresholds (4 fields)
+				account.MasterWeight,
+				account.LowThreshold,
+				account.MedThreshold,
+				account.HighThreshold,
+				// Flags (5 fields)
+				account.Flags,
+				account.AuthRequired,
+				account.AuthRevocable,
+				account.AuthImmutable,
+				account.AuthClawbackEnabled,
+				// Signers (1 field)
+				ptrToInterface(account.Signers),
+				// Sponsorship (1 field)
+				ptrToInterface(account.SponsorAccount),
+				// Metadata (3 fields)
+				account.CreatedAt,
+				account.UpdatedAt,
+				account.LedgerRange,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to append account %s at ledger %d: %w", account.AccountID, account.LedgerSequence, err)
+			}
+		}
+
+		// Flush appender to commit rows to DuckLake
+		flushStart := time.Now()
+		if err := ing.accountAppender.Flush(); err != nil {
+			return fmt.Errorf("failed to flush account appender: %w", err)
+		}
+		log.Printf("[FLUSH] ✓ V2: Appended and flushed %d accounts in %v (append: %v, flush: %v)",
+			numAccounts, time.Since(appendStart), flushStart.Sub(appendStart), time.Since(flushStart))
+	}
+
+	// ========================================
+	// 8. INSERT INTO trustlines_snapshot_v1 (V2: Cycle 9)
+	// ========================================
+	if numTrustlines > 0 {
+		log.Printf("[FLUSH] V2: Appending %d trustlines via Appender API...", numTrustlines)
+		appendStart := time.Now()
+
+		for _, trustline := range ing.buffers.trustlines {
+			err := ing.trustlineAppender.AppendRow(
+				// Identity (4 fields)
+				trustline.AccountID,
+				trustline.AssetCode,
+				trustline.AssetIssuer,
+				trustline.AssetType,
+				// Trust & Balance (4 fields)
+				trustline.Balance,
+				trustline.TrustLimit,
+				trustline.BuyingLiabilities,
+				trustline.SellingLiabilities,
+				// Authorization (3 fields)
+				trustline.Authorized,
+				trustline.AuthorizedToMaintainLiabilities,
+				trustline.ClawbackEnabled,
+				// Metadata (3 fields)
+				trustline.LedgerSequence,
+				trustline.CreatedAt,
+				trustline.LedgerRange,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to append trustline %s:%s for account %s: %w", trustline.AssetCode, trustline.AssetIssuer, trustline.AccountID, err)
+			}
+		}
+
+		// Flush appender to commit rows to DuckLake
+		flushStart := time.Now()
+		if err := ing.trustlineAppender.Flush(); err != nil {
+			return fmt.Errorf("failed to flush trustline appender: %w", err)
+		}
+		log.Printf("[FLUSH] ✓ V2: Appended and flushed %d trustlines in %v (append: %v, flush: %v)",
+			numTrustlines, time.Since(appendStart), flushStart.Sub(appendStart), time.Since(flushStart))
+	}
+
+	// ========================================
+	// 9. RECORD QUALITY CHECK RESULTS (Obsrvr v2.0)
 	// ========================================
 	if len(qualityResults) > 0 {
 		log.Printf("[QUALITY] Recording quality check results to _meta_quality...")
@@ -2957,24 +3177,26 @@ func (ing *Ingester) flush(ctx context.Context) error {
 	}
 
 	// ========================================
-	// 8. RECORD DATA LINEAGE (Obsrvr v2.0)
+	// 10. RECORD DATA LINEAGE (Obsrvr v2.0)
 	// ========================================
 	log.Printf("[LINEAGE] Recording data lineage to _meta_lineage...")
-	if err := ing.recordLineage(numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades); err != nil {
+	if err := ing.recordLineage(numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades, numAccounts, numTrustlines); err != nil {
 		log.Printf("⚠️  Warning: Failed to record lineage: %v", err)
 		// Non-fatal: continue with flush completion
 	}
 
-	log.Printf("[FLUSH] ✅ COMPLETE: Flushed %d ledgers, %d transactions, %d operations, %d balances, %d effects, %d trades in %v total",
-		numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades, time.Since(flushStart))
+	log.Printf("[FLUSH] ✅ COMPLETE: Flushed %d ledgers, %d transactions, %d operations, %d balances, %d effects, %d trades, %d accounts, %d trustlines in %v total",
+		numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades, numAccounts, numTrustlines, time.Since(flushStart))
 
 	// Clear all buffers
 	ing.buffers.ledgers = ing.buffers.ledgers[:0]
 	ing.buffers.transactions = ing.buffers.transactions[:0]
 	ing.buffers.operations = ing.buffers.operations[:0]
 	ing.buffers.balances = ing.buffers.balances[:0]
-	ing.buffers.effects = ing.buffers.effects[:0]     // Cycle 8
-	ing.buffers.trades = ing.buffers.trades[:0]       // Cycle 8
+	ing.buffers.effects = ing.buffers.effects[:0]       // Cycle 8
+	ing.buffers.trades = ing.buffers.trades[:0]         // Cycle 8
+	ing.buffers.accounts = ing.buffers.accounts[:0]     // Cycle 9
+	ing.buffers.trustlines = ing.buffers.trustlines[:0] // Cycle 9
 	ing.lastCommit = time.Now()
 
 	return nil
@@ -2982,7 +3204,7 @@ func (ing *Ingester) flush(ctx context.Context) error {
 
 // recordLineage records data lineage information for the current batch to _meta_lineage table
 // This tracks the source ledger range, processor version, and row counts for each dataset
-func (ing *Ingester) recordLineage(numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades int) error {
+func (ing *Ingester) recordLineage(numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades, numAccounts, numTrustlines int) error {
 	if numLedgers == 0 {
 		return nil // No data to record
 	}
@@ -3052,7 +3274,23 @@ func (ing *Ingester) recordLineage(numLedgers, numTransactions, numOperations, n
 		})
 	}
 
-	// OPTIMIZED: Batched insert with single query instead of 6 individual inserts
+	// Record accounts if present (Cycle 9)
+	if numAccounts > 0 {
+		entries = append(entries, LineageEntry{
+			Dataset:  "core.accounts_snapshot_v1",
+			RowCount: numAccounts,
+		})
+	}
+
+	// Record trustlines if present (Cycle 9)
+	if numTrustlines > 0 {
+		entries = append(entries, LineageEntry{
+			Dataset:  "core.trustlines_snapshot_v1",
+			RowCount: numTrustlines,
+		})
+	}
+
+	// OPTIMIZED: Batched insert with single query instead of 8 individual inserts
 	// This reduces network roundtrips from 4 to 1 (critical for remote PostgreSQL)
 	createdAt := time.Now()
 
@@ -3130,6 +3368,12 @@ func (ing *Ingester) Close() error {
 	}
 	if ing.tradeAppender != nil {
 		ing.tradeAppender.Close()
+	}
+	if ing.accountAppender != nil {
+		ing.accountAppender.Close()
+	}
+	if ing.trustlineAppender != nil {
+		ing.trustlineAppender.Close()
 	}
 
 	// Close native connection
