@@ -619,3 +619,54 @@ func (ing *Ingester) createTrustlinesTable() error {
 
 	return nil
 }
+
+// createOffersTable creates the offers snapshot table (Cycle 10)
+// Obsrvr playbook naming: core.offers_snapshot_v1
+// - Domain: core (blockchain infrastructure data)
+// - Subject: offers
+// - Grain: snapshot (point-in-time DEX orderbook state per ledger range)
+// - Version: v1 (15 fields)
+func (ing *Ingester) createOffersTable() error {
+	offersSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s.%s.offers_snapshot_v1 (
+			-- Identity (4 fields)
+			offer_id BIGINT NOT NULL,
+			seller_account VARCHAR NOT NULL,
+			ledger_sequence BIGINT NOT NULL,
+			closed_at TIMESTAMP NOT NULL,
+
+			-- Selling Asset (3 fields)
+			selling_asset_type VARCHAR NOT NULL,
+			selling_asset_code VARCHAR,
+			selling_asset_issuer VARCHAR,
+
+			-- Buying Asset (3 fields)
+			buying_asset_type VARCHAR NOT NULL,
+			buying_asset_code VARCHAR,
+			buying_asset_issuer VARCHAR,
+
+			-- Offer Details (2 fields)
+			amount VARCHAR NOT NULL,
+			price VARCHAR NOT NULL,
+
+			-- Flags (1 field)
+			flags INT NOT NULL,
+
+			-- Metadata (2 fields)
+			created_at TIMESTAMP NOT NULL,
+			ledger_range BIGINT NOT NULL
+		)`,
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName,
+	)
+
+	if _, err := ing.db.Exec(offersSQL); err != nil {
+		return fmt.Errorf("failed to create offers_snapshot_v1 table: %w", err)
+	}
+
+	log.Printf("Table ready: %s.%s.offers_snapshot_v1",
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName)
+
+	return nil
+}

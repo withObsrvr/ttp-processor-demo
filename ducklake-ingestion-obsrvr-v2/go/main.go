@@ -57,6 +57,7 @@ const (
 	TradesMinorVersion       = 0 // Cycle 8: v1.0
 	AccountsMinorVersion     = 0 // Cycle 9: v1.0
 	TrustlinesMinorVersion   = 0 // Cycle 9: v1.0
+	OffersMinorVersion       = 0 // Cycle 10: v1.0
 )
 
 // Config represents the application configuration
@@ -477,6 +478,37 @@ type TrustlineData struct {
 	LedgerRange    uint32    // Data partition key
 }
 
+// OfferData represents a single DEX offer snapshot (Cycle 10)
+// Obsrvr playbook: core.offers_snapshot_v1
+type OfferData struct {
+	// Identity (4 fields)
+	OfferID        int64     // Stellar offer ID
+	SellerAccount  string    // Account placing the offer
+	LedgerSequence uint32    // Ledger when snapshot taken
+	ClosedAt       time.Time // Ledger close time
+
+	// Selling Asset (3 fields)
+	SellingAssetType   string  // Asset type (native, credit_alphanum4, credit_alphanum12)
+	SellingAssetCode   *string // Asset code (nullable for native)
+	SellingAssetIssuer *string // Issuer account (nullable for native)
+
+	// Buying Asset (3 fields)
+	BuyingAssetType   string  // Asset type
+	BuyingAssetCode   *string // Asset code (nullable for native)
+	BuyingAssetIssuer *string // Issuer account (nullable for native)
+
+	// Offer Details (2 fields)
+	Amount string // Amount of selling asset (stroops)
+	Price  string // Price as "N/D" ratio (e.g., "157/100")
+
+	// Flags (1 field)
+	Flags uint32 // Offer flags bitmask
+
+	// Metadata (2 fields)
+	CreatedAt   time.Time // When ingested
+	LedgerRange uint32    // Data partition key
+}
+
 // WorkerBuffers holds buffers for all tables for a single worker
 type WorkerBuffers struct {
 	ledgers       []LedgerData
@@ -487,6 +519,7 @@ type WorkerBuffers struct {
 	trades        []TradeData     // Cycle 8: Trades table
 	accounts      []AccountData   // Cycle 9: Accounts snapshot
 	trustlines    []TrustlineData // Cycle 9: Trustlines snapshot
+	offers        []OfferData     // Cycle 10: Offers snapshot
 	lastCommit    time.Time
 }
 
@@ -559,6 +592,7 @@ type Ingester struct {
 	tradeAppender       *duckdb.Appender  // Cycle 8: Trades appender
 	accountAppender     *duckdb.Appender  // Cycle 9: Accounts appender
 	trustlineAppender   *duckdb.Appender  // Cycle 9: Trustlines appender
+	offerAppender       *duckdb.Appender  // Cycle 10: Offers appender
 
 	buffers     WorkerBuffers
 	lastCommit  time.Time
@@ -1046,6 +1080,11 @@ func (ing *Ingester) initializeDuckLake() error {
 		return fmt.Errorf("failed to create trustlines table: %w", err)
 	}
 
+	// Create offers table (Cycle 10)
+	if err := ing.createOffersTable(); err != nil {
+		return fmt.Errorf("failed to create offers table: %w", err)
+	}
+
 	// Create Obsrvr metadata tables (v2.0)
 	if err := ing.createMetadataTables(); err != nil {
 		return fmt.Errorf("failed to create metadata tables: %w", err)
@@ -1126,7 +1165,13 @@ func (ing *Ingester) initializeDuckLake() error {
 		return fmt.Errorf("failed to create trustline appender: %w", err)
 	}
 
-	log.Println("V2: Appenders initialized for all 8 tables (ledgers_row_v2, transactions_row_v2, operations_row_v2, native_balances_snapshot_v1, effects_row_v1, trades_row_v1, accounts_snapshot_v1, trustlines_snapshot_v1)")
+	// Cycle 10: Offers appender
+	ing.offerAppender, err = duckdb.NewAppenderFromConn(ing.conn, "", "offers_snapshot_v1")
+	if err != nil {
+		return fmt.Errorf("failed to create offer appender: %w", err)
+	}
+
+	log.Println("V2: Appenders initialized for all 9 tables (ledgers_row_v2, transactions_row_v2, operations_row_v2, native_balances_snapshot_v1, effects_row_v1, trades_row_v1, accounts_snapshot_v1, trustlines_snapshot_v1, offers_snapshot_v1)")
 
 	return nil
 }
@@ -1274,6 +1319,16 @@ func (ing *Ingester) registerDatasets() error {
 			MinorVersion: TrustlinesMinorVersion,
 			Owner:        "stellar-ingestion",
 			Purpose:      "Non-native asset holdings with trust limits, liabilities, and authorization flags",
+			Grain:        "snapshot",
+		},
+		{
+			Name:         "core.offers_snapshot_v1",
+			Tier:         "silver",
+			Domain:       "core",
+			MajorVersion: 1,
+			MinorVersion: OffersMinorVersion,
+			Owner:        "stellar-ingestion",
+			Purpose:      "DEX orderbook offer state with selling/buying assets, amount, and price",
 			Grain:        "snapshot",
 		},
 	}
@@ -1476,16 +1531,18 @@ func (ing *Ingester) processLedger(ctx context.Context, rawLedger *pb.RawLedger)
 	trades := ing.extractTradesForLedger(&lcm, closedAt)     // Cycle 8
 	accounts := ing.extractAccounts(&lcm)                     // Cycle 9
 	trustlines := ing.extractTrustlines(&lcm)                 // Cycle 9
+	offers := ing.extractOffers(&lcm)                         // Cycle 10
 
 	// Add to buffers
 	ing.buffers.ledgers = append(ing.buffers.ledgers, ledgerData)
 	ing.buffers.transactions = append(ing.buffers.transactions, transactions...)
 	ing.buffers.operations = append(ing.buffers.operations, operations...)
 	ing.buffers.balances = append(ing.buffers.balances, balances...)
-	ing.buffers.effects = append(ing.buffers.effects, effects...)       // Cycle 8
-	ing.buffers.trades = append(ing.buffers.trades, trades...)           // Cycle 8
-	ing.buffers.accounts = append(ing.buffers.accounts, accounts...)     // Cycle 9
+	ing.buffers.effects = append(ing.buffers.effects, effects...)         // Cycle 8
+	ing.buffers.trades = append(ing.buffers.trades, trades...)             // Cycle 8
+	ing.buffers.accounts = append(ing.buffers.accounts, accounts...)       // Cycle 9
 	ing.buffers.trustlines = append(ing.buffers.trustlines, trustlines...) // Cycle 9
+	ing.buffers.offers = append(ing.buffers.offers, offers...)             // Cycle 10
 
 	// Check if we should flush (based on ledger count or time)
 	shouldFlush := len(ing.buffers.ledgers) >= ing.config.DuckLake.BatchSize ||
@@ -2690,9 +2747,10 @@ func (ing *Ingester) flush(ctx context.Context) error {
 	numTrades := len(ing.buffers.trades)         // Cycle 8
 	numAccounts := len(ing.buffers.accounts)     // Cycle 9
 	numTrustlines := len(ing.buffers.trustlines) // Cycle 9
+	numOffers := len(ing.buffers.offers)         // Cycle 10
 
-	log.Printf("[FLUSH] Starting multi-table flush (separate transactions): %d ledgers, %d transactions, %d operations, %d balances, %d effects, %d trades, %d accounts, %d trustlines",
-		numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades, numAccounts, numTrustlines)
+	log.Printf("[FLUSH] Starting multi-table flush (separate transactions): %d ledgers, %d transactions, %d operations, %d balances, %d effects, %d trades, %d accounts, %d trustlines, %d offers",
+		numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades, numAccounts, numTrustlines, numOffers)
 	flushStart := time.Now()
 
 	// ========================================
@@ -3166,7 +3224,52 @@ func (ing *Ingester) flush(ctx context.Context) error {
 	}
 
 	// ========================================
-	// 9. RECORD QUALITY CHECK RESULTS (Obsrvr v2.0)
+	// 9. INSERT INTO offers_snapshot_v1 (V2: Cycle 10)
+	// ========================================
+	if numOffers > 0 {
+		log.Printf("[FLUSH] V2: Appending %d offers via Appender API...", numOffers)
+		appendStart := time.Now()
+
+		for _, offer := range ing.buffers.offers {
+			err := ing.offerAppender.AppendRow(
+				// Identity (4 fields)
+				offer.OfferID,
+				offer.SellerAccount,
+				offer.LedgerSequence,
+				offer.ClosedAt,
+				// Selling Asset (3 fields)
+				offer.SellingAssetType,
+				ptrToInterface(offer.SellingAssetCode),
+				ptrToInterface(offer.SellingAssetIssuer),
+				// Buying Asset (3 fields)
+				offer.BuyingAssetType,
+				ptrToInterface(offer.BuyingAssetCode),
+				ptrToInterface(offer.BuyingAssetIssuer),
+				// Offer Details (2 fields)
+				offer.Amount,
+				offer.Price,
+				// Flags (1 field)
+				offer.Flags,
+				// Metadata (2 fields)
+				offer.CreatedAt,
+				offer.LedgerRange,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to append offer %d for seller %s: %w", offer.OfferID, offer.SellerAccount, err)
+			}
+		}
+
+		// Flush appender to commit rows to DuckLake
+		flushStart := time.Now()
+		if err := ing.offerAppender.Flush(); err != nil {
+			return fmt.Errorf("failed to flush offer appender: %w", err)
+		}
+		log.Printf("[FLUSH] ✓ V2: Appended and flushed %d offers in %v (append: %v, flush: %v)",
+			numOffers, time.Since(appendStart), flushStart.Sub(appendStart), time.Since(flushStart))
+	}
+
+	// ========================================
+	// 10. RECORD QUALITY CHECK RESULTS (Obsrvr v2.0)
 	// ========================================
 	if len(qualityResults) > 0 {
 		log.Printf("[QUALITY] Recording quality check results to _meta_quality...")
@@ -3177,16 +3280,16 @@ func (ing *Ingester) flush(ctx context.Context) error {
 	}
 
 	// ========================================
-	// 10. RECORD DATA LINEAGE (Obsrvr v2.0)
+	// 11. RECORD DATA LINEAGE (Obsrvr v2.0)
 	// ========================================
 	log.Printf("[LINEAGE] Recording data lineage to _meta_lineage...")
-	if err := ing.recordLineage(numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades, numAccounts, numTrustlines); err != nil {
+	if err := ing.recordLineage(numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades, numAccounts, numTrustlines, numOffers); err != nil {
 		log.Printf("⚠️  Warning: Failed to record lineage: %v", err)
 		// Non-fatal: continue with flush completion
 	}
 
-	log.Printf("[FLUSH] ✅ COMPLETE: Flushed %d ledgers, %d transactions, %d operations, %d balances, %d effects, %d trades, %d accounts, %d trustlines in %v total",
-		numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades, numAccounts, numTrustlines, time.Since(flushStart))
+	log.Printf("[FLUSH] ✅ COMPLETE: Flushed %d ledgers, %d transactions, %d operations, %d balances, %d effects, %d trades, %d accounts, %d trustlines, %d offers in %v total",
+		numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades, numAccounts, numTrustlines, numOffers, time.Since(flushStart))
 
 	// Clear all buffers
 	ing.buffers.ledgers = ing.buffers.ledgers[:0]
@@ -3197,6 +3300,7 @@ func (ing *Ingester) flush(ctx context.Context) error {
 	ing.buffers.trades = ing.buffers.trades[:0]         // Cycle 8
 	ing.buffers.accounts = ing.buffers.accounts[:0]     // Cycle 9
 	ing.buffers.trustlines = ing.buffers.trustlines[:0] // Cycle 9
+	ing.buffers.offers = ing.buffers.offers[:0]         // Cycle 10
 	ing.lastCommit = time.Now()
 
 	return nil
@@ -3204,7 +3308,7 @@ func (ing *Ingester) flush(ctx context.Context) error {
 
 // recordLineage records data lineage information for the current batch to _meta_lineage table
 // This tracks the source ledger range, processor version, and row counts for each dataset
-func (ing *Ingester) recordLineage(numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades, numAccounts, numTrustlines int) error {
+func (ing *Ingester) recordLineage(numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades, numAccounts, numTrustlines, numOffers int) error {
 	if numLedgers == 0 {
 		return nil // No data to record
 	}
@@ -3290,7 +3394,15 @@ func (ing *Ingester) recordLineage(numLedgers, numTransactions, numOperations, n
 		})
 	}
 
-	// OPTIMIZED: Batched insert with single query instead of 8 individual inserts
+	// Record offers if present (Cycle 10)
+	if numOffers > 0 {
+		entries = append(entries, LineageEntry{
+			Dataset:  "core.offers_snapshot_v1",
+			RowCount: numOffers,
+		})
+	}
+
+	// OPTIMIZED: Batched insert with single query instead of 9 individual inserts
 	// This reduces network roundtrips from 4 to 1 (critical for remote PostgreSQL)
 	createdAt := time.Now()
 
@@ -3374,6 +3486,9 @@ func (ing *Ingester) Close() error {
 	}
 	if ing.trustlineAppender != nil {
 		ing.trustlineAppender.Close()
+	}
+	if ing.offerAppender != nil {
+		ing.offerAppender.Close()
 	}
 
 	// Close native connection
