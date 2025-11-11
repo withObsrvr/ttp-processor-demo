@@ -168,3 +168,6 @@ test-cycle9-run.log
 ducklake-ingestion-obsrvr-v2/config/test-cycle9-10ledgers.yaml
 ducklake-ingestion-obsrvr-v2/docs/CYCLE9_HANDOFF.md
 ducklake-ingestion-obsrvr-v2/docs/CYCLE9_SHAPE.md
+ducklake-ingestion-obsrvr-v2/docs/CYCLE10_SHAPE.md
+ducklake-ingestion-obsrvr-v2/test-cycle9-bugfix.log
+ducklake-ingestion-obsrvr-v2/go/test-cycle9-bugfix.log

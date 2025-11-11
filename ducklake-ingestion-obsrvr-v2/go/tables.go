@@ -516,7 +516,7 @@ func (ing *Ingester) createMetadataTables() error {
 // - Domain: core (blockchain infrastructure data)
 // - Subject: accounts
 // - Grain: snapshot (point-in-time account state per ledger range)
-// - Version: v1 (24 fields)
+// - Version: v1 (23 fields)
 func (ing *Ingester) createAccountsTable() error {
 	accountsSQL := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s.%s.accounts_snapshot_v1 (

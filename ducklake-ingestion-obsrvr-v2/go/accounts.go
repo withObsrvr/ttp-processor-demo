@@ -76,7 +76,9 @@ func (ing *Ingester) extractAccounts(lcm *xdr.LedgerCloseMeta) []AccountData {
 		accountData := extractAccountData(accountEntry, ledgerSeq, closedAt)
 
 		// Store in map (overwrites if account appears multiple times)
-		accountMap[accountData.AccountID] = &accountData
+		// Create a copy to avoid pointer reuse bug (loop variable is reused)
+		accountCopy := accountData
+		accountMap[accountData.AccountID] = &accountCopy
 	}
 
 	// Convert map to slice
@@ -273,7 +275,9 @@ func (ing *Ingester) extractTrustlines(lcm *xdr.LedgerCloseMeta) []TrustlineData
 		key := fmt.Sprintf("%s:%s:%s", trustlineData.AccountID, trustlineData.AssetCode, trustlineData.AssetIssuer)
 
 		// Store in map (overwrites if trustline appears multiple times)
-		trustlineMap[key] = &trustlineData
+		// Create a copy to avoid pointer reuse bug (loop variable is reused)
+		trustlineCopy := trustlineData
+		trustlineMap[key] = &trustlineCopy
 	}
 
 	// Convert map to slice
