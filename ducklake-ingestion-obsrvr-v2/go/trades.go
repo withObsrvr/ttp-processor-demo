@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"fmt"
 	"math/big"
 	"time"
@@ -250,9 +251,46 @@ func extractTradeFromClaimAtom(
 		trade.Price = calculatePrice(ob.AmountSold, ob.AmountBought)
 
 	case xdr.ClaimAtomTypeClaimAtomTypeLiquidityPool:
-		// Liquidity pool trade (defer to future cycle - NICE TO HAVE)
-		// For now, skip these trades
-		return trade, fmt.Errorf("liquidity pool trades not yet supported")
+		// Liquidity pool trade (Protocol 18+)
+		// V2 Cycle 13: Extract LP trades
+		lp := claimAtom.MustLiquidityPool()
+
+		// Set trade type to liquidity_pool
+		trade.TradeType = "liquidity_pool"
+
+		// Seller account is not available in ClaimAtom context
+		// Would need operation source - use placeholder for now
+		trade.SellerAccount = "unknown"
+
+		// From pool's perspective:
+		// - assetBought/amountBought: sent TO pool (user sold this)
+		// - assetSold/amountSold: taken FROM pool (user bought this)
+
+		// Selling asset (what user sent to pool)
+		sellingCode, sellingIssuer := extractAssetFromAsset(lp.AssetBought)
+		if sellingCode != "" {
+			trade.SellingAssetCode = &sellingCode
+		}
+		if sellingIssuer != "" {
+			trade.SellingAssetIssuer = &sellingIssuer
+		}
+		trade.SellingAmount = amount.String(lp.AmountBought)
+
+		// Buying asset (what user received from pool)
+		buyingCode, buyingIssuer := extractAssetFromAsset(lp.AssetSold)
+		if buyingCode != "" {
+			trade.BuyingAssetCode = &buyingCode
+		}
+		if buyingIssuer != "" {
+			trade.BuyingAssetIssuer = &buyingIssuer
+		}
+		trade.BuyingAmount = amount.String(lp.AmountSold)
+
+		// Buyer is the liquidity pool ID
+		trade.BuyerAccount = hex.EncodeToString(lp.LiquidityPoolId[:])
+
+		// Calculate price (selling / buying)
+		trade.Price = calculatePrice(lp.AmountBought, lp.AmountSold)
 	}
 
 	return trade, nil

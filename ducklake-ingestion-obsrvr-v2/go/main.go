@@ -55,9 +55,11 @@ const (
 	BalancesMinorVersion     = 0
 	EffectsMinorVersion      = 0 // Cycle 8: v1.0
 	TradesMinorVersion       = 0 // Cycle 8: v1.0
-	AccountsMinorVersion     = 0 // Cycle 9: v1.0
-	TrustlinesMinorVersion   = 0 // Cycle 9: v1.0
-	OffersMinorVersion       = 0 // Cycle 10: v1.0
+	AccountsMinorVersion          = 0 // Cycle 9: v1.0
+	TrustlinesMinorVersion        = 0 // Cycle 9: v1.0
+	OffersMinorVersion            = 0 // Cycle 10: v1.0
+	ClaimableBalancesMinorVersion = 0 // Cycle 11: v1.0
+	LiquidityPoolsMinorVersion    = 0 // Cycle 12: v1.0
 )
 
 // Config represents the application configuration
@@ -509,18 +511,151 @@ type OfferData struct {
 	LedgerRange uint32    // Data partition key
 }
 
+// ClaimableBalanceData represents a claimable balance state snapshot (Protocol 14+)
+// Cycle 11: Claimable Balances Snapshot
+type ClaimableBalanceData struct {
+	// Identity (4 fields)
+	BalanceID      string    // 32-byte hash as hex string (unique identifier)
+	Sponsor        string    // Account funding the reserve
+	LedgerSequence uint32    // Ledger when snapshot taken
+	ClosedAt       time.Time // Ledger close time
+
+	// Asset & Amount (4 fields)
+	AssetType   string  // Asset type (native, credit_alphanum4, credit_alphanum12)
+	AssetCode   *string // Asset code (nullable for native)
+	AssetIssuer *string // Issuer account (nullable for native)
+	Amount      int64   // Amount in stroops
+
+	// Claimants (1 field)
+	ClaimantsCount int32 // Number of accounts that can claim this balance
+
+	// Flags (1 field)
+	Flags uint32 // Claimable balance flags bitmask
+
+	// Metadata (2 fields)
+	CreatedAt   time.Time // When ingested
+	LedgerRange uint32    // Data partition key
+}
+
+// LiquidityPoolData represents a liquidity pool state snapshot (Protocol 18+)
+// AMM (Automated Market Maker) pools for constant product market making
+// Cycle 12: Liquidity Pools Snapshot
+type LiquidityPoolData struct {
+	// Identity (3 fields)
+	LiquidityPoolID string    // 32-byte pool ID as hex string (unique identifier)
+	LedgerSequence  uint32    // Ledger when snapshot taken
+	ClosedAt        time.Time // Ledger close time
+
+	// Pool Type (1 field)
+	PoolType string // Pool type ("constant_product")
+
+	// Fee (1 field)
+	Fee int32 // Fee in basis points (30 = 0.3%)
+
+	// Pool Shares (2 fields)
+	TrustlineCount  int32 // Number of trustlines to pool shares
+	TotalPoolShares int64 // Total pool shares issued (in stroops)
+
+	// Asset A (4 fields)
+	AssetAType   string  // Asset type (native, credit_alphanum4, credit_alphanum12)
+	AssetACode   *string // Asset code (nullable for native)
+	AssetAIssuer *string // Issuer account (nullable for native)
+	AssetAAmount int64   // Reserve amount in stroops
+
+	// Asset B (4 fields)
+	AssetBType   string  // Asset type (native, credit_alphanum4, credit_alphanum12)
+	AssetBCode   *string // Asset code (nullable for native)
+	AssetBIssuer *string // Issuer account (nullable for native)
+	AssetBAmount int64   // Reserve amount in stroops
+
+	// Metadata (2 fields)
+	CreatedAt   time.Time // When ingested
+	LedgerRange uint32    // Data partition key
+}
+
+// ContractEventData represents a single Soroban contract event
+// Includes diagnostic events (invocation tree), contract events, and system events
+// Cycle 14: Contract Events Stream
+type ContractEventData struct {
+	// Identity (5 fields)
+	EventID         string    // Unique: {tx_hash}:{op_index}:{event_index}
+	ContractID      *string   // Contract address (nullable for system events)
+	LedgerSequence  uint32    // Ledger number
+	TransactionHash string    // Transaction that emitted event
+	ClosedAt        time.Time // Ledger close time
+
+	// Event Type (2 fields)
+	EventType               string // "contract", "system", "diagnostic"
+	InSuccessfulContractCall bool   // True if event from successful contract call
+
+	// Event Data (5 fields - Hubble compatible with decoded versions)
+	TopicsJSON     string // JSON array of base64 XDR encoded SCVal topics
+	TopicsDecoded  string // JSON array of decoded SCVal topics (human-readable)
+	DataXDR        string // Base64 XDR encoded SCVal data
+	DataDecoded    string // Decoded SCVal data (human-readable JSON)
+	TopicCount     int32  // Number of topics (0-4)
+
+	// Context (2 fields)
+	OperationIndex uint32 // Operation index within transaction
+	EventIndex     uint32 // Event index within operation
+
+	// Metadata (2 fields)
+	CreatedAt   time.Time // When ingested
+	LedgerRange uint32    // Data partition key
+}
+
+// ContractDataData represents Soroban contract storage data
+// Protocol 20+ smart contract key-value storage
+// Obsrvr playbook: core.contract_data_snapshot_v1
+type ContractDataData struct {
+	// Identity (3 fields)
+	ContractId     string // Contract address (C...)
+	LedgerSequence uint32 // Ledger number
+	LedgerKeyHash  string // Hash of the ledger key
+
+	// Contract metadata (2 fields)
+	ContractKeyType    string // Type of key (e.g., "ContractData")
+	ContractDurability string // "PERSISTENT" or "TEMPORARY"
+
+	// Asset information (3 fields, nullable)
+	AssetCode   *string // Asset code (for SAC tokens)
+	AssetIssuer *string // Asset issuer (for SAC tokens)
+	AssetType   *string // Asset type
+
+	// Balance information (2 fields, nullable)
+	BalanceHolder *string // Account holding balance
+	Balance       *string // Balance as string (big.Int)
+
+	// Ledger metadata (4 fields)
+	LastModifiedLedger int32     // Last ledger that modified this entry
+	LedgerEntryChange  int32     // Type of ledger entry change
+	Deleted            bool      // True if entry was deleted
+	ClosedAt           time.Time // Ledger close time
+
+	// XDR data (1 field)
+	ContractDataXDR string // Base64 encoded full XDR
+
+	// Metadata (2 fields)
+	CreatedAt   time.Time // When ingested
+	LedgerRange uint32    // Data partition key
+}
+
 // WorkerBuffers holds buffers for all tables for a single worker
 type WorkerBuffers struct {
 	ledgers       []LedgerData
 	transactions  []TransactionData
 	operations    []OperationData
 	balances      []BalanceData
-	effects       []EffectData    // Cycle 8: Effects table
-	trades        []TradeData     // Cycle 8: Trades table
-	accounts      []AccountData   // Cycle 9: Accounts snapshot
-	trustlines    []TrustlineData // Cycle 9: Trustlines snapshot
-	offers        []OfferData     // Cycle 10: Offers snapshot
-	lastCommit    time.Time
+	effects       []EffectData         // Cycle 8: Effects table
+	trades        []TradeData          // Cycle 8: Trades table
+	accounts      []AccountData        // Cycle 9: Accounts snapshot
+	trustlines    []TrustlineData      // Cycle 9: Trustlines snapshot
+	offers            []OfferData             // Cycle 10: Offers snapshot
+	claimableBalances []ClaimableBalanceData  // Cycle 11: Claimable balances snapshot
+	liquidityPools    []LiquidityPoolData     // Cycle 12: Liquidity pools snapshot
+	contractEvents    []ContractEventData     // Cycle 11: Contract events stream
+	contractData      []ContractDataData      // Cycle 14: Contract data snapshot
+	lastCommit        time.Time
 }
 
 // Obsrvr Data Culture: Metadata Table Schemas
@@ -588,11 +723,15 @@ type Ingester struct {
 	transactionAppender *duckdb.Appender
 	operationAppender   *duckdb.Appender
 	balanceAppender     *duckdb.Appender
-	effectAppender      *duckdb.Appender  // Cycle 8: Effects appender
-	tradeAppender       *duckdb.Appender  // Cycle 8: Trades appender
-	accountAppender     *duckdb.Appender  // Cycle 9: Accounts appender
-	trustlineAppender   *duckdb.Appender  // Cycle 9: Trustlines appender
-	offerAppender       *duckdb.Appender  // Cycle 10: Offers appender
+	effectAppender       *duckdb.Appender // Cycle 8: Effects appender
+	tradeAppender        *duckdb.Appender // Cycle 8: Trades appender
+	accountAppender      *duckdb.Appender // Cycle 9: Accounts appender
+	trustlineAppender    *duckdb.Appender // Cycle 9: Trustlines appender
+	offerAppender             *duckdb.Appender // Cycle 10: Offers appender
+	claimableBalanceAppender  *duckdb.Appender // Cycle 11: Claimable balances appender
+	liquidityPoolAppender     *duckdb.Appender // Cycle 12: Liquidity pools appender
+	contractEventAppender     *duckdb.Appender // Cycle 11: Contract events appender
+	contractDataAppender      *duckdb.Appender // Cycle 14: Contract data appender
 
 	buffers     WorkerBuffers
 	lastCommit  time.Time
@@ -1085,6 +1224,21 @@ func (ing *Ingester) initializeDuckLake() error {
 		return fmt.Errorf("failed to create offers table: %w", err)
 	}
 
+	// Create claimable balances table (Cycle 11)
+	if err := ing.createClaimableBalancesTable(); err != nil {
+		return fmt.Errorf("failed to create claimable balances table: %w", err)
+	}
+
+	// Create liquidity pools table (Cycle 12)
+	if err := ing.createLiquidityPoolsTable(); err != nil {
+		return fmt.Errorf("failed to create liquidity pools table: %w", err)
+	}
+
+	// Create contract events table (Cycle 14)
+	if err := ing.createContractEventsTable(); err != nil {
+		return fmt.Errorf("failed to create contract events table: %w", err)
+	}
+
 	// Create Obsrvr metadata tables (v2.0)
 	if err := ing.createMetadataTables(); err != nil {
 		return fmt.Errorf("failed to create metadata tables: %w", err)
@@ -1171,7 +1325,25 @@ func (ing *Ingester) initializeDuckLake() error {
 		return fmt.Errorf("failed to create offer appender: %w", err)
 	}
 
-	log.Println("V2: Appenders initialized for all 9 tables (ledgers_row_v2, transactions_row_v2, operations_row_v2, native_balances_snapshot_v1, effects_row_v1, trades_row_v1, accounts_snapshot_v1, trustlines_snapshot_v1, offers_snapshot_v1)")
+	// Cycle 11: Claimable balances appender
+	ing.claimableBalanceAppender, err = duckdb.NewAppenderFromConn(ing.conn, "", "claimable_balances_snapshot_v1")
+	if err != nil {
+		return fmt.Errorf("failed to create claimable balance appender: %w", err)
+	}
+
+	// Cycle 12: Liquidity pools appender
+	ing.liquidityPoolAppender, err = duckdb.NewAppenderFromConn(ing.conn, "", "liquidity_pools_snapshot_v1")
+	if err != nil {
+		return fmt.Errorf("failed to create liquidity pool appender: %w", err)
+	}
+
+	// Cycle 14: Contract events appender
+	ing.contractEventAppender, err = duckdb.NewAppenderFromConn(ing.conn, "", "contract_events_stream_v1")
+	if err != nil {
+		return fmt.Errorf("failed to create contract event appender: %w", err)
+	}
+
+	log.Println("V2: Appenders initialized for all 10 tables (ledgers_row_v2, transactions_row_v2, operations_row_v2, native_balances_snapshot_v1, effects_row_v1, trades_row_v1, accounts_snapshot_v1, trustlines_snapshot_v1, offers_snapshot_v1, contract_events_stream_v1)")
 
 	return nil
 }
@@ -1330,6 +1502,36 @@ func (ing *Ingester) registerDatasets() error {
 			Owner:        "stellar-ingestion",
 			Purpose:      "DEX orderbook offer state with selling/buying assets, amount, and price",
 			Grain:        "snapshot",
+		},
+		{ // Cycle 11: Claimable balances
+			Name:         "core.claimable_balances_snapshot_v1",
+			Tier:         "silver",
+			Domain:       "core",
+			MajorVersion: 1,
+			MinorVersion: ClaimableBalancesMinorVersion,
+			Owner:        "stellar-ingestion",
+			Purpose:      "Claimable balance state for Protocol 14+ deferred payments and multi-party asset distribution",
+			Grain:        "snapshot",
+		},
+		{ // Cycle 12: Liquidity pools
+			Name:         "core.liquidity_pools_snapshot_v1",
+			Tier:         "silver",
+			Domain:       "core",
+			MajorVersion: 1,
+			MinorVersion: LiquidityPoolsMinorVersion,
+			Owner:        "stellar-ingestion",
+			Purpose:      "AMM liquidity pool state for Protocol 18+ constant product pools with asset pairs and reserves",
+			Grain:        "snapshot",
+		},
+		{ // Cycle 14: Contract events
+			Name:         "core.contract_events_stream_v1",
+			Tier:         "silver",
+			Domain:       "core",
+			MajorVersion: 1,
+			MinorVersion: 0, // Initial version
+			Owner:        "stellar-ingestion",
+			Purpose:      "Soroban contract events including diagnostic (invocation tree), contract, and system events",
+			Grain:        "stream",
 		},
 	}
 
@@ -1527,22 +1729,28 @@ func (ing *Ingester) processLedger(ctx context.Context, rawLedger *pb.RawLedger)
 	transactions := ing.extractTransactions(&lcm, closedAt)
 	operations := ing.extractOperations(&lcm, closedAt)
 	balances := ing.extractBalances(&lcm)
-	effects := ing.extractEffectsForLedger(&lcm, closedAt)   // Cycle 8
-	trades := ing.extractTradesForLedger(&lcm, closedAt)     // Cycle 8
-	accounts := ing.extractAccounts(&lcm)                     // Cycle 9
-	trustlines := ing.extractTrustlines(&lcm)                 // Cycle 9
-	offers := ing.extractOffers(&lcm)                         // Cycle 10
+	effects := ing.extractEffectsForLedger(&lcm, closedAt)      // Cycle 8
+	trades := ing.extractTradesForLedger(&lcm, closedAt)        // Cycle 8
+	accounts := ing.extractAccounts(&lcm)                        // Cycle 9
+	trustlines := ing.extractTrustlines(&lcm)                    // Cycle 9
+	offers := ing.extractOffers(&lcm)                            // Cycle 10
+	claimableBalances := ing.extractClaimableBalances(&lcm)      // Cycle 11
+	liquidityPools := ing.extractLiquidityPools(&lcm)            // Cycle 12
+	contractEvents := ing.extractContractEvents(&lcm)            // Cycle 14
 
 	// Add to buffers
 	ing.buffers.ledgers = append(ing.buffers.ledgers, ledgerData)
 	ing.buffers.transactions = append(ing.buffers.transactions, transactions...)
 	ing.buffers.operations = append(ing.buffers.operations, operations...)
 	ing.buffers.balances = append(ing.buffers.balances, balances...)
-	ing.buffers.effects = append(ing.buffers.effects, effects...)         // Cycle 8
-	ing.buffers.trades = append(ing.buffers.trades, trades...)             // Cycle 8
-	ing.buffers.accounts = append(ing.buffers.accounts, accounts...)       // Cycle 9
-	ing.buffers.trustlines = append(ing.buffers.trustlines, trustlines...) // Cycle 9
-	ing.buffers.offers = append(ing.buffers.offers, offers...)             // Cycle 10
+	ing.buffers.effects = append(ing.buffers.effects, effects...)                // Cycle 8
+	ing.buffers.trades = append(ing.buffers.trades, trades...)                   // Cycle 8
+	ing.buffers.accounts = append(ing.buffers.accounts, accounts...)             // Cycle 9
+	ing.buffers.trustlines = append(ing.buffers.trustlines, trustlines...)       // Cycle 9
+	ing.buffers.offers = append(ing.buffers.offers, offers...)                           // Cycle 10
+	ing.buffers.claimableBalances = append(ing.buffers.claimableBalances, claimableBalances...) // Cycle 11
+	ing.buffers.liquidityPools = append(ing.buffers.liquidityPools, liquidityPools...)          // Cycle 12
+	ing.buffers.contractEvents = append(ing.buffers.contractEvents, contractEvents...)  // Cycle 14
 
 	// Check if we should flush (based on ledger count or time)
 	shouldFlush := len(ing.buffers.ledgers) >= ing.config.DuckLake.BatchSize ||
@@ -2747,10 +2955,13 @@ func (ing *Ingester) flush(ctx context.Context) error {
 	numTrades := len(ing.buffers.trades)         // Cycle 8
 	numAccounts := len(ing.buffers.accounts)     // Cycle 9
 	numTrustlines := len(ing.buffers.trustlines) // Cycle 9
-	numOffers := len(ing.buffers.offers)         // Cycle 10
+	numOffers := len(ing.buffers.offers)                         // Cycle 10
+	numClaimableBalances := len(ing.buffers.claimableBalances)   // Cycle 11
+	numLiquidityPools := len(ing.buffers.liquidityPools)         // Cycle 12
+	numContractEvents := len(ing.buffers.contractEvents)         // Cycle 14
 
-	log.Printf("[FLUSH] Starting multi-table flush (separate transactions): %d ledgers, %d transactions, %d operations, %d balances, %d effects, %d trades, %d accounts, %d trustlines, %d offers",
-		numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades, numAccounts, numTrustlines, numOffers)
+	log.Printf("[FLUSH] Starting multi-table flush (separate transactions): %d ledgers, %d transactions, %d operations, %d balances, %d effects, %d trades, %d accounts, %d trustlines, %d offers, %d claimable balances, %d liquidity pools, %d contract events",
+		numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades, numAccounts, numTrustlines, numOffers, numClaimableBalances, numLiquidityPools, numContractEvents)
 	flushStart := time.Now()
 
 	// ========================================
@@ -3269,7 +3480,141 @@ func (ing *Ingester) flush(ctx context.Context) error {
 	}
 
 	// ========================================
-	// 10. RECORD QUALITY CHECK RESULTS (Obsrvr v2.0)
+	// 9.5. INSERT INTO claimable_balances_snapshot_v1 (V2: Cycle 11)
+	// ========================================
+	if numClaimableBalances > 0 {
+		log.Printf("[FLUSH] V2: Appending %d claimable balances via Appender API...", numClaimableBalances)
+		appendStart := time.Now()
+
+		for _, balance := range ing.buffers.claimableBalances {
+			err := ing.claimableBalanceAppender.AppendRow(
+				// Identity (4 fields)
+				balance.BalanceID,
+				balance.Sponsor,
+				balance.LedgerSequence,
+				balance.ClosedAt,
+				// Asset & Amount (4 fields)
+				balance.AssetType,
+				ptrToInterface(balance.AssetCode),
+				ptrToInterface(balance.AssetIssuer),
+				balance.Amount,
+				// Claimants (1 field)
+				balance.ClaimantsCount,
+				// Flags (1 field)
+				balance.Flags,
+				// Metadata (2 fields)
+				balance.CreatedAt,
+				balance.LedgerRange,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to append claimable balance %s: %w", balance.BalanceID, err)
+			}
+		}
+
+		// Flush appender to commit rows to DuckLake
+		flushStart := time.Now()
+		if err := ing.claimableBalanceAppender.Flush(); err != nil {
+			return fmt.Errorf("failed to flush claimable balance appender: %w", err)
+		}
+		log.Printf("[FLUSH] ✓ V2: Appended and flushed %d claimable balances in %v (append: %v, flush: %v)",
+			numClaimableBalances, time.Since(appendStart), flushStart.Sub(appendStart), time.Since(flushStart))
+	}
+
+	// ========================================
+	// 9.6. INSERT INTO liquidity_pools_snapshot_v1 (V2: Cycle 12)
+	// ========================================
+	if numLiquidityPools > 0 {
+		log.Printf("[FLUSH] V2: Appending %d liquidity pools via Appender API...", numLiquidityPools)
+		appendStart := time.Now()
+
+		for _, pool := range ing.buffers.liquidityPools {
+			err := ing.liquidityPoolAppender.AppendRow(
+				// Identity (3 fields)
+				pool.LiquidityPoolID,
+				pool.LedgerSequence,
+				pool.ClosedAt,
+				// Pool Type (1 field)
+				pool.PoolType,
+				// Fee (1 field)
+				pool.Fee,
+				// Pool Shares (2 fields)
+				pool.TrustlineCount,
+				pool.TotalPoolShares,
+				// Asset A (4 fields)
+				pool.AssetAType,
+				ptrToInterface(pool.AssetACode),
+				ptrToInterface(pool.AssetAIssuer),
+				pool.AssetAAmount,
+				// Asset B (4 fields)
+				pool.AssetBType,
+				ptrToInterface(pool.AssetBCode),
+				ptrToInterface(pool.AssetBIssuer),
+				pool.AssetBAmount,
+				// Metadata (2 fields)
+				pool.CreatedAt,
+				pool.LedgerRange,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to append liquidity pool %s: %w", pool.LiquidityPoolID, err)
+			}
+		}
+
+		// Flush appender to commit rows to DuckLake
+		flushStart := time.Now()
+		if err := ing.liquidityPoolAppender.Flush(); err != nil {
+			return fmt.Errorf("failed to flush liquidity pool appender: %w", err)
+		}
+		log.Printf("[FLUSH] ✓ V2: Appended and flushed %d liquidity pools in %v (append: %v, flush: %v)",
+			numLiquidityPools, time.Since(appendStart), flushStart.Sub(appendStart), time.Since(flushStart))
+	}
+
+	// ========================================
+	// 10. INSERT INTO contract_events_stream_v1 (V2: Cycle 14)
+	// ========================================
+	if numContractEvents > 0 {
+		log.Printf("[FLUSH] V2: Appending %d contract events via Appender API...", numContractEvents)
+		appendStart := time.Now()
+
+		for _, event := range ing.buffers.contractEvents {
+			err := ing.contractEventAppender.AppendRow(
+				// Identity (5 fields)
+				event.EventID,
+				ptrToInterface(event.ContractID),
+				event.LedgerSequence,
+				event.TransactionHash,
+				event.ClosedAt,
+				// Event Type (2 fields)
+				event.EventType,
+				event.InSuccessfulContractCall,
+				// Event Data (5 fields - Hubble compatible with decoded versions)
+				event.TopicsJSON,
+				event.TopicsDecoded,
+				event.DataXDR,
+				event.DataDecoded,
+				event.TopicCount,
+				// Context (2 fields)
+				event.OperationIndex,
+				event.EventIndex,
+				// Metadata (2 fields)
+				event.CreatedAt,
+				event.LedgerRange,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to append contract event %s: %w", event.EventID, err)
+			}
+		}
+
+		// Flush appender to commit rows to DuckLake
+		flushStart := time.Now()
+		if err := ing.contractEventAppender.Flush(); err != nil {
+			return fmt.Errorf("failed to flush contract event appender: %w", err)
+		}
+		log.Printf("[FLUSH] ✓ V2: Appended and flushed %d contract events in %v (append: %v, flush: %v)",
+			numContractEvents, time.Since(appendStart), flushStart.Sub(appendStart), time.Since(flushStart))
+	}
+
+	// ========================================
+	// 11. RECORD QUALITY CHECK RESULTS (Obsrvr v2.0)
 	// ========================================
 	if len(qualityResults) > 0 {
 		log.Printf("[QUALITY] Recording quality check results to _meta_quality...")
@@ -3283,7 +3628,7 @@ func (ing *Ingester) flush(ctx context.Context) error {
 	// 11. RECORD DATA LINEAGE (Obsrvr v2.0)
 	// ========================================
 	log.Printf("[LINEAGE] Recording data lineage to _meta_lineage...")
-	if err := ing.recordLineage(numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades, numAccounts, numTrustlines, numOffers); err != nil {
+	if err := ing.recordLineage(numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades, numAccounts, numTrustlines, numOffers, numClaimableBalances, numLiquidityPools, numContractEvents); err != nil {
 		log.Printf("⚠️  Warning: Failed to record lineage: %v", err)
 		// Non-fatal: continue with flush completion
 	}
@@ -3298,9 +3643,12 @@ func (ing *Ingester) flush(ctx context.Context) error {
 	ing.buffers.balances = ing.buffers.balances[:0]
 	ing.buffers.effects = ing.buffers.effects[:0]       // Cycle 8
 	ing.buffers.trades = ing.buffers.trades[:0]         // Cycle 8
-	ing.buffers.accounts = ing.buffers.accounts[:0]     // Cycle 9
-	ing.buffers.trustlines = ing.buffers.trustlines[:0] // Cycle 9
-	ing.buffers.offers = ing.buffers.offers[:0]         // Cycle 10
+	ing.buffers.accounts = ing.buffers.accounts[:0]       // Cycle 9
+	ing.buffers.trustlines = ing.buffers.trustlines[:0]   // Cycle 9
+	ing.buffers.offers = ing.buffers.offers[:0]           // Cycle 10
+	ing.buffers.claimableBalances = ing.buffers.claimableBalances[:0] // Cycle 11
+	ing.buffers.liquidityPools = ing.buffers.liquidityPools[:0]       // Cycle 12
+	ing.buffers.contractEvents = ing.buffers.contractEvents[:0] // Cycle 14
 	ing.lastCommit = time.Now()
 
 	return nil
@@ -3308,7 +3656,7 @@ func (ing *Ingester) flush(ctx context.Context) error {
 
 // recordLineage records data lineage information for the current batch to _meta_lineage table
 // This tracks the source ledger range, processor version, and row counts for each dataset
-func (ing *Ingester) recordLineage(numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades, numAccounts, numTrustlines, numOffers int) error {
+func (ing *Ingester) recordLineage(numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades, numAccounts, numTrustlines, numOffers, numClaimableBalances, numLiquidityPools, numContractEvents int) error {
 	if numLedgers == 0 {
 		return nil // No data to record
 	}
@@ -3402,7 +3750,31 @@ func (ing *Ingester) recordLineage(numLedgers, numTransactions, numOperations, n
 		})
 	}
 
-	// OPTIMIZED: Batched insert with single query instead of 9 individual inserts
+	// Record claimable balances if present (Cycle 11)
+	if numClaimableBalances > 0 {
+		entries = append(entries, LineageEntry{
+			Dataset:  "core.claimable_balances_snapshot_v1",
+			RowCount: numClaimableBalances,
+		})
+	}
+
+	// Record liquidity pools if present (Cycle 12)
+	if numLiquidityPools > 0 {
+		entries = append(entries, LineageEntry{
+			Dataset:  "core.liquidity_pools_snapshot_v1",
+			RowCount: numLiquidityPools,
+		})
+	}
+
+	// Record contract events if present (Cycle 14)
+	if numContractEvents > 0 {
+		entries = append(entries, LineageEntry{
+			Dataset:  "core.contract_events_stream_v1",
+			RowCount: numContractEvents,
+		})
+	}
+
+	// OPTIMIZED: Batched insert with single query instead of 10 individual inserts
 	// This reduces network roundtrips from 4 to 1 (critical for remote PostgreSQL)
 	createdAt := time.Now()
 
@@ -3489,6 +3861,15 @@ func (ing *Ingester) Close() error {
 	}
 	if ing.offerAppender != nil {
 		ing.offerAppender.Close()
+	}
+	if ing.claimableBalanceAppender != nil { // Cycle 11
+		ing.claimableBalanceAppender.Close()
+	}
+	if ing.liquidityPoolAppender != nil { // Cycle 12
+		ing.liquidityPoolAppender.Close()
+	}
+	if ing.contractEventAppender != nil { // Cycle 14
+		ing.contractEventAppender.Close()
 	}
 
 	// Close native connection

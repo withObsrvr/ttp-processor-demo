@@ -670,3 +670,193 @@ func (ing *Ingester) createOffersTable() error {
 
 	return nil
 }
+
+// createClaimableBalancesTable creates the claimable_balances_snapshot_v1 table
+// Cycle 11: Claimable Balances Snapshot
+func (ing *Ingester) createClaimableBalancesTable() error {
+	claimableBalancesSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s.%s.claimable_balances_snapshot_v1 (
+			-- Identity (4 fields)
+			balance_id VARCHAR NOT NULL,
+			sponsor VARCHAR NOT NULL,
+			ledger_sequence BIGINT NOT NULL,
+			closed_at TIMESTAMP NOT NULL,
+
+			-- Asset & Amount (4 fields)
+			asset_type VARCHAR NOT NULL,
+			asset_code VARCHAR,
+			asset_issuer VARCHAR,
+			amount BIGINT NOT NULL,
+
+			-- Claimants (1 field)
+			claimants_count INT NOT NULL,
+
+			-- Flags (1 field)
+			flags INT NOT NULL,
+
+			-- Metadata (2 fields)
+			created_at TIMESTAMP NOT NULL,
+			ledger_range BIGINT NOT NULL
+		)`,
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName,
+	)
+
+	if _, err := ing.db.Exec(claimableBalancesSQL); err != nil {
+		return fmt.Errorf("failed to create claimable_balances_snapshot_v1 table: %w", err)
+	}
+
+	log.Printf("Table ready: %s.%s.claimable_balances_snapshot_v1",
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName)
+
+	return nil
+}
+
+// createLiquidityPoolsTable creates the liquidity_pools_snapshot_v1 table
+// Cycle 12: Liquidity Pools Snapshot
+func (ing *Ingester) createLiquidityPoolsTable() error {
+	liquidityPoolsSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s.%s.liquidity_pools_snapshot_v1 (
+			-- Identity (3 fields)
+			liquidity_pool_id VARCHAR NOT NULL,
+			ledger_sequence BIGINT NOT NULL,
+			closed_at TIMESTAMP NOT NULL,
+
+			-- Pool Type (1 field)
+			pool_type VARCHAR NOT NULL,
+
+			-- Fee (1 field)
+			fee INT NOT NULL,
+
+			-- Pool Shares (2 fields)
+			trustline_count INT NOT NULL,
+			total_pool_shares BIGINT NOT NULL,
+
+			-- Asset A (4 fields)
+			asset_a_type VARCHAR NOT NULL,
+			asset_a_code VARCHAR,
+			asset_a_issuer VARCHAR,
+			asset_a_amount BIGINT NOT NULL,
+
+			-- Asset B (4 fields)
+			asset_b_type VARCHAR NOT NULL,
+			asset_b_code VARCHAR,
+			asset_b_issuer VARCHAR,
+			asset_b_amount BIGINT NOT NULL,
+
+			-- Metadata (2 fields)
+			created_at TIMESTAMP NOT NULL,
+			ledger_range BIGINT NOT NULL
+		)`,
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName,
+	)
+
+	if _, err := ing.db.Exec(liquidityPoolsSQL); err != nil {
+		return fmt.Errorf("failed to create liquidity_pools_snapshot_v1 table: %w", err)
+	}
+
+	log.Printf("Table ready: %s.%s.liquidity_pools_snapshot_v1",
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName)
+
+	return nil
+}
+
+// createContractEventsTable creates the contract_events_stream_v1 table
+// Cycle 14: Contract Events Stream
+func (ing *Ingester) createContractEventsTable() error {
+	contractEventsSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s.%s.contract_events_stream_v1 (
+			-- Identity (5 fields)
+			event_id VARCHAR NOT NULL,
+			contract_id VARCHAR,
+			ledger_sequence BIGINT NOT NULL,
+			transaction_hash VARCHAR NOT NULL,
+			closed_at TIMESTAMP NOT NULL,
+
+			-- Event Type (2 fields)
+			event_type VARCHAR NOT NULL,
+			in_successful_contract_call BOOLEAN NOT NULL,
+
+			-- Event Data (5 fields - Hubble compatible with decoded versions)
+			topics_json VARCHAR NOT NULL,
+			topics_decoded VARCHAR NOT NULL,
+			data_xdr VARCHAR NOT NULL,
+			data_decoded VARCHAR NOT NULL,
+			topic_count INT NOT NULL,
+
+			-- Context (2 fields)
+			operation_index INT NOT NULL,
+			event_index INT NOT NULL,
+
+			-- Metadata (2 fields)
+			created_at TIMESTAMP NOT NULL,
+			ledger_range BIGINT NOT NULL
+		)`,
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName,
+	)
+
+	if _, err := ing.db.Exec(contractEventsSQL); err != nil {
+		return fmt.Errorf("failed to create contract_events_stream_v1 table: %w", err)
+	}
+
+	log.Printf("Table ready: %s.%s.contract_events_stream_v1",
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName)
+
+	return nil
+}
+
+// createContractDataTable creates the contract_data_snapshot_v1 table
+// Cycle 14: Contract Data Snapshot
+func (ing *Ingester) createContractDataTable() error {
+	contractDataSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s.%s.contract_data_snapshot_v1 (
+			-- Identity (3 fields)
+			contract_id VARCHAR NOT NULL,
+			ledger_sequence BIGINT NOT NULL,
+			ledger_key_hash VARCHAR NOT NULL,
+
+			-- Contract metadata (2 fields)
+			contract_key_type VARCHAR NOT NULL,
+			contract_durability VARCHAR NOT NULL,
+
+			-- Asset information (3 fields, nullable)
+			asset_code VARCHAR,
+			asset_issuer VARCHAR,
+			asset_type VARCHAR,
+
+			-- Balance information (2 fields, nullable)
+			balance_holder VARCHAR,
+			balance VARCHAR,
+
+			-- Ledger metadata (4 fields)
+			last_modified_ledger INT NOT NULL,
+			ledger_entry_change INT NOT NULL,
+			deleted BOOLEAN NOT NULL,
+			closed_at TIMESTAMP NOT NULL,
+
+			-- XDR data (1 field)
+			contract_data_xdr TEXT NOT NULL,
+
+			-- Metadata (2 fields)
+			created_at TIMESTAMP NOT NULL,
+			ledger_range BIGINT NOT NULL
+		)`,
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName,
+	)
+
+	if _, err := ing.db.Exec(contractDataSQL); err != nil {
+		return fmt.Errorf("failed to create contract_data_snapshot_v1 table: %w", err)
+	}
+
+	log.Printf("Table ready: %s.%s.contract_data_snapshot_v1",
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName)
+
+	return nil
+}
