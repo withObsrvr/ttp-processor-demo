@@ -1,10 +1,11 @@
-package server
+package main
 
 import (
 	"context"
 	"fmt"
 	"log"
 	"os"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc"
@@ -12,8 +13,67 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	// Import the flowctl proto
-	flowctlpb "github.com/withobsrvr/flowctl/proto"
+	flowctlpb "github.com/withObsrvr/flowctl/proto"
 )
+
+// IngesterMetrics holds processing metrics for flowctl reporting
+type IngesterMetrics struct {
+	mu                    sync.RWMutex
+	TotalLedgersProcessed uint64
+	TotalTablesWritten    uint64
+	LastLedgerSequence    uint32
+	LedgersPerSecond      float64
+	QualityChecksPassed   uint64
+	QualityChecksFailed   uint64
+	LastFlushDuration     float64 // in seconds
+	TotalRows             uint64
+}
+
+// UpdateMetrics updates the ingester metrics
+func (m *IngesterMetrics) UpdateMetrics(ledgerCount uint64, tableCount uint64, lastSeq uint32, ledgersPerSec float64, rowCount uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.TotalLedgersProcessed += ledgerCount
+	m.TotalTablesWritten += tableCount
+	m.LastLedgerSequence = lastSeq
+	m.LedgersPerSecond = ledgersPerSec
+	m.TotalRows += rowCount
+}
+
+// UpdateQualityMetrics updates quality check metrics
+func (m *IngesterMetrics) UpdateQualityMetrics(passed, failed uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.QualityChecksPassed = passed
+	m.QualityChecksFailed = failed
+}
+
+// UpdateFlushDuration updates the last flush duration
+func (m *IngesterMetrics) UpdateFlushDuration(duration time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.LastFlushDuration = duration.Seconds()
+}
+
+// GetSnapshot returns a snapshot of current metrics
+func (m *IngesterMetrics) GetSnapshot() map[string]float64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	return map[string]float64{
+		"total_ledgers_processed": float64(m.TotalLedgersProcessed),
+		"total_tables_written":    float64(m.TotalTablesWritten),
+		"last_ledger_sequence":    float64(m.LastLedgerSequence),
+		"ledgers_per_second":      m.LedgersPerSecond,
+		"quality_checks_passed":   float64(m.QualityChecksPassed),
+		"quality_checks_failed":   float64(m.QualityChecksFailed),
+		"last_flush_duration_sec": m.LastFlushDuration,
+		"total_rows_written":      float64(m.TotalRows),
+	}
+}
 
 // FlowctlController manages the interaction with the flowctl control plane
 type FlowctlController struct {
@@ -22,12 +82,12 @@ type FlowctlController struct {
 	serviceID         string
 	heartbeatInterval time.Duration
 	stopHeartbeat     chan struct{}
-	rawLedgerServer   *RawLedgerServer
+	metrics           *IngesterMetrics
 	endpoint          string
 }
 
 // NewFlowctlController creates a new controller for flowctl integration
-func NewFlowctlController(rawLedgerServer *RawLedgerServer) *FlowctlController {
+func NewFlowctlController(metrics *IngesterMetrics) *FlowctlController {
 	// Default values
 	interval := 10 * time.Second
 	endpoint := "localhost:8080" // Default endpoint
@@ -46,7 +106,7 @@ func NewFlowctlController(rawLedgerServer *RawLedgerServer) *FlowctlController {
 	return &FlowctlController{
 		heartbeatInterval: interval,
 		stopHeartbeat:     make(chan struct{}),
-		rawLedgerServer:   rawLedgerServer,
+		metrics:           metrics,
 		endpoint:          endpoint,
 	}
 }
@@ -66,14 +126,19 @@ func (fc *FlowctlController) RegisterWithFlowctl() error {
 	// Prepare service info
 	network := os.Getenv("STELLAR_NETWORK")
 	if network == "" {
-		network = "testnet" // Default to testnet
+		network = "mainnet" // Default to mainnet for this processor
 	}
 
 	healthPort := os.Getenv("HEALTH_PORT")
 	if healthPort == "" {
-		healthPort = "8088" // Default health port
+		healthPort = "8082" // Default health port for processor
 	}
 	healthEndpoint := fmt.Sprintf("http://localhost:%s/health", healthPort)
+
+	catalogName := os.Getenv("CATALOG_NAME")
+	if catalogName == "" {
+		catalogName = "unknown"
+	}
 
 	// Read component ID from environment (set by flowctl)
 	componentID := os.Getenv("FLOWCTL_COMPONENT_ID")
@@ -83,16 +148,19 @@ func (fc *FlowctlController) RegisterWithFlowctl() error {
 
 	// Create service info
 	serviceInfo := &flowctlpb.ServiceInfo{
-		ServiceType:      flowctlpb.ServiceType_SERVICE_TYPE_SOURCE,
+		ServiceType:      flowctlpb.ServiceType_SERVICE_TYPE_PROCESSOR,
 		ComponentId:      componentID, // Component ID from pipeline YAML
-		OutputEventTypes: []string{"raw_ledger_service.RawLedgerChunk"},
+		InputEventTypes:  []string{"raw_ledger_service.RawLedgerChunk"},
+		OutputEventTypes: []string{}, // Writes to DuckDB, not producing events
 		HealthEndpoint:   healthEndpoint,
 		MaxInflight:      100,
 		Metadata: map[string]string{
-			"network":      network,
-			"ledger_type":  "stellar",
-			"storage_type": os.Getenv("STORAGE_TYPE"),
-			"bucket_name":  os.Getenv("BUCKET_NAME"),
+			"network":       network,
+			"processor":     "ducklake-ingestion-obsrvr-v2",
+			"catalog_name":  catalogName,
+			"schema_name":   os.Getenv("SCHEMA_NAME"),
+			"version":       "v2.3.0",
+			"bronze_tables": "19",
 		},
 	}
 
@@ -101,23 +169,23 @@ func (fc *FlowctlController) RegisterWithFlowctl() error {
 	defer cancel()
 
 	log.Printf("Registering with flowctl control plane at %s", fc.endpoint)
-	
+
 	// Attempt to register
 	ack, err := fc.client.Register(ctx, serviceInfo)
 	if err != nil {
 		// If registration fails, use a simulated ID but log the error
-		fc.serviceID = "sim-stellar-source-" + time.Now().Format("20060102150405")
+		fc.serviceID = "sim-ducklake-processor-" + time.Now().Format("20060102150405")
 		log.Printf("Warning: Failed to register with flowctl. Using simulated ID: %s. Error: %v", fc.serviceID, err)
-		
+
 		// Start heartbeat loop anyway, it will use the simulated ID
 		go fc.startHeartbeatLoop()
 		return nil
 	}
-	
+
 	// Use the service ID from the response
 	fc.serviceID = ack.ServiceId
 	log.Printf("Successfully registered with flowctl control plane - Service ID: %s", fc.serviceID)
-	
+
 	// Log topic names and connection info if provided
 	if len(ack.TopicNames) > 0 {
 		log.Printf("Assigned topics: %v", ack.TopicNames)
@@ -150,20 +218,14 @@ func (fc *FlowctlController) startHeartbeatLoop() {
 
 // sendHeartbeat sends a single heartbeat to the control plane
 func (fc *FlowctlController) sendHeartbeat() {
-	// Get current metrics from the server
-	metrics := fc.rawLedgerServer.GetMetrics()
+	// Get current metrics snapshot
+	metricsSnapshot := fc.metrics.GetSnapshot()
 
 	// Create heartbeat message
 	heartbeat := &flowctlpb.ServiceHeartbeat{
 		ServiceId: fc.serviceID,
 		Timestamp: timestamppb.Now(),
-		Metrics: map[string]float64{
-			"success_count":            float64(metrics.SuccessCount),
-			"error_count":              float64(metrics.ErrorCount),
-			"total_processed":          float64(metrics.TotalProcessed),
-			"total_bytes_processed":    float64(metrics.TotalBytesProcessed),
-			"last_successful_sequence": float64(metrics.LastSuccessfulSeq),
-		},
+		Metrics:   metricsSnapshot,
 	}
 
 	// Send the heartbeat
@@ -176,7 +238,10 @@ func (fc *FlowctlController) sendHeartbeat() {
 		return
 	}
 
-	log.Printf("Sent heartbeat for service %s", fc.serviceID)
+	log.Printf("Sent heartbeat for service %s (ledgers: %.0f, ledgers/sec: %.2f)",
+		fc.serviceID,
+		metricsSnapshot["total_ledgers_processed"],
+		metricsSnapshot["ledgers_per_second"])
 }
 
 // Stop stops the flowctl controller and closes connections

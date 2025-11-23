@@ -12,6 +12,7 @@ enum ServiceType {
   SERVICE_TYPE_SOURCE = 1;
   SERVICE_TYPE_PROCESSOR = 2;
   SERVICE_TYPE_SINK = 3;
+  SERVICE_TYPE_PIPELINE = 4;  // Composite service containing source, processors, and sinks
 }
 
 // Service registration information
@@ -23,6 +24,7 @@ message ServiceInfo {
   string health_endpoint = 5;             // Prometheus metrics endpoint
   int32 max_inflight = 6;                 // Back-pressure credits
   map<string, string> metadata = 7;       // Additional service metadata
+  string component_id = 8;                // Component ID from pipeline YAML (e.g., "stellar-source")
 }
 
 // Registration acknowledgment
@@ -46,6 +48,7 @@ message ServiceStatus {
   bool is_healthy = 3;
   google.protobuf.Timestamp last_heartbeat = 4;
   map<string, double> metrics = 5;
+  string component_id = 6;                // Component ID from pipeline YAML
 }
 
 // List of registered services

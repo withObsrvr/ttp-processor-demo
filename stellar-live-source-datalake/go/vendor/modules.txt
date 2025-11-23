@@ -39,7 +39,7 @@ cloud.google.com/go/iam/apiv1/iampb
 cloud.google.com/go/monitoring/apiv3/v2
 cloud.google.com/go/monitoring/apiv3/v2/monitoringpb
 cloud.google.com/go/monitoring/internal
-# cloud.google.com/go/storage v1.48.0
+# cloud.google.com/go/storage v1.49.0
 ## explicit; go 1.21
 cloud.google.com/go/storage
 cloud.google.com/go/storage/experimental
@@ -345,10 +345,6 @@ github.com/go-logr/stdr
 # github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da
 ## explicit
 github.com/golang/groupcache/lru
-# github.com/golang/protobuf v1.5.4
-## explicit; go 1.17
-github.com/golang/protobuf/ptypes/empty
-github.com/golang/protobuf/ptypes/timestamp
 # github.com/google/s2a-go v0.1.8
 ## explicit; go 1.20
 github.com/google/s2a-go
@@ -379,7 +375,7 @@ github.com/google/uuid
 ## explicit; go 1.19
 github.com/googleapis/enterprise-certificate-proxy/client
 github.com/googleapis/enterprise-certificate-proxy/client/util
-# github.com/googleapis/gax-go/v2 v2.14.0
+# github.com/googleapis/gax-go/v2 v2.14.1
 ## explicit; go 1.21
 github.com/googleapis/gax-go/v2
 github.com/googleapis/gax-go/v2/apierror
@@ -387,6 +383,7 @@ github.com/googleapis/gax-go/v2/apierror/internal/proto
 github.com/googleapis/gax-go/v2/callctx
 github.com/googleapis/gax-go/v2/internal
 github.com/googleapis/gax-go/v2/internallog
+github.com/googleapis/gax-go/v2/internallog/grpclog
 github.com/googleapis/gax-go/v2/internallog/internal
 github.com/googleapis/gax-go/v2/iterator
 # github.com/hashicorp/golang-lru v1.0.2
@@ -498,7 +495,7 @@ github.com/stretchr/objx
 github.com/stretchr/testify/assert
 github.com/stretchr/testify/assert/yaml
 github.com/stretchr/testify/mock
-# github.com/withobsrvr/flowctl v0.0.0-00010101000000-000000000000 => github.com/withObsrvr/flowctl v0.0.1
+# github.com/withobsrvr/flowctl v0.0.4
 ## explicit; go 1.23
 github.com/withobsrvr/flowctl/proto
 # github.com/zeebo/errs v1.4.0
@@ -634,7 +631,7 @@ golang.org/x/text/unicode/norm
 # golang.org/x/time v0.8.0
 ## explicit; go 1.18
 golang.org/x/time/rate
-# google.golang.org/api v0.214.0
+# google.golang.org/api v0.215.0
 ## explicit; go 1.21
 google.golang.org/api/googleapi
 google.golang.org/api/googleapi/transport
@@ -867,6 +864,5 @@ gopkg.in/djherbis/stream.v1
 ## explicit
 gopkg.in/yaml.v3
 # google.golang.org/grpc/stats/opentelemetry => google.golang.org/grpc/stats/opentelemetry v0.0.0-20240907200651-3ffb98b2c93a
-# github.com/withobsrvr/flowctl => github.com/withObsrvr/flowctl v0.0.1
 # github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/gen/raw_ledger_service => ./gen/raw_ledger_service
 # github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/server => ./server
