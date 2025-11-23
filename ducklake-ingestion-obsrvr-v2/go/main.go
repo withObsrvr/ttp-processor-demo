@@ -640,6 +640,167 @@ type ContractDataData struct {
 	LedgerRange uint32    // Data partition key
 }
 
+// ContractCodeData represents Soroban smart contract WASM code
+// Protocol 20+ contract deployments
+// Obsrvr playbook: core.contract_code_snapshot_v1
+type ContractCodeData struct {
+	// Identity (2 fields)
+	ContractCodeHash string // Hash of WASM code (hex)
+	LedgerKeyHash    string // Ledger key hash
+
+	// Extension (1 field)
+	ContractCodeExtV int32 // Extension version (0 or 1)
+
+	// Ledger metadata (4 fields)
+	LastModifiedLedger int32     // Last ledger that modified this entry
+	LedgerEntryChange  int32     // Type of ledger entry change
+	Deleted            bool      // True if entry was deleted
+	ClosedAt           time.Time // Ledger close time
+
+	// Ledger tracking (1 field)
+	LedgerSequence uint32 // Ledger when code was deployed
+
+	// WASM metadata (10 fields, nullable)
+	NInstructions     *int64 // Number of WASM instructions
+	NFunctions        *int64 // Number of functions
+	NGlobals          *int64 // Number of global variables
+	NTableEntries     *int64 // Number of table entries
+	NTypes            *int64 // Number of type definitions
+	NDataSegments     *int64 // Number of data segments
+	NElemSegments     *int64 // Number of element segments
+	NImports          *int64 // Number of imports
+	NExports          *int64 // Number of exports
+	NDataSegmentBytes *int64 // Total data segment bytes
+
+	// Metadata (2 fields)
+	CreatedAt   time.Time // When ingested
+	LedgerRange uint32    // Data partition key
+}
+
+// ConfigSettingData represents network configuration settings (Cycle 16)
+// Tracks Soroban compute and resource limits
+// Obsrvr playbook: core.config_settings_snapshot_v1
+type ConfigSettingData struct {
+	// Identity (2 fields)
+	ConfigSettingID int32  // Config setting identifier
+	LedgerSequence  uint32 // When this config was active
+
+	// Ledger metadata (3 fields)
+	LastModifiedLedger int32     // Last ledger where config changed
+	Deleted            bool      // Config setting removed
+	ClosedAt           time.Time // Ledger close time
+
+	// Soroban compute settings (4 fields, nullable)
+	LedgerMaxInstructions           *int64  // Max instructions per ledger
+	TxMaxInstructions               *int64  // Max instructions per transaction
+	FeeRatePerInstructionsIncrement *int64  // Fee rate per instruction increment
+	TxMemoryLimit                   *uint32 // Transaction memory limit
+
+	// Soroban ledger cost settings (8 fields, nullable)
+	LedgerMaxReadLedgerEntries  *uint32 // Max ledger entries to read per ledger
+	LedgerMaxReadBytes          *uint32 // Max bytes to read per ledger
+	LedgerMaxWriteLedgerEntries *uint32 // Max ledger entries to write per ledger
+	LedgerMaxWriteBytes         *uint32 // Max bytes to write per ledger
+	TxMaxReadLedgerEntries      *uint32 // Max ledger entries to read per tx
+	TxMaxReadBytes              *uint32 // Max bytes to read per tx
+	TxMaxWriteLedgerEntries     *uint32 // Max ledger entries to write per tx
+	TxMaxWriteBytes             *uint32 // Max bytes to write per tx
+
+	// Contract size limit (1 field, nullable)
+	ContractMaxSizeBytes *uint32 // Maximum contract WASM size
+
+	// Raw XDR (1 field)
+	ConfigSettingXDR string // Full XDR for forward compatibility
+
+	// Metadata (2 fields)
+	CreatedAt   time.Time // When ingested
+	LedgerRange uint32    // Data partition key
+}
+
+// TTLData represents time-to-live entries for Soroban contract storage (Cycle 17)
+// Tracks storage expiration and archival status
+// Obsrvr playbook: core.ttl_snapshot_v1
+type TTLData struct {
+	// Identity (2 fields)
+	KeyHash        string // SHA256 hash of the storage key
+	LedgerSequence uint32 // When this TTL was observed
+
+	// TTL tracking (3 fields)
+	LiveUntilLedgerSeq uint32 // Ledger sequence when entry expires
+	TTLRemaining       int64  // Ledgers remaining until expiration
+	Expired            bool   // Entry has expired
+
+	// Ledger metadata (3 fields)
+	LastModifiedLedger int32     // Last ledger where TTL changed
+	Deleted            bool      // TTL entry removed
+	ClosedAt           time.Time // Ledger close time
+
+	// Metadata (2 fields)
+	CreatedAt   time.Time // When ingested
+	LedgerRange uint32    // Data partition key
+}
+
+// EvictedKeyData represents evicted storage keys from Soroban archival (Cycle 18)
+// Tracks which contract storage keys were evicted to archival storage
+// Obsrvr playbook: core.evicted_keys_state_v1
+type EvictedKeyData struct {
+	// Identity (2 fields)
+	KeyHash        string // SHA256 hash of the evicted ledger key
+	LedgerSequence uint32 // When this key was evicted
+
+	// Eviction details (3 fields)
+	ContractID string // Related contract (hex-encoded)
+	KeyType    string // ScVal type or entry type
+	Durability string // "persistent" or "temporary"
+
+	// Metadata (3 fields)
+	ClosedAt    time.Time // Ledger close time
+	LedgerRange uint32    // Data partition key
+	CreatedAt   time.Time // When ingested
+}
+
+// RestoredKeyData represents restored storage keys from Soroban archival (Cycle 19)
+// Tracks which contract storage keys were restored from archival storage
+// Obsrvr playbook: core.restored_keys_state_v1
+type RestoredKeyData struct {
+	// Identity (2 fields)
+	KeyHash        string // SHA256 hash of the restored ledger key
+	LedgerSequence uint32 // When this key was restored
+
+	// Restoration details (4 fields)
+	ContractID         string // Related contract (hex-encoded)
+	KeyType            string // ScVal type or entry type
+	Durability         string // "persistent" or "temporary"
+	RestoredFromLedger uint32 // Source ledger (0 if unknown)
+
+	// Metadata (3 fields)
+	ClosedAt    time.Time // Ledger close time
+	LedgerRange uint32    // Data partition key
+	CreatedAt   time.Time // When ingested
+}
+
+// AccountSignerData represents account signers for multi-sig (Cycle 20)
+// Tracks signer configurations including weights and sponsors
+// Obsrvr playbook: core.account_signers_snapshot_v1
+type AccountSignerData struct {
+	// Identity (3 fields)
+	AccountID      string // Account address
+	Signer         string // Signer public key
+	LedgerSequence uint32 // Current ledger
+
+	// Signer details (2 fields)
+	Weight  uint32 // Signer weight (0-255)
+	Sponsor string // Who sponsors this signer (empty if none)
+
+	// Status (1 field)
+	Deleted bool // Signer removed
+
+	// Metadata (3 fields)
+	ClosedAt    time.Time // Ledger close time
+	LedgerRange uint32    // Data partition key
+	CreatedAt   time.Time // When ingested
+}
+
 // WorkerBuffers holds buffers for all tables for a single worker
 type WorkerBuffers struct {
 	ledgers       []LedgerData
@@ -655,6 +816,12 @@ type WorkerBuffers struct {
 	liquidityPools    []LiquidityPoolData     // Cycle 12: Liquidity pools snapshot
 	contractEvents    []ContractEventData     // Cycle 11: Contract events stream
 	contractData      []ContractDataData      // Cycle 14: Contract data snapshot
+	contractCode      []ContractCodeData      // Cycle 15: Contract code snapshot
+	configSettings    []ConfigSettingData     // Cycle 16: Config settings snapshot
+	ttl               []TTLData               // Cycle 17: TTL snapshot
+	evictedKeys       []EvictedKeyData        // Cycle 18: Evicted keys state
+	restoredKeys      []RestoredKeyData       // Cycle 19: Restored keys state
+	accountSigners    []AccountSignerData     // Cycle 20: Account signers snapshot
 	lastCommit        time.Time
 }
 
@@ -732,9 +899,16 @@ type Ingester struct {
 	liquidityPoolAppender     *duckdb.Appender // Cycle 12: Liquidity pools appender
 	contractEventAppender     *duckdb.Appender // Cycle 11: Contract events appender
 	contractDataAppender      *duckdb.Appender // Cycle 14: Contract data appender
+	contractCodeAppender      *duckdb.Appender // Cycle 15: Contract code appender
+	configSettingsAppender    *duckdb.Appender // Cycle 16: Config settings appender
+	ttlAppender               *duckdb.Appender // Cycle 17: TTL appender
+	evictedKeysAppender       *duckdb.Appender // Cycle 18: Evicted keys appender
+	restoredKeysAppender      *duckdb.Appender // Cycle 19: Restored keys appender
+	accountSignersAppender    *duckdb.Appender // Cycle 20: Account signers appender
 
 	buffers     WorkerBuffers
 	lastCommit  time.Time
+	metrics     *IngesterMetrics  // Flowctl metrics tracking
 }
 
 func main() {
@@ -758,6 +932,25 @@ func main() {
 	// Setup graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Register with flowctl control plane if enabled
+	var flowctlController *FlowctlController
+	if os.Getenv("ENABLE_FLOWCTL") == "true" {
+		// Create shared metrics instance
+		metrics := &IngesterMetrics{}
+		flowctlController = NewFlowctlController(metrics)
+		if err := flowctlController.RegisterWithFlowctl(); err != nil {
+			log.Printf("Warning: Failed to register with flowctl control plane: %v", err)
+		} else {
+			log.Printf("Successfully registered with flowctl control plane")
+		}
+		// Ensure flowctl controller is stopped gracefully on server shutdown
+		defer func() {
+			if flowctlController != nil {
+				flowctlController.Stop()
+			}
+		}()
+	}
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -1022,6 +1215,7 @@ func NewIngester(config *Config) (*Ingester, error) {
 		config:     config,
 		buffers:    WorkerBuffers{},
 		lastCommit: time.Now(),
+		metrics:    &IngesterMetrics{}, // Initialize metrics
 	}
 
 	// Connect to stellar-live-source-datalake via gRPC
@@ -1239,6 +1433,41 @@ func (ing *Ingester) initializeDuckLake() error {
 		return fmt.Errorf("failed to create contract events table: %w", err)
 	}
 
+	// 12. Cycle 14: Contract data snapshot
+	if err := ing.createContractDataTable(); err != nil {
+		return fmt.Errorf("failed to create contract data table: %w", err)
+	}
+
+	// 13. Cycle 15: Contract code snapshot
+	if err := ing.createContractCodeTable(); err != nil {
+		return fmt.Errorf("failed to create contract code table: %w", err)
+	}
+
+	// 14. Cycle 16: Config settings snapshot
+	if err := ing.createConfigSettingsTable(); err != nil {
+		return fmt.Errorf("failed to create config settings table: %w", err)
+	}
+
+	// 15. Cycle 17: TTL snapshot
+	if err := ing.createTTLTable(); err != nil {
+		return fmt.Errorf("failed to create ttl table: %w", err)
+	}
+
+	// 16. Cycle 18: Evicted keys state
+	if err := ing.createEvictedKeysTable(); err != nil {
+		return fmt.Errorf("failed to create evicted keys table: %w", err)
+	}
+
+	// 17. Cycle 19: Restored keys state
+	if err := ing.createRestoredKeysTable(); err != nil {
+		return fmt.Errorf("failed to create restored keys table: %w", err)
+	}
+
+	// 18. Cycle 20: Account signers snapshot
+	if err := ing.createAccountSignersTable(); err != nil {
+		return fmt.Errorf("failed to create account signers table: %w", err)
+	}
+
 	// Create Obsrvr metadata tables (v2.0)
 	if err := ing.createMetadataTables(); err != nil {
 		return fmt.Errorf("failed to create metadata tables: %w", err)
@@ -1337,13 +1566,55 @@ func (ing *Ingester) initializeDuckLake() error {
 		return fmt.Errorf("failed to create liquidity pool appender: %w", err)
 	}
 
-	// Cycle 14: Contract events appender
+	// Cycle 11: Contract events appender
 	ing.contractEventAppender, err = duckdb.NewAppenderFromConn(ing.conn, "", "contract_events_stream_v1")
 	if err != nil {
 		return fmt.Errorf("failed to create contract event appender: %w", err)
 	}
 
-	log.Println("V2: Appenders initialized for all 10 tables (ledgers_row_v2, transactions_row_v2, operations_row_v2, native_balances_snapshot_v1, effects_row_v1, trades_row_v1, accounts_snapshot_v1, trustlines_snapshot_v1, offers_snapshot_v1, contract_events_stream_v1)")
+	// Cycle 14: Contract data appender
+	ing.contractDataAppender, err = duckdb.NewAppenderFromConn(ing.conn, "", "contract_data_snapshot_v1")
+	if err != nil {
+		return fmt.Errorf("failed to create contract data appender: %w", err)
+	}
+
+	// Cycle 15: Contract code appender
+	ing.contractCodeAppender, err = duckdb.NewAppenderFromConn(ing.conn, "", "contract_code_snapshot_v1")
+	if err != nil {
+		return fmt.Errorf("failed to create contract code appender: %w", err)
+	}
+
+	// Cycle 16: Config settings appender
+	ing.configSettingsAppender, err = duckdb.NewAppenderFromConn(ing.conn, "", "config_settings_snapshot_v1")
+	if err != nil {
+		return fmt.Errorf("failed to create config settings appender: %w", err)
+	}
+
+	// Cycle 17: TTL appender
+	ing.ttlAppender, err = duckdb.NewAppenderFromConn(ing.conn, "", "ttl_snapshot_v1")
+	if err != nil {
+		return fmt.Errorf("failed to create ttl appender: %w", err)
+	}
+
+	// Cycle 18: Evicted keys appender
+	ing.evictedKeysAppender, err = duckdb.NewAppenderFromConn(ing.conn, "", "evicted_keys_state_v1")
+	if err != nil {
+		return fmt.Errorf("failed to create evicted keys appender: %w", err)
+	}
+
+	// Cycle 19: Restored keys appender
+	ing.restoredKeysAppender, err = duckdb.NewAppenderFromConn(ing.conn, "", "restored_keys_state_v1")
+	if err != nil {
+		return fmt.Errorf("failed to create restored keys appender: %w", err)
+	}
+
+	// Cycle 20: Account signers appender
+	ing.accountSignersAppender, err = duckdb.NewAppenderFromConn(ing.conn, "", "account_signers_snapshot_v1")
+	if err != nil {
+		return fmt.Errorf("failed to create account signers appender: %w", err)
+	}
+
+	log.Println("V2: Appenders initialized for all 19 tables (ledgers_row_v2, transactions_row_v2, operations_row_v2, native_balances_snapshot_v1, effects_row_v1, trades_row_v1, accounts_snapshot_v1, trustlines_snapshot_v1, offers_snapshot_v1, claimable_balances_snapshot_v1, liquidity_pools_snapshot_v1, contract_events_stream_v1, contract_data_snapshot_v1, contract_code_snapshot_v1, config_settings_snapshot_v1, ttl_snapshot_v1, evicted_keys_state_v1, restored_keys_state_v1, account_signers_snapshot_v1)")
 
 	return nil
 }
@@ -1523,7 +1794,7 @@ func (ing *Ingester) registerDatasets() error {
 			Purpose:      "AMM liquidity pool state for Protocol 18+ constant product pools with asset pairs and reserves",
 			Grain:        "snapshot",
 		},
-		{ // Cycle 14: Contract events
+		{ // Cycle 11: Contract events
 			Name:         "core.contract_events_stream_v1",
 			Tier:         "silver",
 			Domain:       "core",
@@ -1532,6 +1803,76 @@ func (ing *Ingester) registerDatasets() error {
 			Owner:        "stellar-ingestion",
 			Purpose:      "Soroban contract events including diagnostic (invocation tree), contract, and system events",
 			Grain:        "stream",
+		},
+		{ // Cycle 14: Contract data
+			Name:         "core.contract_data_snapshot_v1",
+			Tier:         "silver",
+			Domain:       "core",
+			MajorVersion: 1,
+			MinorVersion: 0, // Initial version
+			Owner:        "stellar-ingestion",
+			Purpose:      "Soroban contract storage data including SAC token balances and persistent/temporary contract state",
+			Grain:        "snapshot",
+		},
+		{ // Cycle 15: Contract code
+			Name:         "core.contract_code_snapshot_v1",
+			Tier:         "silver",
+			Domain:       "core",
+			MajorVersion: 1,
+			MinorVersion: 0, // Initial version
+			Owner:        "stellar-ingestion",
+			Purpose:      "Soroban smart contract WASM code with metadata (instructions, functions, imports, exports, globals)",
+			Grain:        "snapshot",
+		},
+		{ // Cycle 16: Config settings
+			Name:         "core.config_settings_snapshot_v1",
+			Tier:         "silver",
+			Domain:       "core",
+			MajorVersion: 1,
+			MinorVersion: 0, // Initial version
+			Owner:        "stellar-ingestion",
+			Purpose:      "Network configuration settings for Soroban compute and resource limits (stored as XDR)",
+			Grain:        "snapshot",
+		},
+		{ // Cycle 17: TTL
+			Name:         "core.ttl_snapshot_v1",
+			Tier:         "bronze",
+			Domain:       "core",
+			MajorVersion: 1,
+			MinorVersion: 0, // Initial version
+			Owner:        "stellar-ingestion",
+			Purpose:      "Time-to-live entries for Soroban contract storage expiration tracking",
+			Grain:        "snapshot",
+		},
+		{ // Cycle 18: Evicted keys
+			Name:         "core.evicted_keys_state_v1",
+			Tier:         "bronze",
+			Domain:       "core",
+			MajorVersion: 1,
+			MinorVersion: 0, // Initial version
+			Owner:        "stellar-ingestion",
+			Purpose:      "Protocol 20+ evicted storage keys tracking (persistent and temporary archival)",
+			Grain:        "state",
+		},
+		{ // Cycle 19: Restored keys
+			Name:         "core.restored_keys_state_v1",
+			Tier:         "bronze",
+			Domain:       "core",
+			MajorVersion: 1,
+			MinorVersion: 0, // Initial version
+			Owner:        "stellar-ingestion",
+			Purpose:      "Protocol 20+ restored storage keys tracking from archival (RestoreFootprint operations)",
+			Grain:        "state",
+		},
+		{ // Cycle 20: Account signers
+			Name:         "core.account_signers_snapshot_v1",
+			Tier:         "bronze",
+			Domain:       "core",
+			MajorVersion: 1,
+			MinorVersion: 0, // Initial version
+			Owner:        "stellar-ingestion",
+			Purpose:      "Multi-signature account configurations with signer weights and sponsorships",
+			Grain:        "snapshot",
 		},
 	}
 
@@ -1694,11 +2035,16 @@ func (ing *Ingester) Start(ctx context.Context) error {
 
 		processed++
 
-		// Periodic logging
+		// Periodic logging and metrics update
 		if processed%100 == 0 {
 			elapsed := time.Since(startTime)
 			rate := float64(processed) / elapsed.Seconds()
 			log.Printf("Processed %d ledgers (%.2f ledgers/sec)", processed, rate)
+
+			// Update flowctl metrics
+			if ing.metrics != nil {
+				ing.metrics.UpdateMetrics(uint64(processed), 19, rawLedger.Sequence, rate, 0)
+			}
 		}
 	}
 }
@@ -1736,7 +2082,14 @@ func (ing *Ingester) processLedger(ctx context.Context, rawLedger *pb.RawLedger)
 	offers := ing.extractOffers(&lcm)                            // Cycle 10
 	claimableBalances := ing.extractClaimableBalances(&lcm)      // Cycle 11
 	liquidityPools := ing.extractLiquidityPools(&lcm)            // Cycle 12
-	contractEvents := ing.extractContractEvents(&lcm)            // Cycle 14
+	contractEvents := ing.extractContractEvents(&lcm)            // Cycle 11
+	contractData := ing.extractContractData(&lcm)                // Cycle 14
+	contractCode := ing.extractContractCode(&lcm)                // Cycle 15
+	configSettings := ing.extractConfigSettings(&lcm)           // Cycle 16
+	ttl := ing.extractTTL(&lcm)                                  // Cycle 17
+	evictedKeys := ing.extractEvictedKeys(&lcm)                  // Cycle 18
+	restoredKeys := ing.extractRestoredKeys(&lcm)                // Cycle 19
+	accountSigners := ing.extractAccountSigners(&lcm)            // Cycle 20
 
 	// Add to buffers
 	ing.buffers.ledgers = append(ing.buffers.ledgers, ledgerData)
@@ -1750,7 +2103,14 @@ func (ing *Ingester) processLedger(ctx context.Context, rawLedger *pb.RawLedger)
 	ing.buffers.offers = append(ing.buffers.offers, offers...)                           // Cycle 10
 	ing.buffers.claimableBalances = append(ing.buffers.claimableBalances, claimableBalances...) // Cycle 11
 	ing.buffers.liquidityPools = append(ing.buffers.liquidityPools, liquidityPools...)          // Cycle 12
-	ing.buffers.contractEvents = append(ing.buffers.contractEvents, contractEvents...)  // Cycle 14
+	ing.buffers.contractEvents = append(ing.buffers.contractEvents, contractEvents...)  // Cycle 11
+	ing.buffers.contractData = append(ing.buffers.contractData, contractData...)        // Cycle 14
+	ing.buffers.contractCode = append(ing.buffers.contractCode, contractCode...)        // Cycle 15
+	ing.buffers.configSettings = append(ing.buffers.configSettings, configSettings...)  // Cycle 16
+	ing.buffers.ttl = append(ing.buffers.ttl, ttl...)                                   // Cycle 17
+	ing.buffers.evictedKeys = append(ing.buffers.evictedKeys, evictedKeys...)           // Cycle 18
+	ing.buffers.restoredKeys = append(ing.buffers.restoredKeys, restoredKeys...)        // Cycle 19
+	ing.buffers.accountSigners = append(ing.buffers.accountSigners, accountSigners...)  // Cycle 20
 
 	// Check if we should flush (based on ledger count or time)
 	shouldFlush := len(ing.buffers.ledgers) >= ing.config.DuckLake.BatchSize ||
@@ -3613,6 +3973,303 @@ func (ing *Ingester) flush(ctx context.Context) error {
 			numContractEvents, time.Since(appendStart), flushStart.Sub(appendStart), time.Since(flushStart))
 	}
 
+	// 10.13. INSERT INTO contract_data_snapshot_v1 (V2: Cycle 14)
+	numContractData := len(ing.buffers.contractData)
+	if numContractData > 0 {
+		log.Printf("[FLUSH] V2: Appending %d contract data entries via Appender API...", numContractData)
+		appendStart := time.Now()
+
+		for _, data := range ing.buffers.contractData {
+			err := ing.contractDataAppender.AppendRow(
+				// Identity (3 fields)
+				data.ContractId,
+				data.LedgerSequence,
+				data.LedgerKeyHash,
+				// Contract metadata (2 fields)
+				data.ContractKeyType,
+				data.ContractDurability,
+				// Asset information (3 fields, nullable)
+				ptrToInterface(data.AssetCode),
+				ptrToInterface(data.AssetIssuer),
+				ptrToInterface(data.AssetType),
+				// Balance information (2 fields, nullable)
+				ptrToInterface(data.BalanceHolder),
+				ptrToInterface(data.Balance),
+				// Ledger metadata (4 fields)
+				data.LastModifiedLedger,
+				data.LedgerEntryChange,
+				data.Deleted,
+				data.ClosedAt,
+				// XDR data (1 field)
+				data.ContractDataXDR,
+				// Metadata (2 fields)
+				data.CreatedAt,
+				data.LedgerRange,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to append contract data %s: %w", data.ContractId, err)
+			}
+		}
+
+		// Flush appender to commit rows to DuckLake
+		flushStart := time.Now()
+		if err := ing.contractDataAppender.Flush(); err != nil {
+			return fmt.Errorf("failed to flush contract data appender: %w", err)
+		}
+		log.Printf("[FLUSH] ✓ V2: Appended and flushed %d contract data entries in %v (append: %v, flush: %v)",
+			numContractData, time.Since(appendStart), flushStart.Sub(appendStart), time.Since(flushStart))
+	}
+
+	// 10.14. INSERT INTO contract_code_snapshot_v1 (V2: Cycle 15)
+	numContractCode := len(ing.buffers.contractCode)
+	if numContractCode > 0 {
+		log.Printf("[FLUSH] V2: Appending %d contract code entries via Appender API...", numContractCode)
+		appendStart := time.Now()
+
+		for _, code := range ing.buffers.contractCode {
+			err := ing.contractCodeAppender.AppendRow(
+				// Identity (2 fields)
+				code.ContractCodeHash,
+				code.LedgerKeyHash,
+				// Extension (1 field)
+				code.ContractCodeExtV,
+				// Ledger metadata (4 fields)
+				code.LastModifiedLedger,
+				code.LedgerEntryChange,
+				code.Deleted,
+				code.ClosedAt,
+				// Ledger tracking (1 field)
+				code.LedgerSequence,
+				// WASM metadata (10 fields, nullable)
+				ptrToInterface(code.NInstructions),
+				ptrToInterface(code.NFunctions),
+				ptrToInterface(code.NGlobals),
+				ptrToInterface(code.NTableEntries),
+				ptrToInterface(code.NTypes),
+				ptrToInterface(code.NDataSegments),
+				ptrToInterface(code.NElemSegments),
+				ptrToInterface(code.NImports),
+				ptrToInterface(code.NExports),
+				ptrToInterface(code.NDataSegmentBytes),
+				// Metadata (2 fields)
+				code.CreatedAt,
+				code.LedgerRange,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to append contract code %s: %w", code.ContractCodeHash, err)
+			}
+		}
+
+		// Flush appender to commit rows to DuckLake
+		flushStart := time.Now()
+		if err := ing.contractCodeAppender.Flush(); err != nil {
+			return fmt.Errorf("failed to flush contract code appender: %w", err)
+		}
+		log.Printf("[FLUSH] ✓ V2: Appended and flushed %d contract code entries in %v (append: %v, flush: %v)",
+			numContractCode, time.Since(appendStart), flushStart.Sub(appendStart), time.Since(flushStart))
+	}
+
+	// 10.15. INSERT INTO config_settings_snapshot_v1 (V2: Cycle 16)
+	numConfigSettings := len(ing.buffers.configSettings)
+	if numConfigSettings > 0 {
+		log.Printf("[FLUSH] V2: Appending %d config settings via Appender API...", numConfigSettings)
+		appendStart := time.Now()
+
+		for _, setting := range ing.buffers.configSettings {
+			err := ing.configSettingsAppender.AppendRow(
+				// Identity (2 fields)
+				setting.ConfigSettingID,
+				setting.LedgerSequence,
+				// Ledger metadata (3 fields)
+				setting.LastModifiedLedger,
+				setting.Deleted,
+				setting.ClosedAt,
+				// Soroban compute settings (4 fields, nullable)
+				ptrToInterface(setting.LedgerMaxInstructions),
+				ptrToInterface(setting.TxMaxInstructions),
+				ptrToInterface(setting.FeeRatePerInstructionsIncrement),
+				ptrToInterface(setting.TxMemoryLimit),
+				// Soroban ledger cost settings (8 fields, nullable)
+				ptrToInterface(setting.LedgerMaxReadLedgerEntries),
+				ptrToInterface(setting.LedgerMaxReadBytes),
+				ptrToInterface(setting.LedgerMaxWriteLedgerEntries),
+				ptrToInterface(setting.LedgerMaxWriteBytes),
+				ptrToInterface(setting.TxMaxReadLedgerEntries),
+				ptrToInterface(setting.TxMaxReadBytes),
+				ptrToInterface(setting.TxMaxWriteLedgerEntries),
+				ptrToInterface(setting.TxMaxWriteBytes),
+				// Contract size limit (1 field, nullable)
+				ptrToInterface(setting.ContractMaxSizeBytes),
+				// Raw XDR (1 field)
+				setting.ConfigSettingXDR,
+				// Metadata (2 fields)
+				setting.CreatedAt,
+				setting.LedgerRange,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to append config setting %d: %w", setting.ConfigSettingID, err)
+			}
+		}
+
+		// Flush appender to commit rows to DuckLake
+		flushStart := time.Now()
+		if err := ing.configSettingsAppender.Flush(); err != nil {
+			return fmt.Errorf("failed to flush config settings appender: %w", err)
+		}
+		log.Printf("[FLUSH] ✓ V2: Appended and flushed %d config settings in %v (append: %v, flush: %v)",
+			numConfigSettings, time.Since(appendStart), flushStart.Sub(appendStart), time.Since(flushStart))
+	}
+
+	// 10.16. INSERT INTO ttl_snapshot_v1 (V2: Cycle 17)
+	numTTL := len(ing.buffers.ttl)
+	if numTTL > 0 {
+		log.Printf("[FLUSH] V2: Appending %d ttl entries via Appender API...", numTTL)
+		appendStart := time.Now()
+
+		for _, ttl := range ing.buffers.ttl {
+			err := ing.ttlAppender.AppendRow(
+				// Identity (2 fields)
+				ttl.KeyHash,
+				ttl.LedgerSequence,
+				// TTL tracking (3 fields)
+				ttl.LiveUntilLedgerSeq,
+				ttl.TTLRemaining,
+				ttl.Expired,
+				// Ledger metadata (3 fields)
+				ttl.LastModifiedLedger,
+				ttl.Deleted,
+				ttl.ClosedAt,
+				// Metadata (2 fields)
+				ttl.CreatedAt,
+				ttl.LedgerRange,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to append ttl entry %s: %w", ttl.KeyHash, err)
+			}
+		}
+
+		// Flush appender to commit rows to DuckLake
+		flushStart := time.Now()
+		if err := ing.ttlAppender.Flush(); err != nil {
+			return fmt.Errorf("failed to flush ttl appender: %w", err)
+		}
+		log.Printf("[FLUSH] ✓ V2: Appended and flushed %d ttl entries in %v (append: %v, flush: %v)",
+			numTTL, time.Since(appendStart), flushStart.Sub(appendStart), time.Since(flushStart))
+	}
+
+	// 10.17. INSERT INTO evicted_keys_state_v1 (V2: Cycle 18)
+	numEvictedKeys := len(ing.buffers.evictedKeys)
+	if numEvictedKeys > 0 {
+		log.Printf("[FLUSH] V2: Appending %d evicted keys via Appender API...", numEvictedKeys)
+		appendStart := time.Now()
+
+		for _, key := range ing.buffers.evictedKeys {
+			err := ing.evictedKeysAppender.AppendRow(
+				// Identity (2 fields)
+				key.KeyHash,
+				key.LedgerSequence,
+				// Eviction details (3 fields)
+				key.ContractID,
+				key.KeyType,
+				key.Durability,
+				// Metadata (3 fields)
+				key.ClosedAt,
+				key.LedgerRange,
+				key.CreatedAt,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to append evicted key %s: %w", key.KeyHash, err)
+			}
+		}
+
+		// Flush appender to commit rows to DuckLake
+		flushStart := time.Now()
+		if err := ing.evictedKeysAppender.Flush(); err != nil {
+			return fmt.Errorf("failed to flush evicted keys appender: %w", err)
+		}
+		log.Printf("[FLUSH] ✓ V2: Appended and flushed %d evicted keys in %v (append: %v, flush: %v)",
+			numEvictedKeys, time.Since(appendStart), flushStart.Sub(appendStart), time.Since(flushStart))
+	}
+
+	// 10.18. INSERT INTO restored_keys_state_v1 (V2: Cycle 19)
+	numRestoredKeys := len(ing.buffers.restoredKeys)
+	if numRestoredKeys > 0 {
+		log.Printf("[FLUSH] V2: Appending %d restored keys via Appender API...", numRestoredKeys)
+		appendStart := time.Now()
+
+		for _, key := range ing.buffers.restoredKeys {
+			err := ing.restoredKeysAppender.AppendRow(
+				// Identity (2 fields)
+				key.KeyHash,
+				key.LedgerSequence,
+				// Restoration details (4 fields)
+				key.ContractID,
+				key.KeyType,
+				key.Durability,
+				key.RestoredFromLedger,
+				// Metadata (3 fields)
+				key.ClosedAt,
+				key.LedgerRange,
+				key.CreatedAt,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to append restored key %s: %w", key.KeyHash, err)
+			}
+		}
+
+		// Flush appender to commit rows to DuckLake
+		flushStart := time.Now()
+		if err := ing.restoredKeysAppender.Flush(); err != nil {
+			return fmt.Errorf("failed to flush restored keys appender: %w", err)
+		}
+		log.Printf("[FLUSH] ✓ V2: Appended and flushed %d restored keys in %v (append: %v, flush: %v)",
+			numRestoredKeys, time.Since(appendStart), flushStart.Sub(appendStart), time.Since(flushStart))
+	}
+
+	// 10.19. INSERT INTO account_signers_snapshot_v1 (V2: Cycle 20)
+	numAccountSigners := len(ing.buffers.accountSigners)
+	if numAccountSigners > 0 {
+		log.Printf("[FLUSH] V2: Appending %d account signers via Appender API...", numAccountSigners)
+		appendStart := time.Now()
+
+		for _, signer := range ing.buffers.accountSigners {
+			// Handle empty sponsor (nullable)
+			var sponsor interface{}
+			if signer.Sponsor == "" {
+				sponsor = nil
+			} else {
+				sponsor = signer.Sponsor
+			}
+
+			err := ing.accountSignersAppender.AppendRow(
+				// Identity (3 fields)
+				signer.AccountID,
+				signer.Signer,
+				signer.LedgerSequence,
+				// Signer details (2 fields)
+				signer.Weight,
+				sponsor,
+				// Status (1 field)
+				signer.Deleted,
+				// Metadata (3 fields)
+				signer.ClosedAt,
+				signer.LedgerRange,
+				signer.CreatedAt,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to append account signer %s/%s: %w", signer.AccountID, signer.Signer, err)
+			}
+		}
+
+		// Flush appender to commit rows to DuckLake
+		flushStart := time.Now()
+		if err := ing.accountSignersAppender.Flush(); err != nil {
+			return fmt.Errorf("failed to flush account signers appender: %w", err)
+		}
+		log.Printf("[FLUSH] ✓ V2: Appended and flushed %d account signers in %v (append: %v, flush: %v)",
+			numAccountSigners, time.Since(appendStart), flushStart.Sub(appendStart), time.Since(flushStart))
+	}
+
 	// ========================================
 	// 11. RECORD QUALITY CHECK RESULTS (Obsrvr v2.0)
 	// ========================================
@@ -3628,13 +4285,21 @@ func (ing *Ingester) flush(ctx context.Context) error {
 	// 11. RECORD DATA LINEAGE (Obsrvr v2.0)
 	// ========================================
 	log.Printf("[LINEAGE] Recording data lineage to _meta_lineage...")
-	if err := ing.recordLineage(numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades, numAccounts, numTrustlines, numOffers, numClaimableBalances, numLiquidityPools, numContractEvents); err != nil {
+	if err := ing.recordLineage(numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades, numAccounts, numTrustlines, numOffers, numClaimableBalances, numLiquidityPools, numContractEvents, numContractData, numContractCode, numConfigSettings, numTTL, numEvictedKeys, numRestoredKeys, numAccountSigners); err != nil {
 		log.Printf("⚠️  Warning: Failed to record lineage: %v", err)
 		// Non-fatal: continue with flush completion
 	}
 
+	flushDuration := time.Since(flushStart)
 	log.Printf("[FLUSH] ✅ COMPLETE: Flushed %d ledgers, %d transactions, %d operations, %d balances, %d effects, %d trades, %d accounts, %d trustlines, %d offers in %v total",
-		numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades, numAccounts, numTrustlines, numOffers, time.Since(flushStart))
+		numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades, numAccounts, numTrustlines, numOffers, flushDuration)
+
+	// Update flush duration metrics
+	if ing.metrics != nil {
+		ing.metrics.UpdateFlushDuration(flushDuration)
+		totalRows := uint64(numLedgers + numTransactions + numOperations + numBalances + numEffects + numTrades + numAccounts + numTrustlines + numOffers)
+		ing.metrics.UpdateMetrics(0, 0, 0, 0, totalRows)
+	}
 
 	// Clear all buffers
 	ing.buffers.ledgers = ing.buffers.ledgers[:0]
@@ -3648,7 +4313,14 @@ func (ing *Ingester) flush(ctx context.Context) error {
 	ing.buffers.offers = ing.buffers.offers[:0]           // Cycle 10
 	ing.buffers.claimableBalances = ing.buffers.claimableBalances[:0] // Cycle 11
 	ing.buffers.liquidityPools = ing.buffers.liquidityPools[:0]       // Cycle 12
-	ing.buffers.contractEvents = ing.buffers.contractEvents[:0] // Cycle 14
+	ing.buffers.contractEvents = ing.buffers.contractEvents[:0] // Cycle 11
+	ing.buffers.contractData = ing.buffers.contractData[:0]     // Cycle 14
+	ing.buffers.contractCode = ing.buffers.contractCode[:0]     // Cycle 15
+	ing.buffers.configSettings = ing.buffers.configSettings[:0] // Cycle 16
+	ing.buffers.ttl = ing.buffers.ttl[:0]                       // Cycle 17
+	ing.buffers.evictedKeys = ing.buffers.evictedKeys[:0]       // Cycle 18
+	ing.buffers.restoredKeys = ing.buffers.restoredKeys[:0]     // Cycle 19
+	ing.buffers.accountSigners = ing.buffers.accountSigners[:0] // Cycle 20
 	ing.lastCommit = time.Now()
 
 	return nil
@@ -3656,7 +4328,7 @@ func (ing *Ingester) flush(ctx context.Context) error {
 
 // recordLineage records data lineage information for the current batch to _meta_lineage table
 // This tracks the source ledger range, processor version, and row counts for each dataset
-func (ing *Ingester) recordLineage(numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades, numAccounts, numTrustlines, numOffers, numClaimableBalances, numLiquidityPools, numContractEvents int) error {
+func (ing *Ingester) recordLineage(numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades, numAccounts, numTrustlines, numOffers, numClaimableBalances, numLiquidityPools, numContractEvents, numContractData, numContractCode, numConfigSettings, numTTL, numEvictedKeys, numRestoredKeys, numAccountSigners int) error {
 	if numLedgers == 0 {
 		return nil // No data to record
 	}
@@ -3766,11 +4438,67 @@ func (ing *Ingester) recordLineage(numLedgers, numTransactions, numOperations, n
 		})
 	}
 
-	// Record contract events if present (Cycle 14)
+	// Record contract events if present (Cycle 11)
 	if numContractEvents > 0 {
 		entries = append(entries, LineageEntry{
 			Dataset:  "core.contract_events_stream_v1",
 			RowCount: numContractEvents,
+		})
+	}
+
+	// Record contract data if present (Cycle 14)
+	if numContractData > 0 {
+		entries = append(entries, LineageEntry{
+			Dataset:  "core.contract_data_snapshot_v1",
+			RowCount: numContractData,
+		})
+	}
+
+	// Record contract code if present (Cycle 15)
+	if numContractCode > 0 {
+		entries = append(entries, LineageEntry{
+			Dataset:  "core.contract_code_snapshot_v1",
+			RowCount: numContractCode,
+		})
+	}
+
+	// Record config settings if present (Cycle 16)
+	if numConfigSettings > 0 {
+		entries = append(entries, LineageEntry{
+			Dataset:  "core.config_settings_snapshot_v1",
+			RowCount: numConfigSettings,
+		})
+	}
+
+	// Record ttl if present (Cycle 17)
+	if numTTL > 0 {
+		entries = append(entries, LineageEntry{
+			Dataset:  "core.ttl_snapshot_v1",
+			RowCount: numTTL,
+		})
+	}
+
+	// Record evicted keys if present (Cycle 18)
+	if numEvictedKeys > 0 {
+		entries = append(entries, LineageEntry{
+			Dataset:  "core.evicted_keys_state_v1",
+			RowCount: numEvictedKeys,
+		})
+	}
+
+	// Record restored keys if present (Cycle 19)
+	if numRestoredKeys > 0 {
+		entries = append(entries, LineageEntry{
+			Dataset:  "core.restored_keys_state_v1",
+			RowCount: numRestoredKeys,
+		})
+	}
+
+	// Record account signers if present (Cycle 20)
+	if numAccountSigners > 0 {
+		entries = append(entries, LineageEntry{
+			Dataset:  "core.account_signers_snapshot_v1",
+			RowCount: numAccountSigners,
 		})
 	}
 
@@ -3868,8 +4596,29 @@ func (ing *Ingester) Close() error {
 	if ing.liquidityPoolAppender != nil { // Cycle 12
 		ing.liquidityPoolAppender.Close()
 	}
-	if ing.contractEventAppender != nil { // Cycle 14
+	if ing.contractEventAppender != nil { // Cycle 11
 		ing.contractEventAppender.Close()
+	}
+	if ing.contractDataAppender != nil { // Cycle 14
+		ing.contractDataAppender.Close()
+	}
+	if ing.contractCodeAppender != nil { // Cycle 15
+		ing.contractCodeAppender.Close()
+	}
+	if ing.configSettingsAppender != nil { // Cycle 16
+		ing.configSettingsAppender.Close()
+	}
+	if ing.ttlAppender != nil { // Cycle 17
+		ing.ttlAppender.Close()
+	}
+	if ing.evictedKeysAppender != nil { // Cycle 18
+		ing.evictedKeysAppender.Close()
+	}
+	if ing.restoredKeysAppender != nil { // Cycle 19
+		ing.restoredKeysAppender.Close()
+	}
+	if ing.accountSignersAppender != nil { // Cycle 20
+		ing.accountSignersAppender.Close()
 	}
 
 	// Close native connection

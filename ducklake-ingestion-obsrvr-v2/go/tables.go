@@ -860,3 +860,249 @@ func (ing *Ingester) createContractDataTable() error {
 
 	return nil
 }
+
+// createContractCodeTable creates the contract_code_snapshot_v1 table
+// Cycle 15: Contract Code Snapshot
+func (ing *Ingester) createContractCodeTable() error {
+	contractCodeSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s.%s.contract_code_snapshot_v1 (
+			-- Identity (2 fields)
+			contract_code_hash VARCHAR NOT NULL,
+			ledger_key_hash VARCHAR NOT NULL,
+
+			-- Extension (1 field)
+			contract_code_ext_v INT NOT NULL,
+
+			-- Ledger metadata (4 fields)
+			last_modified_ledger INT NOT NULL,
+			ledger_entry_change INT NOT NULL,
+			deleted BOOLEAN NOT NULL,
+			closed_at TIMESTAMP NOT NULL,
+
+			-- Ledger tracking (1 field)
+			ledger_sequence BIGINT NOT NULL,
+
+			-- WASM metadata (10 fields, nullable)
+			n_instructions BIGINT,
+			n_functions BIGINT,
+			n_globals BIGINT,
+			n_table_entries BIGINT,
+			n_types BIGINT,
+			n_data_segments BIGINT,
+			n_elem_segments BIGINT,
+			n_imports BIGINT,
+			n_exports BIGINT,
+			n_data_segment_bytes BIGINT,
+
+			-- Metadata (2 fields)
+			created_at TIMESTAMP NOT NULL,
+			ledger_range BIGINT NOT NULL
+		)`,
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName,
+	)
+
+	if _, err := ing.db.Exec(contractCodeSQL); err != nil {
+		return fmt.Errorf("failed to create contract_code_snapshot_v1 table: %w", err)
+	}
+
+	log.Printf("Table ready: %s.%s.contract_code_snapshot_v1",
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName)
+
+	return nil
+}
+
+// createConfigSettingsTable creates the config_settings_snapshot_v1 table (Cycle 16)
+func (ing *Ingester) createConfigSettingsTable() error {
+	configSettingsSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s.%s.config_settings_snapshot_v1 (
+			-- Identity (2 fields)
+			config_setting_id INT NOT NULL,
+			ledger_sequence BIGINT NOT NULL,
+
+			-- Ledger metadata (3 fields)
+			last_modified_ledger INT NOT NULL,
+			deleted BOOLEAN NOT NULL,
+			closed_at TIMESTAMP NOT NULL,
+
+			-- Soroban compute settings (4 fields, nullable)
+			ledger_max_instructions BIGINT,
+			tx_max_instructions BIGINT,
+			fee_rate_per_instructions_increment BIGINT,
+			tx_memory_limit UINTEGER,
+
+			-- Soroban ledger cost settings (8 fields, nullable)
+			ledger_max_read_ledger_entries UINTEGER,
+			ledger_max_read_bytes UINTEGER,
+			ledger_max_write_ledger_entries UINTEGER,
+			ledger_max_write_bytes UINTEGER,
+			tx_max_read_ledger_entries UINTEGER,
+			tx_max_read_bytes UINTEGER,
+			tx_max_write_ledger_entries UINTEGER,
+			tx_max_write_bytes UINTEGER,
+
+			-- Contract size limit (1 field, nullable)
+			contract_max_size_bytes UINTEGER,
+
+			-- Raw XDR (1 field)
+			config_setting_xdr TEXT NOT NULL,
+
+			-- Metadata (2 fields)
+			created_at TIMESTAMP NOT NULL,
+			ledger_range BIGINT NOT NULL
+		)`,
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName,
+	)
+
+	if _, err := ing.db.Exec(configSettingsSQL); err != nil {
+		return fmt.Errorf("failed to create config_settings_snapshot_v1 table: %w", err)
+	}
+
+	log.Printf("Table ready: %s.%s.config_settings_snapshot_v1",
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName)
+
+	return nil
+}
+
+// createTTLTable creates the ttl_snapshot_v1 table (Cycle 17)
+func (ing *Ingester) createTTLTable() error {
+	ttlSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s.%s.ttl_snapshot_v1 (
+			-- Identity (2 fields)
+			key_hash VARCHAR NOT NULL,
+			ledger_sequence BIGINT NOT NULL,
+
+			-- TTL tracking (3 fields)
+			live_until_ledger_seq BIGINT NOT NULL,
+			ttl_remaining BIGINT NOT NULL,
+			expired BOOLEAN NOT NULL,
+
+			-- Ledger metadata (3 fields)
+			last_modified_ledger INT NOT NULL,
+			deleted BOOLEAN NOT NULL,
+			closed_at TIMESTAMP NOT NULL,
+
+			-- Metadata (2 fields)
+			created_at TIMESTAMP NOT NULL,
+			ledger_range BIGINT NOT NULL
+		)`,
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName,
+	)
+
+	if _, err := ing.db.Exec(ttlSQL); err != nil {
+		return fmt.Errorf("failed to create ttl_snapshot_v1 table: %w", err)
+	}
+
+	log.Printf("Table ready: %s.%s.ttl_snapshot_v1",
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName)
+
+	return nil
+}
+
+// createEvictedKeysTable creates the evicted_keys_state_v1 table (Cycle 18)
+func (ing *Ingester) createEvictedKeysTable() error {
+	evictedKeysSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s.%s.evicted_keys_state_v1 (
+			-- Identity (2 fields)
+			key_hash VARCHAR NOT NULL,
+			ledger_sequence BIGINT NOT NULL,
+
+			-- Eviction details (3 fields)
+			contract_id VARCHAR NOT NULL,
+			key_type VARCHAR NOT NULL,
+			durability VARCHAR NOT NULL,
+
+			-- Metadata (3 fields)
+			closed_at TIMESTAMP NOT NULL,
+			ledger_range BIGINT NOT NULL,
+			created_at TIMESTAMP NOT NULL
+		)`,
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName,
+	)
+
+	if _, err := ing.db.Exec(evictedKeysSQL); err != nil {
+		return fmt.Errorf("failed to create evicted_keys_state_v1 table: %w", err)
+	}
+
+	log.Printf("Table ready: %s.%s.evicted_keys_state_v1",
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName)
+
+	return nil
+}
+
+// createRestoredKeysTable creates the restored_keys_state_v1 table (Cycle 19)
+func (ing *Ingester) createRestoredKeysTable() error {
+	restoredKeysSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s.%s.restored_keys_state_v1 (
+			-- Identity (2 fields)
+			key_hash VARCHAR NOT NULL,
+			ledger_sequence BIGINT NOT NULL,
+
+			-- Restoration details (4 fields)
+			contract_id VARCHAR NOT NULL,
+			key_type VARCHAR NOT NULL,
+			durability VARCHAR NOT NULL,
+			restored_from_ledger BIGINT NOT NULL,
+
+			-- Metadata (3 fields)
+			closed_at TIMESTAMP NOT NULL,
+			ledger_range BIGINT NOT NULL,
+			created_at TIMESTAMP NOT NULL
+		)`,
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName,
+	)
+
+	if _, err := ing.db.Exec(restoredKeysSQL); err != nil {
+		return fmt.Errorf("failed to create restored_keys_state_v1 table: %w", err)
+	}
+
+	log.Printf("Table ready: %s.%s.restored_keys_state_v1",
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName)
+
+	return nil
+}
+
+// createAccountSignersTable creates the account_signers_snapshot_v1 table (Cycle 20)
+func (ing *Ingester) createAccountSignersTable() error {
+	accountSignersSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s.%s.account_signers_snapshot_v1 (
+			-- Identity (3 fields)
+			account_id VARCHAR NOT NULL,
+			signer VARCHAR NOT NULL,
+			ledger_sequence BIGINT NOT NULL,
+
+			-- Signer details (2 fields)
+			weight INTEGER NOT NULL,
+			sponsor VARCHAR,
+
+			-- Status (1 field)
+			deleted BOOLEAN NOT NULL,
+
+			-- Metadata (3 fields)
+			closed_at TIMESTAMP NOT NULL,
+			ledger_range BIGINT NOT NULL,
+			created_at TIMESTAMP NOT NULL
+		)`,
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName,
+	)
+
+	if _, err := ing.db.Exec(accountSignersSQL); err != nil {
+		return fmt.Errorf("failed to create account_signers_snapshot_v1 table: %w", err)
+	}
+
+	log.Printf("Table ready: %s.%s.account_signers_snapshot_v1",
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName)
+
+	return nil
+}

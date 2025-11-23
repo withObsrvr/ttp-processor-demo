@@ -1,0 +1,58 @@
+# Multi-stage build for stellar-live-source-datalake
+# Follows flowctl component image specification
+
+# Stage 1: Builder
+FROM golang:1.24-alpine AS builder
+
+# Install build dependencies
+RUN apk add --no-cache \
+    git \
+    make
+
+WORKDIR /build
+
+# Copy go.mod files and download dependencies
+COPY go/go.mod go/go.sum ./
+RUN go mod download
+
+# Copy the entire go directory including pre-generated protobuf code
+COPY go/ .
+
+# Build the binary with CGO disabled for static linking
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOWORK=off go build \
+    -ldflags="-s -w" \
+    -o stellar-live-source-datalake \
+    main.go
+
+# Stage 2: Runtime (distroless for security)
+FROM gcr.io/distroless/static-debian12:nonroot
+
+# Copy binary to /app/ following flowctl component image spec
+COPY --from=builder /build/stellar-live-source-datalake /app/stellar-live-source-datalake
+
+# Required OCI labels for flowctl component discovery
+LABEL io.flowctl.component.type="source"
+LABEL io.flowctl.component.api-version="v1"
+LABEL io.flowctl.component.name="stellar-live-source-datalake"
+LABEL io.flowctl.component.description="Stellar ledger data source with GCS/B2/S3 backend support"
+LABEL io.flowctl.component.output-events="raw_ledger_service.RawLedgerChunk"
+
+# Additional metadata labels
+LABEL org.opencontainers.image.source="https://github.com/withObsrvr/ttp-processor-demo"
+LABEL org.opencontainers.image.title="Stellar Live Source DataLake"
+LABEL org.opencontainers.image.description="Stellar blockchain data source for flowctl pipelines"
+LABEL org.opencontainers.image.vendor="Obsrvr"
+
+# Health check port
+EXPOSE 8081
+# gRPC service port
+EXPOSE 50053
+
+# Run as non-root user (distroless nonroot user)
+USER nobody:nobody
+
+# Set working directory
+WORKDIR /app
+
+# Entrypoint
+ENTRYPOINT ["/app/stellar-live-source-datalake"]
