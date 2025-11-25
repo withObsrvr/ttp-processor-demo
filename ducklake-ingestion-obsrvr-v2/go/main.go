@@ -17,14 +17,16 @@ import (
 	"syscall"
 	"time"
 
-	duckdb "github.com/marcboeker/go-duckdb/v2"
-	_ "github.com/marcboeker/go-duckdb/v2"
+	_ "github.com/duckdb/duckdb-go/v2"
+	duckdb "github.com/duckdb/duckdb-go/v2"
 	"github.com/stellar/go/ingest"
 	"github.com/stellar/go/strkey"
 	"github.com/stellar/go/xdr"
+	"github.com/withObsrvr/ttp-processor-demo/ducklake-ingestion-obsrvr-v2/go/era"
+	"github.com/withObsrvr/ttp-processor-demo/ducklake-ingestion-obsrvr-v2/go/manifest"
+	"github.com/withObsrvr/ttp-processor-demo/ducklake-ingestion-obsrvr-v2/go/metrics"
+	"github.com/withObsrvr/ttp-processor-demo/ducklake-ingestion-obsrvr-v2/go/source"
 	pb "github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/go/gen/raw_ledger_service"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"gopkg.in/yaml.v3"
 )
 
@@ -49,12 +51,12 @@ const (
 	TradesSchemaVersion       = "v1" // Cycle 8: 17 fields
 
 	// Current minor versions (tracked in _meta_datasets)
-	LedgersMinorVersion      = 0
-	TransactionsMinorVersion = 0 // v2.0: Cycle 4 complete schema
-	OperationsMinorVersion   = 0
-	BalancesMinorVersion     = 0
-	EffectsMinorVersion      = 0 // Cycle 8: v1.0
-	TradesMinorVersion       = 0 // Cycle 8: v1.0
+	LedgersMinorVersion           = 0
+	TransactionsMinorVersion      = 0 // v2.0: Cycle 4 complete schema
+	OperationsMinorVersion        = 0
+	BalancesMinorVersion          = 0
+	EffectsMinorVersion           = 0 // Cycle 8: v1.0
+	TradesMinorVersion            = 0 // Cycle 8: v1.0
 	AccountsMinorVersion          = 0 // Cycle 9: v1.0
 	TrustlinesMinorVersion        = 0 // Cycle 9: v1.0
 	OffersMinorVersion            = 0 // Cycle 10: v1.0
@@ -70,7 +72,7 @@ type Config struct {
 	} `yaml:"service"`
 
 	Source struct {
-		Endpoint         string `yaml:"endpoint"`
+		Endpoint          string `yaml:"endpoint"`
 		NetworkPassphrase string `yaml:"network_passphrase"`
 		StartLedger       uint32 `yaml:"start_ledger"`
 		EndLedger         uint32 `yaml:"end_ledger"`
@@ -104,19 +106,19 @@ type Config struct {
 // LedgerData represents the ledger data we extract
 type LedgerData struct {
 	// Core metadata (existing 13 fields)
-	Sequence            uint32
-	LedgerHash          string
-	PreviousLedgerHash  string
-	ClosedAt            time.Time
-	ProtocolVersion     uint32
-	TotalCoins          int64
-	FeePool             int64
-	BaseFee             uint32
-	BaseReserve         uint32
-	MaxTxSetSize        uint32
-	SuccessfulTxCount   uint32
-	FailedTxCount       uint32
-	LedgerRange         uint32 // Partition key: (sequence / 10000) * 10000
+	Sequence           uint32
+	LedgerHash         string
+	PreviousLedgerHash string
+	ClosedAt           time.Time
+	ProtocolVersion    uint32
+	TotalCoins         int64
+	FeePool            int64
+	BaseFee            uint32
+	BaseReserve        uint32
+	MaxTxSetSize       uint32
+	SuccessfulTxCount  uint32
+	FailedTxCount      uint32
+	LedgerRange        uint32 // Partition key: (sequence / 10000) * 10000
 
 	// NEW: Operation counts (stellar-etl alignment)
 	TransactionCount    uint32 // successful_tx_count + failed_tx_count
@@ -168,12 +170,12 @@ type TransactionData struct {
 	InnerSourceAccount   *string // Nullable: source account of inner transaction
 
 	// Preconditions (6 fields) - CAP-21
-	TimeboundsMinTime   *int64  // Nullable: minimum time bound (unix timestamp)
-	TimeboundsMaxTime   *int64  // Nullable: maximum time bound (unix timestamp)
-	LedgerboundsMin     *uint32 // Nullable: minimum ledger bound
-	LedgerboundsMax     *uint32 // Nullable: maximum ledger bound
-	MinSequenceNumber   *int64  // Nullable: minimum sequence number precondition
-	MinSequenceAge      *uint64 // Nullable: minimum sequence age precondition
+	TimeboundsMinTime *int64  // Nullable: minimum time bound (unix timestamp)
+	TimeboundsMaxTime *int64  // Nullable: maximum time bound (unix timestamp)
+	LedgerboundsMin   *uint32 // Nullable: minimum ledger bound
+	LedgerboundsMax   *uint32 // Nullable: maximum ledger bound
+	MinSequenceNumber *int64  // Nullable: minimum sequence number precondition
+	MinSequenceAge    *uint64 // Nullable: minimum sequence age precondition
 
 	// Soroban fields (13 fields) - CAP-46/CAP-47
 	SorobanResourcesInstructions *uint32 // Nullable: CPU instructions limit
@@ -282,26 +284,26 @@ type OperationData struct {
 	// DEX FIELDS (11 - rare but needed for completeness)
 	// Used by: ManageSellOffer, ManageBuyOffer, CreatePassiveSellOffer
 	// ========================================
-	OfferID           *int64  // Offer ID
-	Price             *string // Price as decimal
-	PriceR            *string // Price as rational (n/d)
-	BuyingAsset       *string
-	BuyingAssetType   *string
-	BuyingAssetCode   *string
-	BuyingAssetIssuer *string
-	SellingAsset      *string
-	SellingAssetType  *string
-	SellingAssetCode  *string
+	OfferID            *int64  // Offer ID
+	Price              *string // Price as decimal
+	PriceR             *string // Price as rational (n/d)
+	BuyingAsset        *string
+	BuyingAssetType    *string
+	BuyingAssetCode    *string
+	BuyingAssetIssuer  *string
+	SellingAsset       *string
+	SellingAssetType   *string
+	SellingAssetCode   *string
 	SellingAssetIssuer *string
 
 	// ========================================
 	// SOROBAN FIELDS (4 - Protocol 20+)
 	// Used by: InvokeHostFunction, ExtendFootprintTTL, RestoreFootprint
 	// ========================================
-	SorobanOperation  *string // "invoke", "extend_ttl", "restore"
-	SorobanFunction   *string // HostFunction type
-	SorobanContractID *string // Contract address
-	SorobanAuthRequired *bool // Requires authorization
+	SorobanOperation    *string // "invoke", "extend_ttl", "restore"
+	SorobanFunction     *string // HostFunction type
+	SorobanContractID   *string // Contract address
+	SorobanAuthRequired *bool   // Requires authorization
 
 	// ========================================
 	// ACCOUNT OPERATIONS (8)
@@ -325,17 +327,17 @@ type OperationData struct {
 
 // NativeBalanceData represents native XLM balance changes
 type BalanceData struct {
-	AccountID            string
-	Balance              int64
-	BuyingLiabilities    int64
-	SellingLiabilities   int64
-	NumSubentries        int32
-	NumSponsoring        int32
-	NumSponsored         int32
-	SequenceNumber       int64
-	LastModifiedLedger   uint32
-	LedgerSequence       uint32
-	LedgerRange          uint32
+	AccountID          string
+	Balance            int64
+	BuyingLiabilities  int64
+	SellingLiabilities int64
+	NumSubentries      int32
+	NumSponsoring      int32
+	NumSponsored       int32
+	SequenceNumber     int64
+	LastModifiedLedger uint32
+	LedgerSequence     uint32
+	LedgerRange        uint32
 }
 
 // EffectData represents state changes from operations (Cycle 8)
@@ -415,9 +417,9 @@ type TradeData struct {
 // Obsrvr playbook: core.accounts_snapshot_v1
 type AccountData struct {
 	// Identity (3 fields)
-	AccountID       string    // Account public key
-	LedgerSequence  uint32    // Ledger when snapshot taken
-	ClosedAt        time.Time // Ledger close time
+	AccountID      string    // Account public key
+	LedgerSequence uint32    // Ledger when snapshot taken
+	ClosedAt       time.Time // Ledger close time
 
 	// Balance (1 field)
 	Balance string // Native XLM balance in stroops
@@ -436,11 +438,11 @@ type AccountData struct {
 	HighThreshold uint32 // High threshold
 
 	// Flags (5 fields)
-	Flags              uint32 // Raw flags bitmask
-	AuthRequired       bool   // Authorization required flag
-	AuthRevocable      bool   // Authorization revocable flag
-	AuthImmutable      bool   // Authorization immutable flag
-	AuthClawbackEnabled bool  // Clawback enabled flag
+	Flags               uint32 // Raw flags bitmask
+	AuthRequired        bool   // Authorization required flag
+	AuthRevocable       bool   // Authorization revocable flag
+	AuthImmutable       bool   // Authorization immutable flag
+	AuthClawbackEnabled bool   // Clawback enabled flag
 
 	// Signers (1 field)
 	Signers *string // JSON array of signers: [{"key": "...", "weight": N}]
@@ -470,9 +472,9 @@ type TrustlineData struct {
 	SellingLiabilities string // Liabilities for selling
 
 	// Authorization (3 fields)
-	Authorized                        bool // Trustline is authorized
-	AuthorizedToMaintainLiabilities   bool // Can maintain liabilities
-	ClawbackEnabled                   bool // Clawback is enabled
+	Authorized                      bool // Trustline is authorized
+	AuthorizedToMaintainLiabilities bool // Can maintain liabilities
+	ClawbackEnabled                 bool // Clawback is enabled
 
 	// Metadata (3 fields)
 	LedgerSequence uint32    // Ledger when snapshot taken
@@ -585,15 +587,15 @@ type ContractEventData struct {
 	ClosedAt        time.Time // Ledger close time
 
 	// Event Type (2 fields)
-	EventType               string // "contract", "system", "diagnostic"
+	EventType                string // "contract", "system", "diagnostic"
 	InSuccessfulContractCall bool   // True if event from successful contract call
 
 	// Event Data (5 fields - Hubble compatible with decoded versions)
-	TopicsJSON     string // JSON array of base64 XDR encoded SCVal topics
-	TopicsDecoded  string // JSON array of decoded SCVal topics (human-readable)
-	DataXDR        string // Base64 XDR encoded SCVal data
-	DataDecoded    string // Decoded SCVal data (human-readable JSON)
-	TopicCount     int32  // Number of topics (0-4)
+	TopicsJSON    string // JSON array of base64 XDR encoded SCVal topics
+	TopicsDecoded string // JSON array of decoded SCVal topics (human-readable)
+	DataXDR       string // Base64 XDR encoded SCVal data
+	DataDecoded   string // Decoded SCVal data (human-readable JSON)
+	TopicCount    int32  // Number of topics (0-4)
 
 	// Context (2 fields)
 	OperationIndex uint32 // Operation index within transaction
@@ -803,25 +805,25 @@ type AccountSignerData struct {
 
 // WorkerBuffers holds buffers for all tables for a single worker
 type WorkerBuffers struct {
-	ledgers       []LedgerData
-	transactions  []TransactionData
-	operations    []OperationData
-	balances      []BalanceData
-	effects       []EffectData         // Cycle 8: Effects table
-	trades        []TradeData          // Cycle 8: Trades table
-	accounts      []AccountData        // Cycle 9: Accounts snapshot
-	trustlines    []TrustlineData      // Cycle 9: Trustlines snapshot
-	offers            []OfferData             // Cycle 10: Offers snapshot
-	claimableBalances []ClaimableBalanceData  // Cycle 11: Claimable balances snapshot
-	liquidityPools    []LiquidityPoolData     // Cycle 12: Liquidity pools snapshot
-	contractEvents    []ContractEventData     // Cycle 11: Contract events stream
-	contractData      []ContractDataData      // Cycle 14: Contract data snapshot
-	contractCode      []ContractCodeData      // Cycle 15: Contract code snapshot
-	configSettings    []ConfigSettingData     // Cycle 16: Config settings snapshot
-	ttl               []TTLData               // Cycle 17: TTL snapshot
-	evictedKeys       []EvictedKeyData        // Cycle 18: Evicted keys state
-	restoredKeys      []RestoredKeyData       // Cycle 19: Restored keys state
-	accountSigners    []AccountSignerData     // Cycle 20: Account signers snapshot
+	ledgers           []LedgerData
+	transactions      []TransactionData
+	operations        []OperationData
+	balances          []BalanceData
+	effects           []EffectData           // Cycle 8: Effects table
+	trades            []TradeData            // Cycle 8: Trades table
+	accounts          []AccountData          // Cycle 9: Accounts snapshot
+	trustlines        []TrustlineData        // Cycle 9: Trustlines snapshot
+	offers            []OfferData            // Cycle 10: Offers snapshot
+	claimableBalances []ClaimableBalanceData // Cycle 11: Claimable balances snapshot
+	liquidityPools    []LiquidityPoolData    // Cycle 12: Liquidity pools snapshot
+	contractEvents    []ContractEventData    // Cycle 11: Contract events stream
+	contractData      []ContractDataData     // Cycle 14: Contract data snapshot
+	contractCode      []ContractCodeData     // Cycle 15: Contract code snapshot
+	configSettings    []ConfigSettingData    // Cycle 16: Config settings snapshot
+	ttl               []TTLData              // Cycle 17: TTL snapshot
+	evictedKeys       []EvictedKeyData       // Cycle 18: Evicted keys state
+	restoredKeys      []RestoredKeyData      // Cycle 19: Restored keys state
+	accountSigners    []AccountSignerData    // Cycle 20: Account signers snapshot
 	lastCommit        time.Time
 }
 
@@ -876,92 +878,92 @@ type WorkerBuffers struct {
 
 // Ingester handles the ledger ingestion pipeline
 type Ingester struct {
-	config      *Config
-	grpcConn    *grpc.ClientConn
-	grpcClient  pb.RawLedgerServiceClient
+	config *Config
+
+	// Source abstraction (supports datastore or gRPC via source.GRPCSource)
+	ledgerSource source.LedgerSource
 
 	// V2: Dual connection model - sql.DB for DDL/queries, native conn for Appender API
-	connector   *duckdb.Connector  // Shared connector for both connections
-	db          *sql.DB              // Keep for DDL, queries, and metadata operations
-	conn        *duckdb.Conn         // Native connection for Appender API
+	connector *duckdb.Connector // Shared connector for both connections
+	db        *sql.DB           // Keep for DDL, queries, and metadata operations
+	conn      *duckdb.Conn      // Native connection for Appender API
 
 	// V2: Appenders for high-performance inserts
-	ledgerAppender      *duckdb.Appender
-	transactionAppender *duckdb.Appender
-	operationAppender   *duckdb.Appender
-	balanceAppender     *duckdb.Appender
-	effectAppender       *duckdb.Appender // Cycle 8: Effects appender
-	tradeAppender        *duckdb.Appender // Cycle 8: Trades appender
-	accountAppender      *duckdb.Appender // Cycle 9: Accounts appender
-	trustlineAppender    *duckdb.Appender // Cycle 9: Trustlines appender
-	offerAppender             *duckdb.Appender // Cycle 10: Offers appender
-	claimableBalanceAppender  *duckdb.Appender // Cycle 11: Claimable balances appender
-	liquidityPoolAppender     *duckdb.Appender // Cycle 12: Liquidity pools appender
-	contractEventAppender     *duckdb.Appender // Cycle 11: Contract events appender
-	contractDataAppender      *duckdb.Appender // Cycle 14: Contract data appender
-	contractCodeAppender      *duckdb.Appender // Cycle 15: Contract code appender
-	configSettingsAppender    *duckdb.Appender // Cycle 16: Config settings appender
-	ttlAppender               *duckdb.Appender // Cycle 17: TTL appender
-	evictedKeysAppender       *duckdb.Appender // Cycle 18: Evicted keys appender
-	restoredKeysAppender      *duckdb.Appender // Cycle 19: Restored keys appender
-	accountSignersAppender    *duckdb.Appender // Cycle 20: Account signers appender
+	ledgerAppender           *duckdb.Appender
+	transactionAppender      *duckdb.Appender
+	operationAppender        *duckdb.Appender
+	balanceAppender          *duckdb.Appender
+	effectAppender           *duckdb.Appender // Cycle 8: Effects appender
+	tradeAppender            *duckdb.Appender // Cycle 8: Trades appender
+	accountAppender          *duckdb.Appender // Cycle 9: Accounts appender
+	trustlineAppender        *duckdb.Appender // Cycle 9: Trustlines appender
+	offerAppender            *duckdb.Appender // Cycle 10: Offers appender
+	claimableBalanceAppender *duckdb.Appender // Cycle 11: Claimable balances appender
+	liquidityPoolAppender    *duckdb.Appender // Cycle 12: Liquidity pools appender
+	contractEventAppender    *duckdb.Appender // Cycle 11: Contract events appender
+	contractDataAppender     *duckdb.Appender // Cycle 14: Contract data appender
+	contractCodeAppender     *duckdb.Appender // Cycle 15: Contract code appender
+	configSettingsAppender   *duckdb.Appender // Cycle 16: Config settings appender
+	ttlAppender              *duckdb.Appender // Cycle 17: TTL appender
+	evictedKeysAppender      *duckdb.Appender // Cycle 18: Evicted keys appender
+	restoredKeysAppender     *duckdb.Appender // Cycle 19: Restored keys appender
+	accountSignersAppender   *duckdb.Appender // Cycle 20: Account signers appender
 
-	buffers     WorkerBuffers
-	lastCommit  time.Time
-	metrics     *IngesterMetrics  // Flowctl metrics tracking
+	buffers    WorkerBuffers
+	lastCommit time.Time
+	metrics    *IngesterMetrics // Flowctl metrics tracking
+
+	// Cycle 2: Audit layer (checkpoint, manifest, PAS)
+	auditLayer *AuditLayer
+
+	// Track batch boundaries for audit
+	batchStartLedger uint32
+	batchStartTime   time.Time
+
+	// Cycle 3: Prometheus metrics and era config
+	promMetrics *metrics.Metrics
+	eraConfig   *era.Config
 }
 
 func main() {
 	configPath := flag.String("config", "config/testnet.yaml", "Path to config file")
 	startLedger := flag.Uint("start-ledger", 0, "Override start ledger")
+	useLegacyConfig := flag.Bool("legacy-config", false, "Use legacy Config format (gRPC only, no audit/metrics)")
 	flag.Parse()
 
-	log.Println("DuckLake Ingestion Processor - Cycle 1")
-
-	// Load config
-	config, err := loadConfig(*configPath)
-	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
-	}
-
-	// Override start ledger if provided
-	if *startLedger > 0 {
-		config.Source.StartLedger = uint32(*startLedger)
-	}
+	log.Println("DuckLake Ingestion Processor v2 - Bronze Copier")
 
 	// Setup graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Register with flowctl control plane if enabled
-	var flowctlController *FlowctlController
-	if os.Getenv("ENABLE_FLOWCTL") == "true" {
-		// Create shared metrics instance
-		metrics := &IngesterMetrics{}
-		flowctlController = NewFlowctlController(metrics)
-		if err := flowctlController.RegisterWithFlowctl(); err != nil {
-			log.Printf("Warning: Failed to register with flowctl control plane: %v", err)
-		} else {
-			log.Printf("Successfully registered with flowctl control plane")
-		}
-		// Ensure flowctl controller is stopped gracefully on server shutdown
-		defer func() {
-			if flowctlController != nil {
-				flowctlController.Stop()
-			}
-		}()
-	}
-
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// Choose execution path based on num_workers
 	errChan := make(chan error, 1)
-	if config.DuckLake.NumWorkers <= 1 {
-		// Single-threaded path (existing behavior)
-		log.Printf("Starting single-threaded ingestion from ledger %d", config.Source.StartLedger)
+
+	if !*useLegacyConfig {
+		// Use enhanced AppConfig format (supports datastore mode, audit, metrics)
+		appConfig, err := LoadAppConfig(*configPath)
+		if err != nil {
+			log.Fatalf("Failed to load app config: %v", err)
+		}
+
+		// Override start ledger if provided
+		if *startLedger > 0 {
+			appConfig.Source.StartLedger = uint32(*startLedger)
+		}
+
+		// Validate config
+		if err := appConfig.Validate(); err != nil {
+			log.Fatalf("Invalid config: %v", err)
+		}
+
+		srcMode := appConfig.Source.ToSourceConfig().Mode
+		log.Printf("Starting ingestion (source mode: %s) from ledger %d", srcMode, appConfig.Source.StartLedger)
+
 		go func() {
-			ingester, err := NewIngester(config)
+			ingester, err := NewIngesterFromAppConfig(appConfig)
 			if err != nil {
 				errChan <- fmt.Errorf("failed to create ingester: %w", err)
 				return
@@ -970,12 +972,53 @@ func main() {
 			errChan <- ingester.Start(ctx)
 		}()
 	} else {
-		// Parallel path
-		log.Printf("Starting parallel ingestion with %d workers from ledger %d to %d",
-			config.DuckLake.NumWorkers, config.Source.StartLedger, config.Source.EndLedger)
-		go func() {
-			errChan <- runParallelWorkers(ctx, config)
-		}()
+		// Use legacy Config format (gRPC mode only)
+		config, err := loadConfig(*configPath)
+		if err != nil {
+			log.Fatalf("Failed to load config: %v", err)
+		}
+
+		// Override start ledger if provided
+		if *startLedger > 0 {
+			config.Source.StartLedger = uint32(*startLedger)
+		}
+
+		// Register with flowctl control plane if enabled
+		var flowctlController *FlowctlController
+		if os.Getenv("ENABLE_FLOWCTL") == "true" {
+			metrics := &IngesterMetrics{}
+			flowctlController = NewFlowctlController(metrics)
+			if err := flowctlController.RegisterWithFlowctl(); err != nil {
+				log.Printf("Warning: Failed to register with flowctl control plane: %v", err)
+			} else {
+				log.Printf("Successfully registered with flowctl control plane")
+			}
+			defer func() {
+				if flowctlController != nil {
+					flowctlController.Stop()
+				}
+			}()
+		}
+
+		// Choose execution path based on num_workers
+		if config.DuckLake.NumWorkers <= 1 {
+			log.Printf("Starting single-threaded ingestion from ledger %d", config.Source.StartLedger)
+			go func() {
+				ingester, err := NewIngester(config)
+				if err != nil {
+					errChan <- fmt.Errorf("failed to create ingester: %w", err)
+					return
+				}
+				defer ingester.Close()
+				errChan <- ingester.Start(ctx)
+			}()
+		} else {
+			log.Printf("Starting parallel ingestion with %d workers from ledger %d to %d",
+				config.DuckLake.NumWorkers, config.Source.StartLedger, config.Source.EndLedger)
+			go func() {
+				errChan <- runParallelWorkers(ctx, config)
+			}()
+		}
 	}
 
 	// Wait for shutdown signal or error
@@ -983,7 +1026,6 @@ func main() {
 	case sig := <-sigChan:
 		log.Printf("Received signal %v, shutting down gracefully...", sig)
 		cancel()
-		// Wait a bit for graceful shutdown
 		time.Sleep(2 * time.Second)
 	case err := <-errChan:
 		if err != nil {
@@ -1103,113 +1145,91 @@ func runWorker(ctx context.Context, workerID int, startLedger, endLedger uint32,
 	}
 	defer ingester.Close()
 
+	// Prepare the ledger source for the range
+	if err := ingester.ledgerSource.PrepareRange(ctx, startLedger, endLedger); err != nil {
+		return fmt.Errorf("[Worker %d] failed to prepare ledger range: %w", workerID, err)
+	}
+
+	// Get ledger stream from source
+	ledgerChan, err := ingester.ledgerSource.GetLedgerRange(ctx, startLedger, endLedger)
+	if err != nil {
+		return fmt.Errorf("[Worker %d] failed to start ledger stream: %w", workerID, err)
+	}
+
+	log.Printf("[Worker %d] Streaming ledgers from %d to %d", workerID, startLedger, endLedger)
+
 	// Start processing with per-worker progress tracking
 	startTime := time.Now()
 	processed := 0
+	var lastSeq uint32
 
-	// Start streaming ledgers
-	stream, err := ingester.grpcClient.StreamRawLedgers(ctx, &pb.StreamLedgersRequest{
-		StartLedger: startLedger,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to start stream: %w", err)
-	}
-
-	// Track last received ledger time to detect stalls
-	lastRecvTime := time.Now()
-	streamTimeout := 900 * time.Second // Timeout if no ledger received in 15 minutes (mainnet needs longer flush time)
-	// Note: Hosted PostgreSQL flushes can take 3+ minutes for 200 ledgers
-	// The processor doesn't receive ledgers during flush, so timeout must be longer than flush time
+	streamTimeout := 900 * time.Second // Timeout if no ledger received in 15 minutes
 
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		default:
-		}
-
-		// Check for stream timeout (source might be hung)
-		if time.Since(lastRecvTime) > streamTimeout {
-			return fmt.Errorf("[Worker %d] stream timeout: no data received for %v (source may be hung)",
-				workerID, streamTimeout)
-		}
-
-		// Receive ledger with non-blocking check
-		type recvResult struct {
-			ledger *pb.RawLedger
-			err    error
-		}
-		recvChan := make(chan recvResult, 1)
-
-		go func() {
-			ledger, err := stream.Recv()
-			recvChan <- recvResult{ledger: ledger, err: err}
-		}()
-
-		// Wait for receive with timeout
-		var rawLedger *pb.RawLedger
-		var err error
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(5 * time.Second):
-			// Still waiting... check total timeout
-			if time.Since(lastRecvTime) > streamTimeout {
-				return fmt.Errorf("[Worker %d] stream timeout after %v, source may be hung",
-					workerID, time.Since(lastRecvTime))
+		case result, ok := <-ledgerChan:
+			if !ok {
+				// Channel closed - stream completed
+				log.Printf("[Worker %d] Ledger stream completed after %d ledgers", workerID, processed)
+				return ingester.flush(ctx)
 			}
-			// Log waiting status
-			log.Printf("[Worker %d] Waiting for ledger... (%.0fs since last receive)",
-				workerID, time.Since(lastRecvTime).Seconds())
 
-			// Wait for actual result (this will block until Recv completes or context cancels)
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case result := <-recvChan:
-				rawLedger = result.ledger
-				err = result.err
-				lastRecvTime = time.Now()
+			// Check for errors
+			if result.Err != nil {
+				if result.Err == io.EOF {
+					log.Printf("[Worker %d] Stream ended (EOF)", workerID)
+					return ingester.flush(ctx)
+				}
+				return fmt.Errorf("[Worker %d] ledger stream error: %w", workerID, result.Err)
 			}
-		case result := <-recvChan:
-			rawLedger = result.ledger
-			err = result.err
-			lastRecvTime = time.Now()
-		}
 
-		if err == io.EOF {
-			log.Printf("[Worker %d] Stream ended", workerID)
-			return ingester.flush(ctx)
-		}
-		if err != nil {
-			return fmt.Errorf("stream error: %w", err)
-		}
+			lcm := result.Ledger
 
-		// Check if we've reached the end ledger (use > to include endLedger in processing)
-		if rawLedger.Sequence > endLedger {
-			log.Printf("[Worker %d] Reached end ledger %d, stopping ingestion", workerID, endLedger)
-			return ingester.flush(ctx)
-		}
+			// Get sequence number for logging
+			var seq uint32
+			switch lcm.V {
+			case 0:
+				seq = uint32(lcm.MustV0().LedgerHeader.Header.LedgerSeq)
+			case 1:
+				seq = uint32(lcm.MustV1().LedgerHeader.Header.LedgerSeq)
+			case 2:
+				seq = uint32(lcm.MustV2().LedgerHeader.Header.LedgerSeq)
+			}
+			lastSeq = seq
 
-		// Process ledger
-		if err := ingester.processLedger(ctx, rawLedger); err != nil {
-			log.Printf("[Worker %d] Error processing ledger %d: %v", workerID, rawLedger.Sequence, err)
-			return err
-		}
+			// Check if we've reached the end ledger (use > to include endLedger in processing)
+			if seq > endLedger {
+				log.Printf("[Worker %d] Reached end ledger %d, stopping ingestion", workerID, endLedger)
+				return ingester.flush(ctx)
+			}
 
-		processed++
+			// Process ledger using XDR directly
+			if err := ingester.processLedgerFromXDR(ctx, lcm); err != nil {
+				log.Printf("[Worker %d] Error processing ledger %d: %v", workerID, seq, err)
+				return err
+			}
 
-		// Periodic logging with worker ID
-		if processed%100 == 0 {
-			elapsed := time.Since(startTime)
-			rate := float64(processed) / elapsed.Seconds()
-			log.Printf("[Worker %d] Processed %d ledgers (%.2f ledgers/sec)", workerID, processed, rate)
+			processed++
+
+			// Periodic logging with worker ID
+			if processed%100 == 0 {
+				elapsed := time.Since(startTime)
+				rate := float64(processed) / elapsed.Seconds()
+				log.Printf("[Worker %d] Processed %d ledgers (%.2f ledgers/sec), current: %d",
+					workerID, processed, rate, seq)
+			}
+
+		case <-time.After(streamTimeout):
+			// Timeout waiting for next ledger
+			return fmt.Errorf("[Worker %d] stream timeout: no data received for %v (last ledger: %d)",
+				workerID, streamTimeout, lastSeq)
 		}
 	}
 }
 
-// NewIngester creates a new ingester
+// NewIngester creates a new ingester from legacy Config
 func NewIngester(config *Config) (*Ingester, error) {
 	ing := &Ingester{
 		config:     config,
@@ -1218,26 +1238,166 @@ func NewIngester(config *Config) (*Ingester, error) {
 		metrics:    &IngesterMetrics{}, // Initialize metrics
 	}
 
-	// Connect to stellar-live-source-datalake via gRPC
-	conn, err := grpc.Dial(
-		config.Source.Endpoint,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(100*1024*1024)),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to source: %w", err)
+	// Create ledger source based on configuration
+	// Check if new source.mode is set, otherwise fall back to legacy gRPC
+	srcConfig := source.SourceConfig{
+		NetworkPassphrase: config.Source.NetworkPassphrase,
+		StartLedger:       config.Source.StartLedger,
+		EndLedger:         config.Source.EndLedger,
 	}
-	ing.grpcConn = conn
-	ing.grpcClient = pb.NewRawLedgerServiceClient(conn)
+
+	// Determine source mode from config
+	// If source.mode is explicitly set in YAML, it will be in config.Source.Mode
+	// Otherwise, use legacy gRPC mode with endpoint
+	if config.Source.Endpoint != "" {
+		// Legacy mode: use gRPC with endpoint
+		srcConfig.Mode = "grpc"
+		srcConfig.GRPC = source.GRPCConfig{
+			Endpoint: config.Source.Endpoint,
+		}
+		srcConfig.GRPC.ApplyDefaults()
+		log.Printf("[source] Using legacy gRPC mode: %s", config.Source.Endpoint)
+	} else {
+		// This would be the new datastore mode - for now, default to gRPC
+		// Full datastore config will come from AppConfig in future
+		return nil, fmt.Errorf("source.endpoint is required (datastore mode not yet wired to main config)")
+	}
+
+	// Create the ledger source
+	ledgerSrc, err := source.NewLedgerSource(srcConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ledger source: %w", err)
+	}
+	ing.ledgerSource = ledgerSrc
 
 	// Initialize DuckLake connection
 	if err := ing.initializeDuckLake(); err != nil {
-		conn.Close()
+		ing.ledgerSource.Close()
 		return nil, fmt.Errorf("failed to initialize DuckLake: %w", err)
 	}
 
 	log.Println("Ingester initialized successfully")
 	return ing, nil
+}
+
+// NewIngesterFromAppConfig creates a new ingester from enhanced AppConfig.
+// This supports both datastore (Galexie archives) and gRPC source modes.
+func NewIngesterFromAppConfig(appConfig *AppConfig) (*Ingester, error) {
+	// Convert AppConfig to legacy Config for compatibility
+	config := &Config{}
+	config.Service.Name = appConfig.Service.Name
+	config.Service.Environment = appConfig.Service.Environment
+	config.Source.NetworkPassphrase = appConfig.Source.NetworkPassphrase
+	config.Source.StartLedger = appConfig.Source.StartLedger
+	config.Source.EndLedger = appConfig.Source.EndLedger
+	config.DuckLake = appConfig.DuckLake
+	config.Logging = appConfig.Logging
+
+	// Handle legacy endpoint field
+	if appConfig.Source.Endpoint != "" {
+		config.Source.Endpoint = appConfig.Source.Endpoint
+	}
+
+	ing := &Ingester{
+		config:     config,
+		buffers:    WorkerBuffers{},
+		lastCommit: time.Now(),
+		metrics:    &IngesterMetrics{},
+	}
+
+	// Cycle 3: Initialize era config
+	eraCfg := appConfig.Era
+	if eraCfg.Network == "" {
+		// Auto-detect network from passphrase if not explicitly set
+		eraCfg.Network = getNetworkName(appConfig.Source.NetworkPassphrase)
+	}
+	ing.eraConfig = &eraCfg
+	log.Printf("[era] Configured era: %s", eraCfg.String())
+
+	// Cycle 3: Initialize Prometheus metrics
+	ing.promMetrics = metrics.New(appConfig.Metrics)
+	if appConfig.Metrics.Enabled {
+		go func() {
+			addr := appConfig.Metrics.Address
+			if addr == "" {
+				addr = ":9090"
+			}
+			log.Printf("[metrics] Starting Prometheus metrics server on %s", addr)
+			if err := ing.promMetrics.StartServer(addr); err != nil {
+				log.Printf("[metrics] Server error: %v", err)
+			}
+		}()
+	}
+
+	// Create ledger source from AppConfig
+	srcConfig := appConfig.Source.ToSourceConfig()
+	log.Printf("[source] Creating source in mode: %s", srcConfig.Mode)
+
+	ledgerSrc, err := source.NewLedgerSource(srcConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ledger source: %w", err)
+	}
+	ing.ledgerSource = ledgerSrc
+
+	// Initialize DuckLake connection
+	if err := ing.initializeDuckLake(); err != nil {
+		ing.ledgerSource.Close()
+		return nil, fmt.Errorf("failed to initialize DuckLake: %w", err)
+	}
+
+	// Cycle 4: Register era in _meta_eras (if era config provided)
+	if err := ing.registerEra(context.Background()); err != nil {
+		ing.ledgerSource.Close()
+		ing.Close()
+		return nil, fmt.Errorf("failed to register era: %w", err)
+	}
+
+	// Cycle 2: Initialize audit layer (checkpoint, manifest, PAS)
+	auditCfg := AuditConfig{
+		Checkpoint:        appConfig.Checkpoint,
+		Manifest:          appConfig.Manifest,
+		PAS:               appConfig.PAS,
+		ProducerID:        fmt.Sprintf("ducklake-ingestion-obsrvr-%s", appConfig.Service.Environment),
+		ProducerVersion:   ProcessorVersion,
+		Network:           getNetworkName(appConfig.Source.NetworkPassphrase),
+		EraID:             eraCfg.EraID, // From era config
+		ManifestOutputDir: appConfig.DuckLake.DataPath,
+	}
+
+	auditLayer, err := NewAuditLayer(auditCfg)
+	if err != nil {
+		ing.ledgerSource.Close()
+		ing.Close()
+		return nil, fmt.Errorf("failed to initialize audit layer: %w", err)
+	}
+	ing.auditLayer = auditLayer
+
+	// Apply checkpoint resume point if enabled
+	if auditLayer.IsCheckpointEnabled() {
+		resumePoint := auditLayer.GetResumePoint(config.Source.StartLedger)
+		if resumePoint > config.Source.StartLedger {
+			log.Printf("[audit] Resuming from checkpoint: ledger %d (was %d)", resumePoint, config.Source.StartLedger)
+			config.Source.StartLedger = resumePoint
+		}
+
+		// Validate checkpoint compatibility
+		if err := auditLayer.ValidateCheckpoint(config.Source.NetworkPassphrase, srcConfig.Mode); err != nil {
+			return nil, fmt.Errorf("checkpoint validation failed: %w", err)
+		}
+	}
+
+	log.Printf("Ingester initialized successfully (source mode: %s)", srcConfig.Mode)
+	return ing, nil
+}
+
+// getNetworkName extracts a human-readable network name from the passphrase.
+func getNetworkName(passphrase string) string {
+	if passphrase == "Public Global Stellar Network ; September 2015" {
+		return "mainnet"
+	} else if passphrase == "Test SDF Network ; September 2015" {
+		return "testnet"
+	}
+	return "unknown"
 }
 
 // initializeDuckLake sets up DuckDB with DuckLake
@@ -1666,7 +1826,6 @@ func (ing *Ingester) configureS3() {
 	}
 }
 
-
 // registerDatasets registers all datasets in the _meta_datasets table
 // This is idempotent - safe to call on every startup
 // Inserts new datasets or updates existing ones with current version info
@@ -1940,125 +2099,110 @@ func (ing *Ingester) registerDatasets() error {
 
 // Start begins the ingestion process
 func (ing *Ingester) Start(ctx context.Context) error {
-	// Start streaming ledgers
-	stream, err := ing.grpcClient.StreamRawLedgers(ctx, &pb.StreamLedgersRequest{
-		StartLedger: ing.config.Source.StartLedger,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to start stream: %w", err)
+	startLedger := ing.config.Source.StartLedger
+	endLedger := ing.config.Source.EndLedger
+
+	// Prepare the ledger source for the range
+	if err := ing.ledgerSource.PrepareRange(ctx, startLedger, endLedger); err != nil {
+		return fmt.Errorf("failed to prepare ledger range: %w", err)
 	}
 
-	log.Printf("Streaming ledgers from %d", ing.config.Source.StartLedger)
+	// Get ledger stream from source
+	ledgerChan, err := ing.ledgerSource.GetLedgerRange(ctx, startLedger, endLedger)
+	if err != nil {
+		return fmt.Errorf("failed to start ledger stream: %w", err)
+	}
+
+	log.Printf("Streaming ledgers from %d (end: %d)", startLedger, endLedger)
 
 	processed := 0
 	startTime := time.Now()
+	var lastSeq uint32
 
-	// Track last received ledger time to detect stalls
-	lastRecvTime := time.Now()
-	streamTimeout := 900 * time.Second // Timeout if no ledger received in 15 minutes (mainnet needs longer flush time)
-	// Note: Hosted PostgreSQL flushes can take 3+ minutes for 200 ledgers
-	// The processor doesn't receive ledgers during flush, so timeout must be longer than flush time
+	streamTimeout := 900 * time.Second // Timeout if no ledger received in 15 minutes
 
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		default:
-		}
-
-		// Check for stream timeout (source might be hung)
-		if time.Since(lastRecvTime) > streamTimeout {
-			return fmt.Errorf("stream timeout: no data received for %v (source may be hung)", streamTimeout)
-		}
-
-		// Receive ledger with non-blocking check
-		type recvResult struct {
-			ledger *pb.RawLedger
-			err    error
-		}
-		recvChan := make(chan recvResult, 1)
-
-		go func() {
-			ledger, err := stream.Recv()
-			recvChan <- recvResult{ledger: ledger, err: err}
-		}()
-
-		// Wait for receive with timeout
-		var rawLedger *pb.RawLedger
-		var err error
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(5 * time.Second):
-			// Still waiting... check total timeout
-			if time.Since(lastRecvTime) > streamTimeout {
-				return fmt.Errorf("stream timeout after %v, source may be hung", time.Since(lastRecvTime))
+		case result, ok := <-ledgerChan:
+			if !ok {
+				// Channel closed - stream completed
+				log.Printf("Ledger stream completed after %d ledgers", processed)
+				return ing.flush(ctx)
 			}
-			// Log waiting status
-			log.Printf("Waiting for ledger... (%.0fs since last receive)", time.Since(lastRecvTime).Seconds())
 
-			// Wait for actual result (this will block until Recv completes or context cancels)
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case result := <-recvChan:
-				rawLedger = result.ledger
-				err = result.err
-				lastRecvTime = time.Now()
+			// Check for errors
+			if result.Err != nil {
+				if result.Err == io.EOF {
+					log.Println("Stream ended (EOF)")
+					return ing.flush(ctx)
+				}
+				return fmt.Errorf("ledger stream error: %w", result.Err)
 			}
-		case result := <-recvChan:
-			rawLedger = result.ledger
-			err = result.err
-			lastRecvTime = time.Now()
-		}
 
-		if err == io.EOF {
-			log.Println("Stream ended")
-			return ing.flush(ctx)
-		}
-		if err != nil {
-			return fmt.Errorf("stream error: %w", err)
-		}
+			lcm := result.Ledger
 
-		// Check if we've reached the end ledger
-		if ing.config.Source.EndLedger > 0 && rawLedger.Sequence >= uint32(ing.config.Source.EndLedger) {
-			log.Printf("Reached end ledger %d, stopping ingestion", ing.config.Source.EndLedger)
-			return ing.flush(ctx)
-		}
-
-		// Process ledger
-		if err := ing.processLedger(ctx, rawLedger); err != nil {
-			log.Printf("Error processing ledger %d: %v", rawLedger.Sequence, err)
-			return err
-		}
-
-		processed++
-
-		// Periodic logging and metrics update
-		if processed%100 == 0 {
-			elapsed := time.Since(startTime)
-			rate := float64(processed) / elapsed.Seconds()
-			log.Printf("Processed %d ledgers (%.2f ledgers/sec)", processed, rate)
-
-			// Update flowctl metrics
-			if ing.metrics != nil {
-				ing.metrics.UpdateMetrics(uint64(processed), 19, rawLedger.Sequence, rate, 0)
+			// Get sequence number for logging
+			var seq uint32
+			switch lcm.V {
+			case 0:
+				seq = uint32(lcm.MustV0().LedgerHeader.Header.LedgerSeq)
+			case 1:
+				seq = uint32(lcm.MustV1().LedgerHeader.Header.LedgerSeq)
+			case 2:
+				seq = uint32(lcm.MustV2().LedgerHeader.Header.LedgerSeq)
 			}
+			lastSeq = seq
+
+			// Check if we've reached the end ledger (for bounded ranges)
+			if endLedger > 0 && seq > endLedger {
+				log.Printf("Reached end ledger %d, stopping ingestion", endLedger)
+				return ing.flush(ctx)
+			}
+
+			// Process ledger using XDR directly
+			if err := ing.processLedgerFromXDR(ctx, lcm); err != nil {
+				log.Printf("Error processing ledger %d: %v", seq, err)
+				return err
+			}
+
+			processed++
+
+			// Periodic logging and metrics update
+			if processed%100 == 0 {
+				elapsed := time.Since(startTime)
+				rate := float64(processed) / elapsed.Seconds()
+				log.Printf("Processed %d ledgers (%.2f ledgers/sec), current: %d", processed, rate, seq)
+
+				// Update flowctl metrics
+				if ing.metrics != nil {
+					ing.metrics.UpdateMetrics(uint64(processed), 19, seq, rate, 0)
+				}
+			}
+
+		case <-time.After(streamTimeout):
+			// Timeout waiting for next ledger
+			return fmt.Errorf("stream timeout: no data received for %v (last ledger: %d)", streamTimeout, lastSeq)
 		}
 	}
 }
 
-// processLedger processes a single ledger
+// processLedger processes a single ledger from gRPC (legacy compatibility wrapper)
 func (ing *Ingester) processLedger(ctx context.Context, rawLedger *pb.RawLedger) error {
 	// Unmarshal XDR
 	var lcm xdr.LedgerCloseMeta
 	if err := lcm.UnmarshalBinary(rawLedger.LedgerCloseMetaXdr); err != nil {
 		return fmt.Errorf("failed to unmarshal XDR: %w", err)
 	}
+	return ing.processLedgerFromXDR(ctx, &lcm)
+}
 
+// processLedgerFromXDR processes a single ledger from LedgerCloseMeta
+// This is the core processing logic, used by both LedgerSource and legacy gRPC paths
+func (ing *Ingester) processLedgerFromXDR(ctx context.Context, lcm *xdr.LedgerCloseMeta) error {
 	// Extract ledger data
-	ledgerData := ing.extractLedgerData(&lcm)
+	ledgerData := ing.extractLedgerData(lcm)
 
 	// Get closed_at timestamp for child tables
 	var closedAt time.Time
@@ -2072,45 +2216,45 @@ func (ing *Ingester) processLedger(ctx context.Context, rawLedger *pb.RawLedger)
 	}
 
 	// Extract data for all tables
-	transactions := ing.extractTransactions(&lcm, closedAt)
-	operations := ing.extractOperations(&lcm, closedAt)
-	balances := ing.extractBalances(&lcm)
-	effects := ing.extractEffectsForLedger(&lcm, closedAt)      // Cycle 8
-	trades := ing.extractTradesForLedger(&lcm, closedAt)        // Cycle 8
-	accounts := ing.extractAccounts(&lcm)                        // Cycle 9
-	trustlines := ing.extractTrustlines(&lcm)                    // Cycle 9
-	offers := ing.extractOffers(&lcm)                            // Cycle 10
-	claimableBalances := ing.extractClaimableBalances(&lcm)      // Cycle 11
-	liquidityPools := ing.extractLiquidityPools(&lcm)            // Cycle 12
-	contractEvents := ing.extractContractEvents(&lcm)            // Cycle 11
-	contractData := ing.extractContractData(&lcm)                // Cycle 14
-	contractCode := ing.extractContractCode(&lcm)                // Cycle 15
-	configSettings := ing.extractConfigSettings(&lcm)           // Cycle 16
-	ttl := ing.extractTTL(&lcm)                                  // Cycle 17
-	evictedKeys := ing.extractEvictedKeys(&lcm)                  // Cycle 18
-	restoredKeys := ing.extractRestoredKeys(&lcm)                // Cycle 19
-	accountSigners := ing.extractAccountSigners(&lcm)            // Cycle 20
+	transactions := ing.extractTransactions(lcm, closedAt)
+	operations := ing.extractOperations(lcm, closedAt)
+	balances := ing.extractBalances(lcm)
+	effects := ing.extractEffectsForLedger(lcm, closedAt)  // Cycle 8
+	trades := ing.extractTradesForLedger(lcm, closedAt)    // Cycle 8
+	accounts := ing.extractAccounts(lcm)                   // Cycle 9
+	trustlines := ing.extractTrustlines(lcm)               // Cycle 9
+	offers := ing.extractOffers(lcm)                       // Cycle 10
+	claimableBalances := ing.extractClaimableBalances(lcm) // Cycle 11
+	liquidityPools := ing.extractLiquidityPools(lcm)       // Cycle 12
+	contractEvents := ing.extractContractEvents(lcm)       // Cycle 11
+	contractData := ing.extractContractData(lcm)           // Cycle 14
+	contractCode := ing.extractContractCode(lcm)           // Cycle 15
+	configSettings := ing.extractConfigSettings(lcm)       // Cycle 16
+	ttl := ing.extractTTL(lcm)                             // Cycle 17
+	evictedKeys := ing.extractEvictedKeys(lcm)             // Cycle 18
+	restoredKeys := ing.extractRestoredKeys(lcm)           // Cycle 19
+	accountSigners := ing.extractAccountSigners(lcm)       // Cycle 20
 
 	// Add to buffers
 	ing.buffers.ledgers = append(ing.buffers.ledgers, ledgerData)
 	ing.buffers.transactions = append(ing.buffers.transactions, transactions...)
 	ing.buffers.operations = append(ing.buffers.operations, operations...)
 	ing.buffers.balances = append(ing.buffers.balances, balances...)
-	ing.buffers.effects = append(ing.buffers.effects, effects...)                // Cycle 8
-	ing.buffers.trades = append(ing.buffers.trades, trades...)                   // Cycle 8
-	ing.buffers.accounts = append(ing.buffers.accounts, accounts...)             // Cycle 9
-	ing.buffers.trustlines = append(ing.buffers.trustlines, trustlines...)       // Cycle 9
-	ing.buffers.offers = append(ing.buffers.offers, offers...)                           // Cycle 10
+	ing.buffers.effects = append(ing.buffers.effects, effects...)                               // Cycle 8
+	ing.buffers.trades = append(ing.buffers.trades, trades...)                                  // Cycle 8
+	ing.buffers.accounts = append(ing.buffers.accounts, accounts...)                            // Cycle 9
+	ing.buffers.trustlines = append(ing.buffers.trustlines, trustlines...)                      // Cycle 9
+	ing.buffers.offers = append(ing.buffers.offers, offers...)                                  // Cycle 10
 	ing.buffers.claimableBalances = append(ing.buffers.claimableBalances, claimableBalances...) // Cycle 11
 	ing.buffers.liquidityPools = append(ing.buffers.liquidityPools, liquidityPools...)          // Cycle 12
-	ing.buffers.contractEvents = append(ing.buffers.contractEvents, contractEvents...)  // Cycle 11
-	ing.buffers.contractData = append(ing.buffers.contractData, contractData...)        // Cycle 14
-	ing.buffers.contractCode = append(ing.buffers.contractCode, contractCode...)        // Cycle 15
-	ing.buffers.configSettings = append(ing.buffers.configSettings, configSettings...)  // Cycle 16
-	ing.buffers.ttl = append(ing.buffers.ttl, ttl...)                                   // Cycle 17
-	ing.buffers.evictedKeys = append(ing.buffers.evictedKeys, evictedKeys...)           // Cycle 18
-	ing.buffers.restoredKeys = append(ing.buffers.restoredKeys, restoredKeys...)        // Cycle 19
-	ing.buffers.accountSigners = append(ing.buffers.accountSigners, accountSigners...)  // Cycle 20
+	ing.buffers.contractEvents = append(ing.buffers.contractEvents, contractEvents...)          // Cycle 11
+	ing.buffers.contractData = append(ing.buffers.contractData, contractData...)                // Cycle 14
+	ing.buffers.contractCode = append(ing.buffers.contractCode, contractCode...)                // Cycle 15
+	ing.buffers.configSettings = append(ing.buffers.configSettings, configSettings...)          // Cycle 16
+	ing.buffers.ttl = append(ing.buffers.ttl, ttl...)                                           // Cycle 17
+	ing.buffers.evictedKeys = append(ing.buffers.evictedKeys, evictedKeys...)                   // Cycle 18
+	ing.buffers.restoredKeys = append(ing.buffers.restoredKeys, restoredKeys...)                // Cycle 19
+	ing.buffers.accountSigners = append(ing.buffers.accountSigners, accountSigners...)          // Cycle 20
 
 	// Check if we should flush (based on ledger count or time)
 	shouldFlush := len(ing.buffers.ledgers) >= ing.config.DuckLake.BatchSize ||
@@ -2822,7 +2966,7 @@ func (ing *Ingester) extractOperations(lcm *xdr.LedgerCloseMeta, closedAt time.T
 
 				// Determine authorization status from flags
 				// TrustLineFlags: Authorized = 1, AuthorizedToMaintainLiabilities = 2
-				authorized := (setF & 1) != 0 || (clearF & 1) == 0
+				authorized := (setF&1) != 0 || (clearF&1) == 0
 				authorizedLiabilities := (setF & 2) != 0
 
 				opData.Authorize = &authorized
@@ -3158,11 +3302,11 @@ func (ing *Ingester) extractBalances(lcm *xdr.LedgerCloseMeta) []BalanceData {
 		balanceData := BalanceData{
 			AccountID:          accountID,
 			Balance:            int64(accountEntry.Balance),
-			BuyingLiabilities:  0,  // Default
-			SellingLiabilities: 0,  // Default
+			BuyingLiabilities:  0, // Default
+			SellingLiabilities: 0, // Default
 			NumSubentries:      int32(accountEntry.NumSubEntries),
-			NumSponsoring:      0,  // Default
-			NumSponsored:       0,  // Default
+			NumSponsoring:      0, // Default
+			NumSponsored:       0, // Default
 			SequenceNumber:     int64(accountEntry.SeqNum),
 			LastModifiedLedger: ledgerSeq,
 			LedgerSequence:     ledgerSeq,
@@ -3311,14 +3455,14 @@ func (ing *Ingester) flush(ctx context.Context) error {
 	numTransactions := len(ing.buffers.transactions)
 	numOperations := len(ing.buffers.operations)
 	numBalances := len(ing.buffers.balances)
-	numEffects := len(ing.buffers.effects)       // Cycle 8
-	numTrades := len(ing.buffers.trades)         // Cycle 8
-	numAccounts := len(ing.buffers.accounts)     // Cycle 9
-	numTrustlines := len(ing.buffers.trustlines) // Cycle 9
-	numOffers := len(ing.buffers.offers)                         // Cycle 10
-	numClaimableBalances := len(ing.buffers.claimableBalances)   // Cycle 11
-	numLiquidityPools := len(ing.buffers.liquidityPools)         // Cycle 12
-	numContractEvents := len(ing.buffers.contractEvents)         // Cycle 14
+	numEffects := len(ing.buffers.effects)                     // Cycle 8
+	numTrades := len(ing.buffers.trades)                       // Cycle 8
+	numAccounts := len(ing.buffers.accounts)                   // Cycle 9
+	numTrustlines := len(ing.buffers.trustlines)               // Cycle 9
+	numOffers := len(ing.buffers.offers)                       // Cycle 10
+	numClaimableBalances := len(ing.buffers.claimableBalances) // Cycle 11
+	numLiquidityPools := len(ing.buffers.liquidityPools)       // Cycle 12
+	numContractEvents := len(ing.buffers.contractEvents)       // Cycle 14
 
 	log.Printf("[FLUSH] Starting multi-table flush (separate transactions): %d ledgers, %d transactions, %d operations, %d balances, %d effects, %d trades, %d accounts, %d trustlines, %d offers, %d claimable balances, %d liquidity pools, %d contract events",
 		numLedgers, numTransactions, numOperations, numBalances, numEffects, numTrades, numAccounts, numTrustlines, numOffers, numClaimableBalances, numLiquidityPools, numContractEvents)
@@ -4301,26 +4445,169 @@ func (ing *Ingester) flush(ctx context.Context) error {
 		ing.metrics.UpdateMetrics(0, 0, 0, 0, totalRows)
 	}
 
+	// Cycle 3: Update Prometheus metrics
+	if ing.promMetrics != nil && ing.promMetrics.IsEnabled() {
+		// Get era info for labels
+		network := "unknown"
+		eraID := "p23_plus"
+		if ing.eraConfig != nil {
+			network = ing.eraConfig.Network
+			eraID = ing.eraConfig.EraID
+		}
+
+		// Record ledgers processed
+		for i := 0; i < numLedgers; i++ {
+			ing.promMetrics.RecordLedgerProcessed(network, eraID)
+		}
+
+		// Record rows written by table
+		ing.promMetrics.RecordRowsWritten("ledgers", int64(numLedgers))
+		ing.promMetrics.RecordRowsWritten("transactions", int64(numTransactions))
+		ing.promMetrics.RecordRowsWritten("operations", int64(numOperations))
+		ing.promMetrics.RecordRowsWritten("balances", int64(numBalances))
+		ing.promMetrics.RecordRowsWritten("effects", int64(numEffects))
+		ing.promMetrics.RecordRowsWritten("trades", int64(numTrades))
+		ing.promMetrics.RecordRowsWritten("accounts", int64(numAccounts))
+		ing.promMetrics.RecordRowsWritten("trustlines", int64(numTrustlines))
+		ing.promMetrics.RecordRowsWritten("offers", int64(numOffers))
+		ing.promMetrics.RecordRowsWritten("claimable_balances", int64(numClaimableBalances))
+		ing.promMetrics.RecordRowsWritten("liquidity_pools", int64(numLiquidityPools))
+		ing.promMetrics.RecordRowsWritten("contract_events", int64(numContractEvents))
+
+		// Record batch duration
+		ing.promMetrics.RecordBatchDuration(flushDuration)
+		ing.promMetrics.RecordBatchCompleted(true)
+
+		// Update current ledger gauge
+		if numLedgers > 0 {
+			ing.promMetrics.SetCurrentLedger(ing.buffers.ledgers[numLedgers-1].Sequence)
+		}
+	}
+
+	// Cycle 2: Audit layer - generate manifest, emit PAS event, save checkpoint
+	if ing.auditLayer != nil {
+		// Determine ledger range from buffer
+		ledgerStart := ing.buffers.ledgers[0].Sequence
+		ledgerEnd := ing.buffers.ledgers[numLedgers-1].Sequence
+
+		// Build table statistics for manifest
+		tableStats := make(map[string]manifest.TableStats)
+		if numLedgers > 0 {
+			tableStats["ledgers_row_v2"] = manifest.TableStats{RowCount: int64(numLedgers)}
+		}
+		if numTransactions > 0 {
+			tableStats["transactions_row_v2"] = manifest.TableStats{RowCount: int64(numTransactions)}
+		}
+		if numOperations > 0 {
+			tableStats["operations_row_v2"] = manifest.TableStats{RowCount: int64(numOperations)}
+		}
+		if numBalances > 0 {
+			tableStats["native_balances_snapshot_v1"] = manifest.TableStats{RowCount: int64(numBalances)}
+		}
+		if numEffects > 0 {
+			tableStats["effects_row_v1"] = manifest.TableStats{RowCount: int64(numEffects)}
+		}
+		if numTrades > 0 {
+			tableStats["trades_row_v1"] = manifest.TableStats{RowCount: int64(numTrades)}
+		}
+		if numAccounts > 0 {
+			tableStats["accounts_snapshot_v1"] = manifest.TableStats{RowCount: int64(numAccounts)}
+		}
+		if numTrustlines > 0 {
+			tableStats["trustlines_snapshot_v1"] = manifest.TableStats{RowCount: int64(numTrustlines)}
+		}
+		if numOffers > 0 {
+			tableStats["offers_snapshot_v1"] = manifest.TableStats{RowCount: int64(numOffers)}
+		}
+		if numClaimableBalances > 0 {
+			tableStats["claimable_balances_snapshot_v1"] = manifest.TableStats{RowCount: int64(numClaimableBalances)}
+		}
+		if numLiquidityPools > 0 {
+			tableStats["liquidity_pools_snapshot_v1"] = manifest.TableStats{RowCount: int64(numLiquidityPools)}
+		}
+		if numContractEvents > 0 {
+			tableStats["contract_events_stream_v1"] = manifest.TableStats{RowCount: int64(numContractEvents)}
+		}
+		if numContractData > 0 {
+			tableStats["contract_data_snapshot_v1"] = manifest.TableStats{RowCount: int64(numContractData)}
+		}
+		if numContractCode > 0 {
+			tableStats["contract_code_snapshot_v1"] = manifest.TableStats{RowCount: int64(numContractCode)}
+		}
+		if numConfigSettings > 0 {
+			tableStats["config_settings_snapshot_v1"] = manifest.TableStats{RowCount: int64(numConfigSettings)}
+		}
+		if numTTL > 0 {
+			tableStats["ttl_snapshot_v1"] = manifest.TableStats{RowCount: int64(numTTL)}
+		}
+		if numEvictedKeys > 0 {
+			tableStats["evicted_keys_state_v1"] = manifest.TableStats{RowCount: int64(numEvictedKeys)}
+		}
+		if numRestoredKeys > 0 {
+			tableStats["restored_keys_state_v1"] = manifest.TableStats{RowCount: int64(numRestoredKeys)}
+		}
+		if numAccountSigners > 0 {
+			tableStats["account_signers_snapshot_v1"] = manifest.TableStats{RowCount: int64(numAccountSigners)}
+		}
+
+		// Get source mode from source
+		sourceMode := "datastore"
+		if ing.config.Source.Endpoint != "" {
+			sourceMode = "grpc"
+		}
+
+		batchStats := BatchStats{
+			LedgerStart: ledgerStart,
+			LedgerEnd:   ledgerEnd,
+			LedgerCount: numLedgers,
+			Tables:      tableStats,
+			StartTime:   flushStart,
+		}
+
+		pasInfo, err := ing.auditLayer.OnFlushComplete(
+			batchStats,
+			sourceMode,
+			ing.config.Source.NetworkPassphrase,
+			ing.config.Source.StartLedger,
+			ing.config.Source.EndLedger,
+		)
+		if err != nil {
+			log.Printf("⚠️  [AUDIT] Warning: Failed to complete audit: %v", err)
+		}
+
+		// Cycle 4: Link PAS event to lineage records
+		if pasInfo != nil {
+			if err := ing.linkPASToLineage(ctx, ledgerStart, ledgerEnd, pasInfo); err != nil {
+				log.Printf("⚠️  [LINEAGE] Warning: Failed to link PAS to lineage: %v", err)
+			}
+
+			// Cycle 4: Update era PAS chain head
+			if err := ing.updateEraPASChainHead(ctx, pasInfo.EventHash); err != nil {
+				log.Printf("⚠️  [ERA] Warning: Failed to update PAS chain head: %v", err)
+			}
+		}
+	}
+
 	// Clear all buffers
 	ing.buffers.ledgers = ing.buffers.ledgers[:0]
 	ing.buffers.transactions = ing.buffers.transactions[:0]
 	ing.buffers.operations = ing.buffers.operations[:0]
 	ing.buffers.balances = ing.buffers.balances[:0]
-	ing.buffers.effects = ing.buffers.effects[:0]       // Cycle 8
-	ing.buffers.trades = ing.buffers.trades[:0]         // Cycle 8
-	ing.buffers.accounts = ing.buffers.accounts[:0]       // Cycle 9
-	ing.buffers.trustlines = ing.buffers.trustlines[:0]   // Cycle 9
-	ing.buffers.offers = ing.buffers.offers[:0]           // Cycle 10
+	ing.buffers.effects = ing.buffers.effects[:0]                     // Cycle 8
+	ing.buffers.trades = ing.buffers.trades[:0]                       // Cycle 8
+	ing.buffers.accounts = ing.buffers.accounts[:0]                   // Cycle 9
+	ing.buffers.trustlines = ing.buffers.trustlines[:0]               // Cycle 9
+	ing.buffers.offers = ing.buffers.offers[:0]                       // Cycle 10
 	ing.buffers.claimableBalances = ing.buffers.claimableBalances[:0] // Cycle 11
 	ing.buffers.liquidityPools = ing.buffers.liquidityPools[:0]       // Cycle 12
-	ing.buffers.contractEvents = ing.buffers.contractEvents[:0] // Cycle 11
-	ing.buffers.contractData = ing.buffers.contractData[:0]     // Cycle 14
-	ing.buffers.contractCode = ing.buffers.contractCode[:0]     // Cycle 15
-	ing.buffers.configSettings = ing.buffers.configSettings[:0] // Cycle 16
-	ing.buffers.ttl = ing.buffers.ttl[:0]                       // Cycle 17
-	ing.buffers.evictedKeys = ing.buffers.evictedKeys[:0]       // Cycle 18
-	ing.buffers.restoredKeys = ing.buffers.restoredKeys[:0]     // Cycle 19
-	ing.buffers.accountSigners = ing.buffers.accountSigners[:0] // Cycle 20
+	ing.buffers.contractEvents = ing.buffers.contractEvents[:0]       // Cycle 11
+	ing.buffers.contractData = ing.buffers.contractData[:0]           // Cycle 14
+	ing.buffers.contractCode = ing.buffers.contractCode[:0]           // Cycle 15
+	ing.buffers.configSettings = ing.buffers.configSettings[:0]       // Cycle 16
+	ing.buffers.ttl = ing.buffers.ttl[:0]                             // Cycle 17
+	ing.buffers.evictedKeys = ing.buffers.evictedKeys[:0]             // Cycle 18
+	ing.buffers.restoredKeys = ing.buffers.restoredKeys[:0]           // Cycle 19
+	ing.buffers.accountSigners = ing.buffers.accountSigners[:0]       // Cycle 20
 	ing.lastCommit = time.Now()
 
 	return nil
@@ -4506,22 +4793,31 @@ func (ing *Ingester) recordLineage(numLedgers, numTransactions, numOperations, n
 	// This reduces network roundtrips from 4 to 1 (critical for remote PostgreSQL)
 	createdAt := time.Now()
 
+	// Cycle 4: Include era_id and version_label columns
 	insertSQL := fmt.Sprintf(`
 		INSERT INTO %s.%s._meta_lineage (
 			id, dataset, partition, source_ledger_start, source_ledger_end,
-			pipeline_version, processor_name, checksum, row_count, created_at
+			pipeline_version, processor_name, checksum, row_count, created_at,
+			era_id, version_label
 		) VALUES `,
 		ing.config.DuckLake.CatalogName,
 		ing.config.DuckLake.SchemaName,
 	)
 
+	// Cycle 4: Get era info from config
+	var eraID, versionLabel string
+	if ing.eraConfig != nil {
+		eraID = ing.eraConfig.EraID
+		versionLabel = ing.eraConfig.VersionLabel
+	}
+
 	// Build multi-row VALUES clause
 	valuePlaceholders := make([]string, len(entries))
-	args := make([]interface{}, 0, len(entries)*10) // 10 fields per entry
+	args := make([]interface{}, 0, len(entries)*12) // 12 fields per entry (Cycle 4: added era_id, version_label)
 
 	for i, entry := range entries {
 		id := baseID + int64(i)
-		valuePlaceholders[i] = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+		valuePlaceholders[i] = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 
 		args = append(args,
 			id,
@@ -4534,6 +4830,8 @@ func (ing *Ingester) recordLineage(numLedgers, numTransactions, numOperations, n
 			"",                          // checksum (optional, not computed for now)
 			entry.RowCount,              // row_count
 			createdAt,                   // created_at
+			eraID,                       // era_id (Cycle 4)
+			versionLabel,                // version_label (Cycle 4)
 		)
 	}
 
@@ -4546,6 +4844,32 @@ func (ing *Ingester) recordLineage(numLedgers, numTransactions, numOperations, n
 
 	log.Printf("[LINEAGE] Recorded lineage for %d datasets (ledgers %d-%d, processor v%s)",
 		len(entries), sourceLedgerStart, sourceLedgerEnd, ProcessorVersion)
+
+	return nil
+}
+
+// linkPASToLineage updates lineage records with PAS event information.
+// Cycle 4: Links PAS events to lineage for provenance auditing.
+func (ing *Ingester) linkPASToLineage(ctx context.Context, ledgerStart, ledgerEnd uint32, pasInfo *PASEventInfo) error {
+	if pasInfo == nil {
+		return nil
+	}
+
+	updateSQL := fmt.Sprintf(`
+		UPDATE %s.%s._meta_lineage
+		SET pas_event_id = ?,
+		    pas_event_hash = ?,
+		    pas_verified = TRUE
+		WHERE source_ledger_start = ? AND source_ledger_end = ?
+	`, ing.config.DuckLake.CatalogName, ing.config.DuckLake.SchemaName)
+
+	result, err := ing.db.ExecContext(ctx, updateSQL, pasInfo.EventID, pasInfo.EventHash, ledgerStart, ledgerEnd)
+	if err != nil {
+		return fmt.Errorf("failed to link PAS to lineage: %w", err)
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	log.Printf("[LINEAGE] Linked PAS event to %d lineage records (hash: %s...)", rowsAffected, pasInfo.EventHash[:16])
 
 	return nil
 }
@@ -4630,8 +4954,13 @@ func (ing *Ingester) Close() error {
 	if ing.db != nil {
 		ing.db.Close()
 	}
-	if ing.grpcConn != nil {
-		ing.grpcConn.Close()
+	if ing.ledgerSource != nil {
+		ing.ledgerSource.Close()
+	}
+
+	// Cycle 2: Close audit layer
+	if ing.auditLayer != nil {
+		ing.auditLayer.Close()
 	}
 
 	log.Println("Ingester closed")

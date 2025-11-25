@@ -12,33 +12,33 @@ import (
 
 // Effect type constants (stellar-go effect types)
 const (
-	EffectAccountCreated          = 0
-	EffectAccountRemoved          = 1
-	EffectAccountCredited         = 2
-	EffectAccountDebited          = 3
-	EffectAccountThresholdsUpdated = 4
-	EffectAccountHomeDomainUpdated = 5
-	EffectAccountFlagsUpdated     = 6
-	EffectSignerCreated           = 10
-	EffectSignerRemoved           = 11
-	EffectSignerUpdated           = 12
-	EffectTrustlineCreated        = 20
-	EffectTrustlineRemoved        = 21
-	EffectTrustlineUpdated        = 22
-	EffectTrustlineAuthorized     = 23
-	EffectTrustlineDeauthorized   = 24
+	EffectAccountCreated                           = 0
+	EffectAccountRemoved                           = 1
+	EffectAccountCredited                          = 2
+	EffectAccountDebited                           = 3
+	EffectAccountThresholdsUpdated                 = 4
+	EffectAccountHomeDomainUpdated                 = 5
+	EffectAccountFlagsUpdated                      = 6
+	EffectSignerCreated                            = 10
+	EffectSignerRemoved                            = 11
+	EffectSignerUpdated                            = 12
+	EffectTrustlineCreated                         = 20
+	EffectTrustlineRemoved                         = 21
+	EffectTrustlineUpdated                         = 22
+	EffectTrustlineAuthorized                      = 23
+	EffectTrustlineDeauthorized                    = 24
 	EffectTrustlineAuthorizedToMaintainLiabilities = 25
-	EffectTrustlineFlagsUpdated   = 26
-	EffectOfferCreated            = 30
-	EffectOfferRemoved            = 31
-	EffectOfferUpdated            = 32
-	EffectTrade                   = 33
-	EffectDataCreated             = 40
-	EffectDataRemoved             = 41
-	EffectDataUpdated             = 42
-	EffectClaimableBalanceCreated = 50
-	EffectClaimableBalanceClaimed = 51
-	EffectClaimableBalanceClaimantCreated = 52
+	EffectTrustlineFlagsUpdated                    = 26
+	EffectOfferCreated                             = 30
+	EffectOfferRemoved                             = 31
+	EffectOfferUpdated                             = 32
+	EffectTrade                                    = 33
+	EffectDataCreated                              = 40
+	EffectDataRemoved                              = 41
+	EffectDataUpdated                              = 42
+	EffectClaimableBalanceCreated                  = 50
+	EffectClaimableBalanceClaimed                  = 51
+	EffectClaimableBalanceClaimantCreated          = 52
 )
 
 // extractEffects extracts effects from transaction meta

@@ -115,9 +115,9 @@ func (ing *Ingester) extractContractData(lcm *xdr.LedgerCloseMeta) []ContractDat
 
 			data := ContractDataData{
 				// Identity (3 fields)
-				ContractId:      contractOutput.ContractId,
-				LedgerSequence:  ledgerSeq,
-				LedgerKeyHash:   contractOutput.LedgerKeyHash,
+				ContractId:     contractOutput.ContractId,
+				LedgerSequence: ledgerSeq,
+				LedgerKeyHash:  contractOutput.LedgerKeyHash,
 
 				// Contract metadata (2 fields)
 				ContractKeyType:    contractOutput.ContractKeyType,

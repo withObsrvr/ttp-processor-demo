@@ -141,7 +141,7 @@ func extractContractEvent(
 		ClosedAt:        closedAt,
 
 		// Event Type
-		EventType:               eventType,
+		EventType:                eventType,
 		InSuccessfulContractCall: inSuccessfulCall,
 
 		// Event Data (Hubble-compatible with decoded versions)

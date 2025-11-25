@@ -1,0 +1,62 @@
+# Binaries
+contract-data-processor
+postgresql-consumer
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go generated files
+go/proto/*.pb.go
+go/vendor/
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Go workspace
+go.work
+go.work.sum
+
+# Dependency directories
+vendor/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# Build artifacts
+/bin/
+/dist/
+/build/
+
+# Nix build results
+result
+result-*
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Debug files
+debug
+__debug_bin
+
+# Coverage reports
+coverage.txt
+coverage.html

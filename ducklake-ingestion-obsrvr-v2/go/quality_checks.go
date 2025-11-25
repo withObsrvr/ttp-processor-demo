@@ -24,15 +24,15 @@ type QualityCheck interface {
 
 // QualityCheckResult holds the outcome of a quality check
 type QualityCheckResult struct {
-	CheckName      string    // Name of the check that was run
-	CheckType      string    // Type/category of check
-	Passed         bool      // Whether the check passed
-	Details        string    // Human-readable details about the result
-	RowCount       int       // Number of rows examined
-	NullAnomalies  int       // Count of null/missing value issues found
-	Dataset        string    // Dataset name (e.g., "core.ledgers_row_v2")
-	Partition      string    // Partition identifier (optional)
-	CreatedAt      time.Time // When the check was performed
+	CheckName     string    // Name of the check that was run
+	CheckType     string    // Type/category of check
+	Passed        bool      // Whether the check passed
+	Details       string    // Human-readable details about the result
+	RowCount      int       // Number of rows examined
+	NullAnomalies int       // Count of null/missing value issues found
+	Dataset       string    // Dataset name (e.g., "core.ledgers_row_v2")
+	Partition     string    // Partition identifier (optional)
+	CreatedAt     time.Time // When the check was performed
 }
 
 // ==============================================================================

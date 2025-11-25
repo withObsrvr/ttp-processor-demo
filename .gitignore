@@ -1,204 +1,189 @@
-# Generated code directories
+# ============================================================================
+# Generated Code & Build Artifacts
+# ============================================================================
 **/gen/
-
-ttp_grpc_server
-
-# Vendored proto files
-# **/cli_tool/protos/ingest/
-# **/consumer_app/protos/
-
-# Node.js
-**/node_modules/
 **/dist/
-.env
-
-# Editor files
-.vscode/
-*.swp
-*.swo
-
-# OS generated files
-.DS_Store
-.gradle
-**/minecraft_mod/build/
-**/.claude/settings.local.json
-
-# Nix-related
+**/build/
 result
 result-*
+
+# ============================================================================
+# Dependencies
+# ============================================================================
+**/node_modules/
+**/vendor/
+
+# ============================================================================
+# Environment & Secrets
+# ============================================================================
+.env
+.envrc
+.secrets
+*.secret.yaml
+quickstart.yaml
+
+# ============================================================================
+# Editor & IDE
+# ============================================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+**/.claude/settings.local.json
+
+# ============================================================================
+# OS & Tool Files
+# ============================================================================
+.DS_Store
+.gradle
 .direnv/
 .go/
 .cache/
 .gopath/
 
-ai_docs/
+# ============================================================================
+# Nix Build System
+# ============================================================================
+result
+result-*
 
-# Binary files
-stellar_live_source_datalake
-stellar_live_source
-ttp_processor_server
-*.parquet
+# ============================================================================
+# Database Files
+# ============================================================================
 *.duckdb
 *.duckdb.wal
-# Secrets
-.envrc
-.secrets
-datalake.log
-test-arrow-integration.sh
-test-arrow-simple.sh
-test_end_ledger.sh
-test_hex_path.go
-arrow-consumer-demo/go/debug_consumer.go.bak
-arrow-consumer-demo/go/arrow-consumer-demo
-stellar-arrow-source/go/debug_backend.go
-stellar-arrow-source/go/stellar-arrow-source
-stellar-arrow-source/go/stellar-arrow-source
-stellar-arrow-source/go/stellar-arrow-source-conn-debug
-stellar-arrow-source/go/stellar-arrow-source-real
-stellar-arrow-source/go/stellar-arrow-source-new
-stellar-arrow-source/go/stellar-arrow-source-fixed
-stellar-arrow-source/go/stellar-arrow-source-final
-.gitignore
-stellar-arrow-source/go/stellar-arrow-source-debug
-.gitignore
-stellar-arrow-source/go/test_gcs_path.sh
-stellar-arrow-source/go/consumer_app/parquet/check_gcs.sh
-stellar-arrow-source/go/consumer_app/parquet/parquet-consumer
+*.db
+
+# ============================================================================
+# Data Files & Archives
+# ============================================================================
+*.parquet
+cycle*data/
+obsrvr_*/
+state/
+pas-backup*/
+
+# ============================================================================
+# Project Binaries (Executables)
+# ============================================================================
+# Main services
+stellar-live-source-datalake
+stellar_live_source_datalake
+stellar-live-source
+stellar_live_source
+ttp_processor_server
+ttp_grpc_server
+
+# Arrow/Source variants
+stellar-arrow-source/go/stellar-arrow-source*
 stellar-live-source/go/stellar-live-source
 stellar-live-source-datalake/go/stellar-arrow-source
 stellar-arrow-source/stellar-arrow-source
+
+# DuckLake ingestion variants
 ducklake-ingestion-processor/ducklake-ingestion
-ducklake-ingestion-processor/cycle1_test.db
-ducklake-ingestion-processor/query-ducklake.sql
-ducklake-ingestion-processor/config/testnet.yaml
-ducklake-ingestion-processor/validation/
-duckdb-consumer/asset_summary.csv
-quickstart.yaml
+ducklake-ingestion-processor/go/ducklake-ingestion
+ducklake-ingestion-obsrvr/ducklake-ingestion-obsrvr
+ducklake-ingestion-obsrvr-v2/ducklake-ingestion-obsrvr*
+
+# Consumer/Demo binaries
+arrow-consumer-demo/go/arrow-consumer-demo
+stellar-arrow-source/go/consumer_app/parquet/parquet-consumer
 account-balance-processor/bin/account-balance-processor
 duckdb-consumer/bin/duckdb-consumer
 
-ducklake-ingestion-processor/go/ducklake-ingestion
-ducklake-ingestion-processor/main_cycle3_backup.go
+# Test/POC binaries
+ducklake-ingestion-obsrvr-v2/appender_*
+ducklake-ingestion-obsrvr-v2/ducklake-query
+resolver-test
+test-binary
+verify-archive-fix
 
-# Test/utility scripts with hardcoded credentials
-ducklake-ingestion-processor/*.sh
-ducklake-ingestion-processor/check_cycle3_data.go
-stellar-live-source-datalake/stellar-live-source-datalake
-local_test.log
-ducklake-ingestion-processor/local_test_optimized.log
-ducklake-ingestion-processor/config/testnet-local-postgres-2workers.yaml
-ducklake-ingestion-processor/config/testnet-local-postgres-4workers.yaml
-ducklake-ingestion-processor/test_local_catalog.db
-ducklake-ingestion-processor/config/testnet-local-postgres.yaml
-ducklake-ingestion-processor/go/main.go
-ducklake-ingestion-processor/go/test_run.log
-ducklake-ingestion-processor/config/testnet-multitable.yaml
-ducklake-ingestion-processor/PHASE_5_HANDOFF.md
-ducklake-ingestion-processor/PITCH_MULTI_TABLE_INGESTION.md
-ducklake-ingestion-processor/PITCH_HYBRID_REALTIME_ARCHITECTURE.md
-ducklake-ingestion-processor/PITCH_HYBRID_REALTIME_SIMPLE.md
-ducklake-ingestion-processor/VALIDATION_PLAN_PG_DUCKDB.md
-ducklake-ingestion-processor/STELLAR_ETL_COMPARISON.md
-.gitignore
-ducklake-ingestion-processor/docs/obsrvr-data-culture-analysis.md
-ducklake-ingestion-processor/docs/shapes/ducklake-obsrvr-checklist.md
-ducklake-ingestion-processor/docs/shapes/ducklake-obsrvr-cooldown.md
-.gitignore
-ducklake-ingestion-processor/docs/OBSRVR_DATA_CULTURE.md
-ducklake-ingestion-processor/docs/shapes/ducklake-obsrvr-implementation.md
-ducklake-ingestion-obsrvr/ducklake-ingestion-obsrvr
-*.secret.yaml
-ducklake-ingestion-obsrvr/config/test-1000-ledgers.yaml
-test-cycle5-day2.log
-ducklake-ingestion-obsrvr/test-cycle4.log
-.gitignore
-ducklake-ingestion-obsrvr/query-cycle5-day2.sh
-ducklake-ingestion-obsrvr/test-cycle5-1000-ledgers.log
-stellar-live-source-datalake/stellar-source.log
-ducklake-ingestion-obsrvr/query-cycle4.sh
-ducklake-ingestion-obsrvr/CYCLE4_VALIDATION_REPORT.md
-ducklake-ingestion-obsrvr/CYCLE5_HANDOFF.md
-ducklake-ingestion-obsrvr/mainnet-ingestion.log
-stellar-live-source-datalake/mainnet-source.log
+# ============================================================================
+# Logs
+# ============================================================================
+*.log
+**/logs/*.log
+test*output/
+
+# ============================================================================
+# Test & Development Files
+# ============================================================================
+# Test configs
+test*.yaml
+config/test*.yaml
+**/config/test*.yaml
+main*.yaml.example
+
+# Test scripts
+*.sh
+test_*.go
+verify-archive-fix.go
+
+# Test data/output
+test*output/
+datalake.log
+validation/
+duckdb-consumer/asset_summary.csv
+
+# Query scripts (with hardcoded values)
+query*.sh
+**/query*.sh
+
+# ============================================================================
+# Documentation (WIP/Temporary)
+# ============================================================================
+# Shape Up documents
+*SHAPE_UP*.md
+BRONZE*.md
+ai_docs/
+shapes/
+obsrvr*.md
+OBSRVR*.md
+DAY*.md
+
+# Cycle documentation (keep committed versions)
+ducklake-ingestion-obsrvr-v2/docs/CYCLE*.md
+
+# Project-specific temporary docs
+CYCLE*_HANDOFF.md
+CYCLE*_VALIDATION_REPORT.md
+PITCH_*.md
+PHASE*.md
+VALIDATION_PLAN_*.md
+STELLAR_ETL_COMPARISON.md
+QUERYING*.md
+FLOWCTL-GUIDE.md
+docs/obsrvr-data-culture-analysis.md
+docs/shapes/*.md
 docs/ducklake-performance-optimization.md
 docs/duckdb-appender-api-guide.md
-ducklake-ingestion-obsrvr-v2/appender_ducklake_poc
-ducklake-ingestion-obsrvr-v2/appender_poc
-ducklake-ingestion-obsrvr-v2/appender_simple_poc
-ducklake-ingestion-obsrvr-v2/ducklake-ingestion-obsrvr
 docs/shape-up-ducklake-ingestion-obsrvr-v2.md
-docs/v2-implementation-roadmap.md
-docs/v2-project-summary.md
-docs/v2-technical-architecture.md
-ducklake-ingestion-obsrvr-v2/mainnet-test.log
-ducklake-ingestion-obsrvr-v2/test-run.log
-ducklake-ingestion-obsrvr-v2/go/poc/appender_ducklake_poc.go
-ducklake-ingestion-obsrvr-v2/go/poc/appender_simple_poc.go
-ducklake-ingestion-obsrvr-v2/go/poc/appender_poc.go
-ducklake-ingestion-obsrvr-v2/config/testnet-v2.yaml
-ducklake-ingestion-obsrvr-v2/config/mainnet-v2.yaml
-ducklake-ingestion-obsrvr-v2/docs/DAY1_POC_RESULTS.md
-ducklake-ingestion-obsrvr-v2/docs/DAY2-3_PERFORMANCE_RESULTS.md
-ducklake-ingestion-obsrvr-v2/docs/MAINNET_VALIDATION.md
-ducklake-ingestion-obsrvr-v2/docs/TECHNICAL_HANDOFF.md
-ducklake-ingestion-obsrvr-v2/ducklake-query
-ducklake-ingestion-obsrvr-v2/query-ducklake.sh
-ducklake-ingestion-obsrvr-v2/query.sh
-ducklake-ingestion-obsrvr-v2/QUERYING.md
-ducklake-ingestion-obsrvr-v2/go/query.go
-ducklake-ingestion-obsrvr-v2/ducklake-ingestion-obsrvr-v2
-ducklake-ingestion-obsrvr-v2/mainnet-cycle6-final-test.log
-ducklake-ingestion-obsrvr-v2/mainnet-cycle6-test.log
-ducklake-ingestion-obsrvr-v2/mainnet-cycle6-v2-test.log
-ducklake-ingestion-obsrvr-v2/test-cycle7-dex.log
-ducklake-ingestion-obsrvr-v2/test-*.log
-ducklake-ingestion-obsrvr-v2/go/test-*.log
-ducklake-ingestion-obsrvr-v2/config/test-*.yaml
-ducklake-ingestion-obsrvr-v2/docs/CYCLE8_PROGRESS.md
-ducklake-ingestion-obsrvr-v2/docs/CYCLES_REMAINING.md
-ducklake-ingestion-obsrvr-v2/docs/PITCH_CYCLE8_EFFECTS_TRADES.md
-query-effects-sample.sh
-ducklake-ingestion-obsrvr-v2/test-cycle8-10ledgers.log
-ducklake-ingestion-obsrvr-v2/test-cycle8-run.log
-ducklake-ingestion-obsrvr-v2/test-cycle8-run2.log
-ducklake-ingestion-obsrvr-v2/test-v4-meta.log
-ducklake-ingestion-obsrvr-v2/config/test-10-ledgers.yaml
-ducklake-ingestion-obsrvr-v2/config/test-cycle8-10ledgers.yaml
-ducklake-ingestion-obsrvr-v2/docs/CYCLE8_HANDOFF.md
-ducklake-ingestion-obsrvr-v2/config/test-cycle9-10ledgers.yaml
-ducklake-ingestion-obsrvr-v2/docs/CYCLE9_HANDOFF.md
-ducklake-ingestion-obsrvr-v2/docs/CYCLE9_SHAPE.md
-ducklake-ingestion-obsrvr-v2/docs/CYCLE10_SHAPE.md
-ducklake-ingestion-obsrvr-v2/test-cycle9-bugfix.log
-ducklake-ingestion-obsrvr-v2/go/test-cycle9-bugfix.log
-ducklake-ingestion-obsrvr-v2/config/test-cycle10-10ledgers.yaml
-test-*.log
-ducklake-ingestion-obsrvr-v2/config/test-cycle11-10ledgers.yaml
-ducklake-ingestion-obsrvr-v2/config/test-cycle12-10ledgers.yaml
-ducklake-ingestion-obsrvr-v2/config/test-cycle13-10ledgers.yaml
-ducklake-ingestion-obsrvr-v2/config/test-cycle14-10ledgers.yaml
-ducklake-ingestion-obsrvr-v2/docs/CYCLE10_HANDOFF.md
-ducklake-ingestion-obsrvr-v2/docs/CYCLE11_SHAPE.md
-ducklake-ingestion-obsrvr-v2/docs/CYCLE12_SHAPE.md
-ducklake-ingestion-obsrvr-v2/docs/CYCLE13_SHAPE.md
-ducklake-ingestion-obsrvr-v2/docs/CYCLE14_SHAPE.md
-ducklake-ingestion-obsrvr-v2/docs/CYCLE15_SHAPE.md
-ducklake-ingestion-obsrvr-v2/docs/ROADMAP_TO_100_HUBBLE.md
-ducklake-ingestion-obsrvr-v2/QUERYING_V2.md
-ducklake-ingestion-obsrvr-v2/go/test-cycle11-run2.log
-ducklake-ingestion-obsrvr-v2/test-binary
-ducklake-ingestion-obsrvr-v2/test-cycle15-mainnet.log
-ducklake-ingestion-obsrvr-v2/go/ducklake-ingestion-obsrvr-v2
-ducklake-ingestion-obsrvr-v2/flowctl-pipeline.yaml
-ducklake-ingestion-obsrvr-v2/flowctl-test.log
-ducklake-ingestion-obsrvr-v2/query-mainnet-v3.sh
-ducklake-ingestion-obsrvr-v2/verify-archive-fix
-ducklake-ingestion-obsrvr-v2/verify-archive-fix.go
+docs/v2-*.md
+manifest*.json
+docs/
+*GUIDE.md
+
+# Completion/status docs
 ducklake-ingestion-obsrvr-v2/docs/BRONZE-LAYER-COMPLETION.md
 ducklake-ingestion-obsrvr-v2/docs/IMPLEMENTATION-STATUS.md
 ducklake-ingestion-obsrvr-v2/docs/SHAPE-UP-CYCLES-15-21.md
-ducklake-ingestion-obsrvr-v2/FLOWCTL-GUIDE.md
-ducklake-ingestion-obsrvr-v2/logs/stellar-data-source.log
-ducklake-ingestion-obsrvr-v2/logs/ducklake-ingester.log
-stellar-live-source-datalake/logs/ducklake-ingester.log
-stellar-live-source-datalake/logs/stellar-data-source.log
+ducklake-ingestion-obsrvr-v2/docs/ROADMAP_TO_100_HUBBLE.md
+
+# ============================================================================
+# Backup Files
+# ============================================================================
+*.bak
+*.orig
+*_backup.go
+ducklake-ingestion-processor/check_cycle3_data.go
+ducklake-ingestion-processor/query-ducklake.sql
+ducklake-ingestion-obsrvr-v2/docs/ERA_RESOLVER_ARCHITECTURE.md
+ducklake-ingestion-obsrvr-v2/docs/MAINNET_VALIDATION.md
+
+ducklake-ingestion-obsrvr-v2/docs/TECHNICAL_HANDOFF.md
+ducklake-ingestion-obsrvr-v2/go/ducklake-ingestion-obsrvr-v2
+ducklake-ingestion-obsrvr-v2/go/poc/appender_poc.go
+ducklake-ingestion-obsrvr-v2/go/poc/appender_ducklake_poc.go
+ducklake-ingestion-obsrvr-v2/go/poc/appender_simple_poc.go
+ducklake-ingestion-obsrvr-v2/docs/CLOUD_DEPLOYMENT_RUNBOOK.md

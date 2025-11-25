@@ -94,13 +94,13 @@ func ConvertScValToJSON(val xdr.ScVal) (interface{}, error) {
 		}
 		parts := *val.U256
 		return map[string]interface{}{
-			"type":     "u256",
-			"hi_hi":    parts.HiHi,
-			"hi_lo":    parts.HiLo,
-			"lo_hi":    parts.LoHi,
-			"lo_lo":    parts.LoLo,
-			"value":    uint256ToString(parts),
-			"hex":      uint256ToHex(parts),
+			"type":  "u256",
+			"hi_hi": parts.HiHi,
+			"hi_lo": parts.HiLo,
+			"lo_hi": parts.LoHi,
+			"lo_lo": parts.LoLo,
+			"value": uint256ToString(parts),
+			"hex":   uint256ToHex(parts),
 		}, nil
 
 	case xdr.ScValTypeScvI256:
@@ -109,13 +109,13 @@ func ConvertScValToJSON(val xdr.ScVal) (interface{}, error) {
 		}
 		parts := *val.I256
 		return map[string]interface{}{
-			"type":     "i256",
-			"hi_hi":    parts.HiHi,
-			"hi_lo":    parts.HiLo,
-			"lo_hi":    parts.LoHi,
-			"lo_lo":    parts.LoLo,
-			"value":    int256ToString(parts),
-			"hex":      int256ToHex(parts),
+			"type":  "i256",
+			"hi_hi": parts.HiHi,
+			"hi_lo": parts.HiLo,
+			"lo_hi": parts.LoHi,
+			"lo_lo": parts.LoLo,
+			"value": int256ToString(parts),
+			"hex":   int256ToHex(parts),
 		}, nil
 
 	case xdr.ScValTypeScvSymbol:
@@ -174,11 +174,11 @@ func ConvertScValToJSON(val xdr.ScVal) (interface{}, error) {
 		scMap := *val.Map
 		result := make(map[string]interface{})
 		orderedKeys := make([]interface{}, 0, len(*scMap))
-		
+
 		for _, entry := range *scMap {
 			key, keyErr := ConvertScValToJSON(entry.Key)
 			value, valErr := ConvertScValToJSON(entry.Val)
-			
+
 			// Create a string representation of the key for the map
 			var keyStr string
 			if keyErr != nil {
@@ -186,7 +186,7 @@ func ConvertScValToJSON(val xdr.ScVal) (interface{}, error) {
 			} else {
 				keyStr = fmt.Sprintf("%v", key)
 			}
-			
+
 			if valErr != nil {
 				result[keyStr] = map[string]interface{}{
 					"error": valErr.Error(),
@@ -195,10 +195,10 @@ func ConvertScValToJSON(val xdr.ScVal) (interface{}, error) {
 			} else {
 				result[keyStr] = value
 			}
-			
+
 			orderedKeys = append(orderedKeys, key)
 		}
-		
+
 		return map[string]interface{}{
 			"type":    "map",
 			"entries": result,
@@ -210,8 +210,8 @@ func ConvertScValToJSON(val xdr.ScVal) (interface{}, error) {
 			return nil, fmt.Errorf("ScvContractInstance has nil value")
 		}
 		return map[string]interface{}{
-			"type":   "contract_instance",
-			"value":  "complex_contract_instance",
+			"type":  "contract_instance",
+			"value": "complex_contract_instance",
 		}, nil
 
 	case xdr.ScValTypeScvLedgerKeyContractInstance:
@@ -261,7 +261,7 @@ func convertScAddress(addr xdr.ScAddress) (interface{}, error) {
 			"type":    "account",
 			"address": accountStr,
 		}, nil
-		
+
 	case xdr.ScAddressTypeScAddressTypeContract:
 		if addr.ContractId == nil {
 			return nil, fmt.Errorf("ScAddressTypeContract has nil ContractId")
@@ -275,7 +275,7 @@ func convertScAddress(addr xdr.ScAddress) (interface{}, error) {
 			"type":    "contract",
 			"address": contractStr,
 		}, nil
-		
+
 	case xdr.ScAddressTypeScAddressTypeMuxedAccount:
 		// Muxed accounts are not allowed in storage keys per CAP-67
 		// but may appear in other contexts
@@ -299,7 +299,7 @@ func convertScAddress(addr xdr.ScAddress) (interface{}, error) {
 			"address": muxedStr,
 			"id":      addr.MuxedAccount.Id,
 		}, nil
-		
+
 	case xdr.ScAddressTypeScAddressTypeClaimableBalance:
 		// Per CAP-67: disallowed by host, conversions will fail
 		if addr.ClaimableBalanceId == nil {
@@ -321,7 +321,7 @@ func convertScAddress(addr xdr.ScAddress) (interface{}, error) {
 			"type":    "claimable_balance",
 			"address": claimableBalanceStr,
 		}, nil
-		
+
 	case xdr.ScAddressTypeScAddressTypeLiquidityPool:
 		// Per CAP-67: disallowed by host, conversions will fail
 		if addr.LiquidityPoolId == nil {
@@ -336,7 +336,7 @@ func convertScAddress(addr xdr.ScAddress) (interface{}, error) {
 			"type":    "liquidity_pool",
 			"address": poolStr,
 		}, nil
-		
+
 	default:
 		return nil, fmt.Errorf("unknown ScAddress type: %v", addr.Type)
 	}
@@ -356,13 +356,13 @@ func int128ToString(val xdr.Int128Parts) string {
 	// For signed integers, we need to handle the sign bit
 	hi := big.NewInt(0).SetUint64(uint64(val.Hi))
 	lo := big.NewInt(0).SetUint64(uint64(val.Lo))
-	
+
 	// Check if negative (high bit set)
 	if uint64(val.Hi)&(uint64(1)<<63) != 0 {
 		// Two's complement for negative numbers
 		hi.Sub(hi, big.NewInt(1).Lsh(big.NewInt(1), 64))
 	}
-	
+
 	hi.Lsh(hi, 64)
 	hi.Add(hi, lo)
 	return hi.String()
@@ -373,17 +373,17 @@ func uint256ToString(val xdr.UInt256Parts) string {
 	hiLo := big.NewInt(0).SetUint64(uint64(val.HiLo))
 	loHi := big.NewInt(0).SetUint64(uint64(val.LoHi))
 	loLo := big.NewInt(0).SetUint64(uint64(val.LoLo))
-	
+
 	hiHi.Lsh(hiHi, 192)
 	hiLo.Lsh(hiLo, 128)
 	loHi.Lsh(loHi, 64)
-	
+
 	result := big.NewInt(0)
 	result.Add(result, hiHi)
 	result.Add(result, hiLo)
 	result.Add(result, loHi)
 	result.Add(result, loLo)
-	
+
 	return result.String()
 }
 
@@ -396,23 +396,23 @@ func int256ToString(val xdr.Int256Parts) string {
 	hiLo := big.NewInt(0).SetUint64(uint64(val.HiLo))
 	loHi := big.NewInt(0).SetUint64(uint64(val.LoHi))
 	loLo := big.NewInt(0).SetUint64(uint64(val.LoLo))
-	
+
 	// Check if negative (high bit set in HiHi)
 	if uint64(val.HiHi)&(uint64(1)<<63) != 0 {
 		// Two's complement for negative numbers
 		hiHi.Sub(hiHi, big.NewInt(1).Lsh(big.NewInt(1), 64))
 	}
-	
+
 	hiHi.Lsh(hiHi, 192)
 	hiLo.Lsh(hiLo, 128)
 	loHi.Lsh(loHi, 64)
-	
+
 	result := big.NewInt(0)
 	result.Add(result, hiHi)
 	result.Add(result, hiLo)
 	result.Add(result, loHi)
 	result.Add(result, loLo)
-	
+
 	return result.String()
 }
 

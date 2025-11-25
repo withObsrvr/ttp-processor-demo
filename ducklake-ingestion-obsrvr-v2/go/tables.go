@@ -411,6 +411,7 @@ func (ing *Ingester) createTradesTable() error {
 func (ing *Ingester) createMetadataTables() error {
 	// 1. _meta_datasets (Dataset Registry)
 	// Note: DuckLake doesn't support PRIMARY KEY constraints
+	// Cycle 4: Added era_id, version_label, schema_hash, compatibility columns
 	datasetsSQL := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s.%s._meta_datasets (
 			dataset TEXT NOT NULL,
@@ -422,7 +423,13 @@ func (ing *Ingester) createMetadataTables() error {
 			purpose TEXT,
 			grain TEXT,
 			created_at TIMESTAMP NOT NULL,
-			updated_at TIMESTAMP NOT NULL
+			updated_at TIMESTAMP NOT NULL,
+
+			-- Cycle 4: Era-Aware Meta Tables
+			era_id VARCHAR,
+			version_label VARCHAR,
+			schema_hash VARCHAR,
+			compatibility VARCHAR
 		)`,
 		ing.config.DuckLake.CatalogName,
 		ing.config.DuckLake.SchemaName,
@@ -436,6 +443,7 @@ func (ing *Ingester) createMetadataTables() error {
 
 	// 2. _meta_lineage (Processing Provenance)
 	// Note: DuckLake doesn't support PRIMARY KEY constraints
+	// Cycle 4: Added era_id, version_label, pas_event_id, pas_event_hash, pas_verified columns
 	lineageSQL := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s.%s._meta_lineage (
 			id INTEGER NOT NULL,
@@ -447,7 +455,16 @@ func (ing *Ingester) createMetadataTables() error {
 			processor_name TEXT NOT NULL,
 			checksum TEXT,
 			row_count INT,
-			created_at TIMESTAMP NOT NULL
+			created_at TIMESTAMP NOT NULL,
+
+			-- Cycle 4: Era-Aware Meta Tables
+			era_id VARCHAR,
+			version_label VARCHAR,
+
+			-- Cycle 4: PAS Linkage
+			pas_event_id VARCHAR,
+			pas_event_hash VARCHAR,
+			pas_verified BOOLEAN
 		)`,
 		ing.config.DuckLake.CatalogName,
 		ing.config.DuckLake.SchemaName,
@@ -505,6 +522,34 @@ func (ing *Ingester) createMetadataTables() error {
 		return fmt.Errorf("failed to create _meta_changes table: %w", err)
 	}
 	log.Printf("Metadata table ready: %s.%s._meta_changes",
+		ing.config.DuckLake.CatalogName, ing.config.DuckLake.SchemaName)
+
+	// 5. _meta_eras (Era Registry) - Cycle 4
+	// Tracks protocol eras for multi-era catalog support
+	// Note: DuckLake doesn't support DEFAULT CURRENT_TIMESTAMP, so we handle defaults in code
+	erasSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s.%s._meta_eras (
+			era_id VARCHAR NOT NULL,
+			network VARCHAR NOT NULL,
+			version_label VARCHAR NOT NULL,
+			ledger_start BIGINT NOT NULL,
+			ledger_end BIGINT,
+			protocol_min INTEGER,
+			protocol_max INTEGER,
+			status VARCHAR NOT NULL,
+			schema_epoch VARCHAR,
+			pas_chain_head VARCHAR,
+			created_at TIMESTAMP,
+			frozen_at TIMESTAMP
+		)`,
+		ing.config.DuckLake.CatalogName,
+		ing.config.DuckLake.SchemaName,
+	)
+
+	if _, err := ing.db.Exec(erasSQL); err != nil {
+		return fmt.Errorf("failed to create _meta_eras table: %w", err)
+	}
+	log.Printf("Metadata table ready: %s.%s._meta_eras",
 		ing.config.DuckLake.CatalogName, ing.config.DuckLake.SchemaName)
 
 	log.Println("✅ All Obsrvr metadata tables created successfully")
