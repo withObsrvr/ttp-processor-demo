@@ -187,3 +187,15 @@ ducklake-ingestion-obsrvr-v2/go/poc/appender_poc.go
 ducklake-ingestion-obsrvr-v2/go/poc/appender_ducklake_poc.go
 ducklake-ingestion-obsrvr-v2/go/poc/appender_simple_poc.go
 ducklake-ingestion-obsrvr-v2/docs/CLOUD_DEPLOYMENT_RUNBOOK.md
+ACCOUNT_BALANCES_QUERIES.md
+DUCKLAKE_FINAL_SOLUTION.md
+DUCKLAKE_QUERY_STATUS.md
+ducklake-query-examples.md
+example_ledgers_queries.sql
+resolver-consumer-example
+test_ducklake_performance.sql
+VERSION-COLUMN-INVESTIGATION.md
+ducklake-api-gateway/VERSION-AWARENESS-CORRECTION.md
+ducklake-api-gateway/VERSION-AWARENESS-UPDATE.md
+ducklake-ingestion-obsrvr-v2/go/main.go.backup_20251125_215749
+SECRETS-REMOVAL-SUMMARY.md

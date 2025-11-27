@@ -48,7 +48,11 @@ func (ing *Ingester) createTable() error {
 			live_soroban_state_size BIGINT,
 
 			-- NEW: Protocol 23 (CAP-62) - Hot Archive
-			evicted_keys_count INT
+			evicted_keys_count INT,
+
+			-- CYCLE 14: Incremental Versioning Support
+			era_id VARCHAR,
+			version_label VARCHAR
 		)`,
 		ing.config.DuckLake.CatalogName,
 		ing.config.DuckLake.SchemaName,
@@ -134,7 +138,11 @@ func (ing *Ingester) createTransactionsTable() error {
 
 			-- Cycle 6: Signer fields (2) - Multi-sig analysis
 			tx_signers TEXT,
-			extra_signers TEXT
+			extra_signers TEXT,
+
+			-- CYCLE 14: Incremental Versioning Support
+			era_id VARCHAR,
+			version_label VARCHAR
 		)`,
 		ing.config.DuckLake.CatalogName,
 		ing.config.DuckLake.SchemaName,
@@ -239,8 +247,11 @@ func (ing *Ingester) createOperationsTable() error {
 			high_threshold INT,
 
 			-- Other (2)
-			data_name VARCHAR,
-			data_value VARCHAR
+			data_value VARCHAR,
+
+			-- CYCLE 14: Incremental Versioning Support
+			era_id VARCHAR,
+			version_label VARCHAR
 		)`,
 		ing.config.DuckLake.CatalogName,
 		ing.config.DuckLake.SchemaName,
@@ -276,7 +287,11 @@ func (ing *Ingester) createNativeBalancesTable() error {
 			sequence_number BIGINT,
 			last_modified_ledger BIGINT NOT NULL,
 			ledger_sequence BIGINT NOT NULL,
-			ledger_range BIGINT
+			ledger_range BIGINT,
+
+			-- CYCLE 14: Incremental Versioning Support
+			era_id VARCHAR,
+			version_label VARCHAR
 		)`,
 		ing.config.DuckLake.CatalogName,
 		ing.config.DuckLake.SchemaName,
@@ -336,7 +351,11 @@ func (ing *Ingester) createEffectsTable() error {
 
 			-- Metadata (2 fields)
 			created_at TIMESTAMP NOT NULL,
-			ledger_range BIGINT
+			ledger_range BIGINT,
+
+			-- CYCLE 14: Incremental Versioning Support
+			era_id VARCHAR,
+			version_label VARCHAR
 		)`,
 		ing.config.DuckLake.CatalogName,
 		ing.config.DuckLake.SchemaName,
@@ -389,7 +408,11 @@ func (ing *Ingester) createTradesTable() error {
 
 			-- Metadata (2 fields)
 			created_at TIMESTAMP NOT NULL,
-			ledger_range BIGINT
+			ledger_range BIGINT,
+
+			-- CYCLE 14: Incremental Versioning Support
+			era_id VARCHAR,
+			version_label VARCHAR
 		)`,
 		ing.config.DuckLake.CatalogName,
 		ing.config.DuckLake.SchemaName,
@@ -602,7 +625,11 @@ func (ing *Ingester) createAccountsTable() error {
 			-- Metadata (3 fields)
 			created_at TIMESTAMP NOT NULL,
 			updated_at TIMESTAMP NOT NULL,
-			ledger_range BIGINT NOT NULL
+			ledger_range BIGINT NOT NULL,
+
+			-- CYCLE 14: Incremental Versioning Support
+			era_id VARCHAR,
+			version_label VARCHAR
 		)`,
 		ing.config.DuckLake.CatalogName,
 		ing.config.DuckLake.SchemaName,
@@ -648,7 +675,11 @@ func (ing *Ingester) createTrustlinesTable() error {
 			-- Metadata (3 fields)
 			ledger_sequence BIGINT NOT NULL,
 			created_at TIMESTAMP NOT NULL,
-			ledger_range BIGINT NOT NULL
+			ledger_range BIGINT NOT NULL,
+
+			-- CYCLE 14: Incremental Versioning Support
+			era_id VARCHAR,
+			version_label VARCHAR
 		)`,
 		ing.config.DuckLake.CatalogName,
 		ing.config.DuckLake.SchemaName,
@@ -699,7 +730,11 @@ func (ing *Ingester) createOffersTable() error {
 
 			-- Metadata (2 fields)
 			created_at TIMESTAMP NOT NULL,
-			ledger_range BIGINT NOT NULL
+			ledger_range BIGINT NOT NULL,
+
+			-- CYCLE 14: Incremental Versioning Support
+			era_id VARCHAR,
+			version_label VARCHAR
 		)`,
 		ing.config.DuckLake.CatalogName,
 		ing.config.DuckLake.SchemaName,
@@ -741,7 +776,11 @@ func (ing *Ingester) createClaimableBalancesTable() error {
 
 			-- Metadata (2 fields)
 			created_at TIMESTAMP NOT NULL,
-			ledger_range BIGINT NOT NULL
+			ledger_range BIGINT NOT NULL,
+
+			-- CYCLE 14: Incremental Versioning Support
+			era_id VARCHAR,
+			version_label VARCHAR
 		)`,
 		ing.config.DuckLake.CatalogName,
 		ing.config.DuckLake.SchemaName,
@@ -792,7 +831,11 @@ func (ing *Ingester) createLiquidityPoolsTable() error {
 
 			-- Metadata (2 fields)
 			created_at TIMESTAMP NOT NULL,
-			ledger_range BIGINT NOT NULL
+			ledger_range BIGINT NOT NULL,
+
+			-- CYCLE 14: Incremental Versioning Support
+			era_id VARCHAR,
+			version_label VARCHAR
 		)`,
 		ing.config.DuckLake.CatalogName,
 		ing.config.DuckLake.SchemaName,
@@ -838,7 +881,11 @@ func (ing *Ingester) createContractEventsTable() error {
 
 			-- Metadata (2 fields)
 			created_at TIMESTAMP NOT NULL,
-			ledger_range BIGINT NOT NULL
+			ledger_range BIGINT NOT NULL,
+
+			-- CYCLE 14: Incremental Versioning Support
+			era_id VARCHAR,
+			version_label VARCHAR
 		)`,
 		ing.config.DuckLake.CatalogName,
 		ing.config.DuckLake.SchemaName,
@@ -889,7 +936,11 @@ func (ing *Ingester) createContractDataTable() error {
 
 			-- Metadata (2 fields)
 			created_at TIMESTAMP NOT NULL,
-			ledger_range BIGINT NOT NULL
+			ledger_range BIGINT NOT NULL,
+
+			-- CYCLE 14: Incremental Versioning Support
+			era_id VARCHAR,
+			version_label VARCHAR
 		)`,
 		ing.config.DuckLake.CatalogName,
 		ing.config.DuckLake.SchemaName,
@@ -941,7 +992,11 @@ func (ing *Ingester) createContractCodeTable() error {
 
 			-- Metadata (2 fields)
 			created_at TIMESTAMP NOT NULL,
-			ledger_range BIGINT NOT NULL
+			ledger_range BIGINT NOT NULL,
+
+			-- CYCLE 14: Incremental Versioning Support
+			era_id VARCHAR,
+			version_label VARCHAR
 		)`,
 		ing.config.DuckLake.CatalogName,
 		ing.config.DuckLake.SchemaName,
@@ -995,7 +1050,11 @@ func (ing *Ingester) createConfigSettingsTable() error {
 
 			-- Metadata (2 fields)
 			created_at TIMESTAMP NOT NULL,
-			ledger_range BIGINT NOT NULL
+			ledger_range BIGINT NOT NULL,
+
+			-- CYCLE 14: Incremental Versioning Support
+			era_id VARCHAR,
+			version_label VARCHAR
 		)`,
 		ing.config.DuckLake.CatalogName,
 		ing.config.DuckLake.SchemaName,
@@ -1032,7 +1091,11 @@ func (ing *Ingester) createTTLTable() error {
 
 			-- Metadata (2 fields)
 			created_at TIMESTAMP NOT NULL,
-			ledger_range BIGINT NOT NULL
+			ledger_range BIGINT NOT NULL,
+
+			-- CYCLE 14: Incremental Versioning Support
+			era_id VARCHAR,
+			version_label VARCHAR
 		)`,
 		ing.config.DuckLake.CatalogName,
 		ing.config.DuckLake.SchemaName,
@@ -1065,7 +1128,11 @@ func (ing *Ingester) createEvictedKeysTable() error {
 			-- Metadata (3 fields)
 			closed_at TIMESTAMP NOT NULL,
 			ledger_range BIGINT NOT NULL,
-			created_at TIMESTAMP NOT NULL
+			created_at TIMESTAMP NOT NULL,
+
+			-- CYCLE 14: Incremental Versioning Support
+			era_id VARCHAR,
+			version_label VARCHAR
 		)`,
 		ing.config.DuckLake.CatalogName,
 		ing.config.DuckLake.SchemaName,
@@ -1099,7 +1166,11 @@ func (ing *Ingester) createRestoredKeysTable() error {
 			-- Metadata (3 fields)
 			closed_at TIMESTAMP NOT NULL,
 			ledger_range BIGINT NOT NULL,
-			created_at TIMESTAMP NOT NULL
+			created_at TIMESTAMP NOT NULL,
+
+			-- CYCLE 14: Incremental Versioning Support
+			era_id VARCHAR,
+			version_label VARCHAR
 		)`,
 		ing.config.DuckLake.CatalogName,
 		ing.config.DuckLake.SchemaName,
@@ -1135,7 +1206,11 @@ func (ing *Ingester) createAccountSignersTable() error {
 			-- Metadata (3 fields)
 			closed_at TIMESTAMP NOT NULL,
 			ledger_range BIGINT NOT NULL,
-			created_at TIMESTAMP NOT NULL
+			created_at TIMESTAMP NOT NULL,
+
+			-- CYCLE 14: Incremental Versioning Support
+			era_id VARCHAR,
+			version_label VARCHAR
 		)`,
 		ing.config.DuckLake.CatalogName,
 		ing.config.DuckLake.SchemaName,

@@ -3520,6 +3520,8 @@ func (ing *Ingester) flush(ctx context.Context) error {
 				ledger.BucketListSize,
 				ledger.LiveSorobanStateSize,
 				ledger.EvictedKeysCount,
+				ing.eraConfig.EraID,
+				ing.eraConfig.VersionLabel,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to append ledger %d: %w", ledger.Sequence, err)
@@ -3598,6 +3600,8 @@ func (ing *Ingester) flush(ctx context.Context) error {
 				// Cycle 6: Signer fields (2) - nullable
 				ptrToInterface(tx.TxSigners),
 				ptrToInterface(tx.ExtraSigners),
+				ing.eraConfig.EraID,
+				ing.eraConfig.VersionLabel,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to append transaction %s: %w", tx.TransactionHash, err)
@@ -3692,6 +3696,8 @@ func (ing *Ingester) flush(ctx context.Context) error {
 				// Other (2) - nullable
 				ptrToInterface(op.DataName),
 				ptrToInterface(op.DataValue),
+				ing.eraConfig.EraID,
+				ing.eraConfig.VersionLabel,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to append operation %d: %w", op.OperationIndex, err)
@@ -3727,6 +3733,8 @@ func (ing *Ingester) flush(ctx context.Context) error {
 				bal.LastModifiedLedger,
 				bal.LedgerSequence,
 				bal.LedgerRange,
+				ing.eraConfig.EraID,
+				ing.eraConfig.VersionLabel,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to append balance for account %s: %w", bal.AccountID, err)
@@ -3779,6 +3787,8 @@ func (ing *Ingester) flush(ctx context.Context) error {
 				// Metadata (2 fields)
 				effect.CreatedAt,
 				effect.LedgerRange,
+				ing.eraConfig.EraID,
+				ing.eraConfig.VersionLabel,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to append effect %d for operation %d: %w", effect.EffectIndex, effect.OperationIndex, err)
@@ -3826,6 +3836,8 @@ func (ing *Ingester) flush(ctx context.Context) error {
 				// Metadata (2 fields)
 				trade.CreatedAt,
 				trade.LedgerRange,
+				ing.eraConfig.EraID,
+				ing.eraConfig.VersionLabel,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to append trade %d for operation %d: %w", trade.TradeIndex, trade.OperationIndex, err)
@@ -3881,6 +3893,8 @@ func (ing *Ingester) flush(ctx context.Context) error {
 				account.CreatedAt,
 				account.UpdatedAt,
 				account.LedgerRange,
+				ing.eraConfig.EraID,
+				ing.eraConfig.VersionLabel,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to append account %s at ledger %d: %w", account.AccountID, account.LedgerSequence, err)
@@ -3923,6 +3937,8 @@ func (ing *Ingester) flush(ctx context.Context) error {
 				trustline.LedgerSequence,
 				trustline.CreatedAt,
 				trustline.LedgerRange,
+				ing.eraConfig.EraID,
+				ing.eraConfig.VersionLabel,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to append trustline %s:%s for account %s: %w", trustline.AssetCode, trustline.AssetIssuer, trustline.AccountID, err)
@@ -3968,6 +3984,8 @@ func (ing *Ingester) flush(ctx context.Context) error {
 				// Metadata (2 fields)
 				offer.CreatedAt,
 				offer.LedgerRange,
+				ing.eraConfig.EraID,
+				ing.eraConfig.VersionLabel,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to append offer %d for seller %s: %w", offer.OfferID, offer.SellerAccount, err)
@@ -4009,6 +4027,8 @@ func (ing *Ingester) flush(ctx context.Context) error {
 				// Metadata (2 fields)
 				balance.CreatedAt,
 				balance.LedgerRange,
+				ing.eraConfig.EraID,
+				ing.eraConfig.VersionLabel,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to append claimable balance %s: %w", balance.BalanceID, err)
@@ -4057,6 +4077,8 @@ func (ing *Ingester) flush(ctx context.Context) error {
 				// Metadata (2 fields)
 				pool.CreatedAt,
 				pool.LedgerRange,
+				ing.eraConfig.EraID,
+				ing.eraConfig.VersionLabel,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to append liquidity pool %s: %w", pool.LiquidityPoolID, err)
@@ -4102,6 +4124,8 @@ func (ing *Ingester) flush(ctx context.Context) error {
 				// Metadata (2 fields)
 				event.CreatedAt,
 				event.LedgerRange,
+				ing.eraConfig.EraID,
+				ing.eraConfig.VersionLabel,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to append contract event %s: %w", event.EventID, err)
@@ -4149,6 +4173,8 @@ func (ing *Ingester) flush(ctx context.Context) error {
 				// Metadata (2 fields)
 				data.CreatedAt,
 				data.LedgerRange,
+				ing.eraConfig.EraID,
+				ing.eraConfig.VersionLabel,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to append contract data %s: %w", data.ContractId, err)
@@ -4198,6 +4224,8 @@ func (ing *Ingester) flush(ctx context.Context) error {
 				// Metadata (2 fields)
 				code.CreatedAt,
 				code.LedgerRange,
+				ing.eraConfig.EraID,
+				ing.eraConfig.VersionLabel,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to append contract code %s: %w", code.ContractCodeHash, err)
@@ -4249,6 +4277,8 @@ func (ing *Ingester) flush(ctx context.Context) error {
 				// Metadata (2 fields)
 				setting.CreatedAt,
 				setting.LedgerRange,
+				ing.eraConfig.EraID,
+				ing.eraConfig.VersionLabel,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to append config setting %d: %w", setting.ConfigSettingID, err)
@@ -4286,6 +4316,8 @@ func (ing *Ingester) flush(ctx context.Context) error {
 				// Metadata (2 fields)
 				ttl.CreatedAt,
 				ttl.LedgerRange,
+				ing.eraConfig.EraID,
+				ing.eraConfig.VersionLabel,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to append ttl entry %s: %w", ttl.KeyHash, err)
@@ -4320,6 +4352,8 @@ func (ing *Ingester) flush(ctx context.Context) error {
 				key.ClosedAt,
 				key.LedgerRange,
 				key.CreatedAt,
+				ing.eraConfig.EraID,
+				ing.eraConfig.VersionLabel,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to append evicted key %s: %w", key.KeyHash, err)
@@ -4355,6 +4389,8 @@ func (ing *Ingester) flush(ctx context.Context) error {
 				key.ClosedAt,
 				key.LedgerRange,
 				key.CreatedAt,
+				ing.eraConfig.EraID,
+				ing.eraConfig.VersionLabel,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to append restored key %s: %w", key.KeyHash, err)
@@ -4399,6 +4435,8 @@ func (ing *Ingester) flush(ctx context.Context) error {
 				signer.ClosedAt,
 				signer.LedgerRange,
 				signer.CreatedAt,
+				ing.eraConfig.EraID,
+				ing.eraConfig.VersionLabel,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to append account signer %s/%s: %w", signer.AccountID, signer.Signer, err)
