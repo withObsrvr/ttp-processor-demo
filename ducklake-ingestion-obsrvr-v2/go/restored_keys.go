@@ -184,10 +184,10 @@ func extractRestoredKeyData(ledgerKey xdr.LedgerKey, ledgerSeq uint32, durabilit
 		LedgerSequence: ledgerSeq,
 
 		// Restoration details (4 fields)
-		ContractID:          contractID,
-		KeyType:             keyType,
-		Durability:          durability,
-		RestoredFromLedger:  restoredFromLedger,
+		ContractID:         contractID,
+		KeyType:            keyType,
+		Durability:         durability,
+		RestoredFromLedger: restoredFromLedger,
 
 		// Metadata (3 fields)
 		ClosedAt:    closedAt,

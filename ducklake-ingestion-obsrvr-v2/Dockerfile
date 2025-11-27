@@ -46,7 +46,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libstdc++6 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -g 65532 nonroot \
-    && useradd -u 65532 -g nonroot -s /bin/false nonroot
+    && useradd -u 65532 -g nonroot -m -d /home/nonroot -s /bin/false nonroot
 
 # Copy binary to /app/ following flowctl component image spec
 COPY --from=builder /build/ttp-processor-demo/ducklake-ingestion-obsrvr-v2/go/ducklake-ingestion-obsrvr-v2 /app/ducklake-ingestion-obsrvr-v2

@@ -79,21 +79,27 @@ func extractEvictedKeyData(ledgerKey xdr.LedgerKey, ledgerSeq uint32, durability
 	switch ledgerKey.Type {
 	case xdr.LedgerEntryTypeContractData:
 		if ledgerKey.ContractData != nil {
-			// Extract contract ID - may panic if structure is unexpected
-			contractIDBytes, err := ledgerKey.ContractData.Contract.ContractId.MarshalBinary()
-			if err == nil {
-				contractID = hex.EncodeToString(contractIDBytes)
+			// Extract contract ID - safely handle potentially malformed data
+			// In early testnet data, these fields might not be properly populated
+			contractBytes, err := ledgerKey.ContractData.Contract.MarshalBinary()
+			if err == nil && len(contractBytes) > 0 {
+				// Use hash of the full contract address as ID
+				contractHash := sha256.Sum256(contractBytes)
+				contractID = hex.EncodeToString(contractHash[:])
 			}
 
-			// Extract key type from ScVal
-			keyType = ledgerKey.ContractData.Key.Type.String()
+			// Extract key type from ScVal - use error handling for safety
+			keyType = "ContractData"
+			if keyBytes, err := ledgerKey.ContractData.Key.MarshalBinary(); err == nil && len(keyBytes) > 0 {
+				keyType = ledgerKey.ContractData.Key.Type.String()
+			}
 		}
 
 	case xdr.LedgerEntryTypeContractCode:
 		if ledgerKey.ContractCode != nil {
-			// Contract code hash
+			// Contract code hash - use error handling for safety
 			codeHashBytes, err := ledgerKey.ContractCode.Hash.MarshalBinary()
-			if err == nil {
+			if err == nil && len(codeHashBytes) > 0 {
 				contractID = hex.EncodeToString(codeHashBytes)
 			}
 			keyType = "ContractCode"
