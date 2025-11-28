@@ -159,12 +159,12 @@ func (ing *Ingester) createTransactionsTable() error {
 	return nil
 }
 
-// createOperationsTable creates the operations table (Cycle 5: Complete schema - 59 fields)
+// createOperationsTable creates the operations table (Cycle 5: Complete schema - 60 fields)
 // Obsrvr playbook naming: core.operations_row_v2
 // - Domain: core (blockchain infrastructure data)
 // - Subject: operations
 // - Grain: row (one row per operation)
-// - Version: v2 (59 fields - covers 12 operation types, 98%+ coverage)
+// - Version: v2 (60 fields - covers 12 operation types, 98%+ coverage)
 func (ing *Ingester) createOperationsTable() error {
 	createSQL := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s.%s.operations_row_v2 (
@@ -247,6 +247,7 @@ func (ing *Ingester) createOperationsTable() error {
 			high_threshold INT,
 
 			-- Other (2)
+			data_name VARCHAR,
 			data_value VARCHAR,
 
 			-- CYCLE 14: Incremental Versioning Support
