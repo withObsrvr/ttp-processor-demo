@@ -199,3 +199,4 @@ ducklake-api-gateway/VERSION-AWARENESS-CORRECTION.md
 ducklake-api-gateway/VERSION-AWARENESS-UPDATE.md
 ducklake-ingestion-obsrvr-v2/go/main.go.backup_20251125_215749
 SECRETS-REMOVAL-SUMMARY.md
+DOCKER-DEPLOYMENT-CHECKLIST.md
