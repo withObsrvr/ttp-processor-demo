@@ -207,3 +207,4 @@ ducklake-ingestion-obsrvr-v3/config/README.md
 ducklake-ingestion-obsrvr-v3/go/ducklake-ingestion-obsrvr-v2
 ducklake-ingestion-obsrvr-v3/go/main.go.backup_20251125_215749
 ducklake-ingestion-obsrvr-v3/go/poc/appender_simple_poc.go
+STELLAR_LIVE_SOURCE_COMPARISON.md

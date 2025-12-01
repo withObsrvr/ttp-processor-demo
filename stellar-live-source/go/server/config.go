@@ -44,6 +44,13 @@ type Config struct {
 	MaxBackoff                time.Duration
 	CircuitBreakerThreshold   int
 	CircuitBreakerTimeout     time.Duration
+
+	// Checkpointing for crash recovery
+	CheckpointPath     string
+	CheckpointInterval time.Duration
+
+	// Batch API limits
+	MaxBatchSize int
 }
 
 // LoadConfig loads configuration from environment variables
@@ -83,6 +90,13 @@ func LoadConfig() (*Config, error) {
 		MaxBackoff:              getDurationEnv("MAX_BACKOFF", 30*time.Second),
 		CircuitBreakerThreshold: getIntEnv("CIRCUIT_BREAKER_THRESHOLD", 5),
 		CircuitBreakerTimeout:   getDurationEnv("CIRCUIT_BREAKER_TIMEOUT", 30*time.Second),
+
+		// Checkpointing for crash recovery
+		CheckpointPath:     getEnvOrDefault("CHECKPOINT_PATH", "./checkpoints/stellar-live-source.json"),
+		CheckpointInterval: getDurationEnv("CHECKPOINT_INTERVAL", 30*time.Second),
+
+		// Batch API limits
+		MaxBatchSize: getIntEnv("MAX_BATCH_SIZE", 1000),
 	}
 
 	// Validate required configuration

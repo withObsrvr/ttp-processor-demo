@@ -17,8 +17,24 @@ message StreamLedgersRequest {
     // End ledger is omitted - service streams indefinitely from start
 }
 
+// Request to get a specific range of ledgers (batch mode)
+message GetLedgerRangeRequest {
+    uint32 start_ledger = 1; // Inclusive - first ledger to retrieve
+    uint32 end_ledger = 2;   // Exclusive - range is [start_ledger, end_ledger)
+}
+
+// Response containing a batch of ledgers
+message GetLedgerRangeResponse {
+    repeated RawLedger ledgers = 1;  // The requested ledgers
+    uint32 latest_ledger = 2;        // Current network latest ledger
+}
+
 // The service definition for streaming raw ledgers
 service RawLedgerService {
     // Streams raw ledgers starting from a specific sequence indefinitely
     rpc StreamRawLedgers(StreamLedgersRequest) returns (stream RawLedger) {}
+
+    // Gets a specific range of ledgers (batch mode)
+    // Range semantics: [start_ledger, end_ledger) - start inclusive, end exclusive
+    rpc GetLedgerRange(GetLedgerRangeRequest) returns (GetLedgerRangeResponse) {}
 }

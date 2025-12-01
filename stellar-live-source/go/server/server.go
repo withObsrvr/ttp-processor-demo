@@ -317,6 +317,10 @@ func (s *RawLedgerServer) StreamRawLedgers(req *rawledger.StreamLedgersRequest, 
 	retryCount := 0
 	backoff := s.config.InitialBackoff
 
+	// Initialize checkpoint tracking
+	lastCheckpointTime := time.Now()
+	lastProcessedSeq := uint32(0)
+
 	// Create initial GetLedgers request using our enhanced builder
 	getLedgersReq := s.buildGetLedgersRequest(req.StartLedger)
 
@@ -394,7 +398,6 @@ func (s *RawLedgerServer) StreamRawLedgers(req *rawledger.StreamLedgersRequest, 
 			continue
 		}
 
-		lastProcessedSeq := uint32(0)
 		// Process each ledger with enterprise-grade error handling
 		for _, ledgerInfo := range resp.Ledgers {
 			if ledgerInfo.Sequence < req.StartLedger {
@@ -498,6 +501,12 @@ func (s *RawLedgerServer) StreamRawLedgers(req *rawledger.StreamLedgersRequest, 
 				return status.Errorf(codes.Unavailable, "failed to send data to client: %v", err)
 			}
 			lastProcessedSeq = ledgerInfo.Sequence
+		}
+
+		// Save checkpoint asynchronously at configured interval
+		if s.config.CheckpointPath != "" && lastProcessedSeq > 0 && time.Since(lastCheckpointTime) >= s.config.CheckpointInterval {
+			s.SaveCheckpointAsync(lastProcessedSeq)
+			lastCheckpointTime = time.Now()
 		}
 
 		// Update request with enterprise-grade cursor management
@@ -653,6 +662,9 @@ func (s *RawLedgerServer) StartHealthCheckServer(port int) error {
 				"prefetch_enabled":     s.config.EnablePredictivePrefetch,
 				"buffer_size":          s.config.BufferSize,
 				"num_workers":          s.config.NumWorkers,
+				"checkpoint_enabled":   s.config.CheckpointPath != "",
+				"checkpoint_interval":  s.config.CheckpointInterval.String(),
+				"max_batch_size":       s.config.MaxBatchSize,
 			},
 			"metrics": map[string]interface{}{
 				"retry_count":           metrics.RetryCount,
@@ -676,6 +688,7 @@ func (s *RawLedgerServer) StartHealthCheckServer(port int) error {
 				}
 				return nil
 			}(),
+			"checkpoint": s.GetCheckpointInfo(),
 			"guarantees": map[string]interface{}{
 				"min_uptime":        MinProcessorUptime,
 				"max_latency_p99":   MaxLatencyP99.String(),
