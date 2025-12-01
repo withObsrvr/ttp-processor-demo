@@ -1,8 +1,6 @@
 module github.com/withObsrvr/ttp-processor-demo/ducklake-ingestion-obsrvr-v3/go
 
-go 1.24.0
-
-toolchain go1.24.9
+go 1.25
 
 require (
 	github.com/duckdb/duckdb-go/v2 v2.5.3
