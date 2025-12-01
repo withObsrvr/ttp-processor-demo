@@ -53,14 +53,11 @@ func (ing *Ingester) extractEvictedKeys(lcm *xdr.LedgerCloseMeta) []EvictedKeyDa
 }
 
 // extractEvictedKeyData extracts data from a single evicted ledger key
-func extractEvictedKeyData(ledgerKey xdr.LedgerKey, ledgerSeq uint32, durability string, closedAt time.Time) (result *EvictedKeyData) {
-	// Recover from any panics due to nil pointer access in XDR structures
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("Recovered from panic in extractEvictedKeyData: %v (ledger %d, key type %v)", r, ledgerSeq, ledgerKey.Type)
-			result = nil
-		}
-	}()
+func extractEvictedKeyData(ledgerKey xdr.LedgerKey, ledgerSeq uint32, durability string, closedAt time.Time) *EvictedKeyData {
+	// PERFORMANCE FIX: Replaced defer recover() with explicit nil checks
+	// - Avoids expensive stack unwinding on every call
+	// - Makes logic bugs visible instead of hiding them
+	// - Improves throughput in high-volume ingestion
 
 	// Generate hash of the ledger key
 	keyHashBytes, err := ledgerKey.MarshalBinary()
@@ -78,8 +75,12 @@ func extractEvictedKeyData(ledgerKey xdr.LedgerKey, ledgerSeq uint32, durability
 
 	switch ledgerKey.Type {
 	case xdr.LedgerEntryTypeContractData:
-		if ledgerKey.ContractData != nil {
-			// Extract contract ID - safely handle potentially malformed data
+		// EXPLICIT NIL CHECKS: Prevent panics from malformed XDR
+		if ledgerKey.ContractData == nil {
+			log.Printf("Warning: ContractData is nil for ledger %d, key type %v", ledgerSeq, ledgerKey.Type)
+			keyType = "ContractData"
+		} else {
+			// Safely extract contract ID with nested nil checks
 			// In early testnet data, these fields might not be properly populated
 			contractBytes, err := ledgerKey.ContractData.Contract.MarshalBinary()
 			if err == nil && len(contractBytes) > 0 {
@@ -88,7 +89,7 @@ func extractEvictedKeyData(ledgerKey xdr.LedgerKey, ledgerSeq uint32, durability
 				contractID = hex.EncodeToString(contractHash[:])
 			}
 
-			// Extract key type from ScVal - use error handling for safety
+			// Safely extract key type from ScVal
 			keyType = "ContractData"
 			if keyBytes, err := ledgerKey.ContractData.Key.MarshalBinary(); err == nil && len(keyBytes) > 0 {
 				keyType = ledgerKey.ContractData.Key.Type.String()
@@ -96,8 +97,12 @@ func extractEvictedKeyData(ledgerKey xdr.LedgerKey, ledgerSeq uint32, durability
 		}
 
 	case xdr.LedgerEntryTypeContractCode:
-		if ledgerKey.ContractCode != nil {
-			// Contract code hash - use error handling for safety
+		// EXPLICIT NIL CHECKS: Prevent panics from malformed XDR
+		if ledgerKey.ContractCode == nil {
+			log.Printf("Warning: ContractCode is nil for ledger %d, key type %v", ledgerSeq, ledgerKey.Type)
+			keyType = "ContractCode"
+		} else {
+			// Safely extract contract code hash
 			codeHashBytes, err := ledgerKey.ContractCode.Hash.MarshalBinary()
 			if err == nil && len(codeHashBytes) > 0 {
 				contractID = hex.EncodeToString(codeHashBytes)

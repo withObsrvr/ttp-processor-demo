@@ -1339,58 +1339,71 @@ func (ing *Ingester) recordQualityChecks(results []QualityCheckResult) error {
 	// Generate unique IDs for each result (timestamp-based)
 	baseID := time.Now().UnixNano()
 
-	// OPTIMIZED: Batched insert with single query instead of 19 individual inserts
-	// This reduces network roundtrips from 19 to 1 (critical for remote PostgreSQL)
-	insertSQL := fmt.Sprintf(`
-		INSERT INTO %s.%s._meta_quality (
-			id, dataset, partition, check_name, check_type,
-			passed, details, row_count, null_anomalies, created_at
-		) VALUES `,
-		ing.config.DuckLake.CatalogName,
-		ing.config.DuckLake.SchemaName,
-	)
-
-	// Build multi-row VALUES clause
-	valuePlaceholders := make([]string, len(results))
-	args := make([]interface{}, 0, len(results)*10) // 10 fields per result
-
+	// CRITICAL FIX: Chunk inserts to prevent PostgreSQL parameter limit (65,535)
+	// With 10 fields per row, we can safely insert 500 rows per batch (5,000 parameters)
+	// This prevents crashes on large batches (1,000 ledgers * 19 checks = 19,000 rows)
+	const chunkSize = 500
 	passed := 0
 	failed := 0
 
-	for i, result := range results {
-		id := baseID + int64(i)
-		valuePlaceholders[i] = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-
-		partition := result.Partition
-		if partition == "" {
-			partition = "" // NULL partition for non-partitioned data
+	// Process results in chunks
+	for chunkStart := 0; chunkStart < len(results); chunkStart += chunkSize {
+		chunkEnd := chunkStart + chunkSize
+		if chunkEnd > len(results) {
+			chunkEnd = len(results)
 		}
+		chunk := results[chunkStart:chunkEnd]
 
-		args = append(args,
-			id,
-			result.Dataset,
-			partition,
-			result.CheckName,
-			result.CheckType,
-			result.Passed,
-			result.Details,
-			result.RowCount,
-			result.NullAnomalies,
-			result.CreatedAt,
+		// Build INSERT statement for this chunk
+		insertSQL := fmt.Sprintf(`
+			INSERT INTO %s.%s._meta_quality (
+				id, dataset, partition, check_name, check_type,
+				passed, details, row_count, null_anomalies, created_at
+			) VALUES `,
+			ing.config.DuckLake.CatalogName,
+			ing.config.DuckLake.SchemaName,
 		)
 
-		if result.Passed {
-			passed++
-		} else {
-			failed++
-		}
-	}
+		// Build multi-row VALUES clause for this chunk
+		valuePlaceholders := make([]string, len(chunk))
+		args := make([]interface{}, 0, len(chunk)*10) // 10 fields per result
 
-	// Execute single batched insert
-	insertSQL += strings.Join(valuePlaceholders, ",")
-	_, err := ing.db.Exec(insertSQL, args...)
-	if err != nil {
-		return fmt.Errorf("failed to batch record %d quality checks: %w", len(results), err)
+		for i, result := range chunk {
+			id := baseID + int64(chunkStart+i)
+			valuePlaceholders[i] = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+
+			partition := result.Partition
+			if partition == "" {
+				partition = "" // NULL partition for non-partitioned data
+			}
+
+			args = append(args,
+				id,
+				result.Dataset,
+				partition,
+				result.CheckName,
+				result.CheckType,
+				result.Passed,
+				result.Details,
+				result.RowCount,
+				result.NullAnomalies,
+				result.CreatedAt,
+			)
+
+			if result.Passed {
+				passed++
+			} else {
+				failed++
+			}
+		}
+
+		// Execute batched insert for this chunk
+		insertSQL += strings.Join(valuePlaceholders, ",")
+		_, err := ing.db.Exec(insertSQL, args...)
+		if err != nil {
+			return fmt.Errorf("failed to record quality checks (chunk %d-%d of %d): %w",
+				chunkStart, chunkEnd, len(results), err)
+		}
 	}
 
 	// Log summary

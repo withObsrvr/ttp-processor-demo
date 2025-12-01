@@ -31,4 +31,5 @@ require github.com/withobsrvr/flowctl v0.0.1
 require (
 	github.com/golang/protobuf v1.5.4 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
+	golang.org/x/exp v0.0.0-20231006140011-7918f672742d // indirect
 )
