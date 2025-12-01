@@ -19,8 +19,7 @@
             src = ./.;
 
             # Vendor hash for reproducible builds
-            # Will be updated after first build attempt
-            vendorHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+            vendorHash = "sha256-tGOJJk8Sgg292inGo4KRm96SVkkXS1phwSAk0+yoPXs=";
 
             # Set the Go module directory
             modRoot = "./go";
@@ -89,8 +88,8 @@ EOF
                 echo "Proto generation completed for go-modules"
               '';
               preBuild = ''
-                # Move to go directory for vendoring
-                cd go
+                # Already in go directory thanks to modRoot
+                echo "Ready to vendor from: $(pwd)"
               '';
             };
 
