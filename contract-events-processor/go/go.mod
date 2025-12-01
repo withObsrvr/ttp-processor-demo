@@ -111,3 +111,5 @@ replace github.com/withObsrvr/contract-events-processor/gen/raw_ledger_service =
 replace github.com/withObsrvr/contract-events-processor/server => ./server
 
 replace github.com/withObsrvr/contract-events-processor/config => ./config
+
+replace github.com/withobsrvr/flowctl => /home/tillman/Documents/flowctl

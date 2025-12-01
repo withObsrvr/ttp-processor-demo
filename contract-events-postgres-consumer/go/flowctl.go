@@ -137,9 +137,13 @@ func (fc *FlowctlController) RegisterWithFlowctl() error {
 	}
 	healthEndpoint := fmt.Sprintf("http://localhost:%s/health", healthPort)
 
+	// Read component ID from environment (set by flowctl)
+	componentID := os.Getenv("FLOWCTL_COMPONENT_ID")
+
 	// Create service info for SINK type
 	serviceInfo := &flowctlpb.ServiceInfo{
 		ServiceType:     flowctlpb.ServiceType_SERVICE_TYPE_SINK,
+		ComponentId:     componentID,
 		InputEventTypes: []string{"contract_event_service.ContractEvent"},
 		HealthEndpoint:  healthEndpoint,
 		MaxInflight:     100,
@@ -155,6 +159,9 @@ func (fc *FlowctlController) RegisterWithFlowctl() error {
 	defer cancel()
 
 	log.Printf("Registering with flowctl control plane at %s", fc.endpoint)
+	if componentID != "" {
+		log.Printf("Using component ID: %s", componentID)
+	}
 
 	// Attempt to register
 	ack, err := fc.client.Register(ctx, serviceInfo)

@@ -1,0 +1,88 @@
+apiVersion: flowctl/v1
+kind: Pipeline
+metadata:
+  name: contract-events-live-pipeline
+  namespace: obsrvr
+  labels:
+    environment: development
+    purpose: testnet-contract-events-live
+  annotations:
+    description: "Live contract events extraction from Stellar RPC to PostgreSQL"
+
+spec:
+  description: "Real-time Stellar testnet contract events processing to PostgreSQL"
+  driver: local
+
+  sources:
+    - id: stellar-live-source
+      type: stellar-live-source
+      # docker image - type must match the binary name in /app/
+      image: docker.io/withobsrvr/stellar-live-source:latest
+      args: []
+      env:
+        # Stellar RPC configuration
+        RPC_ENDPOINT: "https://soroban-testnet.stellar.org"
+        NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
+
+        # Service configuration
+        GRPC_PORT: "50052"
+        HEALTH_PORT: "8081"
+
+        # Starting point (optional - will start from latest if not specified)
+        # START_LEDGER: "1000"
+
+      health_endpoint: "http://stellar-live-source:8081/health"
+      health_port: 8081
+
+  processors:
+    - id: contract-events-processor
+      type: contract-events-processor
+      image: docker.io/withobsrvr/contract-events-processor:latest
+      args: []
+      inputs: ["stellar-live-source"]
+      env:
+        # Data source connection (localhost in host network mode)
+        LIVE_SOURCE_ADDRESS: "localhost:50052"
+        NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
+
+        # Service ports
+        PORT: ":50053"
+        HEALTH_PORT: "8089"
+
+        # Flowctl integration (localhost in host network mode)
+        ENABLE_FLOWCTL: "true"
+        FLOWCTL_ENDPOINT: "localhost:8080"
+        FLOWCTL_HEARTBEAT_INTERVAL: "10s"
+        STELLAR_NETWORK: "testnet"
+
+      health_endpoint: "http://contract-events-processor:8089/health"
+      health_port: 8089
+
+  sinks:
+    - id: postgres-consumer
+      type: contract-events-postgres-consumer
+      image: docker.io/withobsrvr/contract-events-postgres-consumer:latest
+      # Args: <start_ledger> <end_ledger> (0 for continuous streaming)
+      args: ["0", "0"]  # Start from current and stream continuously
+      inputs: ["contract-events-processor"]
+      env:
+        # Contract Events Service connection (localhost in host network mode)
+        CONTRACT_EVENTS_SERVICE_ADDRESS: "localhost:50053"
+
+        # PostgreSQL configuration (localhost in host network mode)
+        POSTGRES_HOST: "localhost"
+        POSTGRES_PORT: "5432"
+        POSTGRES_DB: "contract_events"
+        POSTGRES_USER: "postgres"
+        POSTGRES_PASSWORD: "postgres"
+        POSTGRES_SSLMODE: "disable"
+
+        # Flowctl integration (localhost in host network mode)
+        ENABLE_FLOWCTL: "true"
+        FLOWCTL_ENDPOINT: "localhost:8080"
+        FLOWCTL_HEARTBEAT_INTERVAL: "10s"
+        STELLAR_NETWORK: "testnet"
+        HEALTH_PORT: "8090"
+
+      health_endpoint: "http://postgres-consumer:8090/health"
+      health_port: 8090

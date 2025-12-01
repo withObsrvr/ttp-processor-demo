@@ -1,0 +1,116 @@
+apiVersion: flowctl/v1
+kind: Pipeline
+metadata:
+  name: contract-events-pipeline
+  namespace: obsrvr
+  labels:
+    environment: production
+    purpose: testnet-contract-events
+  annotations:
+    description: "Contract events extraction and PostgreSQL storage pipeline for Stellar testnet"
+
+spec:
+  description: "Stellar testnet contract events processing to PostgreSQL with Obsrvr Data Culture"
+  driver: local
+
+  sources:
+    - id: stellar-data-source
+      type: stellar-live-source-datalake
+      # docker image - type must match the binary name in /app/
+      image: docker.io/withobsrvr/stellar-live-source-datalake:latest
+      args: []
+      env:
+        # Stellar network configuration
+        NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
+
+        # Storage backend configuration (GCS)
+        STORAGE_TYPE: "GCS"
+        BUCKET_NAME: "your-bucket-name"  # UPDATE THIS
+        BUCKET_PATH: "landing/ledgers/testnet"
+        ARCHIVE_PATH: "landing/ledgers/testnet"
+        LEDGERS_PER_FILE: "1"
+        FILES_PER_PARTITION: "64000"
+
+        # Service configuration
+        GRPC_PORT: "50052"
+        HEALTH_PORT: "8081"
+
+        # GCS credentials - UPDATE THIS PATH
+        GOOGLE_APPLICATION_CREDENTIALS: "/path/to/gcp-credentials.json"
+
+      health_endpoint: "http://stellar-data-source:8081/health"
+      health_port: 8081
+
+  processors:
+    - id: contract-events-processor
+      type: contract-events-processor
+      # docker image - type must match the binary name in /app/
+      image: docker.io/withobsrvr/contract-events-processor:latest
+      args: []
+      inputs: ["stellar-data-source"]
+      env:
+        # Data source connection (localhost in host network mode)
+        LIVE_SOURCE_ADDRESS: "localhost:50052"
+        NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
+
+        # Service ports
+        PORT: ":50053"
+        HEALTH_PORT: "8089"
+
+        # Flowctl integration (localhost in host network mode)
+        ENABLE_FLOWCTL: "true"
+        FLOWCTL_ENDPOINT: "localhost:8080"
+        FLOWCTL_HEARTBEAT_INTERVAL: "10s"
+        STELLAR_NETWORK: "testnet"
+
+      health_endpoint: "http://contract-events-processor:8089/health"
+      health_port: 8089
+
+  sinks:
+    - id: postgres-consumer
+      type: contract-events-postgres-consumer
+      # docker image - type must match the binary name in /app/
+      image: docker.io/withobsrvr/contract-events-postgres-consumer:latest
+      # Args: <start_ledger> <end_ledger> (0 for continuous streaming)
+      args: ["1000", "0"]
+      inputs: ["contract-events-processor"]
+      env:
+        # Contract Events Service connection (localhost in host network mode)
+        CONTRACT_EVENTS_SERVICE_ADDRESS: "localhost:50053"
+
+        # PostgreSQL configuration - UPDATE THESE
+        # Use localhost in host network mode
+        POSTGRES_HOST: "localhost"
+        POSTGRES_PORT: "5432"
+        POSTGRES_DB: "contract_events"
+        POSTGRES_USER: "postgres"
+        POSTGRES_PASSWORD: "postgres"  # UPDATE THIS
+        POSTGRES_SSLMODE: "disable"
+
+        # Filtering (optional - leave empty for all events)
+        # FILTER_CONTRACT_IDS: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC,..."
+        # FILTER_EVENT_TYPES: "transfer,mint,burn"
+        # INCLUDE_FAILED: "false"
+
+        # Flowctl integration (localhost in host network mode)
+        ENABLE_FLOWCTL: "true"
+        FLOWCTL_ENDPOINT: "localhost:8080"
+        FLOWCTL_HEARTBEAT_INTERVAL: "10s"
+        STELLAR_NETWORK: "testnet"
+        HEALTH_PORT: "8090"
+
+      health_endpoint: "http://postgres-consumer:8090/health"
+      health_port: 8090
+
+# NOTE: Preflight checks and monitoring are planned features but not yet implemented in flowctl
+# For now, run these checks manually before starting the pipeline:
+#
+# 1. Verify PostgreSQL schema:
+#    psql -d contract_events -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'contract_events'"
+#
+# 2. Check GCS credentials (if using datalake source):
+#    ls -l /path/to/gcp-credentials.json
+#
+# 3. Monitor processing with SQL queries:
+#    psql -d contract_events -c "SELECT COUNT(*) FROM contract_events"
+#    psql -d contract_events -c "SELECT MAX(ledger_sequence) FROM contract_events"

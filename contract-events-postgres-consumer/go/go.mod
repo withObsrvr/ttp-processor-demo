@@ -11,7 +11,6 @@ require (
 )
 
 require (
-	github.com/golang/protobuf v1.5.4 // indirect
 	golang.org/x/net v0.35.0 // indirect
 	golang.org/x/sys v0.33.0 // indirect
 	golang.org/x/text v0.22.0 // indirect
@@ -19,3 +18,5 @@ require (
 )
 
 replace github.com/withObsrvr/contract-events-postgres-consumer/gen/contract_event_service => ../gen/contract_event_service
+
+replace github.com/withobsrvr/flowctl => /home/tillman/Documents/flowctl
