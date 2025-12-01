@@ -163,6 +163,7 @@ docs/v2-*.md
 manifest*.json
 docs/
 *GUIDE.md
+shape-up/
 
 # Completion/status docs
 ducklake-ingestion-obsrvr-v2/docs/BRONZE-LAYER-COMPLETION.md
@@ -211,3 +212,6 @@ STELLAR_LIVE_SOURCE_COMPARISON.md
 DOCUMENTATION_INTEGRATION_PLAN.md
 .gitignore
 COMMUNITY_READINESS_ASSESSMENT.md
+contract-events-postgres-consumer/contract-events-postgres-consumer
+contract-events-processor/examples/go-consumer/contract-events-consumer
+contract-events-processor/contract_events_processor

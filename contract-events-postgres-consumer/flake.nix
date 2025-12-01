@@ -10,69 +10,27 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-
-        # Path to contract-events-processor for proto files
-        processorPath = ../contract-events-processor;
       in
       {
         packages = {
-          default = pkgs.buildGoModule {
+          default = pkgs.buildGoModule rec {
             pname = "contract-events-postgres-consumer";
             version = "0.1.0";
             src = ./.;
 
-            # Use vendored dependencies for improved build reliability
-            vendorHash = null;
-            modVendorDir = "./go/vendor";
-            allowVendorCheck = false;
-            buildFlags = ["-mod=vendor" "-modcacherw"];
+            # Vendor hash for reproducible builds
+            vendorHash = "sha256-pWnV2XoDfOhikVMZACM4GZtZc+8eZW1FQIGEKMR8b2k=";
 
+            # Set the Go module directory
+            modRoot = "./go";
+
+            # Disable go workspace mode
             env = {
-              GOPROXY = "off";
+              GOWORK = "off";
             };
 
             preBuild = ''
-              echo "Setting up build environment..."
-
-              # Copy proto files from contract-events-processor
-              echo "Copying proto files from contract-events-processor..."
-              mkdir -p ../contract-events-processor/go/gen
-              cp -r ${processorPath}/go/gen/* ../contract-events-processor/go/gen/ || true
-
-              # Vendor dependencies if not present
-              if [ ! -d "go/vendor" ]; then
-                echo "Vendoring dependencies..."
-                cd go
-                GOWORK=off go mod tidy
-                GOWORK=off go mod vendor
-                cd ..
-              else
-                echo "Using existing vendor directory"
-              fi
-
-              echo "Build environment ready"
-            '';
-
-            buildPhase = ''
-              runHook preBuild
-
-              # Disable go workspace mode
-              export GOWORK=off
-
-              # Build the consumer
-              cd go
-              go build -mod=vendor -o ../contract-events-postgres-consumer
-              cd ..
-
-              runHook postBuild
-            '';
-
-            installPhase = ''
-              runHook preInstall
-              mkdir -p $out/bin
-              cp contract-events-postgres-consumer $out/bin/
-              chmod +x $out/bin/contract-events-postgres-consumer
-              runHook postInstall
+              echo "Setting up build environment for contract-events-postgres-consumer..."
             '';
 
             nativeBuildInputs = [

@@ -19,34 +19,88 @@
             src = ./.;
 
             # Vendor hash for reproducible builds
-            # Update this after first build attempt
+            # Will be updated after first build attempt
             vendorHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
             # Set the Go module directory
             modRoot = "./go";
+
+            # Exclude generated proto packages from being built as separate binaries
+            excludedPackages = [ "./gen/contract_event_service" "./gen/raw_ledger_service" ];
 
             # Disable go workspace mode
             env = {
               GOWORK = "off";
             };
 
-            preBuild = ''
+            # Override the go-modules derivation to handle proto generation correctly
+            overrideModAttrs = old: {
+              nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pkgs.protobuf pkgs.protoc-gen-go pkgs.protoc-gen-go-grpc ];
+              postPatch = ''
+                echo "Setting up go-modules environment for contract-events-processor..."
+
+                # Generate proto files
+                echo "Generating protobuf code..."
+                mkdir -p go/gen/contract_event_service
+                mkdir -p go/gen/raw_ledger_service
+
+                # Generate contract_event_service protos
+                ${pkgs.protobuf}/bin/protoc \
+                  --proto_path=protos \
+                  --plugin=protoc-gen-go=${pkgs.protoc-gen-go}/bin/protoc-gen-go \
+                  --go_out=go/gen/contract_event_service \
+                  --go_opt=paths=source_relative \
+                  --plugin=protoc-gen-go-grpc=${pkgs.protoc-gen-go-grpc}/bin/protoc-gen-go-grpc \
+                  --go-grpc_out=go/gen/contract_event_service \
+                  --go-grpc_opt=paths=source_relative \
+                  --experimental_allow_proto3_optional \
+                  protos/contract_event_service.proto
+
+                # Generate raw_ledger_service protos
+                ${pkgs.protobuf}/bin/protoc \
+                  --proto_path=protos \
+                  --plugin=protoc-gen-go=${pkgs.protoc-gen-go}/bin/protoc-gen-go \
+                  --go_out=go/gen/raw_ledger_service \
+                  --go_opt=paths=source_relative \
+                  --plugin=protoc-gen-go-grpc=${pkgs.protoc-gen-go-grpc}/bin/protoc-gen-go-grpc \
+                  --go-grpc_out=go/gen/raw_ledger_service \
+                  --go-grpc_opt=paths=source_relative \
+                  protos/raw_ledger_service.proto
+
+                # Create go.mod files for generated packages
+                cat > go/gen/contract_event_service/go.mod <<'EOF'
+module github.com/withObsrvr/contract-events-processor/gen/contract_event_service
+go 1.24
+require (
+  google.golang.org/grpc v1.72.0
+  google.golang.org/protobuf v1.36.6
+)
+EOF
+
+                cat > go/gen/raw_ledger_service/go.mod <<'EOF'
+module github.com/withObsrvr/contract-events-processor/gen/raw_ledger_service
+go 1.24
+require (
+  google.golang.org/grpc v1.72.0
+  google.golang.org/protobuf v1.36.6
+)
+EOF
+
+                echo "Proto generation completed for go-modules"
+              '';
+              preBuild = ''
+                # Move to go directory for vendoring
+                cd go
+              '';
+            };
+
+            postPatch = ''
               echo "Setting up build environment for contract-events-processor..."
 
-              # Generate proto files
+              # Generate proto files (for main build)
               echo "Generating protobuf code..."
               mkdir -p go/gen/contract_event_service
               mkdir -p go/gen/raw_ledger_service
-
-              # Copy raw_ledger_service proto from stellar-live-source
-              if [ -f "../stellar-live-source/protos/raw_ledger_service/raw_ledger_service.proto" ]; then
-                cp ../stellar-live-source/protos/raw_ledger_service/raw_ledger_service.proto protos/raw_ledger_service.proto
-              elif [ -f "protos/raw_ledger_service.proto" ]; then
-                echo "Using existing raw_ledger_service.proto"
-              else
-                echo "ERROR: raw_ledger_service.proto not found"
-                exit 1
-              fi
 
               # Generate contract_event_service protos
               ${pkgs.protobuf}/bin/protoc \
@@ -58,7 +112,7 @@
                 --go-grpc_out=go/gen/contract_event_service \
                 --go-grpc_opt=paths=source_relative \
                 --experimental_allow_proto3_optional \
-                contract_event_service.proto
+                protos/contract_event_service.proto
 
               # Generate raw_ledger_service protos
               ${pkgs.protobuf}/bin/protoc \
@@ -69,26 +123,26 @@
                 --plugin=protoc-gen-go-grpc=${pkgs.protoc-gen-go-grpc}/bin/protoc-gen-go-grpc \
                 --go-grpc_out=go/gen/raw_ledger_service \
                 --go-grpc_opt=paths=source_relative \
-                raw_ledger_service.proto
+                protos/raw_ledger_service.proto
 
               # Create go.mod files for generated packages
-              cat > go/gen/contract_event_service/go.mod <<EOF
-              module github.com/withObsrvr/contract-events-processor/gen/contract_event_service
-              go 1.24
-              require (
-                google.golang.org/grpc v1.72.0
-                google.golang.org/protobuf v1.36.6
-              )
-              EOF
+              cat > go/gen/contract_event_service/go.mod <<'EOF'
+module github.com/withObsrvr/contract-events-processor/gen/contract_event_service
+go 1.24
+require (
+  google.golang.org/grpc v1.72.0
+  google.golang.org/protobuf v1.36.6
+)
+EOF
 
-              cat > go/gen/raw_ledger_service/go.mod <<EOF
-              module github.com/withObsrvr/contract-events-processor/gen/raw_ledger_service
-              go 1.24
-              require (
-                google.golang.org/grpc v1.72.0
-                google.golang.org/protobuf v1.36.6
-              )
-              EOF
+              cat > go/gen/raw_ledger_service/go.mod <<'EOF'
+module github.com/withObsrvr/contract-events-processor/gen/raw_ledger_service
+go 1.24
+require (
+  google.golang.org/grpc v1.72.0
+  google.golang.org/protobuf v1.36.6
+)
+EOF
 
               echo "Proto generation completed"
             '';

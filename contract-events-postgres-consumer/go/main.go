@@ -15,7 +15,7 @@ import (
 	"syscall"
 	"time"
 
-	pb "github.com/withObsrvr/contract-events-processor/gen/contract_event_service"
+	pb "github.com/withObsrvr/contract-events-postgres-consumer/gen/contract_event_service"
 	_ "github.com/lib/pq"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
