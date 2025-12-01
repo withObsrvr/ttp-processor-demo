@@ -5,12 +5,27 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/big"
 	"time"
 
-	"github.com/stellar/go/ingest"
-	"github.com/stellar/go/processors/contract"
-	"github.com/stellar/go/xdr"
+	"github.com/stellar/go-stellar-sdk/ingest"
+	"github.com/stellar/go-stellar-sdk/ingest/sac"
+	"github.com/stellar/go-stellar-sdk/xdr"
+	"github.com/withObsrvr/ttp-processor-demo/ducklake-ingestion-obsrvr-v2/go/internal/processors/contract"
 )
+
+// Wrapper functions to adapt sac package to contract processor signature
+func sacAssetFromContractData(ledgerEntry xdr.LedgerEntry, passphrase string) *xdr.Asset {
+	asset, ok := sac.AssetFromContractData(ledgerEntry, passphrase)
+	if !ok {
+		return nil
+	}
+	return &asset
+}
+
+func sacContractBalanceFromContractData(ledgerEntry xdr.LedgerEntry, passphrase string) ([32]byte, *big.Int, bool) {
+	return sac.ContractBalanceFromContractData(ledgerEntry, passphrase)
+}
 
 // extractContractData extracts contract data state from LedgerCloseMeta
 // Protocol 20+ Soroban smart contract storage
@@ -45,10 +60,10 @@ func (ing *Ingester) extractContractData(lcm *xdr.LedgerCloseMeta) []ContractDat
 	// Get ledger header for stellar/go processor
 	ledgerHeader := lcm.LedgerHeaderHistoryEntry()
 
-	// Create stellar/go contract processor
+	// Create stellar/go contract processor with sac wrapper functions
 	transformer := contract.NewTransformContractDataStruct(
-		contract.AssetFromContractData,
-		contract.ContractBalanceFromContractData,
+		sacAssetFromContractData,
+		sacContractBalanceFromContractData,
 	)
 
 	// Track unique contracts (to avoid duplicates within a ledger)

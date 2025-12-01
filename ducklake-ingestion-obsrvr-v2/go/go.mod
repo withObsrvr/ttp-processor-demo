@@ -1,13 +1,13 @@
 module github.com/withObsrvr/ttp-processor-demo/ducklake-ingestion-obsrvr-v2/go
 
-go 1.24.0
-
-toolchain go1.24.9
+go 1.25
 
 require (
+	github.com/dgryski/go-farm v0.0.0-20240924180020-3414d57e47da
 	github.com/duckdb/duckdb-go/v2 v2.5.3
+	github.com/guregu/null v4.0.0+incompatible
 	github.com/prometheus/client_golang v1.20.5
-	github.com/stellar/go v0.0.0-20251023205731-8cd5ab33bcdd
+	github.com/stellar/go-stellar-sdk v0.0.0-20251125210943-4134368d57d8
 	github.com/withObsrvr/flowctl v0.0.0-00010101000000-000000000000
 	github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/go v0.0.0-00010101000000-000000000000
 	google.golang.org/grpc v1.76.0
@@ -56,7 +56,6 @@ require (
 	github.com/creachadair/jrpc2 v1.2.0 // indirect
 	github.com/creachadair/mds v0.13.4 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
-	github.com/dgryski/go-farm v0.0.0-20240924180020-3414d57e47da // indirect
 	github.com/djherbis/fscache v0.10.1 // indirect
 	github.com/duckdb/duckdb-go-bindings v0.1.23 // indirect
 	github.com/duckdb/duckdb-go-bindings/darwin-amd64 v0.1.23 // indirect
@@ -80,7 +79,6 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.6 // indirect
 	github.com/googleapis/gax-go/v2 v2.14.1 // indirect
-	github.com/guregu/null v4.0.0+incompatible // indirect
 	github.com/hashicorp/golang-lru v1.0.2 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
@@ -98,7 +96,6 @@ require (
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.5.0 // indirect
 	github.com/stellar/go-xdr v0.0.0-20231122183749-b53fb00bcac2 // indirect
-	github.com/stellar/stellar-rpc v0.9.6-0.20251007212330-3095aa4d2c52 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/zeebo/errs v1.4.0 // indirect
@@ -106,7 +103,7 @@ require (
 	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
 	go.opentelemetry.io/contrib/detectors/gcp v1.36.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.60.0 // indirect
-	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.60.0 // indirect
+	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.61.0 // indirect
 	go.opentelemetry.io/otel v1.37.0 // indirect
 	go.opentelemetry.io/otel/metric v1.37.0 // indirect
 	go.opentelemetry.io/otel/sdk v1.37.0 // indirect

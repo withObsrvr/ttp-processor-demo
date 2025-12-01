@@ -6,8 +6,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/stellar/go/ingest"
-	"github.com/stellar/go/xdr"
+	"github.com/stellar/go-stellar-sdk/ingest"
+	"github.com/stellar/go-stellar-sdk/xdr"
 )
 
 // extractTTL extracts time-to-live (TTL) entries from LedgerCloseMeta

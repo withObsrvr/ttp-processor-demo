@@ -7,9 +7,9 @@ import (
 	"log"
 	"time"
 
-	"github.com/stellar/go/amount"
-	"github.com/stellar/go/ingest"
-	"github.com/stellar/go/xdr"
+	"github.com/stellar/go-stellar-sdk/amount"
+	"github.com/stellar/go-stellar-sdk/ingest"
+	"github.com/stellar/go-stellar-sdk/xdr"
 )
 
 // extractAccounts extracts account snapshots from LedgerCloseMeta

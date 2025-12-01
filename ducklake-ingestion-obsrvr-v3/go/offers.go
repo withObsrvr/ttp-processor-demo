@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/stellar/go/ingest"
-	"github.com/stellar/go/xdr"
+	"github.com/stellar/go-stellar-sdk/ingest"
+	"github.com/stellar/go-stellar-sdk/xdr"
 )
 
 // extractOffers extracts offer snapshots from LedgerCloseMeta

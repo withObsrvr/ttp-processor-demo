@@ -6,7 +6,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/stellar/go/xdr"
+	"github.com/stellar/go-stellar-sdk/xdr"
 )
 
 // extractEvictedKeys extracts evicted storage keys from LedgerCloseMeta

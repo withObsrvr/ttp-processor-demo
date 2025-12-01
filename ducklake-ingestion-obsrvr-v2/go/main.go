@@ -19,9 +19,9 @@ import (
 
 	_ "github.com/duckdb/duckdb-go/v2"
 	duckdb "github.com/duckdb/duckdb-go/v2"
-	"github.com/stellar/go/ingest"
-	"github.com/stellar/go/strkey"
-	"github.com/stellar/go/xdr"
+	"github.com/stellar/go-stellar-sdk/ingest"
+	"github.com/stellar/go-stellar-sdk/strkey"
+	"github.com/stellar/go-stellar-sdk/xdr"
 	"github.com/withObsrvr/ttp-processor-demo/ducklake-ingestion-obsrvr-v2/go/era"
 	"github.com/withObsrvr/ttp-processor-demo/ducklake-ingestion-obsrvr-v2/go/manifest"
 	"github.com/withObsrvr/ttp-processor-demo/ducklake-ingestion-obsrvr-v2/go/metrics"

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/stellar/go/xdr"
+	"github.com/stellar/go-stellar-sdk/xdr"
 	pb "github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/go/gen/raw_ledger_service"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
