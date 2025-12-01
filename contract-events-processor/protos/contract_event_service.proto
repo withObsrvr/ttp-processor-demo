@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+package contract_event_service;
+
+option go_package = "github.com/withObsrvr/ttp-processor-demo/contract-events-processor/go/pb;pb";
+
+// EventMeta contains ledger and transaction metadata
+message EventMeta {
+    uint32 ledger_sequence = 1;
+    int64 ledger_closed_at = 2;  // Unix timestamp
+    string tx_hash = 3;
+    bool tx_successful = 4;
+    uint32 tx_index = 5;
+}
+
+// ScValue represents a Soroban ScVal in multiple formats
+message ScValue {
+    string xdr_base64 = 1;        // Raw XDR encoded as base64
+    string json = 2;              // Decoded JSON representation
+}
+
+// ContractEvent represents a contract event with full metadata
+message ContractEvent {
+    EventMeta meta = 1;
+    string contract_id = 2;        // Stellar contract address (C...)
+    string event_type = 3;         // Detected type: transfer, mint, burn, swap, etc.
+
+    repeated ScValue topics = 4;   // Event topics (raw + decoded)
+    ScValue data = 5;              // Event data (raw + decoded)
+
+    bool in_successful_tx = 6;     // True if from successful transaction
+    int32 event_index = 7;         // Index within the transaction
+    optional int32 operation_index = 8;  // If from operation-level event
+}
+
+// GetContractEventsRequest defines filtering for contract events
+message GetContractEventsRequest {
+    uint32 start_ledger = 1;
+    uint32 end_ledger = 2;  // 0 for continuous streaming
+
+    // Optional filters (OR logic within each, AND logic between groups)
+    repeated string contract_ids = 3;     // Filter by specific contract IDs
+    repeated string event_types = 4;      // Filter by event types (transfer, mint, etc.)
+    bool include_failed = 5;              // Include events from failed transactions
+    bool include_diagnostics = 6;         // Include diagnostic events
+}
+
+// ContractEventService streams contract events from Stellar ledgers
+service ContractEventService {
+    // GetContractEvents streams contract events with optional filtering
+    rpc GetContractEvents(GetContractEventsRequest) returns (stream ContractEvent) {}
+}
