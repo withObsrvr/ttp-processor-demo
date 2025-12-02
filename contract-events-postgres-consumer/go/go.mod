@@ -19,4 +19,5 @@ require (
 
 replace github.com/withObsrvr/contract-events-postgres-consumer/gen/contract_event_service => ../gen/contract_event_service
 
-replace github.com/withobsrvr/flowctl => /home/tillman/Documents/flowctl
+// Remove replace directive to use published version from GitHub
+// replace github.com/withobsrvr/flowctl => ../../../../flowctl

@@ -112,4 +112,5 @@ replace github.com/withObsrvr/contract-events-processor/server => ./server
 
 replace github.com/withObsrvr/contract-events-processor/config => ./config
 
-replace github.com/withobsrvr/flowctl => /home/tillman/Documents/flowctl
+// Remove replace directive to use published version from GitHub
+// replace github.com/withobsrvr/flowctl => ../../../../flowctl

@@ -60,7 +60,7 @@ func (s *ContractEventServer) GetContractEvents(
 		zap.Bool("include_failed", req.IncludeFailed))
 
 	// Connect to stellar-live-source
-	conn, err := grpc.NewClient(s.liveSourceAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.Dial(s.liveSourceAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		s.logger.Error("Failed to connect to stellar-live-source", zap.Error(err))
 		return fmt.Errorf("failed to connect to stellar-live-source: %w", err)

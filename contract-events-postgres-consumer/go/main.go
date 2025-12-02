@@ -161,7 +161,7 @@ func main() {
 
 	// Connect to contract events service
 	log.Printf("Connecting to Contract Events service at %s", config.ServiceAddress)
-	conn, err := grpc.NewClient(config.ServiceAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.Dial(config.ServiceAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		log.Fatalf("Failed to connect: %v", err)
 	}
