@@ -3,6 +3,7 @@ package datastore
 import (
 	"context"
 	"io"
+	"time"
 
 	"github.com/stretchr/testify/mock"
 )
@@ -27,6 +28,14 @@ func (m *MockDataStore) GetFileMetadata(ctx context.Context, path string) (map[s
 	return args.Get(0).(map[string]string), args.Error(1)
 }
 
+func (m *MockDataStore) GetFileLastModified(ctx context.Context, filePath string) (time.Time, error) {
+	args := m.Called(ctx, filePath)
+	if args.Get(0) != nil {
+		return args.Get(0).(time.Time), args.Error(1)
+	}
+	return time.Time{}, args.Error(1)
+}
+
 func (m *MockDataStore) GetFile(ctx context.Context, path string) (io.ReadCloser, error) {
 	args := m.Called(ctx, path)
 	closer := (io.ReadCloser)(nil)
@@ -46,6 +55,15 @@ func (m *MockDataStore) PutFileIfNotExists(ctx context.Context, path string, in 
 	return args.Get(0).(bool), args.Error(1)
 }
 
+func (m *MockDataStore) ListFilePaths(ctx context.Context, options ListFileOptions) ([]string, error) {
+	args := m.Called(ctx, options)
+	var keys []string
+	if v := args.Get(0); v != nil {
+		keys = v.([]string)
+	}
+	return keys, args.Error(1)
+}
+
 func (m *MockDataStore) Close() error {
 	args := m.Called()
 	return args.Error(0)
@@ -56,15 +74,5 @@ func (m *MockDataStore) GetSchema() DataStoreSchema {
 	return args.Get(0).(DataStoreSchema)
 }
 
-type MockResumableManager struct {
-	mock.Mock
-}
-
-func (m *MockResumableManager) FindStart(ctx context.Context, start, end uint32) (absentLedger uint32, ok bool, err error) {
-	a := m.Called(ctx, start, end)
-	return a.Get(0).(uint32), a.Get(1).(bool), a.Error(2)
-}
-
 // ensure that the MockClient implements ClientInterface
-var _ ResumableManager = &MockResumableManager{}
 var _ DataStore = &MockDataStore{}

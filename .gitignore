@@ -223,3 +223,7 @@ SDK_MIGRATION.md
 STELLAR_MIGRATION_STATUS.md
 contract-events-postgres-consumer-sdk/go/bin/contract-events-postgres-consumer
 contract-events-processor-sdk/go/bin/contract-events-processor
+MIGRATION_COMPLETE.md
+TTP_PROCESSOR_MIGRATION.md
+
+ttp-processor-sdk/go/bin/ttp-processor
