@@ -6,7 +6,7 @@ toolchain go1.24.9
 
 require (
 	github.com/marcboeker/go-duckdb/v2 v2.4.3
-	github.com/stellar/go v0.0.0-20251023205731-8cd5ab33bcdd
+	github.com/stellar/go-stellar-sdk v0.0.0-20251125210943-4134368d57d8
 	github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/go v0.0.0-00010101000000-000000000000
 	google.golang.org/grpc v1.76.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -94,7 +94,6 @@ require (
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.5.0 // indirect
 	github.com/stellar/go-xdr v0.0.0-20231122183749-b53fb00bcac2 // indirect
-	github.com/stellar/stellar-rpc v0.9.6-0.20251007212330-3095aa4d2c52 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/stretchr/testify v1.11.0 // indirect
 	github.com/zeebo/errs v1.4.0 // indirect

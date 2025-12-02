@@ -2,6 +2,25 @@
 
 This project demonstrates a microservices architecture for processing Token Transfer Protocol (TTP) events from the Stellar blockchain. The system processes ledger data from either a Stellar RPC endpoint or a data lake, extracts TTP events, and makes them available to consumer applications via gRPC.
 
+## Quick Start - Contract Events Pipeline
+
+**Process Stellar contract events to PostgreSQL:**
+
+```bash
+# Start the pipeline
+./run-pipeline.sh
+
+# Monitor processing
+docker logs -f flowctl-pipeline-postgres-consumer
+
+# Stop the pipeline
+./stop-pipeline.sh
+```
+
+See [RUNNING_PIPELINE.md](RUNNING_PIPELINE.md) for complete documentation.
+
+---
+
 ## Acknowledgments
 
 This project is based on the original work from the Stellar Development Foundation's TTP as a Service PoC:

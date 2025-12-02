@@ -13,8 +13,6 @@ import (
 	"github.com/stellar/go/support/collections/heap"
 	"github.com/stellar/go/support/compressxdr"
 	"github.com/stellar/go/support/datastore"
-	"github.com/stellar/go/support/ordered"
-
 	"github.com/stellar/go/xdr"
 )
 
@@ -27,6 +25,7 @@ type ledgerBuffer struct {
 	// Passed through from BufferedStorageBackend to control lifetime of ledgerBuffer instance
 	config    BufferedStorageBackendConfig
 	dataStore datastore.DataStore
+	schema    datastore.DataStoreSchema
 
 	// context used to cancel workers within the ledgerBuffer
 	context context.Context
@@ -58,13 +57,14 @@ func (bsb *BufferedStorageBackend) newLedgerBuffer(ledgerRange Range) (*ledgerBu
 	}
 	// ensure BufferSize does not exceed the total range
 	if ledgerRange.bounded {
-		bsb.config.BufferSize = uint32(ordered.Min(int(bsb.config.BufferSize), int(ledgerRange.to-ledgerRange.from)+1))
+		bsb.config.BufferSize = uint32(min(int(bsb.config.BufferSize), int(ledgerRange.to-ledgerRange.from)+1))
 	}
 	pq := heap.New(less, int(bsb.config.BufferSize))
 
 	ledgerBuffer := &ledgerBuffer{
 		config:              bsb.config,
 		dataStore:           bsb.dataStore,
+		schema:              bsb.schema,
 		taskQueue:           make(chan uint32, bsb.config.BufferSize),
 		ledgerQueue:         make(chan []byte, bsb.config.BufferSize),
 		ledgerPriorityQueue: pq,
@@ -97,11 +97,11 @@ func (bsb *BufferedStorageBackend) newLedgerBuffer(ledgerRange Range) (*ledgerBu
 
 func (lb *ledgerBuffer) pushTaskQueue() {
 	// In bounded mode, don't queue past the end boundary ledger for the specified range.
-	if lb.ledgerRange.bounded && lb.nextTaskLedger > lb.dataStore.GetSchema().GetSequenceNumberEndBoundary(lb.ledgerRange.to) {
+	if lb.ledgerRange.bounded && lb.nextTaskLedger > lb.schema.GetSequenceNumberEndBoundary(lb.ledgerRange.to) {
 		return
 	}
 	lb.taskQueue <- lb.nextTaskLedger
-	lb.nextTaskLedger += lb.dataStore.GetSchema().LedgersPerFile
+	lb.nextTaskLedger += lb.schema.LedgersPerFile
 }
 
 // sleepWithContext returns true upon sleeping without interruption from the context
@@ -169,7 +169,7 @@ func (lb *ledgerBuffer) worker(ctx context.Context) {
 }
 
 func (lb *ledgerBuffer) downloadLedgerObject(ctx context.Context, sequence uint32) ([]byte, error) {
-	objectKey := lb.dataStore.GetSchema().GetObjectKeyFromSequenceNumber(sequence)
+	objectKey := lb.schema.GetObjectKeyFromSequenceNumber(sequence)
 
 	reader, err := lb.dataStore.GetFile(ctx, objectKey)
 	if err != nil {
@@ -204,7 +204,7 @@ func (lb *ledgerBuffer) storeObject(ledgerObject []byte, sequence uint32) {
 	for lb.ledgerPriorityQueue.Len() > 0 && lb.currentLedger == uint32(lb.ledgerPriorityQueue.Peek().startLedger) {
 		item := lb.ledgerPriorityQueue.Pop()
 		lb.ledgerQueue <- item.payload
-		lb.currentLedger += lb.dataStore.GetSchema().LedgersPerFile
+		lb.currentLedger += lb.schema.LedgersPerFile
 	}
 }
 

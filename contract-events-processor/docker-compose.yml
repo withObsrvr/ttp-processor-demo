@@ -1,0 +1,55 @@
+services:
+  # Stellar Live Source - provides raw ledger data
+  stellar-live-source:
+    build:
+      context: ../stellar-live-source
+      dockerfile: Dockerfile
+    ports:
+      - "50052:50052"
+      - "8088:8088"
+    environment:
+      - PORT=50052
+      - HEALTH_PORT=8088
+      - RPC_ENDPOINT=https://soroban-testnet.stellar.org:443
+      - NETWORK_PASSPHRASE=Test SDF Network ; September 2015
+      - START_LEDGER=1000
+    networks:
+      - stellar-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8088/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Contract Events Processor - extracts contract events from ledgers
+  contract-events-processor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "50053:50053"
+      - "8089:8089"
+    environment:
+      - PORT=50053
+      - HEALTH_PORT=8089
+      - LIVE_SOURCE_ADDRESS=stellar-live-source:50052
+      - NETWORK_PASSPHRASE=Test SDF Network ; September 2015
+      # Flowctl integration (optional)
+      - ENABLE_FLOWCTL=${ENABLE_FLOWCTL:-false}
+      - FLOWCTL_ENDPOINT=${FLOWCTL_ENDPOINT:-localhost:8080}
+      - FLOWCTL_HEARTBEAT_INTERVAL=${FLOWCTL_HEARTBEAT_INTERVAL:-10s}
+      - STELLAR_NETWORK=${STELLAR_NETWORK:-testnet}
+    depends_on:
+      stellar-live-source:
+        condition: service_healthy
+    networks:
+      - stellar-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8089/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+networks:
+  stellar-network:
+    driver: bridge

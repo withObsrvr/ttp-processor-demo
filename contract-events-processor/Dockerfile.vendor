@@ -1,0 +1,35 @@
+# Build stage
+FROM golang:1.25-alpine AS builder
+
+# Install protoc and required tools
+RUN apk add --no-cache git make protobuf-dev
+
+# Install protoc-gen-go and protoc-gen-go-grpc
+RUN go install google.golang.org/protobuf/cmd/protoc-gen-go@latest && \
+    go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+
+# Set working directory
+WORKDIR /app
+
+# Copy the entire project
+COPY . .
+
+# Build using vendor directory (no need for replace directive to be accessible)
+RUN cd go && go build -mod=vendor -o ../contract_events_processor .
+
+# Runtime stage
+FROM alpine:latest
+
+# Install ca-certificates for HTTPS connections
+RUN apk --no-cache add ca-certificates
+
+WORKDIR /root/
+
+# Copy the binary from builder
+COPY --from=builder /app/contract_events_processor .
+
+# Expose gRPC port and health port
+EXPOSE 50053 8089
+
+# Run the binary
+CMD ["./contract_events_processor"]

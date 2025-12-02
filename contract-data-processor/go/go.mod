@@ -130,6 +130,7 @@ require (
 // Local replacements for development
 replace (
 	github.com/stellar/go => github.com/stellar/go v0.0.0-20250716214416-01d16bf8185f
-	github.com/withObsrvr/flowctl => /home/tillman/projects/obsrvr/flowctl
-	github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake => /home/tillman/Documents/ttp-processor-demo/stellar-live-source-datalake/go
+	// Remove replace directives to use published versions from GitHub
+	// github.com/withObsrvr/flowctl => ../../../flowctl
+	github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake => ../../stellar-live-source-datalake/go
 )

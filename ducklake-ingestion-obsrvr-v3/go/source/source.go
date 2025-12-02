@@ -7,7 +7,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/stellar/go/xdr"
+	"github.com/stellar/go-stellar-sdk/xdr"
 )
 
 // LedgerResult represents a ledger fetch result with optional error.

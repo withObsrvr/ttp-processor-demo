@@ -17,9 +17,9 @@ import (
 	"time"
 
 	_ "github.com/marcboeker/go-duckdb/v2"
-	"github.com/stellar/go/ingest"
-	"github.com/stellar/go/strkey"
-	"github.com/stellar/go/xdr"
+	"github.com/stellar/go-stellar-sdk/ingest"
+	"github.com/stellar/go-stellar-sdk/strkey"
+	"github.com/stellar/go-stellar-sdk/xdr"
 	pb "github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/go/gen/raw_ledger_service"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"

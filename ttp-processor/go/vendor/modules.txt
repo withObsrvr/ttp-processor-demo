@@ -369,7 +369,7 @@ github.com/segmentio/go-loggly
 ## explicit; go 1.13
 github.com/sirupsen/logrus
 github.com/sirupsen/logrus/hooks/test
-# github.com/stellar/go v0.0.0-20250716214416-01d16bf8185f
+# github.com/stellar/go v0.0.0-20251009202746-7bc49336ce8b
 ## explicit; go 1.23
 github.com/stellar/go/amount
 github.com/stellar/go/asset
@@ -378,6 +378,7 @@ github.com/stellar/go/hash
 github.com/stellar/go/historyarchive
 github.com/stellar/go/ingest
 github.com/stellar/go/ingest/ledgerbackend
+github.com/stellar/go/ingest/sac
 github.com/stellar/go/keypair
 github.com/stellar/go/network
 github.com/stellar/go/processors/token_transfer
@@ -390,19 +391,19 @@ github.com/stellar/go/support/compressxdr
 github.com/stellar/go/support/datastore
 github.com/stellar/go/support/errors
 github.com/stellar/go/support/log
-github.com/stellar/go/support/ordered
 github.com/stellar/go/support/storage
 github.com/stellar/go/support/url
 github.com/stellar/go/toid
+github.com/stellar/go/txnbuild
 github.com/stellar/go/xdr
 # github.com/stellar/go-xdr v0.0.0-20231122183749-b53fb00bcac2
 ## explicit; go 1.12
 github.com/stellar/go-xdr/xdr3
 # github.com/stellar/stellar-live-source v0.0.0-00010101000000-000000000000 => ../../stellar-live-source/go
-## explicit; go 1.23
+## explicit; go 1.24
 github.com/stellar/stellar-live-source/gen/raw_ledger_service
-# github.com/stellar/stellar-rpc v0.9.6-0.20250130160539-be7702aa01ba
-## explicit; go 1.22
+# github.com/stellar/stellar-rpc v0.9.6-0.20251007212330-3095aa4d2c52
+## explicit; go 1.24
 github.com/stellar/stellar-rpc/client
 github.com/stellar/stellar-rpc/protocol
 # github.com/stretchr/objx v0.5.2

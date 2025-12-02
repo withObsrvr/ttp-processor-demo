@@ -1,0 +1,115 @@
+services:
+  # PostgreSQL database with auto-schema initialization
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5433:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=contract_events
+    volumes:
+      # Auto-init schema on first startup
+      - ./config/schema:/docker-entrypoint-initdb.d
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - contract-events-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Stellar Live Source (if not already running)
+  stellar-live-source:
+    build:
+      context: ../stellar-live-source
+      dockerfile: Dockerfile
+    ports:
+      - "50052:50052"
+      - "8088:8088"
+    environment:
+      - PORT=50052
+      - HEALTH_PORT=8088
+      - RPC_ENDPOINT=https://soroban-testnet.stellar.org:443
+      - NETWORK_PASSPHRASE=Test SDF Network ; September 2015
+      - START_LEDGER=1000
+    networks:
+      - contract-events-net
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8088/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    profiles:
+      - with-source  # Only start if --profile with-source is specified
+
+  # Contract Events Processor (if not already running)
+  contract-events-processor:
+    build:
+      context: ../contract-events-processor
+      dockerfile: Dockerfile
+    ports:
+      - "50053:50053"
+      - "8089:8089"
+    environment:
+      - PORT=50053
+      - HEALTH_PORT=8089
+      - LIVE_SOURCE_ADDRESS=stellar-live-source:50052
+      - NETWORK_PASSPHRASE=Test SDF Network ; September 2015
+      # Flowctl integration (optional)
+      - ENABLE_FLOWCTL=${ENABLE_FLOWCTL:-false}
+      - FLOWCTL_ENDPOINT=${FLOWCTL_ENDPOINT:-localhost:8080}
+      - FLOWCTL_HEARTBEAT_INTERVAL=${FLOWCTL_HEARTBEAT_INTERVAL:-10s}
+      - STELLAR_NETWORK=${STELLAR_NETWORK:-testnet}
+    depends_on:
+      stellar-live-source:
+        condition: service_healthy
+    networks:
+      - contract-events-net
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8089/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    profiles:
+      - with-source  # Only start if --profile with-source is specified
+
+  # PostgreSQL Consumer
+  postgres-consumer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8090:8090"  # Health check port
+    environment:
+      - CONTRACT_EVENTS_SERVICE_ADDRESS=contract-events-processor:50053
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=contract_events
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_SSLMODE=disable
+      # Flowctl integration (optional)
+      - ENABLE_FLOWCTL=${ENABLE_FLOWCTL:-false}
+      - FLOWCTL_ENDPOINT=${FLOWCTL_ENDPOINT:-localhost:8080}
+      - FLOWCTL_HEARTBEAT_INTERVAL=${FLOWCTL_HEARTBEAT_INTERVAL:-10s}
+      - HEALTH_PORT=8090
+      - STELLAR_NETWORK=${STELLAR_NETWORK:-testnet}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      contract-events-processor:
+        condition: service_healthy
+    networks:
+      - contract-events-net
+    command: ["1000", "0"]  # Stream continuously from ledger 1000
+    profiles:
+      - with-consumer  # Only start if --profile with-consumer is specified
+
+networks:
+  contract-events-net:
+    driver: bridge
+
+volumes:
+  postgres-data:
