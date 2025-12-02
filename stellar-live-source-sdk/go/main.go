@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -111,7 +112,9 @@ type BackendConfig struct {
 	StellarCoreConfigPath string
 
 	// RPC specific
-	RPCEndpoint string
+	RPCEndpoint       string
+	RPCAuthHeader     string // Authorization header value (e.g., "Api-Key xxx" or "Bearer xxx")
+	RPCCustomHeaders  map[string]string // Additional custom headers
 
 	// Archive specific
 	ArchiveStorageType string
@@ -160,6 +163,21 @@ func loadBackendConfig() (*BackendConfig, error) {
 		config.RPCEndpoint = os.Getenv("RPC_ENDPOINT")
 		if config.RPCEndpoint == "" {
 			return nil, fmt.Errorf("RPC_ENDPOINT required for RPC backend")
+		}
+
+		// Load authorization header
+		config.RPCAuthHeader = os.Getenv("RPC_AUTH_HEADER")
+
+		// Load custom headers from comma-separated key:value pairs
+		// Format: HEADER1:VALUE1,HEADER2:VALUE2
+		if customHeaders := os.Getenv("RPC_CUSTOM_HEADERS"); customHeaders != "" {
+			config.RPCCustomHeaders = make(map[string]string)
+			for _, pair := range strings.Split(customHeaders, ",") {
+				parts := strings.SplitN(strings.TrimSpace(pair), ":", 2)
+				if len(parts) == 2 {
+					config.RPCCustomHeaders[parts[0]] = parts[1]
+				}
+			}
 		}
 
 	case "ARCHIVE":
@@ -224,10 +242,51 @@ func createRPCBackend(config *BackendConfig, logger *zap.Logger) (ledgerbackend.
 		BufferSize:   10,
 	}
 
-	logger.Info("Creating RPC backend",
-		zap.String("rpc_endpoint", config.RPCEndpoint))
+	// Create custom HTTP client with authorization headers if configured
+	if config.RPCAuthHeader != "" || len(config.RPCCustomHeaders) > 0 {
+		transport := &authTransport{
+			base:          http.DefaultTransport,
+			authHeader:    config.RPCAuthHeader,
+			customHeaders: config.RPCCustomHeaders,
+		}
+		options.HttpClient = &http.Client{
+			Transport: transport,
+		}
+
+		logger.Info("Creating RPC backend with authentication",
+			zap.String("rpc_endpoint", config.RPCEndpoint),
+			zap.Bool("has_auth_header", config.RPCAuthHeader != ""),
+			zap.Int("custom_headers_count", len(config.RPCCustomHeaders)))
+	} else {
+		logger.Info("Creating RPC backend",
+			zap.String("rpc_endpoint", config.RPCEndpoint))
+	}
 
 	return ledgerbackend.NewRPCLedgerBackend(options), nil
+}
+
+// authTransport is an http.RoundTripper that adds authorization headers
+type authTransport struct {
+	base          http.RoundTripper
+	authHeader    string
+	customHeaders map[string]string
+}
+
+func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Clone the request to avoid modifying the original
+	reqClone := req.Clone(req.Context())
+
+	// Add authorization header if configured
+	if t.authHeader != "" {
+		reqClone.Header.Set("Authorization", t.authHeader)
+	}
+
+	// Add custom headers
+	for key, value := range t.customHeaders {
+		reqClone.Header.Set(key, value)
+	}
+
+	return t.base.RoundTrip(reqClone)
 }
 
 func createArchiveBackend(config *BackendConfig, logger *zap.Logger) (ledgerbackend.LedgerBackend, error) {
@@ -310,7 +369,7 @@ func produceLedgers(
 	// Create event channel
 	eventCh := make(chan *flowctlv1.Event, 100)
 
-	// Determine start ledger from params
+	// Determine start and end ledger from params
 	startLedger := uint32(1)
 	if startLedgerStr, ok := req.Params["start_ledger"]; ok {
 		if parsed, err := strconv.ParseUint(startLedgerStr, 10, 32); err == nil {
@@ -318,9 +377,25 @@ func produceLedgers(
 		}
 	}
 
-	logger.Info("Starting ledger production",
-		zap.Uint32("start_ledger", startLedger),
-		zap.String("backend_type", config.BackendType))
+	// Optional end ledger for bounded ranges
+	var endLedger *uint32
+	if endLedgerStr, ok := req.Params["end_ledger"]; ok {
+		if parsed, err := strconv.ParseUint(endLedgerStr, 10, 32); err == nil {
+			end := uint32(parsed)
+			endLedger = &end
+		}
+	}
+
+	if endLedger != nil {
+		logger.Info("Starting ledger production",
+			zap.Uint32("start_ledger", startLedger),
+			zap.Uint32("end_ledger", *endLedger),
+			zap.String("backend_type", config.BackendType))
+	} else {
+		logger.Info("Starting ledger production (unbounded)",
+			zap.Uint32("start_ledger", startLedger),
+			zap.String("backend_type", config.BackendType))
+	}
 
 	// Start background goroutine to stream ledgers
 	go func() {
@@ -345,6 +420,13 @@ func produceLedgers(
 
 		// Stream ledgers
 		for seq := startLedger; ; seq++ {
+			// Check if we've reached the end ledger
+			if endLedger != nil && seq > *endLedger {
+				logger.Info("Reached end ledger, stopping stream",
+					zap.Uint32("end_ledger", *endLedger))
+				return
+			}
+
 			select {
 			case <-ctx.Done():
 				logger.Info("Context cancelled, stopping ledger stream",

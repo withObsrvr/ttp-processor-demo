@@ -40,6 +40,10 @@ func main() {
 	config.Endpoint = getEnv("PORT", ":50051")
 	config.HealthPort = parseInt(getEnv("HEALTH_PORT", "8088"))
 
+	// Event types
+	config.InputEventTypes = []string{"stellar.ledger.v1"}
+	config.OutputEventTypes = []string{"stellar.token.transfer.v1"}
+
 	// Configure flowctl integration
 	if strings.ToLower(getEnv("ENABLE_FLOWCTL", "false")) == "true" {
 		config.FlowctlConfig.Enabled = true

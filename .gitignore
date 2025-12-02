@@ -227,3 +227,10 @@ MIGRATION_COMPLETE.md
 TTP_PROCESSOR_MIGRATION.md
 
 ttp-processor-sdk/go/bin/ttp-processor
+SIMPLE-SOLUTION.md
+bin/stellar-live-source-sdk
+ttp-pipeline.yaml
+consumer_app/node/ARCHITECTURE-REALITY.md
+consumer_app/node/RUN-WITH-FLOWCTL.md
+consumer_app/node/SDK-MIGRATION.md
+ttp-processor/go/bin/ttp-processor

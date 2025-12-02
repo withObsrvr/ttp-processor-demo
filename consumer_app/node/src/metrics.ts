@@ -47,6 +47,25 @@ export class ConsumerMetrics {
   /**
    * Get all metrics as an object
    */
+  public getMetrics(): {
+    successCount: number;
+    errorCount: number;
+    totalProcessed: number;
+    lastProcessedLedger: number;
+    averageProcessingTime: number;
+  } {
+    return {
+      successCount: this._successCount,
+      errorCount: this._errorCount,
+      totalProcessed: this._totalProcessed,
+      lastProcessedLedger: this._lastProcessedLedger,
+      averageProcessingTime: this._processingLatency,
+    };
+  }
+
+  /**
+   * Get all metrics as an object (for JSON serialization)
+   */
   public toJSON(): Record<string, any> {
     return {
       success_count: this._successCount,
