@@ -102,6 +102,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-// Remove replace directives to use published versions from GitHub
-// replace github.com/withObsrvr/flowctl-sdk => ../../../../flowctl-sdk
-// replace github.com/withObsrvr/flow-proto => ../../../../flow-proto
+// Use local development versions
+replace github.com/withObsrvr/flowctl-sdk => ../../../flowctl-sdk
+
+replace github.com/withObsrvr/flow-proto => ../../../flow-proto

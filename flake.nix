@@ -19,7 +19,7 @@
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
             # Go development
-            go_1_23
+            go
             gopls
             delve
             gotools
@@ -175,7 +175,7 @@
         # Alternative minimal shell for CI/automated builds
         devShells.ci = pkgs.mkShell {
           buildInputs = with pkgs; [
-            go_1_23
+            go
             protobuf
             protoc-gen-go
             protoc-gen-go-grpc
