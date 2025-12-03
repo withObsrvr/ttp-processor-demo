@@ -57,8 +57,37 @@ func main() {
 		log.Fatal("NETWORK_PASSPHRASE environment variable not set")
 	}
 
+	// Determine network name for metrics
+	networkName := "unknown"
+	if strings.Contains(networkPassphrase, "Public Global") {
+		networkName = "mainnet"
+	} else if strings.Contains(networkPassphrase, "Test SDF") {
+		networkName = "testnet"
+	}
+
 	logger.Info("Token Transfer Processor starting",
-		zap.String("network", networkPassphrase))
+		zap.String("network", networkPassphrase),
+		zap.String("network_name", networkName))
+
+	// Load filter configuration
+	filterConfig := LoadFilterConfig(logger)
+
+	// Load batch configuration
+	batchConfig := LoadBatchConfig(logger)
+
+	// Initialize metrics
+	metricsEnabled := parseBool(getEnv("ENABLE_METRICS", "true"))
+	metrics := NewProcessorMetrics(metricsEnabled)
+	if metricsEnabled {
+		logger.Info("Dimensional metrics enabled",
+			zap.String("network", networkName))
+	}
+
+	// Validate configuration
+	validator := NewConfigValidator(logger)
+	if !validator.ValidateConfiguration(networkPassphrase, filterConfig, batchConfig) {
+		log.Fatal("Configuration validation failed with fatal errors")
+	}
 
 	// Create processor
 	proc, err := processor.New(config)
@@ -68,6 +97,34 @@ func main() {
 
 	// Create stellar token transfer processor
 	ttpProcessor := token_transfer.NewEventsProcessor(networkPassphrase)
+
+	// Track filtering metrics
+	var totalExtracted, totalFiltered, totalPassed int64
+
+	// Track error metrics
+	errorCollector := NewErrorCollector()
+
+	// Create batch processor if enabled
+	var batchProcessor *BatchProcessor
+	if batchConfig.Enabled {
+		batchProcessor = NewBatchProcessor(
+			batchConfig,
+			filterConfig,
+			ttpProcessor,
+			logger,
+			config.ID,
+			config.Version,
+			metrics,
+			networkName,
+		)
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := batchProcessor.Stop(ctx); err != nil {
+				logger.Error("Error stopping batch processor", zap.Error(err))
+			}
+		}()
+	}
 
 	// Register processor handler
 	err = proc.OnProcess(
@@ -84,9 +141,23 @@ func main() {
 				return nil, fmt.Errorf("failed to unmarshal ledger: %w", err)
 			}
 
+			// If batch processing is enabled, add to batch
+			if batchProcessor != nil {
+				return batchProcessor.AddLedger(ctx, &rawLedger)
+			}
+
 			// Decode XDR
 			var ledgerCloseMeta xdr.LedgerCloseMeta
 			if err := xdr.SafeUnmarshal(rawLedger.LedgerCloseMetaXdr, &ledgerCloseMeta); err != nil {
+				errorCollector.AddError(
+					SeverityFatal,
+					"Failed to unmarshal XDR",
+					err,
+					map[string]string{
+						"ledger_sequence": fmt.Sprintf("%d", rawLedger.Sequence),
+						"stage":           "xdr_decode",
+					},
+				)
 				logger.Error("Failed to unmarshal XDR", zap.Error(err), zap.Uint32("sequence", rawLedger.Sequence))
 				return nil, fmt.Errorf("failed to unmarshal XDR: %w", err)
 			}
@@ -94,9 +165,24 @@ func main() {
 			// Extract token transfer events using stellar's processor
 			ttpEvents, err := ttpProcessor.EventsFromLedger(ledgerCloseMeta)
 			if err != nil {
+				errorCollector.AddError(
+					SeverityFatal,
+					"Failed to extract token transfer events",
+					err,
+					map[string]string{
+						"ledger_sequence": fmt.Sprintf("%d", rawLedger.Sequence),
+						"stage":           "event_extraction",
+					},
+				)
 				logger.Error("Failed to extract token transfer events", zap.Error(err), zap.Uint32("sequence", rawLedger.Sequence))
 				return nil, fmt.Errorf("failed to extract events: %w", err)
 			}
+
+			// Record ledger processed
+			metrics.RecordLedgerProcessed(networkName, false)
+
+			// Track total extracted
+			totalExtracted += int64(len(ttpEvents))
 
 			// If no events found, skip
 			if len(ttpEvents) == 0 {
@@ -104,17 +190,48 @@ func main() {
 				return nil, nil
 			}
 
-			logger.Info("Extracted token transfer events",
-				zap.Uint32("sequence", rawLedger.Sequence),
-				zap.Int("count", len(ttpEvents)))
-
-			// Convert stellar token transfer events to our proto format
+			// Apply filtering and convert to proto format
 			convertedEvents := make([]*stellarv1.TokenTransferEvent, 0, len(ttpEvents))
+			filteredCount := 0
 			for _, ttpEvent := range ttpEvents {
+				// Record event extracted
+				eventType := getEventType(ttpEvent)
+				metrics.RecordEventExtracted(eventType, networkName, false)
+
+				// Apply filter
+				if !filterConfig.ShouldIncludeEvent(ttpEvent, logger) {
+					filteredCount++
+					// Determine filter reason
+					filterReason := "event_type"
+					if filterConfig.MinAmount != nil && getEventAmount(ttpEvent) < *filterConfig.MinAmount {
+						filterReason = "min_amount"
+					}
+					metrics.RecordEventFiltered(eventType, filterReason, networkName)
+					continue
+				}
+
+				// Convert to proto
 				converted := convertTokenTransferEvent(ttpEvent)
 				if converted != nil {
 					convertedEvents = append(convertedEvents, converted)
+					metrics.RecordEventEmitted(eventType, networkName, false)
 				}
+			}
+
+			// Update metrics
+			totalFiltered += int64(filteredCount)
+			totalPassed += int64(len(convertedEvents))
+
+			// Log processing stats
+			logger.Info("Processed token transfer events",
+				zap.Uint32("sequence", rawLedger.Sequence),
+				zap.Int("extracted", len(ttpEvents)),
+				zap.Int("filtered_out", filteredCount),
+				zap.Int("passed", len(convertedEvents)))
+
+			// If all events filtered out, return nil
+			if len(convertedEvents) == 0 {
+				return nil, nil
 			}
 
 			// Marshal token transfer events for output
@@ -143,8 +260,11 @@ func main() {
 				outputEvent.Metadata[k] = v
 			}
 			outputEvent.Metadata["ledger_sequence"] = fmt.Sprintf("%d", rawLedger.Sequence)
+			outputEvent.Metadata["events_extracted"] = fmt.Sprintf("%d", len(ttpEvents))
+			outputEvent.Metadata["events_filtered"] = fmt.Sprintf("%d", filteredCount)
 			outputEvent.Metadata["events_count"] = fmt.Sprintf("%d", len(convertedEvents))
 			outputEvent.Metadata["processor_version"] = config.Version
+			outputEvent.Metadata["filter_enabled"] = fmt.Sprintf("%t", filterConfig.Enabled)
 
 			return outputEvent, nil
 		},

@@ -234,3 +234,6 @@ consumer_app/node/ARCHITECTURE-REALITY.md
 consumer_app/node/RUN-WITH-FLOWCTL.md
 consumer_app/node/SDK-MIGRATION.md
 ttp-processor/go/bin/ttp-processor
+ttp-pipeline*.yaml
+CYCLE*.md
+PRODUCTION_READINESS*.md
