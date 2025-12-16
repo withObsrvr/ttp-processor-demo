@@ -1,0 +1,19 @@
+{
+  "name": "duckdb-consumer",
+  "version": "v1.0.0",
+  "type": "sink",
+  "description": "DuckDB sink for writing events to embedded database",
+  "produces": [],
+  "consumes": [
+    "stellar.ledger.v1",
+    "stellar.transaction.v1",
+    "stellar.ttp.event.v1"
+  ],
+  "env_mapping": {
+    "database_path": "DATABASE_PATH",
+    "table_name": "TABLE_NAME",
+    "batch_size": "BATCH_SIZE",
+    "port": "PORT",
+    "health_port": "HEALTH_PORT"
+  }
+}

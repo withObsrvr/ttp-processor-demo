@@ -23,8 +23,9 @@ type AppConfig struct {
 		Environment string `yaml:"environment"`
 	} `yaml:"service"`
 
-	// Source configuration - supports both legacy and new formats
-	Source SourceConfigCompat `yaml:"source"`
+	// Source configuration - supports both single source and multi-source
+	Source  SourceConfigCompat   `yaml:"source"`  // Legacy single source (backward compat)
+	Sources []SourceConfigCompat `yaml:"sources"` // Multi-source mode (new)
 
 	DuckLake struct {
 		CatalogPath           string `yaml:"catalog_path"`
@@ -154,23 +155,45 @@ func LoadAppConfig(path string) (*AppConfig, error) {
 	return &config, nil
 }
 
+// GetSources returns all configured sources, handling backward compatibility.
+// If Sources array is populated, returns it. Otherwise, converts single Source to array.
+func (c *AppConfig) GetSources() []SourceConfigCompat {
+	if len(c.Sources) > 0 {
+		return c.Sources
+	}
+	// Backward compatibility: convert single source to array
+	if c.Source.Mode != "" || c.Source.Endpoint != "" {
+		return []SourceConfigCompat{c.Source}
+	}
+	return nil
+}
+
 // Validate validates the application configuration.
 func (c *AppConfig) Validate() error {
-	srcCfg := c.Source.ToSourceConfig()
-	if err := srcCfg.Validate(); err != nil {
-		return fmt.Errorf("source config: %w", err)
+	sources := c.GetSources()
+	if len(sources) == 0 {
+		return fmt.Errorf("at least one source must be configured (either 'source:' or 'sources:')")
+	}
+
+	// Validate each source
+	for i, src := range sources {
+		srcCfg := src.ToSourceConfig()
+		if err := srcCfg.Validate(); err != nil {
+			return fmt.Errorf("source[%d] config: %w", i, err)
+		}
 	}
 
 	if c.DuckLake.CatalogPath == "" {
 		return fmt.Errorf("ducklake.catalog_path is required")
 	}
-	if c.DuckLake.DataPath == "" {
-		return fmt.Errorf("ducklake.data_path is required")
-	}
+	// data_path is optional: empty = local file catalog, non-empty = DuckLake with remote storage
 	if c.DuckLake.CatalogName == "" {
 		return fmt.Errorf("ducklake.catalog_name is required")
 	}
-	if c.DuckLake.SchemaName == "" {
+
+	// In multi-source mode, schema_name may be set per-source
+	// For backward compatibility, keep this validation for single source mode
+	if len(sources) == 1 && c.DuckLake.SchemaName == "" {
 		return fmt.Errorf("ducklake.schema_name is required")
 	}
 

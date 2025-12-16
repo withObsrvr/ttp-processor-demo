@@ -48,9 +48,10 @@ type Checkpointer struct {
 
 // Config holds checkpoint configuration.
 type Config struct {
-	Enabled  bool   `yaml:"enabled"`
-	Dir      string `yaml:"dir"`
-	Filename string `yaml:"filename"`
+	Enabled       bool   `yaml:"enabled"`
+	Dir           string `yaml:"dir"`
+	Filename      string `yaml:"filename"`
+	AllowBackfill bool   `yaml:"allow_backfill"` // Allow starting before last checkpoint (for backfill jobs)
 }
 
 // ApplyDefaults sets default values for checkpoint config.
@@ -168,13 +169,21 @@ func (c *Checkpointer) Current() *Checkpoint {
 
 // GetResumePoint returns the ledger to resume from.
 // Returns startLedger if no checkpoint exists, or lastCommitted+1 if resuming.
-func (c *Checkpointer) GetResumePoint(configStartLedger uint32) uint32 {
+// If allowBackfill is true, allows starting before the checkpoint (for backfill jobs).
+func (c *Checkpointer) GetResumePoint(configStartLedger uint32, allowBackfill bool) uint32 {
 	if c.current == nil {
 		return configStartLedger
 	}
 
 	// Resume from next ledger after last committed
 	resumePoint := c.current.LastCommittedLedger + 1
+
+	// Allow going backwards if explicitly requested (backfill mode)
+	if allowBackfill && configStartLedger < resumePoint {
+		log.Printf("[checkpoint] BACKFILL MODE: Starting at %d (checkpoint was %d)",
+			configStartLedger, c.current.LastCommittedLedger)
+		return configStartLedger
+	}
 
 	// Don't go backwards if config start is higher
 	if configStartLedger > resumePoint {

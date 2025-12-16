@@ -82,7 +82,6 @@ require (
 	github.com/segmentio/go-loggly v0.5.1-0.20171222203950-eb91657e62b2 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.5.0 // indirect
-	github.com/stellar/go-stellar-sdk v0.0.0-20251125210943-4134368d57d8 // indirect
 	github.com/stellar/go-xdr v0.0.0-20231122183749-b53fb00bcac2 // indirect
 	github.com/stellar/stellar-rpc v0.9.6-0.20251007212330-3095aa4d2c52 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect

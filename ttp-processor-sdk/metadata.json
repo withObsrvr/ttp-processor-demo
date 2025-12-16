@@ -1,0 +1,30 @@
+{
+  "name": "ttp-processor",
+  "version": "v1.0.0",
+  "type": "processor",
+  "description": "Token Transfer Pattern processor with batch processing and event filtering",
+  "produces": [
+    "stellar.token.transfer.v1"
+  ],
+  "consumes": [
+    "stellar.ledger.v1",
+    "stellar.transaction.v1"
+  ],
+  "env_mapping": {
+    "network_passphrase": "NETWORK_PASSPHRASE",
+    "enable_batching": "ENABLE_BATCHING",
+    "batch_size": "BATCH_SIZE",
+    "batch_timeout": "BATCH_TIMEOUT",
+    "batch_parallel": "BATCH_PARALLEL",
+    "batch_concurrency": "BATCH_CONCURRENCY",
+    "filter_event_types": "FILTER_EVENT_TYPES",
+    "exclude_event_types": "EXCLUDE_EVENT_TYPES",
+    "filter_min_amount": "FILTER_MIN_AMOUNT",
+    "filter_contract_ids": "FILTER_CONTRACT_IDS",
+    "port": "PORT",
+    "health_port": "HEALTH_PORT",
+    "enable_flowctl": "ENABLE_FLOWCTL",
+    "flowctl_endpoint": "FLOWCTL_ENDPOINT",
+    "flowctl_heartbeat_interval": "FLOWCTL_HEARTBEAT_INTERVAL"
+  }
+}

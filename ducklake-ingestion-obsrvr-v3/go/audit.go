@@ -102,11 +102,14 @@ func NewAuditLayer(cfg AuditConfig) (*AuditLayer, error) {
 
 // GetResumePoint returns the ledger to resume from based on checkpoint state.
 // Returns startLedger if no checkpoint exists.
+// If allowBackfill is true, allows starting before the checkpoint (for backfill jobs).
 func (al *AuditLayer) GetResumePoint(configStartLedger uint32) uint32 {
 	if al.checkpointer == nil {
 		return configStartLedger
 	}
-	return al.checkpointer.GetResumePoint(configStartLedger)
+	// Get allowBackfill from config
+	allowBackfill := al.config.Checkpoint.AllowBackfill
+	return al.checkpointer.GetResumePoint(configStartLedger, allowBackfill)
 }
 
 // ValidateCheckpoint validates checkpoint compatibility with current config.

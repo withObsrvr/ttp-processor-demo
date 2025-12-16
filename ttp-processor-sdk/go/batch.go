@@ -12,7 +12,7 @@ import (
 	"github.com/stellar/go-stellar-sdk/processors/token_transfer"
 	"github.com/stellar/go-stellar-sdk/xdr"
 	"go.uber.org/zap"
-	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // BatchConfig defines batch processing configuration
@@ -62,7 +62,7 @@ type BatchProcessor struct {
 	logger        *zap.Logger
 	componentID   string
 	version       string
-	metrics       *ProcessorMetrics
+	metrics       *TTPMetrics
 	networkName   string
 
 	mu             sync.Mutex
@@ -81,7 +81,7 @@ func NewBatchProcessor(
 	logger *zap.Logger,
 	componentID string,
 	version string,
-	metrics *ProcessorMetrics,
+	metrics *TTPMetrics,
 	networkName string,
 ) *BatchProcessor {
 	bp := &BatchProcessor{
@@ -205,7 +205,7 @@ func (bp *BatchProcessor) processBatch(ctx context.Context, batch []*stellarv1.R
 		Errors:      NewErrorCollector(),
 	}
 
-	allEvents := make([]*stellarv1.TokenTransferEvent, 0)
+	allEvents := make([]*token_transfer.TokenTransferEvent, 0)
 	var firstLedger, lastLedger uint32
 
 	for i, rawLedger := range batch {
@@ -259,7 +259,7 @@ func (bp *BatchProcessor) processBatch(ctx context.Context, batch []*stellarv1.R
 
 		batchStats.EventsExtracted += len(ttpEvents)
 
-		// Apply filtering and convert
+		// Apply filtering (no conversion needed - use Stellar proto directly)
 		for _, ttpEvent := range ttpEvents {
 			// Record event extracted
 			eventType := getEventType(ttpEvent)
@@ -277,12 +277,9 @@ func (bp *BatchProcessor) processBatch(ctx context.Context, batch []*stellarv1.R
 				continue
 			}
 
-			// Convert to proto
-			converted := convertTokenTransferEvent(ttpEvent)
-			if converted != nil {
-				allEvents = append(allEvents, converted)
-				bp.metrics.RecordEventEmitted(eventType, bp.networkName, true)
-			}
+			// No conversion needed - use Stellar proto directly
+			allEvents = append(allEvents, ttpEvent)
+			bp.metrics.RecordEventEmitted(eventType, bp.networkName, true)
 		}
 	}
 
@@ -312,22 +309,24 @@ func (bp *BatchProcessor) processBatch(ctx context.Context, batch []*stellarv1.R
 		return nil, nil
 	}
 
-	// Marshal events
-	eventsData, err := proto.Marshal(&stellarv1.TokenTransferBatch{
-		Events: allEvents,
-	})
+	// Marshal events batch
+	// Note: We use a simple local batch wrapper since Stellar SDK doesn't provide TokenTransferBatch
+	// Consumers import Stellar SDK and unmarshal individual events
+	eventBatch := &TokenTransferEventBatch{Events: allEvents}
+	eventsData, err := eventBatch.Marshal()
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal batch: %w", err)
 	}
 
-	// Create output event
+	// Create output event with Stellar protos in payload
 	outputEvent := &flowctlv1.Event{
 		Id:                fmt.Sprintf("token-transfers-batch-%d-%d", firstLedger, lastLedger),
-		Type:              "stellar.token.transfer.v1",
-		Payload:           eventsData,
+		Type:              "stellar.token.transfer.batch.v1",
+		Payload:           eventsData, // Batch of Stellar protobuf bytes
 		Metadata:          make(map[string]string),
+		Timestamp:         timestamppb.Now(),
 		SourceComponentId: bp.componentID,
-		ContentType:       "application/protobuf",
+		ContentType:       "application/x-stellar-token-transfer-batch",
 		StellarCursor: &flowctlv1.StellarCursor{
 			LedgerSequence: uint64(lastLedger),
 		},
@@ -377,9 +376,4 @@ type BatchStats struct {
 	StartTime        time.Time
 	ProcessingTime   time.Duration
 	Errors           *ErrorCollector
-}
-
-// Helper function
-func parseBool(s string) bool {
-	return s == "true" || s == "1" || s == "yes"
 }

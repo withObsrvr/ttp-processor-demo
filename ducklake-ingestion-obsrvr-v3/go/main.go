@@ -22,6 +22,7 @@ import (
 	"github.com/stellar/go-stellar-sdk/ingest"
 	"github.com/stellar/go-stellar-sdk/strkey"
 	"github.com/stellar/go-stellar-sdk/xdr"
+	"github.com/withObsrvr/ttp-processor-demo/ducklake-ingestion-obsrvr-v3/go/checkpoint"
 	"github.com/withObsrvr/ttp-processor-demo/ducklake-ingestion-obsrvr-v3/go/era"
 	"github.com/withObsrvr/ttp-processor-demo/ducklake-ingestion-obsrvr-v3/go/manifest"
 	"github.com/withObsrvr/ttp-processor-demo/ducklake-ingestion-obsrvr-v3/go/metrics"
@@ -114,6 +115,105 @@ type Config struct {
 		Level  string `yaml:"level"`
 		Format string `yaml:"format"`
 	} `yaml:"logging"`
+}
+
+// MultiNetworkConfig represents configuration for multi-network concurrent ingestion
+type MultiNetworkConfig struct {
+	Service struct {
+		Name        string `yaml:"name"`
+		Environment string `yaml:"environment"`
+	} `yaml:"service"`
+
+	// Multiple sources (networks) that run concurrently
+	Sources []SourceConfig `yaml:"sources"`
+
+	// Shared DuckLake configuration (all networks write to same catalog, different schemas)
+	DuckLake struct {
+		CatalogPath           string `yaml:"catalog_path"`
+		DataPath              string `yaml:"data_path"` // Can use {network} placeholder
+		MetadataSchema        string `yaml:"metadata_schema"`
+		CatalogName           string `yaml:"catalog_name"`
+		PartitionSize         int    `yaml:"partition_size"`
+		AWSAccessKeyID        string `yaml:"aws_access_key_id"`
+		AWSSecretAccessKey    string `yaml:"aws_secret_access_key"`
+		AWSRegion             string `yaml:"aws_region"`
+		AWSEndpoint           string `yaml:"aws_endpoint"`
+		DataInliningRowLimit  int    `yaml:"data_inlining_row_limit"`
+		BatchSize             int    `yaml:"batch_size"`
+		CommitIntervalSeconds int    `yaml:"commit_interval_seconds"`
+		UseUpsert             bool   `yaml:"use_upsert"`
+		CreateIndexes         bool   `yaml:"create_indexes"`
+	} `yaml:"ducklake"`
+
+	// Shared write queue configuration (serializes writes from all networks)
+	WriteQueue struct {
+		Size            int  `yaml:"size"`
+		TimeoutSeconds  int  `yaml:"timeout_seconds"`
+		LogQueueDepth   bool `yaml:"log_queue_depth"`
+		LogIntervalSecs int  `yaml:"log_interval_seconds"`
+	} `yaml:"write_queue"`
+
+	// Checkpoint configuration (per-network state tracking)
+	Checkpoint struct {
+		Enabled bool   `yaml:"enabled"`
+		Dir     string `yaml:"dir"`
+	} `yaml:"checkpoint"`
+
+	// Manifest & PAS configuration
+	Manifest struct {
+		Enabled bool `yaml:"enabled"`
+	} `yaml:"manifest"`
+
+	PAS struct {
+		Enabled   bool   `yaml:"enabled"`
+		BackupDir string `yaml:"backup_dir"`
+		Strict    bool   `yaml:"strict"`
+	} `yaml:"pas"`
+
+	// Metrics configuration
+	Metrics struct {
+		Enabled bool   `yaml:"enabled"`
+		Address string `yaml:"address"`
+	} `yaml:"metrics"`
+
+	// Logging configuration
+	Logging struct {
+		Level  string `yaml:"level"`
+		Format string `yaml:"format"`
+	} `yaml:"logging"`
+
+	// Advanced settings
+	Advanced struct {
+		MaxConcurrentSources       int `yaml:"max_concurrent_sources"`
+		ShutdownTimeoutSeconds     int `yaml:"shutdown_timeout_seconds"`
+		HealthCheckIntervalSeconds int `yaml:"health_check_interval_seconds"`
+	} `yaml:"advanced"`
+}
+
+// SourceConfig represents configuration for a single network source
+type SourceConfig struct {
+	Name              string `yaml:"name"`    // Network name (testnet, mainnet, futurenet)
+	Enabled           bool   `yaml:"enabled"` // Enable/disable this source
+	Endpoint          string `yaml:"endpoint"`
+	NetworkPassphrase string `yaml:"network_passphrase"`
+	StartLedger       uint32 `yaml:"start_ledger"`
+	EndLedger         uint32 `yaml:"end_ledger"` // 0 = continuous (live mode)
+	LiveMode          bool   `yaml:"live_mode"`
+	PollInterval      int    `yaml:"poll_interval_seconds"`
+
+	// Per-source pipeline settings
+	Pipeline struct {
+		BatchSize int `yaml:"batch_size"` // Ledgers per batch
+		Pool      struct {
+			Workers   int `yaml:"workers"`    // Worker threads for this source
+			QueueSize int `yaml:"queue_size"` // Queue size for this source
+		} `yaml:"pool"`
+	} `yaml:"pipeline"`
+
+	// Per-source checkpoint settings (optional override)
+	Checkpoint *struct {
+		AllowBackfill bool `yaml:"allow_backfill"` // Allow backfill mode for this source
+	} `yaml:"checkpoint,omitempty"`
 }
 
 // LedgerData represents the ledger data we extract
@@ -936,15 +1036,23 @@ type Ingester struct {
 	// Cycle 3: Prometheus metrics and era config
 	promMetrics *metrics.Metrics
 	eraConfig   *era.Config
+
+	// Multi-network mode (Week 2, Day 3): Optional write queue integration
+	// When set, flush() submits batches to the shared write queue instead of direct DuckDB writes
+	writeQueue  *WriteQueue // Optional: only set in multi-network mode
+	networkName string      // Optional: network name for multi-network mode (testnet, mainnet, futurenet)
+	schema      string      // Optional: schema name for multi-network mode (testnet., mainnet., futurenet.)
 }
 
 func main() {
 	configPath := flag.String("config", "config/testnet.yaml", "Path to config file")
 	startLedger := flag.Uint("start-ledger", 0, "Override start ledger")
 	useLegacyConfig := flag.Bool("legacy-config", false, "Use legacy Config format (gRPC only, no audit/metrics)")
+	multiNetwork := flag.Bool("multi-network", false, "Enable multi-network concurrent ingestion mode")
+	queryPort := flag.String("query-port", ":8080", "HTTP Query API port (default :8080, empty to disable)")
 	flag.Parse()
 
-	log.Println("DuckLake Ingestion Processor v2 - Bronze Copier")
+	log.Println("DuckLake Ingestion Processor v3 - Bronze Copier")
 
 	// Setup graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
@@ -955,25 +1063,37 @@ func main() {
 
 	errChan := make(chan error, 1)
 
-	if !*useLegacyConfig {
+	// Multi-network mode (new v3 feature)
+	if *multiNetwork {
+		log.Println("=== MULTI-NETWORK MODE ===")
+		go func() {
+			errChan <- runMultiNetworkPipelines(ctx, *configPath, *queryPort)
+		}()
+	} else if !*useLegacyConfig {
 		// Use enhanced AppConfig format (supports datastore mode, audit, metrics)
 		appConfig, err := LoadAppConfig(*configPath)
 		if err != nil {
 			log.Fatalf("Failed to load app config: %v", err)
 		}
 
-		// Override start ledger if provided
-		if *startLedger > 0 {
-			appConfig.Source.StartLedger = uint32(*startLedger)
-		}
-
-		// Validate config
+		// Validate config first to ensure sources are valid
 		if err := appConfig.Validate(); err != nil {
 			log.Fatalf("Invalid config: %v", err)
 		}
 
-		srcMode := appConfig.Source.ToSourceConfig().Mode
-		log.Printf("Starting ingestion (source mode: %s) from ledger %d", srcMode, appConfig.Source.StartLedger)
+		// Get first source (multi-source support via GetSources())
+		sources := appConfig.GetSources()
+		if len(sources) == 0 {
+			log.Fatalf("No sources configured in config file")
+		}
+
+		// Override start ledger if provided
+		if *startLedger > 0 {
+			sources[0].StartLedger = uint32(*startLedger)
+		}
+
+		srcMode := sources[0].ToSourceConfig().Mode
+		log.Printf("Starting ingestion (source mode: %s) from ledger %d", srcMode, sources[0].StartLedger)
 
 		go func() {
 			ingester, err := NewIngesterFromAppConfig(appConfig)
@@ -1071,6 +1191,270 @@ func loadConfig(path string) (*Config, error) {
 	}
 
 	return &config, nil
+}
+
+// loadMultiNetworkConfig loads multi-network configuration from YAML file
+func loadMultiNetworkConfig(path string) (*MultiNetworkConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config: %w", err)
+	}
+
+	// Expand environment variables
+	expanded := os.ExpandEnv(string(data))
+
+	var config MultiNetworkConfig
+	if err := yaml.Unmarshal([]byte(expanded), &config); err != nil {
+		return nil, fmt.Errorf("failed to parse config: %w", err)
+	}
+
+	// Apply defaults
+	if config.WriteQueue.Size == 0 {
+		config.WriteQueue.Size = 1000
+	}
+	if config.WriteQueue.TimeoutSeconds == 0 {
+		config.WriteQueue.TimeoutSeconds = 60
+	}
+	if config.WriteQueue.LogIntervalSecs == 0 {
+		config.WriteQueue.LogIntervalSecs = 30
+	}
+	if config.DuckLake.PartitionSize == 0 {
+		config.DuckLake.PartitionSize = 64000
+	}
+	if config.DuckLake.BatchSize == 0 {
+		config.DuckLake.BatchSize = 50
+	}
+	if config.DuckLake.CommitIntervalSeconds == 0 {
+		config.DuckLake.CommitIntervalSeconds = 30
+	}
+	if config.Advanced.MaxConcurrentSources == 0 {
+		config.Advanced.MaxConcurrentSources = 3
+	}
+	if config.Advanced.ShutdownTimeoutSeconds == 0 {
+		config.Advanced.ShutdownTimeoutSeconds = 60
+	}
+
+	// Apply per-source defaults
+	for i := range config.Sources {
+		if config.Sources[i].Pipeline.BatchSize == 0 {
+			config.Sources[i].Pipeline.BatchSize = 10
+		}
+		if config.Sources[i].Pipeline.Pool.Workers == 0 {
+			config.Sources[i].Pipeline.Pool.Workers = 2
+		}
+		if config.Sources[i].Pipeline.Pool.QueueSize == 0 {
+			config.Sources[i].Pipeline.Pool.QueueSize = 100
+		}
+		if config.Sources[i].PollInterval == 0 {
+			config.Sources[i].PollInterval = 5
+		}
+	}
+
+	return &config, nil
+}
+
+// validateMultiNetworkConfig validates multi-network configuration
+func validateMultiNetworkConfig(config *MultiNetworkConfig) error {
+	// Validate at least one source is enabled
+	enabledCount := 0
+	for _, source := range config.Sources {
+		if source.Enabled {
+			enabledCount++
+		}
+	}
+	if enabledCount == 0 {
+		return fmt.Errorf("no sources enabled in configuration")
+	}
+
+	// Validate source names are unique
+	names := make(map[string]bool)
+	for _, source := range config.Sources {
+		if !source.Enabled {
+			continue
+		}
+		if names[source.Name] {
+			return fmt.Errorf("duplicate source name: %s", source.Name)
+		}
+		names[source.Name] = true
+
+		// Validate source config
+		if source.Endpoint == "" {
+			return fmt.Errorf("source %s: endpoint is required", source.Name)
+		}
+		if source.NetworkPassphrase == "" {
+			return fmt.Errorf("source %s: network_passphrase is required", source.Name)
+		}
+		if source.EndLedger > 0 && source.EndLedger <= source.StartLedger {
+			return fmt.Errorf("source %s: end_ledger (%d) must be greater than start_ledger (%d)",
+				source.Name, source.EndLedger, source.StartLedger)
+		}
+	}
+
+	// Validate DuckLake config
+	if config.DuckLake.CatalogPath == "" {
+		return fmt.Errorf("ducklake.catalog_path is required")
+	}
+	// data_path is optional: empty = local file catalog, non-empty = DuckLake with remote storage
+
+	return nil
+}
+
+// getCheckpointConfigForNetwork creates a checkpoint config for a specific network
+// This generates per-network checkpoint filenames (e.g., checkpoint-testnet.json)
+func getCheckpointConfigForNetwork(globalCheckpoint *struct {
+	Enabled bool   `yaml:"enabled"`
+	Dir     string `yaml:"dir"`
+}, source *SourceConfig) checkpoint.Config {
+	cfg := checkpoint.Config{
+		Enabled: false,
+	}
+
+	if globalCheckpoint != nil && globalCheckpoint.Enabled {
+		cfg.Enabled = true
+		cfg.Dir = globalCheckpoint.Dir
+		// Generate per-network filename
+		cfg.Filename = fmt.Sprintf("checkpoint-%s.json", source.Name)
+
+		// Check for per-source checkpoint override
+		if source.Checkpoint != nil {
+			cfg.AllowBackfill = source.Checkpoint.AllowBackfill
+		}
+	}
+
+	return cfg
+}
+
+// runMultiNetworkPipelines orchestrates concurrent ingestion from multiple networks
+// Each network runs its own pipeline(s), all feeding a shared write queue
+func runMultiNetworkPipelines(ctx context.Context, configPath, queryPort string) error {
+	log.Println("[MULTI-NETWORK] Starting multi-network ingestion orchestrator...")
+
+	// Load app config (supports both single source and multi-source)
+	appConfig, err := LoadAppConfig(configPath)
+	if err != nil {
+		return fmt.Errorf("failed to load app config: %w", err)
+	}
+
+	// Validate config
+	if err := appConfig.Validate(); err != nil {
+		return fmt.Errorf("config validation failed: %w", err)
+	}
+
+	// Create multi-source orchestrator
+	orchestrator, err := NewMultiSourceOrchestrator(appConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create multi-source orchestrator: %w", err)
+	}
+
+	// Configure HTTP Query API (if port specified)
+	orchestrator.SetQueryPort(queryPort)
+
+	// Start all source runners and write worker
+	if err := orchestrator.Start(); err != nil {
+		return fmt.Errorf("failed to start orchestrator: %w", err)
+	}
+
+	// Wait for cancellation
+	<-ctx.Done()
+
+	// Graceful shutdown
+	log.Println("[MULTI-NETWORK] Shutting down orchestrator...")
+	if err := orchestrator.Stop(); err != nil {
+		return fmt.Errorf("error during shutdown: %w", err)
+	}
+
+	return nil
+}
+
+// runNetworkPipeline runs a single network's pipeline with multiple workers
+// All workers feed batches to the shared write queue
+func runNetworkPipeline(ctx context.Context, source SourceConfig, config *MultiNetworkConfig, writeQueue *WriteQueue) error {
+	networkName := strings.ToUpper(source.Name)
+	numWorkers := source.Pipeline.Pool.Workers
+
+	log.Printf("[%s] Initializing pipeline with %d workers", networkName, numWorkers)
+
+	// For now, we'll implement a simplified version
+	// Full implementation will come in next iteration with proper Ingester integration
+
+	// Create single-network Config from SourceConfig
+	singleConfig := &Config{}
+	singleConfig.Service = config.Service
+
+	// Set source config
+	singleConfig.Source.Endpoint = source.Endpoint
+	singleConfig.Source.NetworkPassphrase = source.NetworkPassphrase
+	singleConfig.Source.StartLedger = source.StartLedger
+	singleConfig.Source.EndLedger = source.EndLedger
+	singleConfig.Source.LiveMode = source.LiveMode
+	singleConfig.Source.PollInterval = source.PollInterval
+
+	// Set DuckLake config from multi-network config
+	singleConfig.DuckLake.CatalogPath = config.DuckLake.CatalogPath
+	singleConfig.DuckLake.DataPath = strings.ReplaceAll(config.DuckLake.DataPath, "{network}", source.Name)
+	singleConfig.DuckLake.MetadataSchema = config.DuckLake.MetadataSchema
+	singleConfig.DuckLake.CatalogName = config.DuckLake.CatalogName
+	singleConfig.DuckLake.SchemaName = source.Name // Per-network schema isolation
+	singleConfig.DuckLake.PartitionSize = config.DuckLake.PartitionSize
+	singleConfig.DuckLake.AWSAccessKeyID = config.DuckLake.AWSAccessKeyID
+	singleConfig.DuckLake.AWSSecretAccessKey = config.DuckLake.AWSSecretAccessKey
+	singleConfig.DuckLake.AWSRegion = config.DuckLake.AWSRegion
+	singleConfig.DuckLake.AWSEndpoint = config.DuckLake.AWSEndpoint
+	singleConfig.DuckLake.DataInliningRowLimit = config.DuckLake.DataInliningRowLimit
+	singleConfig.DuckLake.BatchSize = source.Pipeline.BatchSize // From source pipeline config
+	singleConfig.DuckLake.CommitIntervalSeconds = config.DuckLake.CommitIntervalSeconds
+	singleConfig.DuckLake.UseUpsert = config.DuckLake.UseUpsert
+	singleConfig.DuckLake.CreateIndexes = config.DuckLake.CreateIndexes
+	singleConfig.DuckLake.NumWorkers = numWorkers // From source pipeline config
+
+	// Set logging config
+	singleConfig.Logging = config.Logging
+
+	log.Printf("[%s] Pipeline configuration:", networkName)
+	log.Printf("  Endpoint: %s", source.Endpoint)
+	log.Printf("  Ledger range: %d - %d", source.StartLedger, source.EndLedger)
+	log.Printf("  Workers: %d", numWorkers)
+	log.Printf("  Batch size: %d", source.Pipeline.BatchSize)
+
+	// Architecture Decision (Day 3):
+	// For the initial multi-network implementation, we use a simpler architecture:
+	// - Each network runs with a single sequential Ingester (no parallel workers per network)
+	// - Concurrency comes from multiple networks running simultaneously
+	// - All networks feed the shared write queue which serializes writes
+	//
+	// Future optimization (could-have): Add parallel workers per network for faster catchup
+	// (e.g., mainnet backfill could use 16 workers, each submitting to queue)
+
+	// For now: Simple sequential processing per network
+	// This validates the queue architecture before adding per-network parallelism
+	if numWorkers > 1 {
+		log.Printf("[%s] ⚠️  Warning: Multiple workers per network not yet supported in multi-network mode", networkName)
+		log.Printf("[%s] ⚠️  Using single worker for now (parallel workers = future enhancement)", networkName)
+	}
+
+	// Create ingester for this network
+	log.Printf("[%s] Creating Ingester...", networkName)
+	ingester, err := NewIngester(singleConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create ingester: %w", err)
+	}
+	defer ingester.Close()
+
+	// Set multi-network fields on ingester to enable write queue mode
+	ingester.writeQueue = writeQueue
+	ingester.networkName = source.Name
+	ingester.schema = source.Name // Schema name matches network name (testnet, mainnet, etc.)
+
+	log.Printf("[%s] ✓ Ingester created with write queue integration", networkName)
+	log.Printf("[%s] Starting pipeline (ledgers %d-%d)...", networkName, source.StartLedger, source.EndLedger)
+
+	// Start ingester processing
+	if err := ingester.Start(ctx); err != nil {
+		return fmt.Errorf("ingester failed: %w", err)
+	}
+
+	log.Printf("[%s] ✅ Pipeline completed successfully", networkName)
+	return nil
 }
 
 // runParallelWorkers orchestrates multiple workers processing different ledger ranges
@@ -1296,19 +1680,26 @@ func NewIngester(config *Config) (*Ingester, error) {
 // NewIngesterFromAppConfig creates a new ingester from enhanced AppConfig.
 // This supports both datastore (Galexie archives) and gRPC source modes.
 func NewIngesterFromAppConfig(appConfig *AppConfig) (*Ingester, error) {
+	// Get first source (multi-source support via GetSources())
+	sources := appConfig.GetSources()
+	if len(sources) == 0 {
+		return nil, fmt.Errorf("no sources configured")
+	}
+	firstSource := sources[0]
+
 	// Convert AppConfig to legacy Config for compatibility
 	config := &Config{}
 	config.Service.Name = appConfig.Service.Name
 	config.Service.Environment = appConfig.Service.Environment
-	config.Source.NetworkPassphrase = appConfig.Source.NetworkPassphrase
-	config.Source.StartLedger = appConfig.Source.StartLedger
-	config.Source.EndLedger = appConfig.Source.EndLedger
+	config.Source.NetworkPassphrase = firstSource.NetworkPassphrase
+	config.Source.StartLedger = firstSource.StartLedger
+	config.Source.EndLedger = firstSource.EndLedger
 	config.DuckLake = appConfig.DuckLake
 	config.Logging = appConfig.Logging
 
 	// Handle legacy endpoint field
-	if appConfig.Source.Endpoint != "" {
-		config.Source.Endpoint = appConfig.Source.Endpoint
+	if firstSource.Endpoint != "" {
+		config.Source.Endpoint = firstSource.Endpoint
 	}
 
 	ing := &Ingester{
@@ -1342,8 +1733,8 @@ func NewIngesterFromAppConfig(appConfig *AppConfig) (*Ingester, error) {
 		}()
 	}
 
-	// Create ledger source from AppConfig
-	srcConfig := appConfig.Source.ToSourceConfig()
+	// Create ledger source from AppConfig (using first source)
+	srcConfig := firstSource.ToSourceConfig()
 	log.Printf("[source] Creating source in mode: %s", srcConfig.Mode)
 
 	ledgerSrc, err := source.NewLedgerSource(srcConfig)
@@ -3497,6 +3888,12 @@ func (ing *Ingester) flush(ctx context.Context) error {
 		return nil
 	}
 
+	// Multi-network mode: Delegate to queue-based flush
+	if ing.writeQueue != nil {
+		return ing.flushToQueue(ctx)
+	}
+
+	// Single-network mode: Direct DuckDB writes (original behavior)
 	numLedgers := len(ing.buffers.ledgers)
 	numTransactions := len(ing.buffers.transactions)
 	numOperations := len(ing.buffers.operations)
@@ -4694,6 +5091,94 @@ func (ing *Ingester) flush(ctx context.Context) error {
 	ing.buffers.accountSigners = ing.buffers.accountSigners[:0]       // Cycle 20
 	ing.lastCommit = time.Now()
 
+	return nil
+}
+
+// flushToQueue submits buffered data to the shared write queue (multi-network mode)
+// This replaces direct DuckDB writes with queue-based serialization to prevent catalog locks
+func (ing *Ingester) flushToQueue(ctx context.Context) error {
+	numLedgers := len(ing.buffers.ledgers)
+	numTransactions := len(ing.buffers.transactions)
+	numOperations := len(ing.buffers.operations)
+
+	log.Printf("[%s] [FLUSH-QUEUE] Preparing batch for queue submission: %d ledgers, %d transactions, %d operations",
+		ing.networkName, numLedgers, numTransactions, numOperations)
+	flushStart := time.Now()
+
+	// Run quality checks (same as direct flush)
+	log.Printf("[%s] [QUALITY] Running quality checks on batch data...", ing.networkName)
+	qualityCheckStart := time.Now()
+	qualityResults := ing.RunAllQualityChecks()
+	log.Printf("[%s] [QUALITY] Completed %d quality checks in %v", ing.networkName, len(qualityResults), time.Since(qualityCheckStart))
+
+	// Log any failed checks as warnings (non-blocking)
+	for _, result := range qualityResults {
+		if !result.Passed {
+			log.Printf("[%s] ⚠️  [QUALITY] FAILED: %s - %s", ing.networkName, result.CheckName, result.Details)
+		}
+	}
+
+	// Calculate batch ledger range from buffer
+	var batchStartLedger, batchEndLedger uint32
+	if len(ing.buffers.ledgers) > 0 {
+		batchStartLedger = ing.buffers.ledgers[0].Sequence
+		batchEndLedger = ing.buffers.ledgers[len(ing.buffers.ledgers)-1].Sequence
+	}
+
+	// Convert WorkerBuffers to WriteBatch
+	batch := NewWriteBatchFromBuffers(
+		&ing.buffers,
+		ing.networkName,
+		ing.schema,
+		batchStartLedger,
+		batchEndLedger,
+		qualityResults,
+	)
+
+	// Submit to write queue
+	log.Printf("[%s] [FLUSH-QUEUE] Submitting batch to write queue (ledgers %d-%d)...",
+		ing.networkName, batchStartLedger, batchEndLedger)
+	if err := ing.writeQueue.Submit(batch); err != nil {
+		return fmt.Errorf("failed to submit batch to write queue: %w", err)
+	}
+
+	// Wait for async write result
+	log.Printf("[%s] [FLUSH-QUEUE] Waiting for write confirmation...", ing.networkName)
+	select {
+	case err := <-batch.ResultChan:
+		if err != nil {
+			return fmt.Errorf("write queue batch failed: %w", err)
+		}
+		log.Printf("[%s] [FLUSH-QUEUE] ✅ Write confirmed by queue", ing.networkName)
+	case <-ctx.Done():
+		return fmt.Errorf("context cancelled while waiting for write result")
+	case <-time.After(120 * time.Second): // Timeout for safety
+		return fmt.Errorf("timeout waiting for write queue result")
+	}
+
+	// Clear buffers after successful write
+	ing.buffers.ledgers = ing.buffers.ledgers[:0]
+	ing.buffers.transactions = ing.buffers.transactions[:0]
+	ing.buffers.operations = ing.buffers.operations[:0]
+	ing.buffers.balances = ing.buffers.balances[:0]
+	ing.buffers.effects = ing.buffers.effects[:0]
+	ing.buffers.trades = ing.buffers.trades[:0]
+	ing.buffers.accounts = ing.buffers.accounts[:0]
+	ing.buffers.trustlines = ing.buffers.trustlines[:0]
+	ing.buffers.offers = ing.buffers.offers[:0]
+	ing.buffers.claimableBalances = ing.buffers.claimableBalances[:0]
+	ing.buffers.liquidityPools = ing.buffers.liquidityPools[:0]
+	ing.buffers.contractEvents = ing.buffers.contractEvents[:0]
+	ing.buffers.contractData = ing.buffers.contractData[:0]
+	ing.buffers.contractCode = ing.buffers.contractCode[:0]
+	ing.buffers.configSettings = ing.buffers.configSettings[:0]
+	ing.buffers.ttl = ing.buffers.ttl[:0]
+	ing.buffers.evictedKeys = ing.buffers.evictedKeys[:0]
+	ing.buffers.restoredKeys = ing.buffers.restoredKeys[:0]
+	ing.buffers.accountSigners = ing.buffers.accountSigners[:0]
+	ing.lastCommit = time.Now()
+
+	log.Printf("[%s] [FLUSH-QUEUE] ✅ Batch flushed successfully in %v", ing.networkName, time.Since(flushStart))
 	return nil
 }
 

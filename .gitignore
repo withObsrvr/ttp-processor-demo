@@ -237,3 +237,17 @@ ttp-processor/go/bin/ttp-processor
 ttp-pipeline*.yaml
 CYCLE*.md
 PRODUCTION_READINESS*.md
+postgres-ducklake-flusher/config.yaml
+ducklake-ingestion-obsrvr-v3/bin/ducklake-ingestion-obsrvr-v3
+ducklake-ingestion-obsrvr-v3/go/bin/ducklake-ingestion-obsrvr-v3
+ducklake-ingestion-obsrvr-v3/go/bin/query_cli
+ducklake-ingestion-obsrvr-v3/go/go
+stellar-postgres-ingester/bin/stellar-postgres-ingester
+ttp-processor-sdk/go/bin/ttp-processor.dynamic
+bin/
+ttp-processor-sdk/bin/ttp-processor
+stellar-query-api/config.yaml
+silver-transformer/silver-transformer
+ducklake-ingestion-obsrvr-v3
+TROUBLESHOOING.md
+config.yaml.secret.example

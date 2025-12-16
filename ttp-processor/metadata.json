@@ -1,0 +1,18 @@
+{
+  "name": "ttp-processor",
+  "version": "v1.0.0",
+  "type": "processor",
+  "description": "Token Transfer Pattern processor for Stellar events",
+  "produces": [
+    "stellar.ttp.event.v1"
+  ],
+  "consumes": [
+    "stellar.ledger.v1",
+    "stellar.transaction.v1"
+  ],
+  "env_mapping": {
+    "network_passphrase": "NETWORK_PASSPHRASE",
+    "port": "PORT",
+    "health_port": "HEALTH_PORT"
+  }
+}

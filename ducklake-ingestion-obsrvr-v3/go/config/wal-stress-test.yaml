@@ -1,0 +1,21 @@
+# Larger test configuration for WAL mode concurrent queries
+# Testing with 2000 ledgers to validate concurrent query performance
+
+sources:
+  - mode: "grpc"
+    grpc:
+      endpoint: "localhost:50051"
+    network_passphrase: "Test SDF Network ; September 2015"
+    start_ledger: 1000
+    end_ledger: 3000  # 2000 ledgers for stress test
+
+ducklake:
+  catalog_path: "catalogs/wal-stress-test.duckdb"
+  catalog_name: "wal_stress_test"
+  schema_name: "testnet"
+  batch_size: 50
+  commit_interval_seconds: 5
+
+era:
+  era_id: "test-era-stress-001"
+  version_label: "v1.0.0-wal-stress-test"

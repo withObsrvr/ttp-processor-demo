@@ -5,8 +5,8 @@ go 1.25
 toolchain go1.25.4
 
 require (
-	github.com/stellar/go-stellar-sdk v0.0.0-20251125210943-4134368d57d8
-	github.com/withObsrvr/flow-proto v0.0.0
+	github.com/stellar/go-stellar-sdk v0.0.0-20251205214652-e0b536a526bc
+	github.com/withObsrvr/flow-proto v0.1.2
 	github.com/withObsrvr/flowctl-sdk v0.0.0
 	go.uber.org/zap v1.27.0
 	google.golang.org/protobuf v1.36.6

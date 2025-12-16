@@ -1,0 +1,169 @@
+version: '3.8'
+
+services:
+  # ============================================================================
+  # PostgreSQL Hot Buffer - Primary database for staging recent data
+  # ============================================================================
+  postgres-hot-buffer:
+    image: postgres:16-alpine
+    container_name: postgres-hot-buffer
+    ports:
+      - "5434:5432"  # Non-standard port to avoid conflicts
+    environment:
+      POSTGRES_DB: stellar_hot
+      POSTGRES_USER: stellar
+      POSTGRES_PASSWORD: stellar_dev_password
+      # Performance tuning for hot buffer workload
+      POSTGRES_SHARED_BUFFERS: "256MB"
+      POSTGRES_WORK_MEM: "16MB"
+      POSTGRES_MAINTENANCE_WORK_MEM: "64MB"
+      POSTGRES_EFFECTIVE_CACHE_SIZE: "1GB"
+    volumes:
+      # Persistent data
+      - postgres-hot-buffer-data:/var/lib/postgresql/data
+    networks:
+      - stellar-hot-cold
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stellar -d stellar_hot"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    # DEVELOPMENT-ONLY performance flags (UNSAFE for production!)
+    command: >
+      postgres
+      -c shared_buffers=256MB
+      -c work_mem=16MB
+      -c maintenance_work_mem=64MB
+      -c effective_cache_size=1GB
+      -c checkpoint_completion_target=0.9
+      -c wal_buffers=16MB
+      -c default_statistics_target=100
+      -c random_page_cost=1.1
+      -c effective_io_concurrency=200
+      -c min_wal_size=1GB
+      -c max_wal_size=4GB
+      -c max_worker_processes=4
+      -c max_parallel_workers_per_gather=2
+      -c max_parallel_workers=4
+      -c fsync=off
+      -c synchronous_commit=off
+      -c full_page_writes=off
+    # WARNING: fsync=off, synchronous_commit=off, full_page_writes=off
+    # These settings provide 2-3x write performance but risk data loss on crash.
+    # Safe for hot buffer (ephemeral staging) but NEVER use in production for source-of-truth data!
+
+  # ============================================================================
+  # PgBouncer - Connection pooling for hot buffer
+  # ============================================================================
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    container_name: pgbouncer-hot-buffer
+    ports:
+      - "6432:5432"
+    environment:
+      DATABASE_URL: "postgres://stellar:stellar_dev_password@postgres-hot-buffer:5432/stellar_hot"
+      POOL_MODE: transaction
+      DEFAULT_POOL_SIZE: 20
+      MAX_CLIENT_CONN: 100
+      SERVER_LIFETIME: 3600
+      SERVER_IDLE_TIMEOUT: 600
+    depends_on:
+      postgres-hot-buffer:
+        condition: service_healthy
+    networks:
+      - stellar-hot-cold
+    healthcheck:
+      test: ["CMD-SHELL", "psql -h localhost -U stellar -d stellar_hot -c 'SELECT 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ============================================================================
+  # Adminer - Web-based database inspection UI
+  # ============================================================================
+  adminer:
+    image: adminer:latest
+    container_name: adminer-hot-buffer
+    ports:
+      - "8081:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres-hot-buffer
+      ADMINER_DESIGN: pepa-linha-dark
+    depends_on:
+      - postgres-hot-buffer
+    networks:
+      - stellar-hot-cold
+
+networks:
+  stellar-hot-cold:
+    driver: bridge
+    name: stellar-hot-cold
+
+volumes:
+  postgres-hot-buffer-data:
+    name: postgres-hot-buffer-data
+
+# ============================================================================
+# Usage Instructions
+# ============================================================================
+#
+# 1. Start all services:
+#    docker-compose up -d
+#
+# 2. Check service health:
+#    docker-compose ps
+#
+# 3. Connect to PostgreSQL directly:
+#    psql -h localhost -p 5434 -U stellar -d stellar_hot
+#
+# 4. Connect via PgBouncer (recommended):
+#    psql -h localhost -p 6432 -U stellar -d stellar_hot
+#
+# 5. Open Adminer web UI:
+#    http://localhost:8081
+#    Server: postgres-hot-buffer
+#    Username: stellar
+#    Password: stellar_dev_password
+#    Database: stellar_hot
+#
+# 6. Run migrations manually:
+#    # Install golang-migrate first:
+#    brew install golang-migrate  # macOS
+#    # OR
+#    go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
+#
+#    # Run migrations:
+#    migrate -database "postgres://stellar:stellar_dev_password@localhost:5434/stellar_hot?sslmode=disable" \
+#            -path schema/migrations up
+#
+# 7. Verify tables created:
+#    psql -h localhost -p 5434 -U stellar -d stellar_hot -c "\dt"
+#    # Should show 19 tables
+#
+# 8. Test flush helper functions:
+#    psql -h localhost -p 5434 -U stellar -d stellar_hot -c "SELECT * FROM get_high_watermark();"
+#
+# 9. Stop all services:
+#    docker-compose down
+#
+# 10. Stop and delete data:
+#    docker-compose down -v
+#
+# ============================================================================
+# Production Deployment Notes
+# ============================================================================
+#
+# CRITICAL: Remove these unsafe settings before production:
+# - fsync=off
+# - synchronous_commit=off
+# - full_page_writes=off
+#
+# These provide 2-3x write performance but risk data corruption on crash.
+# Safe for hot buffer (ephemeral staging layer) but not for critical data.
+#
+# For production:
+# 1. Use managed PostgreSQL (AWS RDS, Google Cloud SQL, etc.)
+# 2. Enable proper backups
+# 3. Use PgBouncer in separate container/host
+# 4. Monitor with Prometheus + Grafana
+# 5. Set up alerting for flush failures
