@@ -249,5 +249,6 @@ ttp-processor-sdk/bin/ttp-processor
 stellar-query-api/config.yaml
 silver-transformer/silver-transformer
 ducklake-ingestion-obsrvr-v3
-TROUBLESHOOING.md
+TROUBLESHOOTING.secret.md
 config.yaml.secret.example
+checkpoint.json
