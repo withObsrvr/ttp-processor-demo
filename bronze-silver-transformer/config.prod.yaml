@@ -1,0 +1,28 @@
+service:
+  name: bronze-silver-transformer
+  health_port: "8093"
+  transform_interval_minutes: 15  # Run every 15 minutes (near real-time analytics)
+
+ducklake:
+  # PostgreSQL catalog (SHARED for both Bronze and Silver)
+  catalog_path: "ducklake:postgres:postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DATABASE}?sslmode=require"
+  catalog_name: ${CATALOG_NAME}          # e.g., mainnet_catalog or testnet_catalog
+  metadata_schema: ${METADATA_SCHEMA}    # e.g., bronze_meta
+
+  # Bronze schema (source)
+  bronze_schema: bronze
+  bronze_data_path: "${DATA_PATH_BASE}/${NETWORK}_bronze/"  # e.g., s3://bucket/mainnet_bronze/
+
+  # Silver schema (destination)
+  silver_schema: silver
+  silver_data_path: "${DATA_PATH_BASE}/${NETWORK}_silver/"  # e.g., s3://bucket/mainnet_silver/
+
+  # S3/B2 credentials
+  aws_access_key_id: "${AWS_ACCESS_KEY_ID}"
+  aws_secret_access_key: "${AWS_SECRET_ACCESS_KEY}"
+  aws_region: "${AWS_REGION}"
+  aws_endpoint: "${AWS_ENDPOINT}"  # e.g., https://s3.us-west-004.backblazeb2.com
+
+checkpoint:
+  table: silver_transformer_checkpoint
+  schema: bronze  # Store checkpoint in bronze schema

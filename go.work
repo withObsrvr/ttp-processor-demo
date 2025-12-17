@@ -3,12 +3,15 @@ go 1.25
 use (
 	./account-balance-processor/go
 	./arrow-consumer-demo/go
+	./bronze-silver-transformer/go
 	./contract-events-processor/go
 	./contract-invocation-processor/go
 	./duckdb-consumer/go
 	./ducklake-ingestion-obsrvr-v3/go
 	./ducklake-ingestion-processor/go
 	./postgres-ducklake-flusher/go
+	./silver-cold-flusher/go
+	./silver-realtime-transformer/go
 	./silver-transformer
 	./stellar-arrow-source/go
 	./stellar-live-source-datalake/go

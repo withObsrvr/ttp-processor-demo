@@ -8,10 +8,11 @@ import (
 )
 
 type Config struct {
-	Service  ServiceConfig  `yaml:"service"`
-	Postgres PostgresConfig `yaml:"postgres"`
-	DuckLake DuckLakeConfig `yaml:"ducklake"`
-	Query    QueryConfig    `yaml:"query"`
+	Service      ServiceConfig  `yaml:"service"`
+	Postgres     PostgresConfig `yaml:"postgres"`
+	DuckLake     DuckLakeConfig `yaml:"ducklake"`
+	DuckLakeSilver *DuckLakeConfig `yaml:"ducklake_silver,omitempty"`
+	Query        QueryConfig    `yaml:"query"`
 }
 
 type ServiceConfig struct {

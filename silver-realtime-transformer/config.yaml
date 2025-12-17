@@ -1,0 +1,31 @@
+service:
+  name: silver-realtime-transformer
+  health_port: "8094"
+  poll_interval_seconds: 5  # Poll every 5 seconds for sub-10s latency target
+
+# Source: Bronze hot buffer (stellar_hot PostgreSQL)
+bronze_hot:
+  host: localhost
+  port: 5434
+  database: stellar_hot
+  user: stellar
+  password: stellar_dev_password
+  sslmode: disable
+
+# Destination: Silver hot buffer (silver_hot PostgreSQL)
+silver_hot:
+  host: localhost
+  port: 5434
+  database: silver_hot
+  user: stellar
+  password: stellar_dev_password
+  sslmode: disable
+
+# Checkpoint tracking
+checkpoint:
+  table: realtime_transformer_checkpoint
+
+# Performance tuning
+performance:
+  batch_size: 100  # Max ledgers to process per cycle
+  max_workers: 4   # Parallel transformation workers

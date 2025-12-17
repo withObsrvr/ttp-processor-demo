@@ -252,3 +252,14 @@ ducklake-ingestion-obsrvr-v3
 TROUBLESHOOTING.secret.md
 config.yaml.secret.example
 checkpoint.json
+bronze-silver-transformer/config.test.yaml
+bronze-silver-transformer/config.yaml
+bronze-silver-transformer/transformer.pid
+postgres-ducklake-flusher/flusher.pid
+silver-cold-flusher/config.yaml
+silver-realtime-transformer/transformer.pid
+silver-cold-flusher/flusher.pid
+stellar-query-api/config.silver.yaml
+silver-cold-flusher/scripts/create_ducklake_tables.sql
+postgres-ducklake-flusher/scripts/configure_partitioning.sql
+postgres-ducklake-flusher/scripts/diagnose_partitioning.sql

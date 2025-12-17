@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stellar Block Explorer - Silver API Demo</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #0f0f1e;
+            color: #e0e0e0;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        h1 {
+            color: #00d4ff;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+        }
+
+        h2 {
+            color: #00d4ff;
+            margin: 30px 0 15px 0;
+            font-size: 1.8em;
+            border-bottom: 2px solid #00d4ff;
+            padding-bottom: 10px;
+        }
+
+        .subtitle {
+            color: #888;
+            margin-bottom: 30px;
+        }
+
+        .api-endpoint {
+            background: #1a1a2e;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            border-left: 4px solid #00d4ff;
+        }
+
+        .endpoint-url {
+            font-family: 'Courier New', monospace;
+            color: #00ff88;
+            font-size: 0.9em;
+            margin-bottom: 10px;
+        }
+
+        input, button {
+            padding: 12px;
+            margin: 5px;
+            border: 1px solid #333;
+            border-radius: 4px;
+            background: #1a1a2e;
+            color: #e0e0e0;
+            font-size: 1em;
+        }
+
+        input {
+            width: 400px;
+        }
+
+        button {
+            background: #00d4ff;
+            color: #0f0f1e;
+            font-weight: bold;
+            cursor: pointer;
+            border: none;
+            transition: background 0.3s;
+        }
+
+        button:hover {
+            background: #00a8cc;
+        }
+
+        .result {
+            background: #1a1a2e;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 15px;
+            white-space: pre-wrap;
+            font-family: 'Courier New', monospace;
+            font-size: 0.85em;
+            max-height: 500px;
+            overflow-y: auto;
+            border: 1px solid #333;
+        }
+
+        .loading {
+            color: #00d4ff;
+            font-style: italic;
+        }
+
+        .error {
+            color: #ff6b6b;
+            background: #2e1a1a;
+            border-left: 4px solid #ff6b6b;
+        }
+
+        .success {
+            color: #00ff88;
+        }
+
+        .card {
+            background: #1a1a2e;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            border: 1px solid #333;
+        }
+
+        .card-title {
+            color: #00d4ff;
+            font-size: 1.2em;
+            margin-bottom: 10px;
+        }
+
+        .stat {
+            display: inline-block;
+            margin-right: 20px;
+            padding: 10px 15px;
+            background: #0f0f1e;
+            border-radius: 4px;
+            border-left: 3px solid #00ff88;
+        }
+
+        .stat-label {
+            color: #888;
+            font-size: 0.85em;
+        }
+
+        .stat-value {
+            color: #00ff88;
+            font-size: 1.5em;
+            font-weight: bold;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }
+
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #333;
+        }
+
+        th {
+            background: #0f0f1e;
+            color: #00d4ff;
+            font-weight: bold;
+        }
+
+        tr:hover {
+            background: #252540;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 3px;
+            font-size: 0.75em;
+            font-weight: bold;
+        }
+
+        .badge-success {
+            background: #00ff8844;
+            color: #00ff88;
+        }
+
+        .badge-error {
+            background: #ff6b6b44;
+            color: #ff6b6b;
+        }
+
+        .badge-soroban {
+            background: #00d4ff44;
+            color: #00d4ff;
+        }
+
+        .config {
+            background: #2e1a1a;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            border-left: 4px solid #ff6b6b;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>⭐ Stellar Block Explorer</h1>
+        <p class="subtitle">Silver Layer Analytics API Demo</p>
+
+        <div class="config">
+            <strong>API Endpoint:</strong>
+            <input type="text" id="apiEndpoint" value="http://localhost:8092" style="width: 300px;">
+            <button onclick="updateEndpoint()">Update</button>
+        </div>
+
+        <!-- Account Queries -->
+        <h2>🔍 Account Queries</h2>
+
+        <div class="api-endpoint">
+            <div class="endpoint-url">GET /api/v1/silver/accounts/current</div>
+            <input type="text" id="accountId" placeholder="Enter Account ID (e.g., GXXXXXX)" value="">
+            <button onclick="queryAccountCurrent()">Get Current State</button>
+            <div id="accountCurrentResult"></div>
+        </div>
+
+        <div class="api-endpoint">
+            <div class="endpoint-url">GET /api/v1/silver/accounts/history</div>
+            <button onclick="queryAccountHistory()">Get Account History</button>
+            <div id="accountHistoryResult"></div>
+        </div>
+
+        <div class="api-endpoint">
+            <div class="endpoint-url">GET /api/v1/silver/accounts/top</div>
+            <input type="number" id="topAccountsLimit" value="10" min="1" max="100" style="width: 80px;">
+            <button onclick="queryTopAccounts()">Get Top Accounts</button>
+            <div id="topAccountsResult"></div>
+        </div>
+
+        <div class="api-endpoint">
+            <div class="endpoint-url">GET /api/v1/silver/explorer/account</div>
+            <button onclick="queryAccountOverview()">Get Account Overview (All-in-One)</button>
+            <div id="accountOverviewResult"></div>
+        </div>
+
+        <!-- Operations Queries -->
+        <h2>📊 Operations & Payments</h2>
+
+        <div class="api-endpoint">
+            <div class="endpoint-url">GET /api/v1/silver/payments</div>
+            <input type="number" id="paymentsLimit" value="20" min="1" max="100" style="width: 80px;">
+            <button onclick="queryPayments()">Get Recent Payments</button>
+            <div id="paymentsResult"></div>
+        </div>
+
+        <div class="api-endpoint">
+            <div class="endpoint-url">GET /api/v1/silver/operations/enriched</div>
+            <button onclick="queryEnrichedOperations()">Get Enriched Operations</button>
+            <div id="enrichedOpsResult"></div>
+        </div>
+
+        <div class="api-endpoint">
+            <div class="endpoint-url">GET /api/v1/silver/operations/soroban</div>
+            <button onclick="querySorobanOperations()">Get Soroban Operations</button>
+            <div id="sorobanOpsResult"></div>
+        </div>
+
+        <!-- Token Transfers -->
+        <h2>💸 Token Transfers</h2>
+
+        <div class="api-endpoint">
+            <div class="endpoint-url">GET /api/v1/silver/transfers</div>
+            <input type="text" id="assetCode" placeholder="Asset Code (e.g., USDC)" value="">
+            <button onclick="queryTokenTransfers()">Get Token Transfers</button>
+            <div id="transfersResult"></div>
+        </div>
+
+        <div class="api-endpoint">
+            <div class="endpoint-url">GET /api/v1/silver/transfers/stats</div>
+            <select id="statsGroupBy" style="width: 150px;">
+                <option value="asset">By Asset</option>
+                <option value="source_type">By Type</option>
+                <option value="hour">By Hour</option>
+                <option value="day">By Day</option>
+            </select>
+            <button onclick="queryTransferStats()">Get Transfer Statistics</button>
+            <div id="transferStatsResult"></div>
+        </div>
+
+        <!-- Transaction Details -->
+        <h2>🔐 Transaction Details</h2>
+
+        <div class="api-endpoint">
+            <div class="endpoint-url">GET /api/v1/silver/explorer/transaction</div>
+            <input type="text" id="txHash" placeholder="Transaction Hash" value="">
+            <button onclick="queryTransactionDetails()">Get Transaction Details</button>
+            <div id="txDetailsResult"></div>
+        </div>
+    </div>
+
+    <script>
+        let apiEndpoint = 'http://localhost:8092';
+
+        function updateEndpoint() {
+            apiEndpoint = document.getElementById('apiEndpoint').value;
+            console.log('API endpoint updated to:', apiEndpoint);
+        }
+
+        async function fetchAPI(endpoint) {
+            try {
+                const response = await fetch(`${apiEndpoint}${endpoint}`);
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                return await response.json();
+            } catch (error) {
+                throw new Error(`Network error: ${error.message}`);
+            }
+        }
+
+        function showLoading(elementId) {
+            document.getElementById(elementId).innerHTML = '<div class="result loading">Loading...</div>';
+        }
+
+        function showResult(elementId, data) {
+            const resultDiv = document.getElementById(elementId);
+            resultDiv.innerHTML = `<div class="result success">${JSON.stringify(data, null, 2)}</div>`;
+        }
+
+        function showError(elementId, error) {
+            const resultDiv = document.getElementById(elementId);
+            resultDiv.innerHTML = `<div class="result error">Error: ${error.message}</div>`;
+        }
+
+        // Account Queries
+        async function queryAccountCurrent() {
+            const accountId = document.getElementById('accountId').value;
+            if (!accountId) {
+                alert('Please enter an Account ID');
+                return;
+            }
+
+            showLoading('accountCurrentResult');
+            try {
+                const data = await fetchAPI(`/api/v1/silver/accounts/current?account_id=${accountId}`);
+                showResult('accountCurrentResult', data);
+            } catch (error) {
+                showError('accountCurrentResult', error);
+            }
+        }
+
+        async function queryAccountHistory() {
+            const accountId = document.getElementById('accountId').value;
+            if (!accountId) {
+                alert('Please enter an Account ID');
+                return;
+            }
+
+            showLoading('accountHistoryResult');
+            try {
+                const data = await fetchAPI(`/api/v1/silver/accounts/history?account_id=${accountId}&limit=10`);
+                showResult('accountHistoryResult', data);
+            } catch (error) {
+                showError('accountHistoryResult', error);
+            }
+        }
+
+        async function queryTopAccounts() {
+            const limit = document.getElementById('topAccountsLimit').value;
+            showLoading('topAccountsResult');
+            try {
+                const data = await fetchAPI(`/api/v1/silver/accounts/top?limit=${limit}`);
+                showResult('topAccountsResult', data);
+            } catch (error) {
+                showError('topAccountsResult', error);
+            }
+        }
+
+        async function queryAccountOverview() {
+            const accountId = document.getElementById('accountId').value;
+            if (!accountId) {
+                alert('Please enter an Account ID');
+                return;
+            }
+
+            showLoading('accountOverviewResult');
+            try {
+                const data = await fetchAPI(`/api/v1/silver/explorer/account?account_id=${accountId}`);
+                showResult('accountOverviewResult', data);
+            } catch (error) {
+                showError('accountOverviewResult', error);
+            }
+        }
+
+        // Operations Queries
+        async function queryPayments() {
+            const limit = document.getElementById('paymentsLimit').value;
+            showLoading('paymentsResult');
+            try {
+                const data = await fetchAPI(`/api/v1/silver/payments?limit=${limit}`);
+                showResult('paymentsResult', data);
+            } catch (error) {
+                showError('paymentsResult', error);
+            }
+        }
+
+        async function queryEnrichedOperations() {
+            const accountId = document.getElementById('accountId').value;
+            const endpoint = accountId
+                ? `/api/v1/silver/operations/enriched?account_id=${accountId}&limit=20`
+                : `/api/v1/silver/operations/enriched?limit=20`;
+
+            showLoading('enrichedOpsResult');
+            try {
+                const data = await fetchAPI(endpoint);
+                showResult('enrichedOpsResult', data);
+            } catch (error) {
+                showError('enrichedOpsResult', error);
+            }
+        }
+
+        async function querySorobanOperations() {
+            showLoading('sorobanOpsResult');
+            try {
+                const data = await fetchAPI(`/api/v1/silver/operations/soroban?limit=20`);
+                showResult('sorobanOpsResult', data);
+            } catch (error) {
+                showError('sorobanOpsResult', error);
+            }
+        }
+
+        // Token Transfers
+        async function queryTokenTransfers() {
+            const assetCode = document.getElementById('assetCode').value;
+            const endpoint = assetCode
+                ? `/api/v1/silver/transfers?asset_code=${assetCode}&limit=50`
+                : `/api/v1/silver/transfers?limit=50`;
+
+            showLoading('transfersResult');
+            try {
+                const data = await fetchAPI(endpoint);
+                showResult('transfersResult', data);
+            } catch (error) {
+                showError('transfersResult', error);
+            }
+        }
+
+        async function queryTransferStats() {
+            const groupBy = document.getElementById('statsGroupBy').value;
+            showLoading('transferStatsResult');
+            try {
+                const data = await fetchAPI(`/api/v1/silver/transfers/stats?group_by=${groupBy}`);
+                showResult('transferStatsResult', data);
+            } catch (error) {
+                showError('transferStatsResult', error);
+            }
+        }
+
+        // Transaction Details
+        async function queryTransactionDetails() {
+            const txHash = document.getElementById('txHash').value;
+            if (!txHash) {
+                alert('Please enter a Transaction Hash');
+                return;
+            }
+
+            showLoading('txDetailsResult');
+            try {
+                const data = await fetchAPI(`/api/v1/silver/explorer/transaction?tx_hash=${txHash}`);
+                showResult('txDetailsResult', data);
+            } catch (error) {
+                showError('txDetailsResult', error);
+            }
+        }
+    </script>
+</body>
+</html>
