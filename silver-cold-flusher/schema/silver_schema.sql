@@ -378,7 +378,8 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.token_transfers_raw (
     token_contract_id VARCHAR,
     operation_type INTEGER,
     transaction_successful BOOLEAN,
-    inserted_at TIMESTAMP
+    inserted_at TIMESTAMP,
+    ledger_range BIGINT
 );
 
 CREATE TABLE IF NOT EXISTS testnet_catalog.silver.trustlines_current (

@@ -33,7 +33,7 @@ func main() {
 	defer flusher.Close()
 
 	// Start health server
-	healthServer := NewHealthServer(config.Service.HealthPort, config.Service.FlushInterval())
+	healthServer := NewHealthServer(config.Service.HealthPort, config.Service.FlushInterval(), flusher.GetDuckDB())
 	go func() {
 		if err := healthServer.Start(); err != nil {
 			log.Printf("Health server error: %v", err)

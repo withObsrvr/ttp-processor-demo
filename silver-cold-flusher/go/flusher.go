@@ -227,6 +227,11 @@ func (f *Flusher) GetStats() FlushStats {
 	}
 }
 
+// GetDuckDB returns the DuckDB client for maintenance operations
+func (f *Flusher) GetDuckDB() *DuckDBClient {
+	return f.duckDB
+}
+
 // Close closes all connections
 func (f *Flusher) Close() error {
 	var errs []string

@@ -1,4 +1,9 @@
-.PHONY: build run clean test
+.PHONY: build run clean test docker-build docker-push
+
+# Service name
+SERVICE := silver-cold-flusher
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+REGISTRY := withobsrvr
 
 # Build the flusher binary
 build:
@@ -24,3 +29,17 @@ test:
 deps:
 	@cd go && go mod tidy
 	@cd go && go mod download
+
+# Build Docker image
+docker-build:
+	@echo "Building Docker image: $(REGISTRY)/$(SERVICE):$(VERSION)"
+	docker build -t $(REGISTRY)/$(SERVICE):$(VERSION) .
+	docker tag $(REGISTRY)/$(SERVICE):$(VERSION) $(REGISTRY)/$(SERVICE):latest
+	@echo "✅ Docker image built"
+
+# Push Docker image to registry
+docker-push: docker-build
+	@echo "Pushing Docker image to registry..."
+	docker push $(REGISTRY)/$(SERVICE):$(VERSION)
+	docker push $(REGISTRY)/$(SERVICE):latest
+	@echo "✅ Docker image pushed"

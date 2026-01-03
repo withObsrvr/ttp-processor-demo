@@ -35,8 +35,8 @@ func main() {
 	}
 	defer flusher.Close()
 
-	// Start health server in background
-	healthServer := NewHealthServer(flusher, config.Service.HealthPort)
+	// Start health server in background with maintenance endpoints
+	healthServer := NewHealthServer(flusher, flusher.GetDuckDB(), config.Service.HealthPort)
 	go func() {
 		if err := healthServer.Start(); err != nil {
 			log.Fatalf("Health server failed: %v", err)

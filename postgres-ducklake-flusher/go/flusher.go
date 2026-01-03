@@ -217,6 +217,11 @@ func (f *Flusher) GetTotalFlushed() int64 {
 	return f.totalFlushed.Load()
 }
 
+// GetDuckDB returns the DuckDB client for maintenance operations
+func (f *Flusher) GetDuckDB() *DuckDBClient {
+	return f.duckdb
+}
+
 // Close closes all connections
 func (f *Flusher) Close() {
 	if f.pgPool != nil {
