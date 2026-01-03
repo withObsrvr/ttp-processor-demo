@@ -99,7 +99,6 @@ func (c *DuckDBClient) partitionSilverTables() error {
 		"accounts_current",
 		"trustlines_current",
 		"offers_current",
-		"account_signers_current",
 		"claimable_balances_current",
 		"contract_data_current",
 
