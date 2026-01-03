@@ -8,11 +8,14 @@ import (
 )
 
 type Config struct {
-	Service      ServiceConfig  `yaml:"service"`
-	Postgres     PostgresConfig `yaml:"postgres"`
-	DuckLake     DuckLakeConfig `yaml:"ducklake"`
-	DuckLakeSilver *DuckLakeConfig `yaml:"ducklake_silver,omitempty"`
-	Query        QueryConfig    `yaml:"query"`
+	Service        ServiceConfig         `yaml:"service"`
+	Postgres       PostgresConfig        `yaml:"postgres"`
+	PostgresSilver *PostgresConfig       `yaml:"postgres_silver,omitempty"`
+	DuckLake       DuckLakeConfig        `yaml:"ducklake"`
+	DuckLakeSilver *DuckLakeConfig       `yaml:"ducklake_silver,omitempty"`
+	Index          *IndexConfig          `yaml:"index,omitempty"`
+	ContractIndex  *ContractIndexConfig  `yaml:"contract_index,omitempty"`
+	Query          QueryConfig           `yaml:"query"`
 }
 
 type ServiceConfig struct {
@@ -48,6 +51,35 @@ type QueryConfig struct {
 	DefaultLimit     int `yaml:"default_limit"`
 	MaxLimit         int `yaml:"max_limit"`
 	CacheTTLSeconds  int `yaml:"cache_ttl_seconds"`
+}
+
+type IndexConfig struct {
+	Enabled            bool   `yaml:"enabled"`
+	CatalogHost        string `yaml:"catalog_host"`
+	CatalogPort        int    `yaml:"catalog_port"`
+	CatalogDatabase    string `yaml:"catalog_database"`
+	CatalogUser        string `yaml:"catalog_user"`
+	CatalogPassword    string `yaml:"catalog_password"`
+	DuckLakePath       string `yaml:"ducklake_path"`
+	S3Endpoint         string `yaml:"s3_endpoint"`
+	S3Region           string `yaml:"s3_region"`
+	S3Bucket           string `yaml:"s3_bucket"`
+	S3AccessKeyID      string `yaml:"s3_access_key_id"`
+	S3SecretAccessKey  string `yaml:"s3_secret_access_key"`
+}
+
+type ContractIndexConfig struct {
+	Enabled            bool   `yaml:"enabled"`
+	CatalogHost        string `yaml:"catalog_host"`
+	CatalogPort        int    `yaml:"catalog_port"`
+	CatalogDatabase    string `yaml:"catalog_database"`
+	CatalogUser        string `yaml:"catalog_user"`
+	CatalogPassword    string `yaml:"catalog_password"`
+	S3Endpoint         string `yaml:"s3_endpoint"`
+	S3Region           string `yaml:"s3_region"`
+	S3Bucket           string `yaml:"s3_bucket"`
+	S3AccessKeyID      string `yaml:"s3_access_key_id"`
+	S3SecretAccessKey  string `yaml:"s3_secret_access_key"`
 }
 
 func LoadConfig(path string) (*Config, error) {

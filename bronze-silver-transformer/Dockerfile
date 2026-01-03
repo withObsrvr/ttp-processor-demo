@@ -1,7 +1,9 @@
-FROM golang:1.24-alpine AS builder
+FROM golang:1.24-bookworm AS builder
 
 # Install build dependencies
-RUN apk add --no-cache git make
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git make gcc g++ && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
 
@@ -15,14 +17,16 @@ COPY go/ ./
 # Build binary
 RUN CGO_ENABLED=1 go build -o bronze-silver-transformer
 
-FROM alpine:latest
+FROM debian:bookworm-slim
 
 # Install runtime dependencies
-RUN apk add --no-cache ca-certificates tzdata
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates tzdata wget && \
+    rm -rf /var/lib/apt/lists/*
 
 # Create non-root user
-RUN addgroup -g 1000 stellar && \
-    adduser -D -u 1000 -G stellar stellar
+RUN groupadd -g 1000 stellar && \
+    useradd -u 1000 -g stellar -s /bin/bash -m stellar
 
 WORKDIR /app
 

@@ -263,3 +263,9 @@ stellar-query-api/config.silver.yaml
 silver-cold-flusher/scripts/create_ducklake_tables.sql
 postgres-ducklake-flusher/scripts/configure_partitioning.sql
 postgres-ducklake-flusher/scripts/diagnose_partitioning.sql
+contract-event-index-transformer/contract-event-index-transformer
+contract-event-index-transformer/DEPLOYMENT.md
+index-plane-transformer/ARCHITECTURE_COMPARISON.md
+stellar-postgres-ingester/checkpoint.json
+stellar-query-api/stellar-query-api-silver
+stellar-postgres-ingester/checkpoint.json

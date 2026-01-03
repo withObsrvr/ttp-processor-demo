@@ -1,9 +1,6 @@
--- Silver Hot Buffer: Current State Tables
+-- Silver Hot Buffer: Current State Tables (FIXED SCHEMA)
 -- These tables track the current/latest state of entities using UPSERT pattern
--- Created for Cycle 2: UPSERT Pattern Migration
-
--- Connect to silver_hot database
-\c silver_hot
+-- Updated to use Stellar internal naming convention (low_threshold, med_threshold, high_threshold)
 
 -- 1. accounts_current - Latest state of all accounts
 CREATE TABLE IF NOT EXISTS accounts_current (

@@ -120,17 +120,19 @@ func (f *Flusher) flushAllTables(watermark int64) (int64, error) {
 
 	// Snapshot tables (use ledger_sequence)
 	snapshotTables := map[string]bool{
-		"accounts_snapshot":        true,
-		"trustlines_snapshot":      true,
-		"offers_snapshot":          true,
-		"account_signers_snapshot": true,
+		"accounts_snapshot":             true,
+		"trustlines_snapshot":           true,
+		"offers_snapshot":               true,
+		"account_signers_snapshot":      true,
+		"claimable_balances_snapshot":   true,
 	}
 
 	// Enriched/event tables (use ledger_sequence)
 	eventTables := map[string]bool{
-		"enriched_history_operations": true,
-		"token_transfers_raw":         true,
-		"soroban_history_operations":  true,
+		"enriched_history_operations":         true,
+		"enriched_history_operations_soroban": true,
+		"token_transfers_raw":                 true,
+		"soroban_history_operations":          true,
 	}
 
 	for _, tableName := range tables {
@@ -166,17 +168,19 @@ func (f *Flusher) deleteFlushedData(watermark int64) (int64, error) {
 
 	// Snapshot tables (use ledger_sequence)
 	snapshotTables := map[string]bool{
-		"accounts_snapshot":        true,
-		"trustlines_snapshot":      true,
-		"offers_snapshot":          true,
-		"account_signers_snapshot": true,
+		"accounts_snapshot":             true,
+		"trustlines_snapshot":           true,
+		"offers_snapshot":               true,
+		"account_signers_snapshot":      true,
+		"claimable_balances_snapshot":   true,
 	}
 
 	// Enriched/event tables (use ledger_sequence)
 	eventTables := map[string]bool{
-		"enriched_history_operations": true,
-		"token_transfers_raw":         true,
-		"soroban_history_operations":  true,
+		"enriched_history_operations":         true,
+		"enriched_history_operations_soroban": true,
+		"token_transfers_raw":                 true,
+		"soroban_history_operations":          true,
 	}
 
 	for _, tableName := range tables {

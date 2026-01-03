@@ -9,15 +9,15 @@ import (
 	_ "github.com/duckdb/duckdb-go/v2"
 )
 
-// SilverReader queries the analytics-ready Silver layer
-type SilverReader struct {
+// SilverColdReader queries the analytics-ready Silver layer from DuckLake (cold storage)
+type SilverColdReader struct {
 	db          *sql.DB
 	catalogName string
 	schemaName  string
 }
 
-// NewSilverReader creates a new Silver layer reader
-func NewSilverReader(config DuckLakeConfig) (*SilverReader, error) {
+// NewSilverColdReader creates a new Silver cold layer reader
+func NewSilverColdReader(config DuckLakeConfig) (*SilverColdReader, error) {
 	db, err := sql.Open("duckdb", "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open duckdb: %w", err)
@@ -59,7 +59,7 @@ func NewSilverReader(config DuckLakeConfig) (*SilverReader, error) {
 		return nil, fmt.Errorf("failed to attach catalog: %w", err)
 	}
 
-	return &SilverReader{
+	return &SilverColdReader{
 		db:          db,
 		catalogName: config.CatalogName,
 		schemaName:  config.SchemaName,
@@ -67,7 +67,7 @@ func NewSilverReader(config DuckLakeConfig) (*SilverReader, error) {
 }
 
 // Close closes the database connection
-func (r *SilverReader) Close() error {
+func (r *SilverColdReader) Close() error {
 	if r.db != nil {
 		return r.db.Close()
 	}
@@ -97,7 +97,7 @@ type AccountSnapshot struct {
 }
 
 // GetAccountCurrent returns the current state of an account
-func (r *SilverReader) GetAccountCurrent(ctx context.Context, accountID string) (*AccountCurrent, error) {
+func (r *SilverColdReader) GetAccountCurrent(ctx context.Context, accountID string) (*AccountCurrent, error) {
 	query := fmt.Sprintf(`
 		SELECT
 			account_id,
@@ -127,7 +127,7 @@ func (r *SilverReader) GetAccountCurrent(ctx context.Context, accountID string) 
 }
 
 // GetAccountHistory returns historical snapshots of an account
-func (r *SilverReader) GetAccountHistory(ctx context.Context, accountID string, limit int) ([]AccountSnapshot, error) {
+func (r *SilverColdReader) GetAccountHistory(ctx context.Context, accountID string, limit int) ([]AccountSnapshot, error) {
 	query := fmt.Sprintf(`
 		SELECT
 			account_id,
@@ -162,7 +162,7 @@ func (r *SilverReader) GetAccountHistory(ctx context.Context, accountID string, 
 }
 
 // GetTopAccounts returns top accounts by balance
-func (r *SilverReader) GetTopAccounts(ctx context.Context, limit int) ([]AccountCurrent, error) {
+func (r *SilverColdReader) GetTopAccounts(ctx context.Context, limit int) ([]AccountCurrent, error) {
 	query := fmt.Sprintf(`
 		SELECT
 			account_id,
@@ -218,7 +218,7 @@ type EnrichedOperation struct {
 }
 
 // GetEnrichedOperations returns enriched operations with filters
-func (r *SilverReader) GetEnrichedOperations(ctx context.Context, filters OperationFilters) ([]EnrichedOperation, error) {
+func (r *SilverColdReader) GetEnrichedOperations(ctx context.Context, filters OperationFilters) ([]EnrichedOperation, error) {
 	query := fmt.Sprintf(`
 		SELECT
 			transaction_hash,
@@ -313,7 +313,7 @@ type TokenTransfer struct {
 }
 
 // GetTokenTransfers returns token transfers with filters
-func (r *SilverReader) GetTokenTransfers(ctx context.Context, filters TransferFilters) ([]TokenTransfer, error) {
+func (r *SilverColdReader) GetTokenTransfers(ctx context.Context, filters TransferFilters) ([]TokenTransfer, error) {
 	query := fmt.Sprintf(`
 		SELECT
 			timestamp,
@@ -387,7 +387,7 @@ func (r *SilverReader) GetTokenTransfers(ctx context.Context, filters TransferFi
 }
 
 // GetTokenTransferStats returns aggregated transfer statistics
-func (r *SilverReader) GetTokenTransferStats(ctx context.Context, groupBy string, startTime, endTime time.Time) ([]TransferStats, error) {
+func (r *SilverColdReader) GetTokenTransferStats(ctx context.Context, groupBy string, startTime, endTime time.Time) ([]TransferStats, error) {
 	var groupByClause string
 	switch groupBy {
 	case "asset":

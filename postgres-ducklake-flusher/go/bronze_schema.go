@@ -25,10 +25,16 @@ func (c *DuckDBClient) createBronzeTables(ctx context.Context) error {
 	}
 
 	// Read the v3_bronze_schema.sql file
-	schemaPath := filepath.Join("..", "v3_bronze_schema.sql")
+	// Try current directory first (for Docker), then parent (for local dev)
+	schemaPath := "v3_bronze_schema.sql"
 	content, err := os.ReadFile(schemaPath)
 	if err != nil {
-		return fmt.Errorf("failed to read v3_bronze_schema.sql: %w", err)
+		// Try parent directory for local development
+		schemaPath = filepath.Join("..", "v3_bronze_schema.sql")
+		content, err = os.ReadFile(schemaPath)
+		if err != nil {
+			return fmt.Errorf("failed to read v3_bronze_schema.sql: %w", err)
+		}
 	}
 
 	schemaSQL := string(content)

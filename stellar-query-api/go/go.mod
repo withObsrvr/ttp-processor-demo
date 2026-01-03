@@ -5,6 +5,7 @@ go 1.24.0
 require (
 	github.com/duckdb/duckdb-go/v2 v2.5.4
 	github.com/lib/pq v1.10.9
+	github.com/stellar/go v0.0.0-20251210100531-aab2ea4aca88
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -25,6 +26,8 @@ require (
 	github.com/klauspost/compress v1.18.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.22 // indirect
+	github.com/pkg/errors v0.9.1 // indirect
+	github.com/stellar/go-xdr v0.0.0-20231122183749-b53fb00bcac2 // indirect
 	github.com/zeebo/xxh3 v1.0.2 // indirect
 	golang.org/x/exp v0.0.0-20251209150349-8475f28825e9 // indirect
 	golang.org/x/mod v0.31.0 // indirect

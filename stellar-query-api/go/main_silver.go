@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -46,27 +47,77 @@ func mainWithSilver() {
 	queryService := NewQueryService(hotReader, coldReader, config.Query)
 	log.Println("✅ Query service initialized (Hot + Bronze)")
 
-	// Create Silver reader if configured
+	// Create Silver reader if configured (hot + cold)
 	var silverHandlers *SilverHandlers
-	if config.DuckLakeSilver != nil {
-		silverReader, err := NewSilverReader(*config.DuckLakeSilver)
+	if config.DuckLakeSilver != nil && config.PostgresSilver != nil {
+		// Create hot reader (PostgreSQL silver_hot)
+		silverHotReader, err := NewSilverHotReader(*config.PostgresSilver)
 		if err != nil {
-			log.Fatalf("Failed to create Silver reader: %v", err)
+			log.Fatalf("Failed to create Silver hot reader: %v", err)
 		}
-		defer silverReader.Close()
-		log.Println("✅ Connected to DuckLake Silver (analytics layer)")
+		defer silverHotReader.Close()
+		log.Println("✅ Connected to PostgreSQL silver_hot (hot buffer)")
 
-		silverHandlers = NewSilverHandlers(silverReader)
-		log.Println("✅ Silver API handlers initialized")
+		// Create cold reader (DuckLake Silver)
+		silverColdReader, err := NewSilverColdReader(*config.DuckLakeSilver)
+		if err != nil {
+			log.Fatalf("Failed to create Silver cold reader: %v", err)
+		}
+		defer silverColdReader.Close()
+		log.Println("✅ Connected to DuckLake Silver (cold storage)")
+
+		// Create unified reader
+		unifiedSilverReader := NewUnifiedSilverReader(silverHotReader, silverColdReader)
+		silverHandlers = NewSilverHandlers(unifiedSilverReader)
+		log.Println("✅ Silver API handlers initialized (hot + cold)")
 	} else {
-		log.Println("⚠️  Silver layer not configured - Silver endpoints disabled")
+		log.Println("⚠️  Silver layer not fully configured - Silver endpoints disabled")
+		log.Println("     Requires both postgres_silver and ducklake_silver in config")
+	}
+
+	// Create Index Plane reader if configured
+	var indexHandlers *IndexHandlers
+	if config.Index != nil && config.Index.Enabled {
+		indexReader, err := NewIndexReader(*config.Index)
+		if err != nil {
+			log.Printf("⚠️  Failed to create Index Plane reader: %v", err)
+			log.Println("     Index Plane endpoints will be disabled")
+		} else {
+			defer indexReader.Close()
+			log.Println("✅ Connected to Index Plane (fast transaction lookups)")
+			indexHandlers = NewIndexHandlers(indexReader)
+			log.Println("✅ Index Plane API handlers initialized")
+		}
+	} else {
+		log.Println("ℹ️  Index Plane not configured - fast hash lookups disabled")
+	}
+
+	// Create Contract Event Index reader if configured
+	var contractIndexHandlers *ContractIndexHandlers
+	if config.ContractIndex != nil && config.ContractIndex.Enabled {
+		contractIndexReader, err := NewContractIndexReader(*config.ContractIndex)
+		if err != nil {
+			log.Printf("⚠️  Failed to create Contract Event Index reader: %v", err)
+			log.Println("     Contract Event Index endpoints will be disabled")
+		} else {
+			defer contractIndexReader.Close()
+			log.Println("✅ Connected to Contract Event Index (fast contract event lookups)")
+			contractIndexHandlers = NewContractIndexHandlers(contractIndexReader)
+			log.Println("✅ Contract Event Index API handlers initialized")
+		}
+	} else {
+		log.Println("ℹ️  Contract Event Index not configured - contract event lookups disabled")
 	}
 
 	// Create HTTP server
 	mux := http.NewServeMux()
 
 	// Health endpoint
-	mux.HandleFunc("/health", handleHealthWithSilver(config.DuckLakeSilver != nil))
+	mux.HandleFunc("/health", handleHealthWithSilverAndIndexAndContractIndex(
+		config.DuckLakeSilver != nil,
+		config.Index != nil && config.Index.Enabled && indexHandlers != nil,
+		config.ContractIndex != nil && config.ContractIndex.Enabled && contractIndexHandlers != nil,
+	))
 
 	// Bronze layer endpoints (existing)
 	mux.HandleFunc("/ledgers", queryService.HandleLedgers)
@@ -108,6 +159,51 @@ func mainWithSilver() {
 		log.Println("  ✓ /api/v1/silver/explorer/*")
 	}
 
+	// Index Plane endpoints (if enabled)
+	if indexHandlers != nil {
+		log.Println("Registering Index Plane API endpoints:")
+
+		// Transaction hash lookup endpoints
+		mux.HandleFunc("/transactions/", indexHandlers.HandleTransactionLookup)
+		mux.HandleFunc("/api/v1/index/transactions/", indexHandlers.HandleTransactionLookup)
+		mux.HandleFunc("/api/v1/index/transactions/lookup", indexHandlers.HandleBatchTransactionLookup)
+		mux.HandleFunc("/api/v1/index/health", indexHandlers.HandleIndexHealth)
+		log.Println("  ✓ /transactions/{hash} - Fast transaction hash lookup")
+		log.Println("  ✓ /api/v1/index/transactions/{hash} - Fast transaction hash lookup")
+		log.Println("  ✓ /api/v1/index/transactions/lookup - Batch hash lookup (POST)")
+		log.Println("  ✓ /api/v1/index/health - Index coverage statistics")
+	}
+
+	// Contract Event Index endpoints (if enabled)
+	if contractIndexHandlers != nil {
+		log.Println("Registering Contract Event Index API endpoints:")
+
+		// Contract event lookup endpoints
+		mux.HandleFunc("/api/v1/index/contracts/health", contractIndexHandlers.HandleContractIndexHealth)
+		mux.HandleFunc("/api/v1/index/contracts/lookup", contractIndexHandlers.HandleBatchContractLookup)
+
+		// These need to be registered with a prefix handler pattern
+		mux.HandleFunc("/api/v1/index/contracts/", func(w http.ResponseWriter, r *http.Request) {
+			// Route to appropriate handler based on suffix
+			if r.URL.Path == "/api/v1/index/contracts/lookup" {
+				contractIndexHandlers.HandleBatchContractLookup(w, r)
+			} else if r.URL.Path == "/api/v1/index/contracts/health" {
+				contractIndexHandlers.HandleContractIndexHealth(w, r)
+			} else if strings.HasSuffix(r.URL.Path, "/ledgers") {
+				contractIndexHandlers.HandleContractLedgers(w, r)
+			} else if strings.HasSuffix(r.URL.Path, "/summary") {
+				contractIndexHandlers.HandleContractEventSummary(w, r)
+			} else {
+				respondError(w, "invalid endpoint", http.StatusNotFound)
+			}
+		})
+
+		log.Println("  ✓ /api/v1/index/contracts/{contract_id}/ledgers - Get ledgers for contract")
+		log.Println("  ✓ /api/v1/index/contracts/{contract_id}/summary - Get event summary")
+		log.Println("  ✓ /api/v1/index/contracts/lookup - Batch contract lookup (POST)")
+		log.Println("  ✓ /api/v1/index/contracts/health - Contract index statistics")
+	}
+
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", config.Service.Port),
 		Handler:      corsMiddleware(mux),
@@ -143,7 +239,7 @@ func mainWithSilver() {
 	log.Println("✅ Server exited gracefully")
 }
 
-func handleHealthWithSilver(silverEnabled bool) http.HandlerFunc {
+func handleHealthWithSilverAndIndexAndContractIndex(silverEnabled, indexEnabled, contractIndexEnabled bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -151,9 +247,11 @@ func handleHealthWithSilver(silverEnabled bool) http.HandlerFunc {
 		response := map[string]interface{}{
 			"status": "healthy",
 			"layers": map[string]bool{
-				"hot":    true,
-				"bronze": true,
-				"silver": silverEnabled,
+				"hot":            true,
+				"bronze":         true,
+				"silver":         silverEnabled,
+				"index":          indexEnabled,
+				"contract_index": contractIndexEnabled,
 			},
 		}
 

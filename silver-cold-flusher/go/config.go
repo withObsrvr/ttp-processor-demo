@@ -93,27 +93,23 @@ func (c *ServiceConfig) FlushInterval() time.Duration {
 // GetTablesToFlush returns the list of all silver tables to flush
 func GetTablesToFlush() []string {
 	return []string{
-		// Current state tables (9)
+		// Current state tables (4)
 		"accounts_current",
-		"account_signers_current",
 		"trustlines_current",
 		"offers_current",
 		"claimable_balances_current",
-		"liquidity_pools_current",
 		"contract_data_current",
-		"contract_code_current",
-		"config_settings_current",
-		"ttl_current",
 
-		// Snapshot tables (4)
+		// Snapshot tables (5)
 		"accounts_snapshot",
 		"trustlines_snapshot",
 		"offers_snapshot",
 		"account_signers_snapshot",
+		"claimable_balances_snapshot",
 
-		// Enriched/event tables (2)
+		// Enriched/event tables (3)
 		"enriched_history_operations",
+		"enriched_history_operations_soroban",
 		"token_transfers_raw",
-		// "soroban_history_operations", // TODO: Enable when table exists in PostgreSQL
 	}
 }

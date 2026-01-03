@@ -9,11 +9,11 @@ import (
 
 // SilverHandlers contains HTTP handlers for Silver layer queries
 type SilverHandlers struct {
-	reader *SilverReader
+	reader *UnifiedSilverReader
 }
 
 // NewSilverHandlers creates new Silver API handlers
-func NewSilverHandlers(reader *SilverReader) *SilverHandlers {
+func NewSilverHandlers(reader *UnifiedSilverReader) *SilverHandlers {
 	return &SilverHandlers{reader: reader}
 }
 

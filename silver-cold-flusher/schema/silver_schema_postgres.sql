@@ -138,7 +138,9 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.enriched_history_operations (
 
     -- Derived fields
     is_payment_op BOOLEAN,
-    is_soroban_op BOOLEAN
+    is_soroban_op BOOLEAN,
+
+    PRIMARY KEY (transaction_hash, operation_index)
 );
 
 -- 2. token_transfers_raw - Token transfer events
@@ -155,7 +157,8 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.token_transfers_raw (
     token_contract_id VARCHAR,
     operation_type INTEGER NOT NULL,
     transaction_successful BOOLEAN NOT NULL,
-    ledger_range BIGINT
+    ledger_range BIGINT,
+    PRIMARY KEY (transaction_hash, timestamp)
 );
 
 -- 3. soroban_history_operations - Soroban-specific operations
@@ -170,7 +173,8 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.soroban_history_operations (
     contract_id VARCHAR,
     function_name VARCHAR,
     parameters VARCHAR,
-    ledger_range BIGINT
+    ledger_range BIGINT,
+    PRIMARY KEY (transaction_hash, operation_index)
 );
 
 -- =============================================================================
@@ -179,7 +183,7 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.soroban_history_operations (
 
 -- 4. accounts_current - Latest account state
 CREATE TABLE IF NOT EXISTS testnet_catalog.silver.accounts_current (
-    account_id VARCHAR,
+    account_id VARCHAR PRIMARY KEY,
     balance VARCHAR NOT NULL,
     sequence_number BIGINT NOT NULL,
     num_subentries INTEGER NOT NULL,
@@ -223,12 +227,13 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.trustlines_current (
     last_modified_ledger BIGINT NOT NULL,
     ledger_range BIGINT NOT NULL,
     era_id VARCHAR,
-    version_label VARCHAR
+    version_label VARCHAR,
+    PRIMARY KEY (account_id, asset_code, asset_issuer, asset_type)
 );
 
 -- 6. offers_current - Latest DEX offers
 CREATE TABLE IF NOT EXISTS testnet_catalog.silver.offers_current (
-    offer_id BIGINT,
+    offer_id BIGINT PRIMARY KEY,
     seller_account VARCHAR NOT NULL,
     closed_at TIMESTAMP NOT NULL,
     selling_asset_type VARCHAR NOT NULL,
@@ -256,12 +261,13 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.account_signers_current (
     last_modified_ledger BIGINT NOT NULL,
     ledger_range BIGINT NOT NULL,
     era_id VARCHAR,
-    version_label VARCHAR
+    version_label VARCHAR,
+    PRIMARY KEY (account_id, signer)
 );
 
 -- 8. claimable_balances_current - Latest claimable balances
 CREATE TABLE IF NOT EXISTS testnet_catalog.silver.claimable_balances_current (
-    balance_id VARCHAR,
+    balance_id VARCHAR PRIMARY KEY,
     asset_type VARCHAR NOT NULL,
     asset_code VARCHAR NOT NULL,
     asset_issuer VARCHAR NOT NULL,
@@ -277,7 +283,7 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.claimable_balances_current (
 
 -- 9. liquidity_pools_current - Latest liquidity pool state
 CREATE TABLE IF NOT EXISTS testnet_catalog.silver.liquidity_pools_current (
-    liquidity_pool_id VARCHAR,
+    liquidity_pool_id VARCHAR PRIMARY KEY,
     pool_type VARCHAR NOT NULL,
     fee INTEGER NOT NULL,
     trustline_count INTEGER NOT NULL,
@@ -306,12 +312,13 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.contract_data_current (
     last_modified_ledger BIGINT NOT NULL,
     ledger_range BIGINT NOT NULL,
     era_id VARCHAR,
-    version_label VARCHAR
+    version_label VARCHAR,
+    PRIMARY KEY (contract_id, contract_key_type)
 );
 
 -- 11. contract_code_current - Latest Soroban contract code
 CREATE TABLE IF NOT EXISTS testnet_catalog.silver.contract_code_current (
-    contract_code_hash VARCHAR,
+    contract_code_hash VARCHAR PRIMARY KEY,
     contract_code_ext_v INTEGER NOT NULL,
     last_modified_ledger BIGINT NOT NULL,
     ledger_range BIGINT NOT NULL,
@@ -331,7 +338,7 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.contract_code_current (
 
 -- 12. config_settings_current - Latest network config
 CREATE TABLE IF NOT EXISTS testnet_catalog.silver.config_settings_current (
-    config_setting_id INTEGER,
+    config_setting_id INTEGER PRIMARY KEY,
     contract_max_size_bytes BIGINT,
     ledger_max_instructions BIGINT,
     tx_max_instructions BIGINT,
@@ -345,7 +352,7 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.config_settings_current (
 
 -- 13. ttl_current - Latest TTL entries
 CREATE TABLE IF NOT EXISTS testnet_catalog.silver.ttl_current (
-    key_hash VARCHAR,
+    key_hash VARCHAR PRIMARY KEY,
     live_until_ledger_seq BIGINT NOT NULL,
     last_modified_ledger BIGINT NOT NULL,
     ledger_range BIGINT NOT NULL,
@@ -384,7 +391,8 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.accounts_snapshot (
     ledger_range BIGINT NOT NULL,
     era_id VARCHAR,
     version_label VARCHAR,
-    valid_to TIMESTAMP
+    valid_to TIMESTAMP,
+    PRIMARY KEY (account_id, ledger_sequence)
 );
 
 -- 15. trustlines_snapshot - Full trustline history
@@ -405,7 +413,8 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.trustlines_snapshot (
     ledger_range BIGINT NOT NULL,
     era_id VARCHAR,
     version_label VARCHAR,
-    valid_to TIMESTAMP
+    valid_to TIMESTAMP,
+    PRIMARY KEY (account_id, asset_code, asset_issuer, asset_type, ledger_sequence)
 );
 
 -- 16. offers_snapshot - Full offer history
@@ -427,7 +436,8 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.offers_snapshot (
     ledger_range BIGINT NOT NULL,
     era_id VARCHAR,
     version_label VARCHAR,
-    valid_to TIMESTAMP
+    valid_to TIMESTAMP,
+    PRIMARY KEY (offer_id, ledger_sequence)
 );
 
 -- 17. account_signers_snapshot - Full signer history
@@ -441,14 +451,15 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.account_signers_snapshot (
     ledger_range BIGINT NOT NULL,
     era_id VARCHAR,
     version_label VARCHAR,
-    valid_to TIMESTAMP
+    valid_to TIMESTAMP,
+    PRIMARY KEY (account_id, signer, ledger_sequence)
 );
 
 -- =============================================================================
 -- INDEXES (optional - DuckDB handles these differently than PostgreSQL)
 -- =============================================================================
 
--- Note: DuckDB automatically creates indexes for columns
+-- Note: DuckDB automatically creates indexes for PRIMARY KEY columns
 -- Additional indexes can be created if needed for specific query patterns
 
 -- =============================================================================

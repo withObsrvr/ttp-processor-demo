@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log"
 
-	_ "github.com/marcboeker/go-duckdb"
+	_ "github.com/duckdb/duckdb-go/v2"
 )
 
 // DuckDBClient manages DuckDB connection and operations
@@ -93,6 +93,13 @@ func (c *DuckDBClient) initialize() error {
 	}
 
 	log.Println("✅ DuckLake catalog attached successfully")
+
+	// Create Silver tables if they don't exist
+	if err := c.createSilverTables(); err != nil {
+		return fmt.Errorf("failed to create Silver tables: %w", err)
+	}
+
+	log.Println("✅ DuckDB initialized successfully")
 	return nil
 }
 
