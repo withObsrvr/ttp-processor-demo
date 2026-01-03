@@ -61,6 +61,45 @@ func (c *DuckDBClient) createBronzeTables(ctx context.Context) error {
 	}
 
 	log.Printf("Created %d Bronze tables successfully", tableCount)
+
+	// Add partitioning to all tables
+	if err := c.partitionBronzeTables(ctx); err != nil {
+		return fmt.Errorf("failed to partition Bronze tables: %w", err)
+	}
+
+	return nil
+}
+
+// partitionBronzeTables adds DuckLake partitioning to all Bronze tables by ledger_range
+// This organizes Parquet files into partition folders for efficient queries
+func (c *DuckDBClient) partitionBronzeTables(ctx context.Context) error {
+	log.Println("Adding DuckLake partitioning to Bronze tables...")
+
+	successCount := 0
+	for _, table := range BronzeTables {
+		fullTableName := fmt.Sprintf("%s.%s.%s", c.config.CatalogName, c.config.SchemaName, table)
+		partitionSQL := fmt.Sprintf(`ALTER TABLE %s SET PARTITIONED BY (ledger_range)`, fullTableName)
+
+		if _, err := c.db.ExecContext(ctx, partitionSQL); err != nil {
+			log.Printf("⚠️  Failed to partition %s: %v", table, err)
+			// Don't fail - some tables might not exist or not have ledger_range
+			continue
+		}
+
+		log.Printf("✅ Partitioned: %s by ledger_range", table)
+		successCount++
+	}
+
+	if successCount == 0 {
+		return fmt.Errorf("failed to partition all %d Bronze tables", len(BronzeTables))
+	}
+
+	if successCount < len(BronzeTables) {
+		log.Printf("⚠️  Partitioned %d/%d Bronze tables successfully (some failures)", successCount, len(BronzeTables))
+	} else {
+		log.Printf("✅ Partitioned %d/%d Bronze tables successfully", successCount, len(BronzeTables))
+	}
+
 	return nil
 }
 

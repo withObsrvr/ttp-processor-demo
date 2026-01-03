@@ -10,8 +10,9 @@ import (
 
 // DuckDBClient manages DuckDB connection and operations
 type DuckDBClient struct {
-	db     *sql.DB
-	config *DuckLakeConfig
+	db      *sql.DB
+	config  *DuckLakeConfig
+	flusher *Flusher // Reference to parent Flusher for mutex coordination
 }
 
 // NewDuckDBClient creates a new DuckDB client
@@ -126,11 +127,24 @@ func (c *DuckDBClient) FlushTable(tableName string, watermark int64, pgConnStr s
 
 // FlushSnapshotTable flushes a snapshot table (uses ledger_sequence instead of last_modified_ledger)
 func (c *DuckDBClient) FlushSnapshotTable(tableName string, watermark int64, pgConnStr string) (int64, error) {
-	query := fmt.Sprintf(`
-		INSERT INTO %s.%s.%s
-		SELECT * FROM postgres_scan('%s', 'public', '%s')
-		WHERE ledger_sequence <= %d
-	`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, watermark)
+	var query string
+
+	// token_transfers_raw needs ledger_range computed (not in PostgreSQL source)
+	if tableName == "token_transfers_raw" {
+		query = fmt.Sprintf(`
+			INSERT INTO %s.%s.%s
+			SELECT *, FLOOR(ledger_sequence / 100000) AS ledger_range
+			FROM postgres_scan('%s', 'public', '%s')
+			WHERE ledger_sequence <= %d
+		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, watermark)
+	} else {
+		// Other snapshot tables use SELECT * (columns match)
+		query = fmt.Sprintf(`
+			INSERT INTO %s.%s.%s
+			SELECT * FROM postgres_scan('%s', 'public', '%s')
+			WHERE ledger_sequence <= %d
+		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, watermark)
+	}
 
 	result, err := c.db.Exec(query)
 	if err != nil {
@@ -165,6 +179,11 @@ func (c *DuckDBClient) VerifyTableExists(tableName string) error {
 	}
 
 	return nil
+}
+
+// SetFlusher sets the reference to the parent Flusher for mutex coordination
+func (c *DuckDBClient) SetFlusher(f *Flusher) {
+	c.flusher = f
 }
 
 // Close closes the DuckDB connection

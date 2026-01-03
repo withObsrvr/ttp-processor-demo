@@ -8,9 +8,10 @@ import (
 	"time"
 )
 
-// HealthServer provides HTTP health endpoints
+// HealthServer provides HTTP health endpoints and maintenance operations
 type HealthServer struct {
 	flusher *Flusher
+	duckdb  *DuckDBClient
 	port    int
 }
 
@@ -26,9 +27,10 @@ type HealthResponse struct {
 }
 
 // NewHealthServer creates a new health server
-func NewHealthServer(flusher *Flusher, port int) *HealthServer {
+func NewHealthServer(flusher *Flusher, duckdb *DuckDBClient, port int) *HealthServer {
 	return &HealthServer{
 		flusher: flusher,
+		duckdb:  duckdb,
 		port:    port,
 	}
 }
@@ -38,6 +40,11 @@ func (h *HealthServer) Start() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", h.handleHealth)
 	mux.HandleFunc("/metrics", h.handleMetrics)
+	mux.HandleFunc("/maintenance/recreate-bronze", h.handleRecreateBronze)
+	mux.HandleFunc("/maintenance/merge", h.handleMergeBronze)
+	mux.HandleFunc("/maintenance/expire", h.handleExpireBronze)
+	mux.HandleFunc("/maintenance/cleanup", h.handleCleanupBronze)
+	mux.HandleFunc("/maintenance/full", h.handleFullMaintenanceBronze)
 
 	addr := fmt.Sprintf(":%d", h.port)
 	log.Printf("Health server listening on %s", addr)
@@ -111,4 +118,151 @@ func (h *HealthServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "# TYPE flusher_last_flush_timestamp_seconds gauge\n")
 		fmt.Fprintf(w, "flusher_last_flush_timestamp_seconds %d\n", lastFlush)
 	}
+}
+
+// handleRecreateBronze handles the /maintenance/recreate-bronze endpoint
+// WARNING: This deletes ALL Bronze data and recreates tables with partitioning
+func (h *HealthServer) handleRecreateBronze(w http.ResponseWriter, r *http.Request) {
+	// Only allow POST requests
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed. Use POST to recreate Bronze tables.", http.StatusMethodNotAllowed)
+		return
+	}
+
+	log.Println("⚠️  Received request to recreate Bronze tables")
+	log.Println("⚠️  This will DELETE ALL Bronze data!")
+
+	// Execute recreation
+	ctx := r.Context()
+	if err := h.duckdb.RecreateAllBronzeTables(ctx); err != nil {
+		log.Printf("ERROR: Failed to recreate Bronze tables: %v", err)
+		http.Error(w, fmt.Sprintf("Failed to recreate Bronze tables: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]string{
+		"status":  "success",
+		"message": "Bronze tables recreated with partitioning",
+		"note":    "All Bronze data has been deleted. New data will be partitioned by ledger_range.",
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+
+	log.Println("✅ Bronze tables recreation completed successfully")
+}
+
+// handleMergeBronze handles the /maintenance/merge endpoint
+// Merges adjacent files for all Bronze tables
+func (h *HealthServer) handleMergeBronze(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed. Use POST to merge files.", http.StatusMethodNotAllowed)
+		return
+	}
+
+	log.Println("🔧 Received request to merge Bronze files")
+
+	// Merge with max files to avoid memory issues
+	ctx := r.Context()
+	if err := h.duckdb.MergeAllBronzeTables(ctx, DefaultMaxCompactedFiles); err != nil {
+		log.Printf("ERROR: Failed to merge Bronze files: %v", err)
+		http.Error(w, fmt.Sprintf("Failed to merge files: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]string{
+		"status":  "success",
+		"message": "Bronze files merged successfully",
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+
+	log.Println("✅ Bronze file merge completed successfully")
+}
+
+// handleExpireBronze handles the /maintenance/expire endpoint
+// Expires old snapshots to mark merged files for cleanup
+func (h *HealthServer) handleExpireBronze(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed. Use POST to expire snapshots.", http.StatusMethodNotAllowed)
+		return
+	}
+
+	log.Println("🗑️  Received request to expire Bronze snapshots")
+
+	ctx := r.Context()
+	if err := h.duckdb.ExpireBronzeSnapshots(ctx); err != nil {
+		log.Printf("ERROR: Failed to expire snapshots: %v", err)
+		http.Error(w, fmt.Sprintf("Failed to expire snapshots: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]string{
+		"status":  "success",
+		"message": "Bronze snapshots expired successfully",
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+
+	log.Println("✅ Bronze snapshot expiration completed successfully")
+}
+
+// handleCleanupBronze handles the /maintenance/cleanup endpoint
+// Cleans up orphaned files from S3
+func (h *HealthServer) handleCleanupBronze(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed. Use POST to cleanup files.", http.StatusMethodNotAllowed)
+		return
+	}
+
+	log.Println("🧹 Received request to cleanup Bronze orphaned files")
+
+	ctx := r.Context()
+	if err := h.duckdb.CleanupBronzeOrphanedFiles(ctx); err != nil {
+		log.Printf("ERROR: Failed to cleanup orphaned files: %v", err)
+		http.Error(w, fmt.Sprintf("Failed to cleanup files: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]string{
+		"status":  "success",
+		"message": "Bronze orphaned files cleaned up successfully",
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+
+	log.Println("✅ Bronze cleanup completed successfully")
+}
+
+// handleFullMaintenanceBronze handles the /maintenance/full endpoint
+// Runs full maintenance cycle: merge → expire → cleanup
+func (h *HealthServer) handleFullMaintenanceBronze(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed. Use POST to run full maintenance.", http.StatusMethodNotAllowed)
+		return
+	}
+
+	log.Println("🔧 Received request for full Bronze maintenance cycle")
+
+	ctx := r.Context()
+	if err := h.duckdb.PerformBronzeMaintenanceCycle(ctx, DefaultMaxCompactedFiles); err != nil{
+		log.Printf("ERROR: Failed to complete maintenance cycle: %v", err)
+		http.Error(w, fmt.Sprintf("Failed to complete maintenance: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]string{
+		"status":  "success",
+		"message": "Full Bronze maintenance cycle completed successfully",
+		"note":    "Files merged, snapshots expired, and orphaned files cleaned up",
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+
+	log.Println("✅ Full Bronze maintenance cycle completed successfully")
 }

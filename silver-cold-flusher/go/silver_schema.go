@@ -73,6 +73,45 @@ func (c *DuckDBClient) createSilverTables() error {
 	}
 
 	log.Printf("✅ Created %d Silver tables successfully", tableCount)
+
+	// Add partitioning to all tables
+	if err := c.partitionSilverTables(); err != nil {
+		return fmt.Errorf("failed to partition Silver tables: %w", err)
+	}
+
+	return nil
+}
+
+// partitionSilverTables adds DuckLake partitioning to all Silver tables by ledger_range
+// This organizes Parquet files into partition folders for efficient queries
+func (c *DuckDBClient) partitionSilverTables() error {
+	log.Println("Adding DuckLake partitioning to Silver tables...")
+
+	successCount := 0
+	for _, table := range SilverTables {
+		fullTableName := fmt.Sprintf("%s.%s.%s", c.config.CatalogName, c.config.SchemaName, table)
+		partitionSQL := fmt.Sprintf(`ALTER TABLE %s SET PARTITIONED BY (ledger_range)`, fullTableName)
+
+		if _, err := c.db.Exec(partitionSQL); err != nil {
+			log.Printf("⚠️  Failed to partition %s: %v", table, err)
+			// Don't fail - some tables might not exist or not have ledger_range
+			continue
+		}
+
+		log.Printf("✅ Partitioned: %s by ledger_range", table)
+		successCount++
+	}
+
+	if successCount == 0 {
+		return fmt.Errorf("failed to partition all %d Silver tables", len(SilverTables))
+	}
+
+	if successCount < len(SilverTables) {
+		log.Printf("⚠️  Partitioned %d/%d Silver tables successfully (some failures)", successCount, len(SilverTables))
+	} else {
+		log.Printf("✅ Partitioned %d/%d Silver tables successfully", successCount, len(SilverTables))
+	}
+
 	return nil
 }
 

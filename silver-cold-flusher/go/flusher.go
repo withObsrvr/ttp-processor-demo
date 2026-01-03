@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -15,6 +16,7 @@ type Flusher struct {
 	pgDB       *sql.DB
 	duckDB     *DuckDBClient
 	config     *Config
+	mu         sync.RWMutex // Protects against concurrent maintenance operations
 	flushCount int64
 	totalRows  int64
 }
@@ -39,15 +41,24 @@ func NewFlusher(config *Config) (*Flusher, error) {
 		return nil, fmt.Errorf("failed to connect to DuckDB: %w", err)
 	}
 
-	return &Flusher{
+	flusher := &Flusher{
 		pgDB:   pgDB,
 		duckDB: duckDB,
 		config: config,
-	}, nil
+	}
+
+	// Set flusher reference for mutex coordination
+	duckDB.SetFlusher(flusher)
+
+	return flusher, nil
 }
 
 // ExecuteFlush performs a single flush cycle
 func (f *Flusher) ExecuteFlush() error {
+	// Acquire read lock - allows concurrent flushes but blocks maintenance
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+
 	startTime := time.Now()
 	log.Printf("🚀 Starting flush cycle #%d", f.flushCount+1)
 
@@ -225,6 +236,11 @@ func (f *Flusher) GetStats() FlushStats {
 		FlushCount: f.flushCount,
 		TotalRows:  f.totalRows,
 	}
+}
+
+// GetDuckDB returns the DuckDB client for maintenance operations
+func (f *Flusher) GetDuckDB() *DuckDBClient {
+	return f.duckDB
 }
 
 // Close closes all connections

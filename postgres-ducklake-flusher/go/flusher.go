@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -15,6 +16,7 @@ type Flusher struct {
 	pgPool      *pgxpool.Pool
 	duckdb      *DuckDBClient
 	config      *Config
+	mu          sync.RWMutex // Protects against concurrent maintenance operations
 	flushCount  atomic.Int64
 	lastFlush   atomic.Int64 // Unix timestamp
 	lastWater   atomic.Int64 // Last watermark flushed
@@ -60,11 +62,16 @@ func NewFlusher(config *Config) (*Flusher, error) {
 		return nil, fmt.Errorf("failed to create DuckDB client: %w", err)
 	}
 
-	return &Flusher{
+	flusher := &Flusher{
 		pgPool: pgPool,
 		duckdb: duckdb,
 		config: config,
-	}, nil
+	}
+
+	// Set flusher reference for mutex coordination
+	duckdb.SetFlusher(flusher)
+
+	return flusher, nil
 }
 
 // GetHighWatermark retrieves the maximum ledger sequence from PostgreSQL
@@ -79,6 +86,10 @@ func (f *Flusher) GetHighWatermark(ctx context.Context) (int64, error) {
 
 // Flush performs the complete flush operation
 func (f *Flusher) Flush(ctx context.Context) (*FlushMetrics, error) {
+	// Acquire read lock - allows concurrent flushes but blocks maintenance
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+
 	startTime := time.Now()
 	metrics := &FlushMetrics{}
 
@@ -215,6 +226,11 @@ func (f *Flusher) GetLastWatermark() int64 {
 // GetTotalFlushed returns the total rows flushed across all flushes
 func (f *Flusher) GetTotalFlushed() int64 {
 	return f.totalFlushed.Load()
+}
+
+// GetDuckDB returns the DuckDB client for maintenance operations
+func (f *Flusher) GetDuckDB() *DuckDBClient {
+	return f.duckdb
 }
 
 // Close closes all connections
