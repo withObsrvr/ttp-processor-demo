@@ -12,8 +12,9 @@ import (
 
 // DuckDBClient manages the DuckDB connection and catalog
 type DuckDBClient struct {
-	db     *sql.DB
-	config *DuckLakeConfig
+	db      *sql.DB
+	config  *DuckLakeConfig
+	flusher *Flusher // Reference to parent Flusher for mutex coordination
 }
 
 // NewDuckDBClient creates a new DuckDB client with catalog attached
@@ -193,6 +194,11 @@ func (c *DuckDBClient) GetTableRowCount(ctx context.Context, tableName string) (
 	}
 
 	return count, nil
+}
+
+// SetFlusher sets the reference to the parent Flusher for mutex coordination
+func (c *DuckDBClient) SetFlusher(f *Flusher) {
+	c.flusher = f
 }
 
 // Close closes the DuckDB connection

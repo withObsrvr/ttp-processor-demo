@@ -87,29 +87,8 @@ func (c *DuckDBClient) createSilverTables() error {
 func (c *DuckDBClient) partitionSilverTables() error {
 	log.Println("Adding DuckLake partitioning to Silver tables...")
 
-	// Tables with ledger_range column
-	tablesWithLedgerRange := []string{
-		// Snapshot tables (SCD Type 2)
-		"accounts_snapshot",
-		"trustlines_snapshot",
-		"offers_snapshot",
-		"account_signers_snapshot",
-
-		// Current state tables
-		"accounts_current",
-		"trustlines_current",
-		"offers_current",
-		"claimable_balances_current",
-		"contract_data_current",
-
-		// Enriched operations tables
-		"enriched_history_operations",
-		"enriched_history_operations_soroban",
-		"token_transfers_raw",
-	}
-
 	successCount := 0
-	for _, table := range tablesWithLedgerRange {
+	for _, table := range SilverTables {
 		fullTableName := fmt.Sprintf("%s.%s.%s", c.config.CatalogName, c.config.SchemaName, table)
 		partitionSQL := fmt.Sprintf(`ALTER TABLE %s SET PARTITIONED BY (ledger_range)`, fullTableName)
 
@@ -123,7 +102,16 @@ func (c *DuckDBClient) partitionSilverTables() error {
 		successCount++
 	}
 
-	log.Printf("✅ Partitioned %d/%d Silver tables successfully", successCount, len(tablesWithLedgerRange))
+	if successCount == 0 {
+		return fmt.Errorf("failed to partition all %d Silver tables", len(SilverTables))
+	}
+
+	if successCount < len(SilverTables) {
+		log.Printf("⚠️  Partitioned %d/%d Silver tables successfully (some failures)", successCount, len(SilverTables))
+	} else {
+		log.Printf("✅ Partitioned %d/%d Silver tables successfully", successCount, len(SilverTables))
+	}
+
 	return nil
 }
 

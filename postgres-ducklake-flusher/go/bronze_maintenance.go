@@ -6,6 +6,35 @@ import (
 	"log"
 )
 
+// Maintenance operation constants
+const (
+	// DefaultMaxCompactedFiles is the default maximum number of files to compact during merge
+	DefaultMaxCompactedFiles = 1000
+)
+
+// BronzeTables is the centralized list of all Bronze tables
+var BronzeTables = []string{
+	"ledgers_row_v2",
+	"transactions_row_v2",
+	"operations_row_v2",
+	"effects_row_v1",
+	"trades_row_v1",
+	"contract_events_stream_v1",
+	"accounts_snapshot_v1",
+	"trustlines_snapshot_v1",
+	"account_signers_snapshot_v1",
+	"native_balances_snapshot_v1",
+	"offers_snapshot_v1",
+	"liquidity_pools_snapshot_v1",
+	"claimable_balances_snapshot_v1",
+	"contract_data_snapshot_v1",
+	"contract_code_snapshot_v1",
+	"restored_keys_state_v1",
+	"ttl_snapshot_v1",
+	"evicted_keys_state_v1",
+	"config_settings_snapshot_v1",
+}
+
 // RecreateAllBronzeTables drops all Bronze tables and recreates them with partitioning
 // WARNING: This deletes ALL Bronze data and metadata!
 // Use this for:
@@ -13,6 +42,12 @@ import (
 // - Schema migrations that require recreation
 // - Recovering from corrupted metadata
 func (c *DuckDBClient) RecreateAllBronzeTables(ctx context.Context) error {
+	// Acquire exclusive lock - blocks all flushes during recreation
+	if c.flusher != nil {
+		c.flusher.mu.Lock()
+		defer c.flusher.mu.Unlock()
+	}
+
 	log.Println("⚠️  WARNING: Recreating all Bronze tables with partitioning...")
 	log.Println("⚠️  This will DELETE ALL Bronze data!")
 
@@ -43,73 +78,22 @@ func (c *DuckDBClient) RecreateAllBronzeTables(ctx context.Context) error {
 }
 
 // GetPartitionStatus returns partitioning status for all Bronze tables
-// This can be used to verify that partitioning is correctly applied
+// NOTE: This functionality is not yet implemented and currently cannot
+//
+//	query DuckLake metadata to determine actual partition status.
 func (c *DuckDBClient) GetPartitionStatus(ctx context.Context) (map[string]bool, error) {
-	// Query DuckLake metadata to check partition status
-	// This is a placeholder - DuckLake metadata queries may vary
-	status := make(map[string]bool)
+	// ctx is currently unused but kept in the signature for future implementations
+	_ = ctx
 
-	bronzeTables := []string{
-		"ledgers_row_v2",
-		"transactions_row_v2",
-		"operations_row_v2",
-		"effects_row_v1",
-		"trades_row_v1",
-		"contract_events_stream_v1",
-		"accounts_snapshot_v1",
-		"trustlines_snapshot_v1",
-		"account_signers_snapshot_v1",
-		"native_balances_snapshot_v1",
-		"offers_snapshot_v1",
-		"liquidity_pools_snapshot_v1",
-		"claimable_balances_snapshot_v1",
-		"contract_data_snapshot_v1",
-		"contract_code_snapshot_v1",
-		"restored_keys_state_v1",
-		"ttl_snapshot_v1",
-		"evicted_keys_state_v1",
-		"config_settings_snapshot_v1",
-	}
-
-	for _, table := range bronzeTables {
-		// For now, assume all tables are partitioned after creation
-		// In the future, we could query DuckLake metadata to verify
-		status[table] = true
-	}
-
-	return status, nil
+	return nil, fmt.Errorf("GetPartitionStatus is not implemented: partition status cannot be determined from DuckLake metadata yet")
 }
 
-// MergeAllBronzeTables merges adjacent files for all Bronze tables
-// This combines small Parquet files into larger ones for better query performance
-// WARNING: Should be run when flusher is stopped/paused to avoid conflicts
-func (c *DuckDBClient) MergeAllBronzeTables(ctx context.Context, maxFiles int) error {
+// mergeAllBronzeTablesInternal is the internal implementation without locking
+func (c *DuckDBClient) mergeAllBronzeTablesInternal(ctx context.Context, maxFiles int) error {
 	log.Printf("🔧 Starting file merge for all Bronze tables (max_compacted_files=%d)...", maxFiles)
 
-	bronzeTables := []string{
-		"ledgers_row_v2",
-		"transactions_row_v2",
-		"operations_row_v2",
-		"effects_row_v1",
-		"trades_row_v1",
-		"contract_events_stream_v1",
-		"accounts_snapshot_v1",
-		"trustlines_snapshot_v1",
-		"account_signers_snapshot_v1",
-		"native_balances_snapshot_v1",
-		"offers_snapshot_v1",
-		"liquidity_pools_snapshot_v1",
-		"claimable_balances_snapshot_v1",
-		"contract_data_snapshot_v1",
-		"contract_code_snapshot_v1",
-		"restored_keys_state_v1",
-		"ttl_snapshot_v1",
-		"evicted_keys_state_v1",
-		"config_settings_snapshot_v1",
-	}
-
 	successCount := 0
-	for _, table := range bronzeTables {
+	for _, table := range BronzeTables {
 		// Merge files with partitioning-aware adjacency
 		// DuckLake will merge files within each partition
 		mergeSQL := fmt.Sprintf(`CALL ducklake_merge_adjacent_files('%s', '%s', schema => '%s', max_compacted_files => %d)`,
@@ -124,13 +108,34 @@ func (c *DuckDBClient) MergeAllBronzeTables(ctx context.Context, maxFiles int) e
 		successCount++
 	}
 
-	log.Printf("✅ File merge completed for %d/%d Bronze tables", successCount, len(bronzeTables))
+	if successCount == 0 {
+		return fmt.Errorf("failed to merge files for all %d Bronze tables", len(BronzeTables))
+	}
+
+	if successCount < len(BronzeTables) {
+		log.Printf("⚠️  File merge completed with partial success: %d/%d Bronze tables", successCount, len(BronzeTables))
+	} else {
+		log.Printf("✅ File merge completed for %d/%d Bronze tables", successCount, len(BronzeTables))
+	}
+
 	return nil
 }
 
-// ExpireBronzeSnapshots expires old snapshots to mark merged files for cleanup
-// This is a catalog-level operation that expires snapshots for the Bronze catalog
-func (c *DuckDBClient) ExpireBronzeSnapshots(ctx context.Context) error {
+// MergeAllBronzeTables merges adjacent files for all Bronze tables
+// This combines small Parquet files into larger ones for better query performance
+// WARNING: Should be run when flusher is stopped/paused to avoid conflicts
+func (c *DuckDBClient) MergeAllBronzeTables(ctx context.Context, maxFiles int) error {
+	// Acquire exclusive lock - blocks all flushes during merge
+	if c.flusher != nil {
+		c.flusher.mu.Lock()
+		defer c.flusher.mu.Unlock()
+	}
+
+	return c.mergeAllBronzeTablesInternal(ctx, maxFiles)
+}
+
+// expireBronzeSnapshotsInternal is the internal implementation without locking
+func (c *DuckDBClient) expireBronzeSnapshotsInternal(ctx context.Context) error {
 	log.Println("🗑️  Expiring old snapshots (catalog-level operation)...")
 
 	// ducklake_expire_snapshots operates at catalog level
@@ -144,9 +149,20 @@ func (c *DuckDBClient) ExpireBronzeSnapshots(ctx context.Context) error {
 	return nil
 }
 
-// CleanupBronzeOrphanedFiles removes orphaned Parquet files from S3
-// This should be called after ExpireBronzeSnapshots to actually delete old files
-func (c *DuckDBClient) CleanupBronzeOrphanedFiles(ctx context.Context) error {
+// ExpireBronzeSnapshots expires old snapshots to mark merged files for cleanup
+// This is a catalog-level operation that expires snapshots for the Bronze catalog
+func (c *DuckDBClient) ExpireBronzeSnapshots(ctx context.Context) error {
+	// Acquire exclusive lock - blocks all flushes during snapshot expiration
+	if c.flusher != nil {
+		c.flusher.mu.Lock()
+		defer c.flusher.mu.Unlock()
+	}
+
+	return c.expireBronzeSnapshotsInternal(ctx)
+}
+
+// cleanupBronzeOrphanedFilesInternal is the internal implementation without locking
+func (c *DuckDBClient) cleanupBronzeOrphanedFilesInternal(ctx context.Context) error {
 	log.Println("🧹 Cleaning up orphaned files...")
 
 	// ducklake_cleanup_old_files operates at catalog level
@@ -160,24 +176,42 @@ func (c *DuckDBClient) CleanupBronzeOrphanedFiles(ctx context.Context) error {
 	return nil
 }
 
+// CleanupBronzeOrphanedFiles removes orphaned Parquet files from S3
+// This should be called after ExpireBronzeSnapshots to actually delete old files
+func (c *DuckDBClient) CleanupBronzeOrphanedFiles(ctx context.Context) error {
+	// Acquire exclusive lock - blocks all flushes during cleanup
+	if c.flusher != nil {
+		c.flusher.mu.Lock()
+		defer c.flusher.mu.Unlock()
+	}
+
+	return c.cleanupBronzeOrphanedFilesInternal(ctx)
+}
+
 // PerformBronzeMaintenanceCycle runs merge, expire, and cleanup in sequence
 // This is the recommended maintenance workflow for Bronze tables
 // WARNING: MUST be run when flusher is stopped/paused to avoid deadlocks
 func (c *DuckDBClient) PerformBronzeMaintenanceCycle(ctx context.Context, maxFiles int) error {
+	// Acquire exclusive lock once for entire maintenance cycle
+	if c.flusher != nil {
+		c.flusher.mu.Lock()
+		defer c.flusher.mu.Unlock()
+	}
+
 	log.Println("🔧 Starting full Bronze maintenance cycle (merge → expire → cleanup)...")
 
 	// Step 1: Merge small files into larger ones
-	if err := c.MergeAllBronzeTables(ctx, maxFiles); err != nil {
+	if err := c.mergeAllBronzeTablesInternal(ctx, maxFiles); err != nil {
 		return fmt.Errorf("merge failed: %w", err)
 	}
 
 	// Step 2: Expire old snapshots to mark files for deletion
-	if err := c.ExpireBronzeSnapshots(ctx); err != nil {
+	if err := c.expireBronzeSnapshotsInternal(ctx); err != nil {
 		return fmt.Errorf("expire snapshots failed: %w", err)
 	}
 
 	// Step 3: Actually delete orphaned files from S3
-	if err := c.CleanupBronzeOrphanedFiles(ctx); err != nil {
+	if err := c.cleanupBronzeOrphanedFilesInternal(ctx); err != nil {
 		return fmt.Errorf("cleanup failed: %w", err)
 	}
 

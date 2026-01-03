@@ -10,8 +10,9 @@ import (
 
 // DuckDBClient manages DuckDB connection and operations
 type DuckDBClient struct {
-	db     *sql.DB
-	config *DuckLakeConfig
+	db      *sql.DB
+	config  *DuckLakeConfig
+	flusher *Flusher // Reference to parent Flusher for mutex coordination
 }
 
 // NewDuckDBClient creates a new DuckDB client
@@ -178,6 +179,11 @@ func (c *DuckDBClient) VerifyTableExists(tableName string) error {
 	}
 
 	return nil
+}
+
+// SetFlusher sets the reference to the parent Flusher for mutex coordination
+func (c *DuckDBClient) SetFlusher(f *Flusher) {
+	c.flusher = f
 }
 
 // Close closes the DuckDB connection

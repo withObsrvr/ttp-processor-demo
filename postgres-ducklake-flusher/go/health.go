@@ -163,9 +163,9 @@ func (h *HealthServer) handleMergeBronze(w http.ResponseWriter, r *http.Request)
 
 	log.Println("🔧 Received request to merge Bronze files")
 
-	// Merge with max 1000 files to avoid memory issues
+	// Merge with max files to avoid memory issues
 	ctx := r.Context()
-	if err := h.duckdb.MergeAllBronzeTables(ctx, 1000); err != nil {
+	if err := h.duckdb.MergeAllBronzeTables(ctx, DefaultMaxCompactedFiles); err != nil {
 		log.Printf("ERROR: Failed to merge Bronze files: %v", err)
 		http.Error(w, fmt.Sprintf("Failed to merge files: %v", err), http.StatusInternalServerError)
 		return
@@ -249,7 +249,7 @@ func (h *HealthServer) handleFullMaintenanceBronze(w http.ResponseWriter, r *htt
 	log.Println("🔧 Received request for full Bronze maintenance cycle")
 
 	ctx := r.Context()
-	if err := h.duckdb.PerformBronzeMaintenanceCycle(ctx, 1000); err != nil {
+	if err := h.duckdb.PerformBronzeMaintenanceCycle(ctx, DefaultMaxCompactedFiles); err != nil{
 		log.Printf("ERROR: Failed to complete maintenance cycle: %v", err)
 		http.Error(w, fmt.Sprintf("Failed to complete maintenance: %v", err), http.StatusInternalServerError)
 		return

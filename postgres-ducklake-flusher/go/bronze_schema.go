@@ -75,37 +75,14 @@ func (c *DuckDBClient) createBronzeTables(ctx context.Context) error {
 func (c *DuckDBClient) partitionBronzeTables(ctx context.Context) error {
 	log.Println("Adding DuckLake partitioning to Bronze tables...")
 
-	// List of all Bronze tables with ledger_range column
-	bronzeTables := []string{
-		"ledgers_row_v2",
-		"transactions_row_v2",
-		"operations_row_v2",
-		"effects_row_v1",
-		"trades_row_v1",
-		"contract_events_stream_v1",
-		"accounts_snapshot_v1",
-		"trustlines_snapshot_v1",
-		"account_signers_snapshot_v1",
-		"native_balances_snapshot_v1",
-		"offers_snapshot_v1",
-		"liquidity_pools_snapshot_v1",
-		"claimable_balances_snapshot_v1",
-		"contract_data_snapshot_v1",
-		"contract_code_snapshot_v1",
-		"restored_keys_state_v1",
-		"ttl_snapshot_v1",
-		"evicted_keys_state_v1",
-		"config_settings_snapshot_v1",
-	}
-
 	successCount := 0
-	for _, table := range bronzeTables {
+	for _, table := range BronzeTables {
 		fullTableName := fmt.Sprintf("%s.%s.%s", c.config.CatalogName, c.config.SchemaName, table)
 		partitionSQL := fmt.Sprintf(`ALTER TABLE %s SET PARTITIONED BY (ledger_range)`, fullTableName)
 
 		if _, err := c.db.ExecContext(ctx, partitionSQL); err != nil {
 			log.Printf("⚠️  Failed to partition %s: %v", table, err)
-			// Don't fail - some tables might not have ledger_range
+			// Don't fail - some tables might not exist or not have ledger_range
 			continue
 		}
 
@@ -113,7 +90,16 @@ func (c *DuckDBClient) partitionBronzeTables(ctx context.Context) error {
 		successCount++
 	}
 
-	log.Printf("✅ Partitioned %d/%d Bronze tables successfully", successCount, len(bronzeTables))
+	if successCount == 0 {
+		return fmt.Errorf("failed to partition all %d Bronze tables", len(BronzeTables))
+	}
+
+	if successCount < len(BronzeTables) {
+		log.Printf("⚠️  Partitioned %d/%d Bronze tables successfully (some failures)", successCount, len(BronzeTables))
+	} else {
+		log.Printf("✅ Partitioned %d/%d Bronze tables successfully", successCount, len(BronzeTables))
+	}
+
 	return nil
 }
 

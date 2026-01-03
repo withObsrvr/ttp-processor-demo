@@ -131,7 +131,7 @@ func (hs *HealthServer) handleRecreateSilver(w http.ResponseWriter, r *http.Requ
 	log.Println("⚠️  Maintenance endpoint called: /maintenance/recreate-silver")
 
 	if err := hs.duckdb.RecreateAllSilverTables(); err != nil {
-		log.Printf("❌ Failed to recreate Silver tables: %v", err)
+		log.Printf("ERROR: Failed to recreate Silver tables: %v", err)
 		http.Error(w, fmt.Sprintf("Failed to recreate Silver tables: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -157,8 +157,8 @@ func (hs *HealthServer) handleMergeSilver(w http.ResponseWriter, r *http.Request
 
 	log.Println("🔧 Received request to merge Silver files")
 
-	// Merge with max 1000 files to avoid memory issues
-	if err := hs.duckdb.MergeAllSilverTables(1000); err != nil {
+	// Merge with max files to avoid memory issues
+	if err := hs.duckdb.MergeAllSilverTables(DefaultMaxCompactedFiles); err != nil{
 		log.Printf("ERROR: Failed to merge Silver files: %v", err)
 		http.Error(w, fmt.Sprintf("Failed to merge files: %v", err), http.StatusInternalServerError)
 		return
@@ -239,7 +239,7 @@ func (hs *HealthServer) handleFullMaintenanceSilver(w http.ResponseWriter, r *ht
 
 	log.Println("🔧 Received request for full Silver maintenance cycle")
 
-	if err := hs.duckdb.PerformSilverMaintenanceCycle(1000); err != nil {
+	if err := hs.duckdb.PerformSilverMaintenanceCycle(DefaultMaxCompactedFiles); err != nil {
 		log.Printf("ERROR: Failed to complete maintenance cycle: %v", err)
 		http.Error(w, fmt.Sprintf("Failed to complete maintenance: %v", err), http.StatusInternalServerError)
 		return
