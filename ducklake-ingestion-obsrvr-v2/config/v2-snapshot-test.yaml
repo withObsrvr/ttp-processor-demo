@@ -1,0 +1,61 @@
+# V2 Snapshot Test - Compare with V3
+# Uses same data source and ledger range as v3 testnet-datastore test
+
+service:
+  name: "ducklake-ingestion-obsrvr-v2"
+  environment: "testing"
+
+source:
+  mode: "datastore"
+  network_passphrase: "Test SDF Network ; September 2015"
+  start_ledger: 1000
+  end_ledger: 1200
+
+  datastore:
+    type: "GCS"
+    path: "obsrvr-stellar-ledger-data-testnet-data/landing/ledgers/testnet"
+    ledgers_per_file: 1
+    files_per_partition: 64000
+    buffer_size: 100
+    num_workers: 5
+    retry_limit: 3
+    retry_wait_ms: 1000
+
+ducklake:
+  catalog_path: "v2-test-catalog.duckdb"
+  data_path: "v2-test-data"
+  catalog_name: "v2_snapshot_test"
+  schema_name: "testnet"
+  batch_size: 100
+  commit_interval_seconds: 30
+
+logging:
+  level: "info"
+  format: "console"
+
+checkpoint:
+  enabled: true
+  dir: "state-v2-snapshot-test"
+  filename: "checkpoint-v2-snapshot.json"
+
+manifest:
+  enabled: true
+
+pas:
+  enabled: true
+  backup_dir: "state-v2-snapshot-test/pas-backup"
+  strict: false
+
+era:
+  era_id: "v2-snapshot-test"
+  version_label: "v2-test"
+
+pipeline:
+  batch_size: 10
+  pool:
+    workers: 4
+    queue_size: 8
+
+metrics:
+  enabled: true
+  address: ":9093"

@@ -1,0 +1,1583 @@
+package main
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/hex"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/stellar/go-stellar-sdk/xdr"
+	pb "github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/go/gen/raw_ledger_service"
+)
+
+// Writer handles writing ledger data to PostgreSQL
+type Writer struct {
+	db           *pgxpool.Pool
+	config       *Config
+	checkpoint   *Checkpoint
+	healthServer *HealthServer
+}
+
+// LedgerData represents extracted ledger information
+type LedgerData struct {
+	Sequence             uint32
+	LedgerHash           string
+	PreviousLedgerHash   string
+	ClosedAt             time.Time
+	ProtocolVersion      uint32
+	TotalCoins           int64
+	FeePool              int64
+	BaseFee              uint32
+	BaseReserve          uint32
+	MaxTxSetSize         uint32
+	TransactionCount     int
+	OperationCount       int
+	SuccessfulTxCount    int
+	FailedTxCount        int
+	TxSetOperationCount  int
+	SorobanFeeWrite1KB   *int64
+	NodeID               *string
+	Signature            *string
+	LedgerHeader         *string
+	BucketListSize       *int64
+	LiveSorobanStateSize *int64
+	EvictedKeysCount     *int
+	IngestionTimestamp   time.Time
+	LedgerRange          uint32
+}
+
+// NewWriter creates a new PostgreSQL writer
+func NewWriter(db *pgxpool.Pool, config *Config, checkpoint *Checkpoint, healthServer *HealthServer) *Writer {
+	return &Writer{
+		db:           db,
+		config:       config,
+		checkpoint:   checkpoint,
+		healthServer: healthServer,
+	}
+}
+
+// WriteBatch writes a batch of ledgers to PostgreSQL
+func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) error {
+	if len(rawLedgers) == 0 {
+		return nil
+	}
+
+	startTime := time.Now()
+	log.Printf("Writing batch of %d ledgers (sequences %d-%d)",
+		len(rawLedgers),
+		rawLedgers[0].Sequence,
+		rawLedgers[len(rawLedgers)-1].Sequence)
+
+	// Begin transaction
+	tx, err := w.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// Process each ledger
+	var totalTxCount, totalOpCount uint64
+	var allTransactions []TransactionData
+	var allOperations []OperationData
+	var allEffects []EffectData
+	var allTrades []TradeData
+
+	// Phase 1 accumulators (Day 1: accounts & offers)
+	var allAccounts []AccountData
+	var allOffers []OfferData
+
+	// Phase 1 accumulators (Day 2-3: trustlines & account_signers)
+	var allTrustlines []TrustlineData
+	var allAccountSigners []AccountSignerData
+
+	// Phase 2 accumulators (Day 4: claimable_balances & liquidity_pools)
+	var allClaimableBalances []ClaimableBalanceData
+	var allLiquidityPools []LiquidityPoolData
+
+	// Phase 2 accumulators (Day 5: config_settings)
+	var allConfigSettings []ConfigSettingData
+
+	// Phase 2 accumulators (Day 6: ttl)
+	var allTTL []TTLData
+
+	// Phase 3 accumulators (Day 7: evicted_keys)
+	var allEvictedKeys []EvictedKeyData
+
+	// Phase 4 accumulators (Day 8: contract_events)
+	var allContractEvents []ContractEventData
+
+	// Phase 4 accumulators (Day 9: contract_data)
+	var allContractData []ContractDataData
+
+	// Phase 4 accumulators (Day 10: contract_code)
+	var allContractCode []ContractCodeData
+
+	// Phase 5 accumulators (Day 11: native_balances)
+	var allNativeBalances []NativeBalanceData
+
+	// Phase 5 accumulators (Day 11: restored_keys)
+	var allRestoredKeys []RestoredKeyData
+
+	for _, rawLedger := range rawLedgers {
+		// Extract ledger data
+		ledgerData, err := w.extractLedgerData(rawLedger)
+		if err != nil {
+			return fmt.Errorf("failed to extract ledger %d: %w", rawLedger.Sequence, err)
+		}
+
+		// Insert ledger
+		if err := w.insertLedger(ctx, tx, ledgerData); err != nil {
+			return fmt.Errorf("failed to insert ledger %d: %w", ledgerData.Sequence, err)
+		}
+
+		// Extract transactions
+		transactions, err := w.extractTransactions(rawLedger)
+		if err != nil {
+			log.Printf("Warning: Failed to extract transactions for ledger %d: %v", rawLedger.Sequence, err)
+		} else {
+			allTransactions = append(allTransactions, transactions...)
+		}
+
+		// Extract operations
+		operations, err := w.extractOperations(rawLedger)
+		if err != nil {
+			log.Printf("Warning: Failed to extract operations for ledger %d: %v", rawLedger.Sequence, err)
+		} else {
+			allOperations = append(allOperations, operations...)
+		}
+
+		// Extract effects
+		effects, err := w.extractEffects(rawLedger)
+		if err != nil {
+			log.Printf("Warning: Failed to extract effects for ledger %d: %v", rawLedger.Sequence, err)
+		} else {
+			allEffects = append(allEffects, effects...)
+		}
+
+		// Extract trades
+		trades, err := w.extractTrades(rawLedger)
+		if err != nil {
+			log.Printf("Warning: Failed to extract trades for ledger %d: %v", rawLedger.Sequence, err)
+		} else {
+			allTrades = append(allTrades, trades...)
+		}
+
+		// Extract accounts (Phase 1 - Day 1)
+		accounts, err := w.extractAccounts(rawLedger)
+		if err != nil {
+			log.Printf("Warning: Failed to extract accounts for ledger %d: %v", rawLedger.Sequence, err)
+		} else {
+			allAccounts = append(allAccounts, accounts...)
+		}
+
+		// Extract offers (Phase 1 - Day 1)
+		offers, err := w.extractOffers(rawLedger)
+		if err != nil {
+			log.Printf("Warning: Failed to extract offers for ledger %d: %v", rawLedger.Sequence, err)
+		} else {
+			allOffers = append(allOffers, offers...)
+		}
+
+		// Extract trustlines (Phase 1 - Day 2)
+		trustlines, err := w.extractTrustlines(rawLedger)
+		if err != nil {
+			log.Printf("Warning: Failed to extract trustlines for ledger %d: %v", rawLedger.Sequence, err)
+		} else {
+			allTrustlines = append(allTrustlines, trustlines...)
+		}
+
+		// Extract account signers (Phase 1 - Day 3)
+		accountSigners, err := w.extractAccountSigners(rawLedger)
+		if err != nil {
+			log.Printf("Warning: Failed to extract account signers for ledger %d: %v", rawLedger.Sequence, err)
+		} else {
+			allAccountSigners = append(allAccountSigners, accountSigners...)
+		}
+
+		// Extract claimable balances (Phase 2 - Day 4)
+		claimableBalances, err := w.extractClaimableBalances(rawLedger)
+		if err != nil {
+			log.Printf("Warning: Failed to extract claimable balances for ledger %d: %v", rawLedger.Sequence, err)
+		} else {
+			allClaimableBalances = append(allClaimableBalances, claimableBalances...)
+		}
+
+		// Extract liquidity pools (Phase 2 - Day 4)
+		liquidityPools, err := w.extractLiquidityPools(rawLedger)
+		if err != nil {
+			log.Printf("Warning: Failed to extract liquidity pools for ledger %d: %v", rawLedger.Sequence, err)
+		} else {
+			allLiquidityPools = append(allLiquidityPools, liquidityPools...)
+		}
+
+		// Extract config settings (Phase 2 - Day 5)
+		configSettings, err := w.extractConfigSettings(rawLedger)
+		if err != nil {
+			log.Printf("Warning: Failed to extract config settings for ledger %d: %v", rawLedger.Sequence, err)
+		} else {
+			allConfigSettings = append(allConfigSettings, configSettings...)
+		}
+
+		// Extract TTL (Phase 2 - Day 6)
+		ttl, err := w.extractTTL(rawLedger)
+		if err != nil {
+			log.Printf("Warning: Failed to extract TTL for ledger %d: %v", rawLedger.Sequence, err)
+		} else {
+			allTTL = append(allTTL, ttl...)
+		}
+
+		// Extract evicted keys (Phase 3 - Day 7)
+		evictedKeys, err := w.extractEvictedKeys(rawLedger)
+		if err != nil {
+			log.Printf("Warning: Failed to extract evicted keys for ledger %d: %v", rawLedger.Sequence, err)
+		} else {
+			allEvictedKeys = append(allEvictedKeys, evictedKeys...)
+		}
+
+		// Extract contract events (Phase 4 - Day 8)
+		contractEvents, err := w.extractContractEvents(rawLedger)
+		if err != nil {
+			log.Printf("Warning: Failed to extract contract events for ledger %d: %v", rawLedger.Sequence, err)
+		} else {
+			allContractEvents = append(allContractEvents, contractEvents...)
+		}
+
+		// Extract contract data (Phase 4 - Day 9)
+		contractData, err := w.extractContractData(rawLedger)
+		if err != nil {
+			log.Printf("Warning: Failed to extract contract data for ledger %d: %v", rawLedger.Sequence, err)
+		} else {
+			allContractData = append(allContractData, contractData...)
+		}
+
+		// Extract contract code (Phase 4 - Day 10)
+		contractCode, err := w.extractContractCode(rawLedger)
+		if err != nil {
+			log.Printf("Warning: Failed to extract contract code for ledger %d: %v", rawLedger.Sequence, err)
+		} else {
+			allContractCode = append(allContractCode, contractCode...)
+		}
+
+		// Extract native balances (Phase 5 - Day 11)
+		nativeBalances, err := w.extractNativeBalances(rawLedger)
+		if err != nil {
+			log.Printf("Warning: Failed to extract native balances for ledger %d: %v", rawLedger.Sequence, err)
+		} else {
+			allNativeBalances = append(allNativeBalances, nativeBalances...)
+		}
+
+		// Extract restored keys (Phase 5 - Day 11)
+		restoredKeys, err := w.extractRestoredKeys(rawLedger)
+		if err != nil {
+			log.Printf("Warning: Failed to extract restored keys for ledger %d: %v", rawLedger.Sequence, err)
+		} else {
+			allRestoredKeys = append(allRestoredKeys, restoredKeys...)
+		}
+
+		// Update checkpoint
+		if err := w.checkpoint.Update(
+			ledgerData.Sequence,
+			ledgerData.LedgerHash,
+			ledgerData.LedgerRange,
+			uint64(ledgerData.TransactionCount),
+			uint64(ledgerData.OperationCount),
+		); err != nil {
+			return fmt.Errorf("failed to update checkpoint: %w", err)
+		}
+
+		totalTxCount += uint64(ledgerData.TransactionCount)
+		totalOpCount += uint64(ledgerData.OperationCount)
+	}
+
+	// Insert all transactions
+	if len(allTransactions) > 0 {
+		if err := w.insertTransactions(ctx, tx, allTransactions); err != nil {
+			return fmt.Errorf("failed to insert transactions: %w", err)
+		}
+		log.Printf("Inserted %d transactions", len(allTransactions))
+	}
+
+	// Insert all operations
+	if len(allOperations) > 0 {
+		if err := w.insertOperations(ctx, tx, allOperations); err != nil {
+			return fmt.Errorf("failed to insert operations: %w", err)
+		}
+		log.Printf("Inserted %d operations", len(allOperations))
+	}
+
+	// Insert all effects
+	if len(allEffects) > 0 {
+		if err := w.insertEffects(ctx, tx, allEffects); err != nil {
+			return fmt.Errorf("failed to insert effects: %w", err)
+		}
+		log.Printf("Inserted %d effects", len(allEffects))
+	}
+
+	// Insert all trades
+	if len(allTrades) > 0 {
+		if err := w.insertTrades(ctx, tx, allTrades); err != nil {
+			return fmt.Errorf("failed to insert trades: %w", err)
+		}
+		log.Printf("Inserted %d trades", len(allTrades))
+	}
+
+	// Insert all accounts (Phase 1 - Day 1)
+	if len(allAccounts) > 0 {
+		if err := w.insertAccounts(ctx, tx, allAccounts); err != nil {
+			return fmt.Errorf("failed to insert accounts: %w", err)
+		}
+		log.Printf("Inserted %d accounts", len(allAccounts))
+	}
+
+	// Insert all offers (Phase 1 - Day 1)
+	if len(allOffers) > 0 {
+		if err := w.insertOffers(ctx, tx, allOffers); err != nil {
+			return fmt.Errorf("failed to insert offers: %w", err)
+		}
+		log.Printf("Inserted %d offers", len(allOffers))
+	}
+
+	// Insert all trustlines (Phase 1 - Day 2)
+	if len(allTrustlines) > 0 {
+		if err := w.insertTrustlines(ctx, tx, allTrustlines); err != nil {
+			return fmt.Errorf("failed to insert trustlines: %w", err)
+		}
+		log.Printf("Inserted %d trustlines", len(allTrustlines))
+	}
+
+	// Insert all account signers (Phase 1 - Day 3)
+	if len(allAccountSigners) > 0 {
+		if err := w.insertAccountSigners(ctx, tx, allAccountSigners); err != nil {
+			return fmt.Errorf("failed to insert account signers: %w", err)
+		}
+		log.Printf("Inserted %d account signers", len(allAccountSigners))
+	}
+
+	// Insert all claimable balances (Phase 2 - Day 4)
+	if len(allClaimableBalances) > 0 {
+		if err := w.insertClaimableBalances(ctx, tx, allClaimableBalances); err != nil {
+			return fmt.Errorf("failed to insert claimable balances: %w", err)
+		}
+		log.Printf("Inserted %d claimable balances", len(allClaimableBalances))
+	}
+
+	// Insert all liquidity pools (Phase 2 - Day 4)
+	if len(allLiquidityPools) > 0 {
+		if err := w.insertLiquidityPools(ctx, tx, allLiquidityPools); err != nil {
+			return fmt.Errorf("failed to insert liquidity pools: %w", err)
+		}
+		log.Printf("Inserted %d liquidity pools", len(allLiquidityPools))
+	}
+
+	// Insert all config settings (Phase 2 - Day 5)
+	if len(allConfigSettings) > 0 {
+		if err := w.insertConfigSettings(ctx, tx, allConfigSettings); err != nil {
+			return fmt.Errorf("failed to insert config settings: %w", err)
+		}
+		log.Printf("Inserted %d config settings", len(allConfigSettings))
+	}
+
+	// Insert all TTL (Phase 2 - Day 6)
+	if len(allTTL) > 0 {
+		if err := w.insertTTL(ctx, tx, allTTL); err != nil {
+			return fmt.Errorf("failed to insert TTL: %w", err)
+		}
+		log.Printf("Inserted %d TTL entries", len(allTTL))
+	}
+
+	// Insert all evicted keys (Phase 3 - Day 7)
+	if len(allEvictedKeys) > 0 {
+		if err := w.insertEvictedKeys(ctx, tx, allEvictedKeys); err != nil {
+			return fmt.Errorf("failed to insert evicted keys: %w", err)
+		}
+		log.Printf("Inserted %d evicted keys", len(allEvictedKeys))
+	}
+
+	// Insert all contract events (Phase 4 - Day 8)
+	if len(allContractEvents) > 0 {
+		if err := w.insertContractEvents(ctx, tx, allContractEvents); err != nil {
+			return fmt.Errorf("failed to insert contract events: %w", err)
+		}
+		log.Printf("Inserted %d contract events", len(allContractEvents))
+	}
+
+	// Insert all contract data (Phase 4 - Day 9)
+	if len(allContractData) > 0 {
+		if err := w.insertContractData(ctx, tx, allContractData); err != nil {
+			return fmt.Errorf("failed to insert contract data: %w", err)
+		}
+		log.Printf("Inserted %d contract data entries", len(allContractData))
+	}
+
+	// Insert all contract code (Phase 4 - Day 10)
+	if len(allContractCode) > 0 {
+		if err := w.insertContractCode(ctx, tx, allContractCode); err != nil {
+			return fmt.Errorf("failed to insert contract code: %w", err)
+		}
+		log.Printf("Inserted %d contract code entries", len(allContractCode))
+	}
+
+	// Insert all native balances (Phase 5 - Day 11)
+	if len(allNativeBalances) > 0 {
+		if err := w.insertNativeBalances(ctx, tx, allNativeBalances); err != nil {
+			return fmt.Errorf("failed to insert native balances: %w", err)
+		}
+		log.Printf("Inserted %d native balances", len(allNativeBalances))
+	}
+
+	// Insert all restored keys (Phase 5 - Day 11)
+	if len(allRestoredKeys) > 0 {
+		if err := w.insertRestoredKeys(ctx, tx, allRestoredKeys); err != nil {
+			return fmt.Errorf("failed to insert restored keys: %w", err)
+		}
+		log.Printf("Inserted %d restored keys", len(allRestoredKeys))
+	}
+
+	// Commit transaction
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	// Save checkpoint
+	if err := w.checkpoint.Save(); err != nil {
+		log.Printf("Warning: Failed to save checkpoint: %v", err)
+	}
+
+	// Update metrics
+	w.healthServer.UpdateMetrics(uint64(len(rawLedgers)), totalTxCount, totalOpCount)
+
+	log.Printf("Batch written successfully in %v (%.2f ledgers/sec)",
+		time.Since(startTime),
+		float64(len(rawLedgers))/time.Since(startTime).Seconds())
+
+	return nil
+}
+
+// extractLedgerData extracts ledger data from raw ledger protobuf
+func (w *Writer) extractLedgerData(rawLedger *pb.RawLedger) (*LedgerData, error) {
+	// Unmarshal XDR
+	var lcm xdr.LedgerCloseMeta
+	if err := lcm.UnmarshalBinary(rawLedger.LedgerCloseMetaXdr); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal XDR: %w", err)
+	}
+
+	// Get ledger header based on version
+	var header xdr.LedgerHeaderHistoryEntry
+	switch lcm.V {
+	case 0:
+		header = lcm.MustV0().LedgerHeader
+	case 1:
+		header = lcm.MustV1().LedgerHeader
+	case 2:
+		header = lcm.MustV2().LedgerHeader
+	default:
+		return nil, fmt.Errorf("unknown LedgerCloseMeta version: %d", lcm.V)
+	}
+
+	// Extract core fields
+	data := &LedgerData{
+		Sequence:           uint32(header.Header.LedgerSeq),
+		LedgerHash:         hex.EncodeToString(header.Hash[:]),
+		PreviousLedgerHash: hex.EncodeToString(header.Header.PreviousLedgerHash[:]),
+		ClosedAt:           time.Unix(int64(header.Header.ScpValue.CloseTime), 0).UTC(),
+		ProtocolVersion:    uint32(header.Header.LedgerVersion),
+		TotalCoins:         int64(header.Header.TotalCoins),
+		FeePool:            int64(header.Header.FeePool),
+		BaseFee:            uint32(header.Header.BaseFee),
+		BaseReserve:        uint32(header.Header.BaseReserve),
+		MaxTxSetSize:       uint32(header.Header.MaxTxSetSize),
+		IngestionTimestamp: time.Now().UTC(),
+	}
+
+	// Calculate ledger_range (partition key)
+	data.LedgerRange = (data.Sequence / 10000) * 10000
+
+	// Count transactions and operations based on LedgerCloseMeta version
+	var txCount uint32
+	var failedCount uint32
+	var operationCount uint32
+	var txSetOperationCount uint32
+
+	switch lcm.V {
+	case 0:
+		v0 := lcm.MustV0()
+		txCount = uint32(len(v0.TxSet.Txs))
+		// V0 doesn't have tx processing results, count all ops from envelopes
+		for _, tx := range v0.TxSet.Txs {
+			opCount := uint32(len(tx.Operations()))
+			txSetOperationCount += opCount
+			operationCount += opCount
+		}
+	case 1:
+		v1 := lcm.MustV1()
+		txCount = uint32(len(v1.TxProcessing))
+
+		// Count operations from transaction results
+		for _, txApply := range v1.TxProcessing {
+			if opResults, ok := txApply.Result.Result.OperationResults(); ok {
+				opCount := uint32(len(opResults))
+				txSetOperationCount += opCount
+
+				if txApply.Result.Result.Successful() {
+					operationCount += opCount
+				} else {
+					failedCount++
+				}
+			} else {
+				failedCount++
+			}
+		}
+	case 2:
+		v2 := lcm.MustV2()
+		txCount = uint32(len(v2.TxProcessing))
+
+		// Count operations from transaction results
+		for _, txApply := range v2.TxProcessing {
+			if opResults, ok := txApply.Result.Result.OperationResults(); ok {
+				opCount := uint32(len(opResults))
+				txSetOperationCount += opCount
+
+				if txApply.Result.Result.Successful() {
+					operationCount += opCount
+				} else {
+					failedCount++
+				}
+			} else {
+				failedCount++
+			}
+		}
+	}
+
+	data.TransactionCount = int(txCount)
+	data.SuccessfulTxCount = int(txCount - failedCount)
+	data.FailedTxCount = int(failedCount)
+	data.OperationCount = int(operationCount)
+	data.TxSetOperationCount = int(txSetOperationCount)
+
+	// Protocol 20+ Soroban fields
+	if lcmV1, ok := lcm.GetV1(); ok {
+		if extV1, ok := lcmV1.Ext.GetV1(); ok {
+			feeWrite := int64(extV1.SorobanFeeWrite1Kb)
+			data.SorobanFeeWrite1KB = &feeWrite
+		}
+	} else if lcmV2, ok := lcm.GetV2(); ok {
+		if extV1, ok := lcmV2.Ext.GetV1(); ok {
+			feeWrite := int64(extV1.SorobanFeeWrite1Kb)
+			data.SorobanFeeWrite1KB = &feeWrite
+		}
+	}
+
+	// Node ID and signature (from SCP value)
+	if lcValueSig, ok := header.Header.ScpValue.Ext.GetLcValueSignature(); ok {
+		nodeIDStr := base64.StdEncoding.EncodeToString(lcValueSig.NodeId.Ed25519[:])
+		data.NodeID = &nodeIDStr
+
+		sigStr := base64.StdEncoding.EncodeToString(lcValueSig.Signature[:])
+		data.Signature = &sigStr
+	}
+
+	// Ledger header XDR (base64 encoded)
+	headerXDR, err := header.Header.MarshalBinary()
+	if err == nil {
+		headerStr := base64.StdEncoding.EncodeToString(headerXDR)
+		data.LedgerHeader = &headerStr
+	}
+
+	// Bucket list size and live Soroban state size (Protocol 20+)
+	if lcmV1, ok := lcm.GetV1(); ok {
+		sorobanStateSize := int64(lcmV1.TotalByteSizeOfLiveSorobanState)
+		data.BucketListSize = &sorobanStateSize
+		data.LiveSorobanStateSize = &sorobanStateSize
+	} else if lcmV2, ok := lcm.GetV2(); ok {
+		sorobanStateSize := int64(lcmV2.TotalByteSizeOfLiveSorobanState)
+		data.BucketListSize = &sorobanStateSize
+		data.LiveSorobanStateSize = &sorobanStateSize
+	}
+
+	// Protocol 23+ Hot Archive fields (evicted keys count)
+	if lcmV1, ok := lcm.GetV1(); ok {
+		evicted := int(len(lcmV1.EvictedKeys))
+		data.EvictedKeysCount = &evicted
+	} else if lcmV2, ok := lcm.GetV2(); ok {
+		evicted := int(len(lcmV2.EvictedKeys))
+		data.EvictedKeysCount = &evicted
+	}
+
+	return data, nil
+}
+
+// insertLedger inserts a single ledger into PostgreSQL
+func (w *Writer) insertLedger(ctx context.Context, tx pgx.Tx, ledger *LedgerData) error {
+	query := `
+		INSERT INTO ledgers_row_v2 (
+			sequence, ledger_hash, previous_ledger_hash, closed_at,
+			protocol_version, total_coins, fee_pool, base_fee, base_reserve,
+			max_tx_set_size, successful_tx_count, failed_tx_count,
+			ingestion_timestamp, ledger_range,
+			transaction_count, operation_count, tx_set_operation_count,
+			soroban_fee_write1kb, node_id, signature, ledger_header,
+			bucket_list_size, live_soroban_state_size, evicted_keys_count
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+			$11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+			$21, $22, $23, $24
+		)
+		ON CONFLICT (sequence) DO UPDATE SET
+			ledger_hash = EXCLUDED.ledger_hash,
+			closed_at = EXCLUDED.closed_at,
+			transaction_count = EXCLUDED.transaction_count,
+			operation_count = EXCLUDED.operation_count,
+			successful_tx_count = EXCLUDED.successful_tx_count,
+			failed_tx_count = EXCLUDED.failed_tx_count
+	`
+
+	_, err := tx.Exec(ctx, query,
+		ledger.Sequence,
+		ledger.LedgerHash,
+		ledger.PreviousLedgerHash,
+		ledger.ClosedAt,
+		ledger.ProtocolVersion,
+		ledger.TotalCoins,
+		ledger.FeePool,
+		ledger.BaseFee,
+		ledger.BaseReserve,
+		ledger.MaxTxSetSize,
+		ledger.SuccessfulTxCount,
+		ledger.FailedTxCount,
+		ledger.IngestionTimestamp,
+		ledger.LedgerRange,
+		ledger.TransactionCount,
+		ledger.OperationCount,
+		ledger.TxSetOperationCount,
+		ledger.SorobanFeeWrite1KB,
+		ledger.NodeID,
+		ledger.Signature,
+		ledger.LedgerHeader,
+		ledger.BucketListSize,
+		ledger.LiveSorobanStateSize,
+		ledger.EvictedKeysCount,
+	)
+
+	return err
+}
+
+// insertTransactions inserts transactions into PostgreSQL
+func (w *Writer) insertTransactions(ctx context.Context, tx pgx.Tx, transactions []TransactionData) error {
+	if len(transactions) == 0 {
+		return nil
+	}
+
+	query := `
+		INSERT INTO transactions_row_v2 (
+			ledger_sequence, transaction_hash, source_account, fee_charged,
+			max_fee, successful, transaction_result_code, operation_count,
+			memo_type, memo, created_at, account_sequence, ledger_range,
+			signatures_count, new_account
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+			$11, $12, $13, $14, $15
+		)
+		ON CONFLICT (ledger_sequence, transaction_hash) DO UPDATE SET
+			successful = EXCLUDED.successful,
+			fee_charged = EXCLUDED.fee_charged
+	`
+
+	for _, txData := range transactions {
+		_, err := tx.Exec(ctx, query,
+			txData.LedgerSequence,
+			txData.TransactionHash,
+			txData.SourceAccount,
+			txData.FeeCharged,
+			txData.MaxFee,
+			txData.Successful,
+			txData.TransactionResultCode,
+			txData.OperationCount,
+			txData.MemoType,
+			txData.Memo,
+			txData.CreatedAt,
+			txData.AccountSequence,
+			txData.LedgerRange,
+			txData.SignaturesCount,
+			txData.NewAccount,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to insert transaction %s: %w", txData.TransactionHash, err)
+		}
+	}
+
+	return nil
+}
+
+// insertOperations inserts operations into PostgreSQL
+func (w *Writer) insertOperations(ctx context.Context, tx pgx.Tx, operations []OperationData) error {
+	if len(operations) == 0 {
+		return nil
+	}
+
+	query := `
+		INSERT INTO operations_row_v2 (
+			transaction_hash, operation_index, ledger_sequence, source_account,
+			type, type_string, created_at, transaction_successful,
+			operation_result_code, ledger_range, amount, asset, destination
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+			$11, $12, $13
+		)
+		ON CONFLICT (ledger_sequence, transaction_hash, operation_index) DO UPDATE SET
+			transaction_successful = EXCLUDED.transaction_successful
+	`
+
+	for _, opData := range operations {
+		_, err := tx.Exec(ctx, query,
+			opData.TransactionHash,
+			opData.OperationIndex,
+			opData.LedgerSequence,
+			opData.SourceAccount,
+			opData.OpType,
+			opData.TypeString,
+			opData.CreatedAt,
+			opData.TransactionSuccessful,
+			opData.OperationResultCode,
+			opData.LedgerRange,
+			opData.Amount,
+			opData.Asset,
+			opData.Destination,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to insert operation %s:%d: %w", opData.TransactionHash, opData.OperationIndex, err)
+		}
+	}
+
+	return nil
+}
+
+// insertEffects inserts effects into PostgreSQL
+func (w *Writer) insertEffects(ctx context.Context, tx pgx.Tx, effects []EffectData) error {
+	if len(effects) == 0 {
+		return nil
+	}
+
+	query := `
+		INSERT INTO effects_row_v1 (
+			ledger_sequence, transaction_hash, operation_index, effect_index,
+			effect_type, effect_type_string, account_id,
+			amount, asset_code, asset_issuer, asset_type,
+			trustline_limit, authorize_flag, clawback_flag,
+			signer_account, signer_weight,
+			offer_id, seller_account,
+			created_at, ledger_range
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+			$11, $12, $13, $14, $15, $16, $17, $18, $19, $20
+		)
+		ON CONFLICT (ledger_sequence, transaction_hash, operation_index, effect_index) DO NOTHING
+	`
+
+	for _, effData := range effects {
+		_, err := tx.Exec(ctx, query,
+			effData.LedgerSequence,
+			effData.TransactionHash,
+			effData.OperationIndex,
+			effData.EffectIndex,
+			effData.EffectType,
+			effData.EffectTypeString,
+			effData.AccountID,
+			effData.Amount,
+			effData.AssetCode,
+			effData.AssetIssuer,
+			effData.AssetType,
+			effData.TrustlineLimit,
+			effData.AuthorizeFlag,
+			effData.ClawbackFlag,
+			effData.SignerAccount,
+			effData.SignerWeight,
+			effData.OfferID,
+			effData.SellerAccount,
+			effData.CreatedAt,
+			effData.LedgerRange,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to insert effect %s:%d:%d: %w",
+				effData.TransactionHash, effData.OperationIndex, effData.EffectIndex, err)
+		}
+	}
+
+	return nil
+}
+
+// insertTrades inserts trades into PostgreSQL
+func (w *Writer) insertTrades(ctx context.Context, tx pgx.Tx, trades []TradeData) error {
+	if len(trades) == 0 {
+		return nil
+	}
+
+	query := `
+		INSERT INTO trades_row_v1 (
+			ledger_sequence, transaction_hash, operation_index, trade_index,
+			trade_type, trade_timestamp,
+			seller_account, selling_asset_code, selling_asset_issuer, selling_amount,
+			buyer_account, buying_asset_code, buying_asset_issuer, buying_amount,
+			price, created_at, ledger_range
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+			$11, $12, $13, $14, $15, $16, $17
+		)
+		ON CONFLICT (ledger_sequence, transaction_hash, operation_index, trade_index) DO NOTHING
+	`
+
+	for _, tradeData := range trades {
+		_, err := tx.Exec(ctx, query,
+			tradeData.LedgerSequence,
+			tradeData.TransactionHash,
+			tradeData.OperationIndex,
+			tradeData.TradeIndex,
+			tradeData.TradeType,
+			tradeData.TradeTimestamp,
+			tradeData.SellerAccount,
+			tradeData.SellingAssetCode,
+			tradeData.SellingAssetIssuer,
+			tradeData.SellingAmount,
+			tradeData.BuyerAccount,
+			tradeData.BuyingAssetCode,
+			tradeData.BuyingAssetIssuer,
+			tradeData.BuyingAmount,
+			tradeData.Price,
+			tradeData.CreatedAt,
+			tradeData.LedgerRange,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to insert trade %s:%d:%d: %w",
+				tradeData.TransactionHash, tradeData.OperationIndex, tradeData.TradeIndex, err)
+		}
+	}
+
+	return nil
+}
+
+// insertAccounts inserts account snapshots into PostgreSQL
+func (w *Writer) insertAccounts(ctx context.Context, tx pgx.Tx, accounts []AccountData) error {
+	if len(accounts) == 0 {
+		return nil
+	}
+
+	query := `
+		INSERT INTO accounts_snapshot_v1 (
+			account_id, ledger_sequence, closed_at, balance,
+			sequence_number, num_subentries, num_sponsoring, num_sponsored, home_domain,
+			master_weight, low_threshold, med_threshold, high_threshold,
+			flags, auth_required, auth_revocable, auth_immutable, auth_clawback_enabled,
+			signers, sponsor_account,
+			created_at, updated_at, ledger_range
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+			$11, $12, $13, $14, $15, $16, $17, $18,
+			$19, $20, $21, $22, $23
+		)
+		ON CONFLICT (account_id, ledger_sequence) DO UPDATE SET
+			balance = EXCLUDED.balance,
+			sequence_number = EXCLUDED.sequence_number,
+			num_subentries = EXCLUDED.num_subentries,
+			flags = EXCLUDED.flags,
+			updated_at = EXCLUDED.updated_at
+	`
+
+	for _, acct := range accounts {
+		_, err := tx.Exec(ctx, query,
+			acct.AccountID,
+			acct.LedgerSequence,
+			acct.ClosedAt,
+			acct.Balance,
+			acct.SequenceNumber,
+			acct.NumSubentries,
+			acct.NumSponsoring,
+			acct.NumSponsored,
+			acct.HomeDomain,
+			acct.MasterWeight,
+			acct.LowThreshold,
+			acct.MedThreshold,
+			acct.HighThreshold,
+			acct.Flags,
+			acct.AuthRequired,
+			acct.AuthRevocable,
+			acct.AuthImmutable,
+			acct.AuthClawbackEnabled,
+			acct.Signers,
+			acct.SponsorAccount,
+			acct.CreatedAt,
+			acct.UpdatedAt,
+			acct.LedgerRange,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to insert account %s: %w", acct.AccountID, err)
+		}
+	}
+
+	return nil
+}
+
+// insertOffers inserts DEX offer snapshots into PostgreSQL
+func (w *Writer) insertOffers(ctx context.Context, tx pgx.Tx, offers []OfferData) error {
+	if len(offers) == 0 {
+		return nil
+	}
+
+	query := `
+		INSERT INTO offers_snapshot_v1 (
+			offer_id, seller_account, ledger_sequence, closed_at,
+			selling_asset_type, selling_asset_code, selling_asset_issuer,
+			buying_asset_type, buying_asset_code, buying_asset_issuer,
+			amount, price, flags,
+			created_at, ledger_range
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+			$11, $12, $13, $14, $15
+		)
+		ON CONFLICT (offer_id, ledger_sequence) DO UPDATE SET
+			amount = EXCLUDED.amount,
+			price = EXCLUDED.price,
+			created_at = EXCLUDED.created_at
+	`
+
+	for _, offer := range offers {
+		_, err := tx.Exec(ctx, query,
+			offer.OfferID,
+			offer.SellerAccount,
+			offer.LedgerSequence,
+			offer.ClosedAt,
+			offer.SellingAssetType,
+			offer.SellingAssetCode,
+			offer.SellingAssetIssuer,
+			offer.BuyingAssetType,
+			offer.BuyingAssetCode,
+			offer.BuyingAssetIssuer,
+			offer.Amount,
+			offer.Price,
+			offer.Flags,
+			offer.CreatedAt,
+			offer.LedgerRange,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to insert offer %d: %w", offer.OfferID, err)
+		}
+	}
+
+	return nil
+}
+
+// insertTrustlines inserts trustline snapshots into PostgreSQL
+func (w *Writer) insertTrustlines(ctx context.Context, tx pgx.Tx, trustlines []TrustlineData) error {
+	if len(trustlines) == 0 {
+		return nil
+	}
+
+	query := `
+		INSERT INTO trustlines_snapshot_v1 (
+			account_id, asset_code, asset_issuer, asset_type,
+			balance, trust_limit, buying_liabilities, selling_liabilities,
+			authorized, authorized_to_maintain_liabilities, clawback_enabled,
+			ledger_sequence, created_at, ledger_range
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+			$11, $12, $13, $14
+		)
+		ON CONFLICT (account_id, asset_code, asset_issuer, asset_type, ledger_sequence) DO UPDATE SET
+			balance = EXCLUDED.balance,
+			trust_limit = EXCLUDED.trust_limit,
+			buying_liabilities = EXCLUDED.buying_liabilities,
+			selling_liabilities = EXCLUDED.selling_liabilities,
+			authorized = EXCLUDED.authorized,
+			authorized_to_maintain_liabilities = EXCLUDED.authorized_to_maintain_liabilities,
+			clawback_enabled = EXCLUDED.clawback_enabled
+	`
+
+	for _, tl := range trustlines {
+		_, err := tx.Exec(ctx, query,
+			tl.AccountID,
+			tl.AssetCode,
+			tl.AssetIssuer,
+			tl.AssetType,
+			tl.Balance,
+			tl.TrustLimit,
+			tl.BuyingLiabilities,
+			tl.SellingLiabilities,
+			tl.Authorized,
+			tl.AuthorizedToMaintainLiabilities,
+			tl.ClawbackEnabled,
+			tl.LedgerSequence,
+			tl.CreatedAt,
+			tl.LedgerRange,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to insert trustline %s:%s:%s: %w",
+				tl.AccountID, tl.AssetCode, tl.AssetIssuer, err)
+		}
+	}
+
+	return nil
+}
+
+// insertAccountSigners inserts account signer snapshots into PostgreSQL
+func (w *Writer) insertAccountSigners(ctx context.Context, tx pgx.Tx, signers []AccountSignerData) error {
+	if len(signers) == 0 {
+		return nil
+	}
+
+	query := `
+		INSERT INTO account_signers_snapshot_v1 (
+			account_id, signer, ledger_sequence, weight, sponsor,
+			deleted, closed_at, ledger_range, created_at
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9
+		)
+		ON CONFLICT (account_id, signer, ledger_sequence) DO UPDATE SET
+			weight = EXCLUDED.weight,
+			sponsor = EXCLUDED.sponsor,
+			deleted = EXCLUDED.deleted,
+			closed_at = EXCLUDED.closed_at
+	`
+
+	for _, s := range signers {
+		_, err := tx.Exec(ctx, query,
+			s.AccountID,
+			s.Signer,
+			s.LedgerSequence,
+			s.Weight,
+			nullString(s.Sponsor),
+			s.Deleted,
+			s.ClosedAt,
+			s.LedgerRange,
+			s.CreatedAt,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to insert account signer %s:%s: %w",
+				s.AccountID, s.Signer, err)
+		}
+	}
+
+	return nil
+}
+
+// nullString returns nil if s is empty, otherwise returns s
+func nullString(s string) interface{} {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// insertClaimableBalances inserts claimable balance snapshots into PostgreSQL
+func (w *Writer) insertClaimableBalances(ctx context.Context, tx pgx.Tx, balances []ClaimableBalanceData) error {
+	if len(balances) == 0 {
+		return nil
+	}
+
+	query := `
+		INSERT INTO claimable_balances_snapshot_v1 (
+			balance_id, sponsor, ledger_sequence, closed_at,
+			asset_type, asset_code, asset_issuer, amount,
+			claimants_count, flags, created_at, ledger_range
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+		)
+		ON CONFLICT (balance_id, ledger_sequence) DO UPDATE SET
+			sponsor = EXCLUDED.sponsor,
+			asset_type = EXCLUDED.asset_type,
+			asset_code = EXCLUDED.asset_code,
+			asset_issuer = EXCLUDED.asset_issuer,
+			amount = EXCLUDED.amount,
+			claimants_count = EXCLUDED.claimants_count,
+			flags = EXCLUDED.flags
+	`
+
+	for _, bal := range balances {
+		_, err := tx.Exec(ctx, query,
+			bal.BalanceID,
+			bal.Sponsor,
+			bal.LedgerSequence,
+			bal.ClosedAt,
+			bal.AssetType,
+			bal.AssetCode,
+			bal.AssetIssuer,
+			bal.Amount,
+			bal.ClaimantsCount,
+			bal.Flags,
+			bal.CreatedAt,
+			bal.LedgerRange,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to insert claimable balance %s: %w", bal.BalanceID, err)
+		}
+	}
+
+	return nil
+}
+
+// insertLiquidityPools inserts liquidity pool snapshots into PostgreSQL
+func (w *Writer) insertLiquidityPools(ctx context.Context, tx pgx.Tx, pools []LiquidityPoolData) error {
+	if len(pools) == 0 {
+		return nil
+	}
+
+	query := `
+		INSERT INTO liquidity_pools_snapshot_v1 (
+			liquidity_pool_id, ledger_sequence, closed_at,
+			pool_type, fee, trustline_count, total_pool_shares,
+			asset_a_type, asset_a_code, asset_a_issuer, asset_a_amount,
+			asset_b_type, asset_b_code, asset_b_issuer, asset_b_amount,
+			created_at, ledger_range
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+		)
+		ON CONFLICT (liquidity_pool_id, ledger_sequence) DO UPDATE SET
+			pool_type = EXCLUDED.pool_type,
+			fee = EXCLUDED.fee,
+			trustline_count = EXCLUDED.trustline_count,
+			total_pool_shares = EXCLUDED.total_pool_shares,
+			asset_a_amount = EXCLUDED.asset_a_amount,
+			asset_b_amount = EXCLUDED.asset_b_amount
+	`
+
+	for _, pool := range pools {
+		_, err := tx.Exec(ctx, query,
+			pool.LiquidityPoolID,
+			pool.LedgerSequence,
+			pool.ClosedAt,
+			pool.PoolType,
+			pool.Fee,
+			pool.TrustlineCount,
+			pool.TotalPoolShares,
+			pool.AssetAType,
+			pool.AssetACode,
+			pool.AssetAIssuer,
+			pool.AssetAAmount,
+			pool.AssetBType,
+			pool.AssetBCode,
+			pool.AssetBIssuer,
+			pool.AssetBAmount,
+			pool.CreatedAt,
+			pool.LedgerRange,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to insert liquidity pool %s: %w", pool.LiquidityPoolID, err)
+		}
+	}
+
+	return nil
+}
+
+// insertConfigSettings inserts config settings data into the database
+func (w *Writer) insertConfigSettings(ctx context.Context, tx pgx.Tx, settings []ConfigSettingData) error {
+	if len(settings) == 0 {
+		return nil
+	}
+
+	query := `
+		INSERT INTO config_settings_snapshot_v1 (
+			config_setting_id, ledger_sequence, last_modified_ledger, deleted, closed_at,
+			ledger_max_instructions, tx_max_instructions, fee_rate_per_instructions_increment, tx_memory_limit,
+			ledger_max_read_ledger_entries, ledger_max_read_bytes, ledger_max_write_ledger_entries, ledger_max_write_bytes,
+			tx_max_read_ledger_entries, tx_max_read_bytes, tx_max_write_ledger_entries, tx_max_write_bytes,
+			contract_max_size_bytes, config_setting_xdr, created_at, ledger_range
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+		)
+		ON CONFLICT (config_setting_id, ledger_sequence) DO UPDATE SET
+			last_modified_ledger = EXCLUDED.last_modified_ledger,
+			deleted = EXCLUDED.deleted,
+			ledger_max_instructions = EXCLUDED.ledger_max_instructions,
+			tx_max_instructions = EXCLUDED.tx_max_instructions,
+			fee_rate_per_instructions_increment = EXCLUDED.fee_rate_per_instructions_increment,
+			tx_memory_limit = EXCLUDED.tx_memory_limit,
+			ledger_max_read_ledger_entries = EXCLUDED.ledger_max_read_ledger_entries,
+			ledger_max_read_bytes = EXCLUDED.ledger_max_read_bytes,
+			ledger_max_write_ledger_entries = EXCLUDED.ledger_max_write_ledger_entries,
+			ledger_max_write_bytes = EXCLUDED.ledger_max_write_bytes,
+			tx_max_read_ledger_entries = EXCLUDED.tx_max_read_ledger_entries,
+			tx_max_read_bytes = EXCLUDED.tx_max_read_bytes,
+			tx_max_write_ledger_entries = EXCLUDED.tx_max_write_ledger_entries,
+			tx_max_write_bytes = EXCLUDED.tx_max_write_bytes,
+			contract_max_size_bytes = EXCLUDED.contract_max_size_bytes,
+			config_setting_xdr = EXCLUDED.config_setting_xdr
+	`
+
+	for _, setting := range settings {
+		_, err := tx.Exec(ctx, query,
+			setting.ConfigSettingID,
+			setting.LedgerSequence,
+			setting.LastModifiedLedger,
+			setting.Deleted,
+			setting.ClosedAt,
+			setting.LedgerMaxInstructions,
+			setting.TxMaxInstructions,
+			setting.FeeRatePerInstructionsIncrement,
+			setting.TxMemoryLimit,
+			setting.LedgerMaxReadLedgerEntries,
+			setting.LedgerMaxReadBytes,
+			setting.LedgerMaxWriteLedgerEntries,
+			setting.LedgerMaxWriteBytes,
+			setting.TxMaxReadLedgerEntries,
+			setting.TxMaxReadBytes,
+			setting.TxMaxWriteLedgerEntries,
+			setting.TxMaxWriteBytes,
+			setting.ContractMaxSizeBytes,
+			setting.ConfigSettingXDR,
+			setting.CreatedAt,
+			setting.LedgerRange,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to insert config setting %d: %w", setting.ConfigSettingID, err)
+		}
+	}
+
+	return nil
+}
+
+// insertTTL inserts TTL data into the database
+func (w *Writer) insertTTL(ctx context.Context, tx pgx.Tx, ttls []TTLData) error {
+	if len(ttls) == 0 {
+		return nil
+	}
+
+	query := `
+		INSERT INTO ttl_snapshot_v1 (
+			key_hash, ledger_sequence, live_until_ledger_seq, ttl_remaining, expired,
+			last_modified_ledger, deleted, closed_at, created_at, ledger_range
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+		)
+		ON CONFLICT (key_hash, ledger_sequence) DO UPDATE SET
+			live_until_ledger_seq = EXCLUDED.live_until_ledger_seq,
+			ttl_remaining = EXCLUDED.ttl_remaining,
+			expired = EXCLUDED.expired,
+			last_modified_ledger = EXCLUDED.last_modified_ledger,
+			deleted = EXCLUDED.deleted
+	`
+
+	for _, ttl := range ttls {
+		_, err := tx.Exec(ctx, query,
+			ttl.KeyHash,
+			ttl.LedgerSequence,
+			ttl.LiveUntilLedgerSeq,
+			ttl.TTLRemaining,
+			ttl.Expired,
+			ttl.LastModifiedLedger,
+			ttl.Deleted,
+			ttl.ClosedAt,
+			ttl.CreatedAt,
+			ttl.LedgerRange,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to insert TTL for key %s: %w", ttl.KeyHash, err)
+		}
+	}
+
+	return nil
+}
+
+// insertEvictedKeys inserts evicted keys data into the database
+func (w *Writer) insertEvictedKeys(ctx context.Context, tx pgx.Tx, keys []EvictedKeyData) error {
+	if len(keys) == 0 {
+		return nil
+	}
+
+	query := `
+		INSERT INTO evicted_keys_state_v1 (
+			key_hash, ledger_sequence, contract_id, key_type, durability,
+			closed_at, ledger_range, created_at
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8
+		)
+		ON CONFLICT (key_hash, ledger_sequence) DO UPDATE SET
+			contract_id = EXCLUDED.contract_id,
+			key_type = EXCLUDED.key_type,
+			durability = EXCLUDED.durability
+	`
+
+	for _, key := range keys {
+		_, err := tx.Exec(ctx, query,
+			key.KeyHash,
+			key.LedgerSequence,
+			key.ContractID,
+			key.KeyType,
+			key.Durability,
+			key.ClosedAt,
+			key.LedgerRange,
+			key.CreatedAt,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to insert evicted key %s: %w", key.KeyHash, err)
+		}
+	}
+
+	return nil
+}
+
+// insertContractEvents inserts contract events data into the database
+func (w *Writer) insertContractEvents(ctx context.Context, tx pgx.Tx, events []ContractEventData) error {
+	if len(events) == 0 {
+		return nil
+	}
+
+	query := `
+		INSERT INTO contract_events_stream_v1 (
+			event_id, contract_id, ledger_sequence, transaction_hash, closed_at,
+			event_type, in_successful_contract_call,
+			topics_json, topics_decoded, data_xdr, data_decoded, topic_count,
+			operation_index, event_index, created_at, ledger_range
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+		)
+		ON CONFLICT (ledger_sequence, transaction_hash, event_index) DO UPDATE SET
+			contract_id = EXCLUDED.contract_id,
+			event_type = EXCLUDED.event_type,
+			in_successful_contract_call = EXCLUDED.in_successful_contract_call,
+			topics_json = EXCLUDED.topics_json,
+			topics_decoded = EXCLUDED.topics_decoded,
+			data_xdr = EXCLUDED.data_xdr,
+			data_decoded = EXCLUDED.data_decoded,
+			topic_count = EXCLUDED.topic_count
+	`
+
+	for _, event := range events {
+		_, err := tx.Exec(ctx, query,
+			event.EventID,
+			event.ContractID,
+			event.LedgerSequence,
+			event.TransactionHash,
+			event.ClosedAt,
+			event.EventType,
+			event.InSuccessfulContractCall,
+			event.TopicsJSON,
+			event.TopicsDecoded,
+			event.DataXDR,
+			event.DataDecoded,
+			event.TopicCount,
+			event.OperationIndex,
+			event.EventIndex,
+			event.CreatedAt,
+			event.LedgerRange,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to insert contract event %s: %w", event.EventID, err)
+		}
+	}
+
+	return nil
+}
+
+// insertContractData inserts contract data snapshots (Phase 4 - Day 9)
+func (w *Writer) insertContractData(ctx context.Context, tx pgx.Tx, contractDataList []ContractDataData) error {
+	if len(contractDataList) == 0 {
+		return nil
+	}
+
+	query := `
+		INSERT INTO contract_data_snapshot_v1 (
+			contract_id, ledger_sequence, ledger_key_hash,
+			contract_key_type, contract_durability,
+			asset_code, asset_issuer, asset_type,
+			balance_holder, balance,
+			last_modified_ledger, ledger_entry_change, deleted, closed_at,
+			contract_data_xdr, created_at, ledger_range
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+		)
+		ON CONFLICT (contract_id, ledger_key_hash, ledger_sequence) DO UPDATE SET
+			contract_key_type = EXCLUDED.contract_key_type,
+			contract_durability = EXCLUDED.contract_durability,
+			asset_code = EXCLUDED.asset_code,
+			asset_issuer = EXCLUDED.asset_issuer,
+			asset_type = EXCLUDED.asset_type,
+			balance_holder = EXCLUDED.balance_holder,
+			balance = EXCLUDED.balance,
+			last_modified_ledger = EXCLUDED.last_modified_ledger,
+			ledger_entry_change = EXCLUDED.ledger_entry_change,
+			deleted = EXCLUDED.deleted,
+			contract_data_xdr = EXCLUDED.contract_data_xdr
+	`
+
+	for _, data := range contractDataList {
+		_, err := tx.Exec(ctx, query,
+			data.ContractId,
+			data.LedgerSequence,
+			data.LedgerKeyHash,
+			data.ContractKeyType,
+			data.ContractDurability,
+			data.AssetCode,
+			data.AssetIssuer,
+			data.AssetType,
+			data.BalanceHolder,
+			data.Balance,
+			data.LastModifiedLedger,
+			data.LedgerEntryChange,
+			data.Deleted,
+			data.ClosedAt,
+			data.ContractDataXDR,
+			data.CreatedAt,
+			data.LedgerRange,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to insert contract data %s/%s: %w", data.ContractId, data.LedgerKeyHash, err)
+		}
+	}
+
+	return nil
+}
+
+// insertContractCode inserts contract code snapshots with WASM metrics (Phase 4 - Day 10)
+func (w *Writer) insertContractCode(ctx context.Context, tx pgx.Tx, contractCodeList []ContractCodeData) error {
+	if len(contractCodeList) == 0 {
+		return nil
+	}
+
+	query := `
+		INSERT INTO contract_code_snapshot_v1 (
+			contract_code_hash, ledger_key_hash, contract_code_ext_v,
+			last_modified_ledger, ledger_entry_change, deleted, closed_at,
+			ledger_sequence,
+			n_instructions, n_functions, n_globals, n_table_entries, n_types,
+			n_data_segments, n_elem_segments, n_imports, n_exports, n_data_segment_bytes,
+			created_at, ledger_range
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
+		)
+		ON CONFLICT (contract_code_hash, ledger_sequence) DO UPDATE SET
+			ledger_key_hash = EXCLUDED.ledger_key_hash,
+			contract_code_ext_v = EXCLUDED.contract_code_ext_v,
+			last_modified_ledger = EXCLUDED.last_modified_ledger,
+			ledger_entry_change = EXCLUDED.ledger_entry_change,
+			deleted = EXCLUDED.deleted,
+			n_instructions = EXCLUDED.n_instructions,
+			n_functions = EXCLUDED.n_functions,
+			n_globals = EXCLUDED.n_globals,
+			n_table_entries = EXCLUDED.n_table_entries,
+			n_types = EXCLUDED.n_types,
+			n_data_segments = EXCLUDED.n_data_segments,
+			n_elem_segments = EXCLUDED.n_elem_segments,
+			n_imports = EXCLUDED.n_imports,
+			n_exports = EXCLUDED.n_exports,
+			n_data_segment_bytes = EXCLUDED.n_data_segment_bytes
+	`
+
+	for _, code := range contractCodeList {
+		_, err := tx.Exec(ctx, query,
+			code.ContractCodeHash,
+			code.LedgerKeyHash,
+			code.ContractCodeExtV,
+			code.LastModifiedLedger,
+			code.LedgerEntryChange,
+			code.Deleted,
+			code.ClosedAt,
+			code.LedgerSequence,
+			code.NInstructions,
+			code.NFunctions,
+			code.NGlobals,
+			code.NTableEntries,
+			code.NTypes,
+			code.NDataSegments,
+			code.NElemSegments,
+			code.NImports,
+			code.NExports,
+			code.NDataSegmentBytes,
+			code.CreatedAt,
+			code.LedgerRange,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to insert contract code %s: %w", code.ContractCodeHash, err)
+		}
+	}
+
+	return nil
+}
+
+// insertNativeBalances inserts XLM-only balances (Phase 5 - Day 11)
+func (w *Writer) insertNativeBalances(ctx context.Context, tx pgx.Tx, nativeBalancesList []NativeBalanceData) error {
+	if len(nativeBalancesList) == 0 {
+		return nil
+	}
+
+	query := `
+		INSERT INTO native_balances_snapshot_v1 (
+			account_id, balance, buying_liabilities, selling_liabilities,
+			num_subentries, num_sponsoring, num_sponsored, sequence_number,
+			last_modified_ledger, ledger_sequence, ledger_range
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+		)
+		ON CONFLICT (account_id, ledger_sequence) DO UPDATE SET
+			balance = EXCLUDED.balance,
+			buying_liabilities = EXCLUDED.buying_liabilities,
+			selling_liabilities = EXCLUDED.selling_liabilities,
+			num_subentries = EXCLUDED.num_subentries,
+			num_sponsoring = EXCLUDED.num_sponsoring,
+			num_sponsored = EXCLUDED.num_sponsored,
+			sequence_number = EXCLUDED.sequence_number,
+			last_modified_ledger = EXCLUDED.last_modified_ledger
+	`
+
+	for _, nb := range nativeBalancesList {
+		_, err := tx.Exec(ctx, query,
+			nb.AccountID,
+			nb.Balance,
+			nb.BuyingLiabilities,
+			nb.SellingLiabilities,
+			nb.NumSubentries,
+			nb.NumSponsoring,
+			nb.NumSponsored,
+			nb.SequenceNumber,
+			nb.LastModifiedLedger,
+			nb.LedgerSequence,
+			nb.LedgerRange,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to insert native balance for account %s: %w", nb.AccountID, err)
+		}
+	}
+
+	return nil
+}
+
+// insertRestoredKeys inserts restored storage keys (Phase 5 - Day 11)
+func (w *Writer) insertRestoredKeys(ctx context.Context, tx pgx.Tx, restoredKeysList []RestoredKeyData) error {
+	if len(restoredKeysList) == 0 {
+		return nil
+	}
+
+	query := `
+		INSERT INTO restored_keys_state_v1 (
+			key_hash, ledger_sequence,
+			contract_id, key_type, durability, restored_from_ledger,
+			closed_at, ledger_range, created_at
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9
+		)
+		ON CONFLICT (key_hash, ledger_sequence) DO UPDATE SET
+			contract_id = EXCLUDED.contract_id,
+			key_type = EXCLUDED.key_type,
+			durability = EXCLUDED.durability,
+			restored_from_ledger = EXCLUDED.restored_from_ledger
+	`
+
+	for _, rk := range restoredKeysList {
+		_, err := tx.Exec(ctx, query,
+			rk.KeyHash,
+			rk.LedgerSequence,
+			rk.ContractID,
+			rk.KeyType,
+			rk.Durability,
+			rk.RestoredFromLedger,
+			rk.ClosedAt,
+			rk.LedgerRange,
+			rk.CreatedAt,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to insert restored key %s: %w", rk.KeyHash, err)
+		}
+	}
+
+	return nil
+}

@@ -1,0 +1,34 @@
+{
+  "name": "stellar-live-source",
+  "version": "v1.0.0",
+  "type": "source",
+  "description": "Stellar blockchain live data source with RPC, Captive Core, and Archive backends",
+  "produces": [
+    "stellar.ledger.v1",
+    "stellar.transaction.v1"
+  ],
+  "consumes": [],
+  "env_mapping": {
+    "backend_type": "BACKEND_TYPE",
+    "network_passphrase": "NETWORK_PASSPHRASE",
+    "history_archive_urls": "HISTORY_ARCHIVE_URLS",
+    "rpc_endpoint": "RPC_ENDPOINT",
+    "rpc_auth_header": "RPC_AUTH_HEADER",
+    "rpc_custom_headers": "RPC_CUSTOM_HEADERS",
+    "captive_core_binary_path": "CAPTIVE_CORE_BINARY_PATH",
+    "captive_core_config_path": "CAPTIVE_CORE_CONFIG_PATH",
+    "archive_storage_type": "ARCHIVE_STORAGE_TYPE",
+    "archive_bucket_name": "ARCHIVE_BUCKET_NAME",
+    "archive_path": "ARCHIVE_PATH",
+    "archive_ledgers_per_file": "ARCHIVE_LEDGERS_PER_FILE",
+    "archive_files_per_partition": "ARCHIVE_FILES_PER_PARTITION",
+    "start_ledger": "START_LEDGER",
+    "end_ledger": "END_LEDGER",
+    "port": "PORT",
+    "health_port": "HEALTH_PORT",
+    "enable_flowctl": "ENABLE_FLOWCTL",
+    "flowctl_endpoint": "FLOWCTL_ENDPOINT",
+    "flowctl_heartbeat_interval": "FLOWCTL_HEARTBEAT_INTERVAL",
+    "stellar_network": "STELLAR_NETWORK"
+  }
+}

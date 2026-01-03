@@ -84,15 +84,15 @@ func (fc *FlowctlController) RegisterWithFlowctl() error {
 	// Create service info
 	serviceInfo := &flowctlpb.ServiceInfo{
 		ServiceType:      flowctlpb.ServiceType_SERVICE_TYPE_SOURCE,
-		ComponentId:      componentID, // Component ID from pipeline YAML
 		OutputEventTypes: []string{"raw_ledger_service.RawLedgerChunk"},
 		HealthEndpoint:   healthEndpoint,
 		MaxInflight:      100,
 		Metadata: map[string]string{
-			"network":      network,
-			"ledger_type":  "stellar",
-			"storage_type": os.Getenv("STORAGE_TYPE"),
-			"bucket_name":  os.Getenv("BUCKET_NAME"),
+			"component_id":  componentID, // Component ID from pipeline YAML
+			"network":       network,
+			"ledger_type":   "stellar",
+			"storage_type":  os.Getenv("STORAGE_TYPE"),
+			"bucket_name":   os.Getenv("BUCKET_NAME"),
 		},
 	}
 

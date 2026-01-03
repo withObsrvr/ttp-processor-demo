@@ -1,0 +1,183 @@
+# DuckLake Multi-Network Ingestion Configuration
+# Version: 3.1.0 (Multi-Network Support)
+#
+# This config enables concurrent ingestion from multiple Stellar networks
+# into a single DuckDB catalog with isolated schemas per network.
+#
+# Key Features:
+# - Multiple source pipelines running concurrently
+# - Shared write queue for DuckDB serialization
+# - Per-network schema isolation
+# - No catalog lock errors
+
+service:
+  name: "ducklake-multi-network-ingester"
+  environment: "development"
+
+# MULTI-SOURCE CONFIGURATION
+# Each source runs its own pipeline, all feed shared write queue
+sources:
+  # Testnet - Stellar Test Network
+  - name: "testnet"
+    enabled: true
+    endpoint: "localhost:50051"  # stellar-live-source-datalake gRPC endpoint
+    network_passphrase: "Test SDF Network ; September 2015"
+    start_ledger: 1000
+    end_ledger: 2000  # 0 = continuous (live mode)
+    live_mode: false
+    poll_interval_seconds: 5
+
+    # Per-source pipeline settings
+    pipeline:
+      batch_size: 10     # Ledgers per batch
+      pool:
+        workers: 2       # Worker threads for this source
+        queue_size: 100  # Queue size for this source
+
+  # Mainnet - Stellar Public Network (Recent data for live ingestion)
+  - name: "mainnet"
+    enabled: true
+    endpoint: "localhost:50052"
+    network_passphrase: "Public Global Stellar Network ; September 2015"
+    start_ledger: 1000      # Start from early ledgers for testing
+    end_ledger: 2000        # Test range like testnet
+    live_mode: false
+    poll_interval_seconds: 5
+
+    pipeline:
+      batch_size: 10
+      pool:
+        workers: 2  # Match testnet for balanced testing
+        queue_size: 100
+
+  # Futurenet - Stellar Future Network (Protocol Testing)
+  - name: "futurenet"
+    enabled: false  # Start with testnet + mainnet, add futurenet on Day 3
+    endpoint: "futurenet-rpc:50051"
+    network_passphrase: "Test SDF Future Network ; October 2022"
+    start_ledger: 1000
+    end_ledger: 2000
+    live_mode: false
+    poll_interval_seconds: 5
+
+    pipeline:
+      batch_size: 10
+      pool:
+        workers: 2
+        queue_size: 100
+
+  # EXAMPLE: Mainnet Historical Backfill (Run as separate job)
+  # Uncomment and adjust to backfill historical mainnet data
+  # - name: "mainnet-backfill"
+  #   enabled: false
+  #   endpoint: "mainnet-rpc:50051"
+  #   network_passphrase: "Public Global Stellar Network ; September 2015"
+  #   start_ledger: 0
+  #   end_ledger: 59000000
+  #   live_mode: false
+  #   poll_interval_seconds: 5
+  #
+  #   pipeline:
+  #     batch_size: 100  # Larger batches for historical data
+  #     pool:
+  #       workers: 16     # Many workers for fast backfill
+  #       queue_size: 200
+  #
+  #   checkpoint:
+  #     allow_backfill: true  # ← Enables backfill mode!
+
+# SHARED DUCKLAKE CONFIGURATION
+# All networks write to same catalog, different schemas
+ducklake:
+  # Catalog path (shared by all networks)
+  catalog_path: "./catalogs/multi-network.duckdb"
+
+  # Data path template - {network} will be replaced
+  # Example: /data/testnet/, /data/mainnet/, /data/futurenet/
+  data_path: "./data/{network}/"
+
+  # Catalog name (shared)
+  catalog_name: "multi_network"
+
+  # Schema per network
+  # Each source creates its own schema:
+  # - testnet.ledgers_row_v2
+  # - mainnet.ledgers_row_v2
+  # - futurenet.ledgers_row_v2
+
+  # Partition settings (shared)
+  partition_size: 64000  # Ledgers per partition (Galexie alignment)
+
+  # S3/B2 settings (optional, for remote storage)
+  aws_access_key_id: ""
+  aws_secret_access_key: ""
+  aws_region: "us-west-004"
+  aws_endpoint: "s3.us-west-004.backblazeb2.com"
+
+  # Batch/commit settings (shared across networks)
+  batch_size: 50
+  commit_interval_seconds: 30
+
+  # Performance settings
+  data_inlining_row_limit: 0  # 0 = disabled
+  use_upsert: false
+  create_indexes: false
+
+# SHARED WRITE QUEUE CONFIGURATION
+# Serializes writes from all networks to prevent catalog locks
+write_queue:
+  size: 1000            # Max batches in queue
+  timeout_seconds: 60   # Write timeout
+
+  # Monitoring
+  log_queue_depth: true
+  log_interval_seconds: 30
+
+# Checkpoint configuration (per-network state tracking)
+checkpoint:
+  enabled: true
+  dir: "./state"
+  # Per-network checkpoint files:
+  # - checkpoint-testnet.json
+  # - checkpoint-mainnet.json
+  # - checkpoint-futurenet.json
+
+# Manifest & PAS (Provenance Audit System)
+manifest:
+  enabled: true
+
+pas:
+  enabled: true
+  backup_dir: "./pas-backup"
+  strict: false
+
+# Era configuration (Protocol Version Isolation)
+# Each network can have different protocol versions
+# Era ID is set per source based on protocol version
+
+# Metrics (Prometheus)
+metrics:
+  enabled: true
+  address: ":9090"  # Prometheus metrics endpoint
+
+  # Per-network metrics available:
+  # - ducklake_ledgers_ingested{network="testnet"}
+  # - ducklake_ledgers_ingested{network="mainnet"}
+  # - ducklake_queue_depth{network="testnet"}
+
+# Logging
+logging:
+  level: "info"  # debug, info, warn, error
+  format: "console"  # console or json
+
+  # Per-network logging prefixes:
+  # [TESTNET] Starting pipeline...
+  # [MAINNET] Starting pipeline...
+  # [FUTURENET] Starting pipeline...
+
+# Advanced Settings (optional)
+advanced:
+  # Global settings that apply to all sources
+  max_concurrent_sources: 3  # Safety limit
+  shutdown_timeout_seconds: 60  # Graceful shutdown time
+  health_check_interval_seconds: 30

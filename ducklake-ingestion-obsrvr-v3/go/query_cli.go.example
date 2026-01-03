@@ -1,0 +1,147 @@
+package main
+
+import (
+	"database/sql"
+	"fmt"
+	"log"
+	"os"
+
+	_ "github.com/duckdb/duckdb-go/v2"
+)
+
+func main() {
+	if len(os.Args) < 2 {
+		fmt.Println("Usage: query_cli <catalog_path> [query]")
+		fmt.Println("\nExamples:")
+		fmt.Println("  query_cli catalogs/wal-test.duckdb")
+		fmt.Println("  query_cli catalogs/wal-test.duckdb \"SELECT COUNT(*) FROM testnet.ledgers_row_v2\"")
+		os.Exit(1)
+	}
+
+	catalogPath := os.Args[1]
+
+	// Open in READ_ONLY mode to allow concurrent access while ingestion runs
+	connectionString := catalogPath + "?access_mode=READ_ONLY"
+	db, err := sql.Open("duckdb", connectionString)
+	if err != nil {
+		log.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	// If custom query provided, run it
+	if len(os.Args) >= 3 {
+		customQuery := os.Args[2]
+		runQuery(db, customQuery)
+		return
+	}
+
+	// Otherwise, run default summary queries
+	fmt.Println("=== DuckLake Catalog Summary ===\n")
+
+	runQuery(db, `
+		SELECT
+			schema_name,
+			COUNT(*) as table_count
+		FROM information_schema.tables
+		WHERE schema_name NOT IN ('information_schema', 'pg_catalog')
+		GROUP BY schema_name
+		ORDER BY schema_name
+	`)
+
+	fmt.Println("\n=== Ledger Statistics ===\n")
+	runQuery(db, `
+		SELECT
+			COUNT(*) as total_ledgers,
+			MIN(sequence) as first_ledger,
+			MAX(sequence) as last_ledger,
+			SUM(transaction_count) as total_transactions
+		FROM testnet.ledgers_row_v2
+	`)
+
+	fmt.Println("\n=== Recent Ledgers ===\n")
+	runQuery(db, `
+		SELECT
+			sequence,
+			closed_at,
+			transaction_count,
+			operation_count,
+			successful_tx_count,
+			failed_tx_count
+		FROM testnet.ledgers_row_v2
+		ORDER BY sequence DESC
+		LIMIT 10
+	`)
+
+	fmt.Println("\n=== Transaction Statistics ===\n")
+	runQuery(db, `
+		SELECT
+			COUNT(*) as total_transactions,
+			COUNT(DISTINCT account) as unique_accounts,
+			SUM(operation_count) as total_operations
+		FROM testnet.transactions_row_v2
+	`)
+}
+
+func runQuery(db *sql.DB, query string) {
+	rows, err := db.Query(query)
+	if err != nil {
+		log.Printf("Query error: %v\n", err)
+		return
+	}
+	defer rows.Close()
+
+	// Get column names
+	cols, err := rows.Columns()
+	if err != nil {
+		log.Printf("Failed to get columns: %v\n", err)
+		return
+	}
+
+	// Print header
+	for i, col := range cols {
+		if i > 0 {
+			fmt.Print(" | ")
+		}
+		fmt.Printf("%-20s", col)
+	}
+	fmt.Println()
+	fmt.Println(string(make([]byte, len(cols)*23-3)))
+
+	// Print rows
+	values := make([]interface{}, len(cols))
+	valuePtrs := make([]interface{}, len(cols))
+	for i := range values {
+		valuePtrs[i] = &values[i]
+	}
+
+	rowCount := 0
+	for rows.Next() {
+		err := rows.Scan(valuePtrs...)
+		if err != nil {
+			log.Printf("Scan error: %v\n", err)
+			continue
+		}
+
+		for i, val := range values {
+			if i > 0 {
+				fmt.Print(" | ")
+			}
+
+			switch v := val.(type) {
+			case nil:
+				fmt.Printf("%-20s", "NULL")
+			case []byte:
+				fmt.Printf("%-20s", string(v))
+			default:
+				fmt.Printf("%-20v", v)
+			}
+		}
+		fmt.Println()
+		rowCount++
+	}
+
+	if rowCount == 0 {
+		fmt.Println("(No rows)")
+	}
+	fmt.Printf("\n(%d rows)\n", rowCount)
+}

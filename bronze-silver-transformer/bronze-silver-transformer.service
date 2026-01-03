@@ -1,0 +1,27 @@
+[Unit]
+Description=Bronze to Silver Transformer Service
+After=network.target
+Requires=network.target
+
+[Service]
+Type=simple
+User=stellar
+Group=stellar
+WorkingDirectory=/opt/bronze-silver-transformer
+ExecStart=/opt/bronze-silver-transformer/bin/bronze-silver-transformer -config /opt/bronze-silver-transformer/config.yaml
+
+# Restart policy
+Restart=always
+RestartSec=10s
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bronze-silver-transformer
+
+# Resource limits (optional)
+LimitNOFILE=65536
+MemoryMax=4G
+
+[Install]
+WantedBy=multi-user.target

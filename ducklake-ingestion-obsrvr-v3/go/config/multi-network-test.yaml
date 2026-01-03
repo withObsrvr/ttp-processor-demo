@@ -1,0 +1,55 @@
+service:
+  name: "ducklake-ingestion-obsrvr-v3"
+  environment: "multi-network-test"
+
+# Multi-network mode: configure multiple sources (testnet + mainnet)
+sources:
+  - mode: "grpc"
+    grpc:
+      endpoint: "localhost:50051"  # Testnet archive source
+    network_passphrase: "Test SDF Network ; September 2015"
+    start_ledger: 2048000
+    end_ledger: 2048500  # Process 500 ledgers from testnet
+
+  - mode: "grpc"
+    grpc:
+      endpoint: "localhost:50052"  # Mainnet archive source
+    network_passphrase: "Public Global Stellar Network ; September 2015"
+    start_ledger: 60250000
+    end_ledger: 60250500  # Process 500 ledgers from mainnet
+
+ducklake:
+  catalog_path: "catalogs/multi-network-test.duckdb"
+  catalog_name: "multi_network_test"
+  # Schema names are auto-derived from network (testnet, mainnet)
+  batch_size: 50  # Larger batches for stress testing
+  commit_interval_seconds: 10  # Moderate commit frequency
+  partition_size: 64000  # Standard partition size
+
+logging:
+  level: "info"
+  format: "text"
+
+# Checkpoint management (per-network files)
+checkpoint:
+  enabled: true
+  dir: "./state-multi-network-test"
+  # Filenames are auto-generated: checkpoint-testnet.json, checkpoint-mainnet.json
+
+# Manifest tracking
+manifest:
+  enabled: false  # Disable for test to reduce complexity
+
+# PAS (Provenance & Attestation System)
+pas:
+  enabled: false  # Disable for test
+
+# Era tracking
+era:
+  era_id: "multi_network_test"
+  version_label: "v1"
+  # Network name is overridden per-network in orchestrator
+
+# Metrics
+metrics:
+  enabled: false  # Disable Prometheus for test

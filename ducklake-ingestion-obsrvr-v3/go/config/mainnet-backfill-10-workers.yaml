@@ -1,0 +1,142 @@
+service:
+  name: "ducklake-ingestion-obsrvr-v3"
+  environment: "mainnet-backfill-10-workers"
+
+# 10-worker parallel backfill configuration
+# Each worker handles 6 million ledgers from the mainnet archive
+# Total: 60 million ledgers (0 → 60,000,000)
+#
+# Estimated completion time: ~5 days
+# - Single worker: ~13.79 ledgers/sec = 50 days
+# - 10 workers: ~138 ledgers/sec = 5 days
+#
+# Workers:
+#   Worker 1 (port 50061): Ledgers 0 → 6,000,000
+#   Worker 2 (port 50062): Ledgers 6,000,000 → 12,000,000
+#   Worker 3 (port 50063): Ledgers 12,000,000 → 18,000,000
+#   Worker 4 (port 50064): Ledgers 18,000,000 → 24,000,000
+#   Worker 5 (port 50065): Ledgers 24,000,000 → 30,000,000
+#   Worker 6 (port 50066): Ledgers 30,000,000 → 36,000,000
+#   Worker 7 (port 50067): Ledgers 36,000,000 → 42,000,000
+#   Worker 8 (port 50068): Ledgers 42,000,000 → 48,000,000
+#   Worker 9 (port 50069): Ledgers 48,000,000 → 54,000,000
+#   Worker 10 (port 50070): Ledgers 54,000,000 → 60,000,000
+
+sources:
+  # Worker 1: Genesis → 6M
+  - mode: "grpc"
+    grpc:
+      endpoint: "localhost:50061"
+    network_passphrase: "Public Global Stellar Network ; September 2015"
+    start_ledger: 0
+    end_ledger: 6000000
+
+  # Worker 2: 6M → 12M
+  - mode: "grpc"
+    grpc:
+      endpoint: "localhost:50062"
+    network_passphrase: "Public Global Stellar Network ; September 2015"
+    start_ledger: 6000000
+    end_ledger: 12000000
+
+  # Worker 3: 12M → 18M
+  - mode: "grpc"
+    grpc:
+      endpoint: "localhost:50063"
+    network_passphrase: "Public Global Stellar Network ; September 2015"
+    start_ledger: 12000000
+    end_ledger: 18000000
+
+  # Worker 4: 18M → 24M
+  - mode: "grpc"
+    grpc:
+      endpoint: "localhost:50064"
+    network_passphrase: "Public Global Stellar Network ; September 2015"
+    start_ledger: 18000000
+    end_ledger: 24000000
+
+  # Worker 5: 24M → 30M
+  - mode: "grpc"
+    grpc:
+      endpoint: "localhost:50065"
+    network_passphrase: "Public Global Stellar Network ; September 2015"
+    start_ledger: 24000000
+    end_ledger: 30000000
+
+  # Worker 6: 30M → 36M
+  - mode: "grpc"
+    grpc:
+      endpoint: "localhost:50066"
+    network_passphrase: "Public Global Stellar Network ; September 2015"
+    start_ledger: 30000000
+    end_ledger: 36000000
+
+  # Worker 7: 36M → 42M
+  - mode: "grpc"
+    grpc:
+      endpoint: "localhost:50067"
+    network_passphrase: "Public Global Stellar Network ; September 2015"
+    start_ledger: 36000000
+    end_ledger: 42000000
+
+  # Worker 8: 42M → 48M
+  - mode: "grpc"
+    grpc:
+      endpoint: "localhost:50068"
+    network_passphrase: "Public Global Stellar Network ; September 2015"
+    start_ledger: 42000000
+    end_ledger: 48000000
+
+  # Worker 9: 48M → 54M
+  - mode: "grpc"
+    grpc:
+      endpoint: "localhost:50069"
+    network_passphrase: "Public Global Stellar Network ; September 2015"
+    start_ledger: 48000000
+    end_ledger: 54000000
+
+  # Worker 10: 54M → 60M
+  - mode: "grpc"
+    grpc:
+      endpoint: "localhost:50070"
+    network_passphrase: "Public Global Stellar Network ; September 2015"
+    start_ledger: 54000000
+    end_ledger: 60000000
+
+# DuckDB configuration optimized for backfill throughput
+ducklake:
+  catalog_path: "catalogs/mainnet-backfill.duckdb"
+  catalog_name: "mainnet_backfill"
+  batch_size: 100  # Larger batches for better throughput
+  commit_interval_seconds: 30  # Less frequent commits (more throughput)
+  partition_size: 64000  # Standard partition size
+
+# Logging
+logging:
+  level: "info"
+  format: "text"
+
+# Checkpoint management (per-worker checkpoint files)
+checkpoint:
+  enabled: true
+  dir: "./state-mainnet-backfill"
+  # Auto-generates files: checkpoint-mainnet-worker1.json, checkpoint-mainnet-worker2.json, etc.
+  # Allows resumable backfill if any worker crashes
+
+# Manifest tracking (disabled for backfill)
+manifest:
+  enabled: false  # Enable in production for audit trail
+
+# PAS (Provenance & Attestation System)
+pas:
+  enabled: false  # Enable in production for data provenance
+
+# Era tracking
+era:
+  era_id: "mainnet_backfill_10_workers"
+  version_label: "v1"
+  # Network name is auto-derived: mainnet
+
+# Metrics (disabled for backfill, enable for production monitoring)
+metrics:
+  enabled: false  # Set to true + configure Prometheus for production

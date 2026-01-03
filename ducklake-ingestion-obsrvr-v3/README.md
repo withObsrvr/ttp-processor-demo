@@ -77,6 +77,7 @@ mkdir -p catalogs test_data
 
 ### 4. Query the Data
 
+**Option A: DuckDB CLI**
 ```bash
 duckdb
 
@@ -92,6 +93,21 @@ D SELECT sequence, closed_at, transaction_count
   FROM catalog.testnet.ledgers_row_v2
   LIMIT 3;
 ```
+
+**Option B: HTTP Query API (Concurrent with Ingestion)**
+```bash
+# Start ingestion with Query API enabled
+./ducklake-ingestion-obsrvr-v3 -config config/test-10-ledgers.yaml --query-port :8080
+
+# Query while ingestion is running
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{"sql": "SELECT COUNT(*) FROM testnet.ledgers_row_v2"}'
+
+# Response: {"columns":["count"],"rows":[[10]],"row_count":1,"execution_time_ms":2}
+```
+
+See **EXAMPLE_QUERIES.md** for more query patterns and API usage.
 
 ## ⚙️ Configuration
 
@@ -162,6 +178,87 @@ ducklake:
 - `offers_snapshot_v1` - Order book offers
 - `claimable_balances_snapshot_v1` - Claimable balances
 - `liquidity_pools_snapshot_v1` - AMM pools
+
+## 🔍 HTTP Query API
+
+### Concurrent Queries During Ingestion
+
+v3 includes an HTTP Query API that allows querying the DuckLake catalog while 24/7 ingestion is running. No more stopping ingestion to run queries!
+
+**Start with Query API enabled:**
+```bash
+./ducklake-ingestion-obsrvr-v3 \
+  -config config/testnet-duckdb.yaml \
+  --multi-network \
+  --query-port :8080
+```
+
+### API Endpoints
+
+**1. Query Data** - `POST /query`
+```bash
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sql": "SELECT sequence, closed_at, transaction_count FROM testnet.ledgers_row_v2 ORDER BY sequence DESC LIMIT 10",
+    "limit": 1000,
+    "offset": 0
+  }'
+```
+
+**2. Health Check** - `GET /health`
+```bash
+curl http://localhost:8080/health
+# {"status":"ok","db_connected":true}
+```
+
+**3. Metrics** - `GET /metrics`
+```bash
+curl http://localhost:8080/metrics
+# Prometheus-format connection pool metrics
+```
+
+### Query Features
+
+- ✅ **Concurrent with ingestion** - MVCC allows unlimited readers
+- ✅ **Query validation** - Prevents dangerous operations (DROP, DELETE, etc.)
+- ✅ **Automatic limits** - Default 1,000 rows, max 10,000
+- ✅ **Query timeout** - 30 seconds max execution time
+- ✅ **Connection pooling** - 20 concurrent queries supported
+- ✅ **Zero impact** - Queries don't block ingestion
+
+### Example Queries
+
+**Count ledgers:**
+```bash
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{"sql": "SELECT COUNT(*) FROM testnet.ledgers_row_v2"}'
+```
+
+**Recent transactions:**
+```bash
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{"sql": "SELECT sequence, transaction_count, successful_tx_count FROM testnet.ledgers_row_v2 WHERE transaction_count > 0 ORDER BY sequence DESC LIMIT 20"}'
+```
+
+**Time-based analysis:**
+```bash
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{"sql": "SELECT DATE_TRUNC('"'"'hour'"'"', closed_at) as hour, SUM(transaction_count) as total_txs FROM testnet.ledgers_row_v2 GROUP BY hour ORDER BY hour DESC LIMIT 24"}'
+```
+
+For comprehensive query examples, see **go/EXAMPLE_QUERIES.md**.
+
+### Performance
+
+**Tested with 10,000 ledgers:**
+- ✅ Ingestion: 47.31 ledgers/sec (unaffected)
+- ✅ Query latency: 0-10ms for simple queries
+- ✅ Concurrent queries: 5 simultaneous queries, all 1-3ms
+- ✅ Zero wait time: Connection pool not saturated
 
 ## 🐳 Docker Deployment
 
@@ -238,7 +335,9 @@ Reduce `batch_size` in config or ensure you're using v3 (not v2).
 ## 📚 Documentation
 
 - **Full Config Reference:** See `config/testnet-duckdb.yaml`
-- **Query Examples:** See `QUERYING_V2.md`
+- **Query Examples:** See `go/EXAMPLE_QUERIES.md` (HTTP API), `QUERYING_V2.md` (DuckDB CLI)
+- **WAL Implementation:** See `go/WAL_IMPLEMENTATION_SUMMARY.md`
+- **Shape Up Plans:** See `go/SHAPE_UP_QUERY_API.md`
 - **Deployment Guide:** See `QUICKSTART.md`
 
 ## 🆚 Version Comparison
@@ -250,6 +349,8 @@ Reduce `batch_size` in config or ensure you're using v3 (not v2).
 | Nil Pointer Safety | ⚠️ recover() | ✅ Explicit checks |
 | Memory Optimization | Standard | ✅ Optimized |
 | Multi-Writer | ✅ Yes | ⚠️ No (PostgreSQL optional) |
+| **HTTP Query API** | ❌ No | ✅ **Yes** |
+| **Concurrent Queries** | ❌ Blocked | ✅ **MVCC** |
 | Operational Complexity | High | **Low** |
 
 ## 📝 License

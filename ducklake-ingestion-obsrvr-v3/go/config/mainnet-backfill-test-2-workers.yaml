@@ -1,0 +1,66 @@
+service:
+  name: "ducklake-ingestion-obsrvr-v3"
+  environment: "mainnet-backfill-test-2-workers"
+
+# Small test configuration: 2 workers, 100K ledgers each (200K total)
+# This validates the backfill setup before running the full 60M ledger backfill
+#
+# Test duration estimate: ~20 minutes
+# - 200K ledgers / 28 ledgers/sec (2 workers) = ~2 hours
+# - But we're using recent ledgers with higher transaction density
+#
+# Workers:
+#   Worker 1 (port 50061): Ledgers 60,000,000 → 60,100,000 (100K ledgers)
+#   Worker 2 (port 50062): Ledgers 60,100,000 → 60,200,000 (100K ledgers)
+
+sources:
+  # Worker 1: 60M → 60.1M
+  - mode: "grpc"
+    grpc:
+      endpoint: "localhost:50061"
+    network_passphrase: "Public Global Stellar Network ; September 2015"
+    start_ledger: 60000000
+    end_ledger: 60100000
+
+  # Worker 2: 60.1M → 60.2M
+  - mode: "grpc"
+    grpc:
+      endpoint: "localhost:50062"
+    network_passphrase: "Public Global Stellar Network ; September 2015"
+    start_ledger: 60100000
+    end_ledger: 60200000
+
+# DuckDB configuration optimized for test
+ducklake:
+  catalog_path: "catalogs/mainnet-backfill-test.duckdb"
+  catalog_name: "mainnet_backfill_test"
+  batch_size: 50  # Moderate batch size for test
+  commit_interval_seconds: 10  # Frequent commits for monitoring
+  partition_size: 64000
+
+# Logging
+logging:
+  level: "info"
+  format: "text"
+
+# Checkpoint management
+checkpoint:
+  enabled: true
+  dir: "./state-mainnet-backfill-test"
+
+# Manifest tracking (disabled for test)
+manifest:
+  enabled: false
+
+# PAS (disabled for test)
+pas:
+  enabled: false
+
+# Era tracking
+era:
+  era_id: "mainnet_backfill_test_2_workers"
+  version_label: "v1"
+
+# Metrics (disabled for test)
+metrics:
+  enabled: false

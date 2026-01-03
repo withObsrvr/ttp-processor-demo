@@ -1,0 +1,21 @@
+# Query API test configuration with 10,000 ledgers
+# Testing concurrent queries during active ingestion
+
+sources:
+  - mode: "grpc"
+    grpc:
+      endpoint: "localhost:50051"
+    network_passphrase: "Test SDF Network ; September 2015"
+    start_ledger: 1000
+    end_ledger: 11000  # 10,000 ledgers for Query API test
+
+ducklake:
+  catalog_path: "catalogs/query-api-test.duckdb"
+  catalog_name: "query_api_test"
+  schema_name: "testnet"
+  batch_size: 100
+  commit_interval_seconds: 5
+
+era:
+  era_id: "test-era-query-api-001"
+  version_label: "v1.0.0-query-api-test"

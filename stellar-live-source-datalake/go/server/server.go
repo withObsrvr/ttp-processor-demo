@@ -141,8 +141,9 @@ type LedgerBackendConfig struct {
 	StellarCoreConfigPath string
 	
 	// RPC specific
-	RPCEndpoint string
-	
+	RPCEndpoint   string
+	RPCAuthHeader string  // Authorization header for RPC requests (e.g., "Api-Key xyz123")
+
 	// Archive specific  
 	ArchiveStorageType string
 	ArchiveBucketName  string
@@ -202,6 +203,7 @@ func loadConfiguration() (*LedgerBackendConfig, error) {
 		if config.RPCEndpoint == "" {
 			return nil, fmt.Errorf("RPC_ENDPOINT required for RPC backend")
 		}
+		config.RPCAuthHeader = os.Getenv("RPC_AUTH_HEADER") // Optional auth header
 	case "ARCHIVE":
 		config.ArchiveStorageType = os.Getenv("ARCHIVE_STORAGE_TYPE")
 		config.ArchiveBucketName = os.Getenv("ARCHIVE_BUCKET_NAME")
@@ -336,12 +338,36 @@ func (s *RawLedgerServer) createCaptiveCore() (ledgerbackend.LedgerBackend, erro
 	return ledgerbackend.NewCaptive(config)
 }
 
+// authTransport is an http.RoundTripper that adds Authorization header to requests
+type authTransport struct {
+	base       http.RoundTripper
+	authHeader string
+}
+
+func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Clone request to avoid modifying original
+	req = req.Clone(req.Context())
+	req.Header.Set("Authorization", t.authHeader)
+	return t.base.RoundTrip(req)
+}
+
 func (s *RawLedgerServer) createRPCBackend() (ledgerbackend.LedgerBackend, error) {
 	options := ledgerbackend.RPCLedgerBackendOptions{
 		RPCServerURL: s.config.RPCEndpoint,
 		BufferSize:   10, // Default buffer size
 	}
-	
+
+	// If auth header is provided, create custom HTTP client with auth transport
+	if s.config.RPCAuthHeader != "" {
+		transport := &authTransport{
+			base:       http.DefaultTransport,
+			authHeader: s.config.RPCAuthHeader,
+		}
+		options.HttpClient = &http.Client{
+			Transport: transport,
+		}
+	}
+
 	return ledgerbackend.NewRPCLedgerBackend(options), nil
 }
 

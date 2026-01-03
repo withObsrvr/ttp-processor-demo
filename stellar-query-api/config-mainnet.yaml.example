@@ -1,0 +1,36 @@
+service:
+  name: stellar-query-api-mainnet
+  port: 8093  # Different port from testnet (8092)
+  read_timeout_seconds: 30
+  write_timeout_seconds: 30
+
+# PostgreSQL Hot Buffer (recent data)
+postgres:
+  host: localhost
+  port: 5435  # Different port from testnet (5434)
+  database: stellar_hot
+  user: stellar
+  password: stellar_dev_password
+  sslmode: disable
+  max_connections: 10
+
+# DuckLake Bronze (historical data)
+ducklake:
+  # PostgreSQL catalog connection (separate catalog for mainnet)
+  catalog_path: "ducklake:postgres:postgresql://doadmin:PASSWORD@catalog-host:25060/obsrvr_lake_catalog_mainnet?sslmode=require"
+  data_path: "s3://obsrvr-test-bucket-1/mainnet_bronze/"  # Different S3 path
+  catalog_name: mainnet_catalog  # Different catalog name
+  schema_name: bronze
+  metadata_schema: bronze_meta
+
+  # S3 credentials (same Backblaze B2 account)
+  aws_access_key_id: "004755c0f85715d0000000002"
+  aws_secret_access_key: "K004c0t0rlFIuwJpU9p6lQXQqGXS/ao"
+  aws_region: "us-west-004"
+  aws_endpoint: "https://s3.us-west-004.backblazeb2.com"
+
+# Query defaults
+query:
+  default_limit: 100
+  max_limit: 10000
+  cache_ttl_seconds: 60

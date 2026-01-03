@@ -1,16 +1,26 @@
-go 1.24.0
-
-toolchain go1.24.8
+go 1.25.4
 
 use (
 	./account-balance-processor/go
 	./arrow-consumer-demo/go
+	./bronze-silver-transformer/go
+	./contract-event-index-transformer/go
 	./contract-events-processor/go
 	./contract-invocation-processor/go
 	./duckdb-consumer/go
+	./ducklake-ingestion-obsrvr-v3/go
 	./ducklake-ingestion-processor/go
+	./index-plane-transformer/go
+	./postgres-ducklake-flusher/go
+	./silver-cold-flusher/go
+	./silver-realtime-transformer/go
+	./silver-transformer
 	./stellar-arrow-source/go
 	./stellar-live-source-datalake/go
+	./stellar-live-source-sdk/go
 	./stellar-live-source/go
+	./stellar-postgres-ingester/go
+	./stellar-query-api/go
+	./ttp-processor-sdk/go
 	./ttp-processor/go
 )

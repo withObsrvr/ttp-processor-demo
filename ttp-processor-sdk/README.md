@@ -2,6 +2,8 @@
 
 A Go processor implementation that extracts SEP-41 token transfer events from Stellar ledgers using the official Stellar Go SDK's `token_transfer` processor, wrapped with flowctl-sdk for integration into data pipelines.
 
+**Latest Release:** v2.0.0-sdk (Go 1.25) - [Cycle 1 Cleanup Complete](./CYCLE1_CLEANUP_COMPLETE.md)
+
 ## Overview
 
 The Token Transfer Processor SDK provides a standardized way to parse Stellar network transaction data and derive token transfer events. It functions as a facade to [CAP-67](https://stellar.org/protocol/cap-67), automatically generating standardized events from ledger data without requiring manual parsing of complex transaction structures.
@@ -349,10 +351,12 @@ go test ./...
 ### Dependencies
 
 The processor uses:
+- **Go 1.25+** - Modern Go toolchain with container-aware GOMAXPROCS
 - **Stellar Go SDK** - Official Stellar processor implementation
   - `github.com/stellar/go-stellar-sdk/processors/token_transfer`
 - **flowctl-sdk** - Pipeline integration framework
   - `github.com/withObsrvr/flowctl-sdk/pkg/processor`
+  - `github.com/withObsrvr/flowctl-sdk/pkg/flowctl` (metrics & health)
 - **flow-proto** - Protobuf definitions
   - `github.com/withObsrvr/flow-proto/go/gen/stellar/v1`
 

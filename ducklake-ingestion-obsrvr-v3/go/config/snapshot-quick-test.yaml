@@ -1,0 +1,49 @@
+# Quick test config with smaller ledger range
+sources:
+  - mode: "datastore"
+    network_passphrase: "Test SDF Network ; September 2015"
+    start_ledger: 1501101
+    end_ledger: 1501150  # Just 50 ledgers for quick test
+
+    datastore:
+      type: "GCS"
+      path: "obsrvr-stellar-ledger-data-testnet-data/landing/ledgers/testnet"
+      ledgers_per_file: 1
+      files_per_partition: 64000
+      buffer_size: 50
+      num_workers: 3
+      retry_limit: 3
+      retry_wait_ms: 1000
+
+ducklake:
+  catalog_path: "catalogs/snapshot-quick-test.duckdb"
+  catalog_name: "snapshot_quick_test"
+  schema_name: "testnet"
+  batch_size: 50
+  commit_interval_seconds: 30
+
+era:
+  era_id: "snapshot-quick-test"
+  version_label: "v3-fix-test"
+
+logging:
+  level: "info"
+  format: "console"
+
+checkpoint:
+  enabled: false
+
+manifest:
+  enabled: false
+
+pas:
+  enabled: false
+
+pipeline:
+  batch_size: 10
+  pool:
+    workers: 2
+    queue_size: 4
+
+metrics:
+  enabled: false
