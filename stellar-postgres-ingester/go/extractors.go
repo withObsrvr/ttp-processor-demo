@@ -264,6 +264,11 @@ func (w *Writer) extractOperations(rawLedger *pb.RawLedger) ([]OperationData, er
 				opData.SorobanContractID = contractID
 				opData.SorobanFunction = functionName
 				opData.SorobanArgumentsJSON = argsJSON
+
+				// Extract call graph for cross-contract call tracking (Freighter use case)
+				if err := integrateCallGraph(tx, i, op, &opData); err != nil {
+					log.Printf("Warning: Failed to integrate call graph for op %s:%d: %v", txHash, i, err)
+				}
 			}
 
 			operations = append(operations, opData)

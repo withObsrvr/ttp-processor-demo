@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+
+	"github.com/lib/pq"
 )
 
 // SilverWriter writes transformed data to silver hot buffer (silver_hot PostgreSQL)
@@ -601,6 +603,82 @@ func (sw *SilverWriter) WriteContractInvocation(ctx context.Context, tx *sql.Tx,
 
 	if err != nil {
 		return fmt.Errorf("failed to write contract invocation: %w", err)
+	}
+
+	return nil
+}
+
+// WriteContractCall inserts a contract call row (flattened from call graph)
+func (sw *SilverWriter) WriteContractCall(ctx context.Context, tx *sql.Tx, row *ContractCallRow) error {
+	query := `
+		INSERT INTO contract_invocation_calls (
+			ledger_sequence,
+			transaction_index,
+			operation_index,
+			transaction_hash,
+			from_contract,
+			to_contract,
+			function_name,
+			call_depth,
+			execution_order,
+			successful,
+			closed_at,
+			ledger_range
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+		)
+		ON CONFLICT (ledger_sequence, transaction_hash, operation_index, execution_order) DO NOTHING
+	`
+
+	_, err := tx.ExecContext(ctx, query,
+		row.LedgerSequence,
+		row.TransactionIndex,
+		row.OperationIndex,
+		row.TransactionHash,
+		row.FromContract,
+		row.ToContract,
+		row.FunctionName,
+		row.CallDepth,
+		row.ExecutionOrder,
+		row.Successful,
+		row.ClosedAt,
+		row.LedgerRange,
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to write contract call: %w", err)
+	}
+
+	return nil
+}
+
+// WriteContractHierarchy inserts a contract hierarchy row (ancestry chain)
+func (sw *SilverWriter) WriteContractHierarchy(ctx context.Context, tx *sql.Tx, row *ContractHierarchyRow) error {
+	query := `
+		INSERT INTO contract_invocation_hierarchy (
+			transaction_hash,
+			root_contract,
+			child_contract,
+			path_depth,
+			full_path,
+			ledger_range
+		) VALUES (
+			$1, $2, $3, $4, $5, $6
+		)
+		ON CONFLICT (transaction_hash, root_contract, child_contract) DO NOTHING
+	`
+
+	_, err := tx.ExecContext(ctx, query,
+		row.TransactionHash,
+		row.RootContract,
+		row.ChildContract,
+		row.PathDepth,
+		pq.Array(row.FullPath),
+		row.LedgerRange,
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to write contract hierarchy: %w", err)
 	}
 
 	return nil

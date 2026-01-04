@@ -9,9 +9,10 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
+
+	"github.com/gorilla/mux"
 )
 
 func mainWithSilver() {
@@ -49,6 +50,7 @@ func mainWithSilver() {
 
 	// Create Silver reader if configured (hot + cold)
 	var silverHandlers *SilverHandlers
+	var unifiedSilverReader *UnifiedSilverReader
 	if config.DuckLakeSilver != nil && config.PostgresSilver != nil {
 		// Create hot reader (PostgreSQL silver_hot)
 		silverHotReader, err := NewSilverHotReader(*config.PostgresSilver)
@@ -67,7 +69,7 @@ func mainWithSilver() {
 		log.Println("✅ Connected to DuckLake Silver (cold storage)")
 
 		// Create unified reader
-		unifiedSilverReader := NewUnifiedSilverReader(silverHotReader, silverColdReader)
+		unifiedSilverReader = NewUnifiedSilverReader(silverHotReader, silverColdReader)
 		silverHandlers = NewSilverHandlers(unifiedSilverReader)
 		log.Println("✅ Silver API handlers initialized (hot + cold)")
 	} else {
@@ -109,54 +111,88 @@ func mainWithSilver() {
 		log.Println("ℹ️  Contract Event Index not configured - contract event lookups disabled")
 	}
 
-	// Create HTTP server
-	mux := http.NewServeMux()
+	// Create HTTP server with gorilla/mux for path parameter support
+	router := mux.NewRouter()
 
 	// Health endpoint
-	mux.HandleFunc("/health", handleHealthWithSilverAndIndexAndContractIndex(
+	router.HandleFunc("/health", handleHealthWithSilverAndIndexAndContractIndex(
 		config.DuckLakeSilver != nil,
 		config.Index != nil && config.Index.Enabled && indexHandlers != nil,
 		config.ContractIndex != nil && config.ContractIndex.Enabled && contractIndexHandlers != nil,
 	))
 
-	// Bronze layer endpoints (existing)
-	mux.HandleFunc("/ledgers", queryService.HandleLedgers)
-	mux.HandleFunc("/transactions", queryService.HandleTransactions)
-	mux.HandleFunc("/operations", queryService.HandleOperations)
-	mux.HandleFunc("/effects", queryService.HandleEffects)
-	mux.HandleFunc("/trades", queryService.HandleTrades)
-	mux.HandleFunc("/accounts", queryService.HandleAccounts)
-	mux.HandleFunc("/trustlines", queryService.HandleTrustlines)
-	mux.HandleFunc("/offers", queryService.HandleOffers)
-	mux.HandleFunc("/contract_events", queryService.HandleContractEvents)
+	// Bronze layer endpoints - /api/v1/bronze/*
+	log.Println("Registering Bronze API endpoints:")
+	router.HandleFunc("/api/v1/bronze/ledgers", queryService.HandleLedgers)
+	router.HandleFunc("/api/v1/bronze/transactions", queryService.HandleTransactions)
+	router.HandleFunc("/api/v1/bronze/operations", queryService.HandleOperations)
+	router.HandleFunc("/api/v1/bronze/effects", queryService.HandleEffects)
+	router.HandleFunc("/api/v1/bronze/trades", queryService.HandleTrades)
+	router.HandleFunc("/api/v1/bronze/accounts", queryService.HandleAccounts)
+	router.HandleFunc("/api/v1/bronze/trustlines", queryService.HandleTrustlines)
+	router.HandleFunc("/api/v1/bronze/offers", queryService.HandleOffers)
+	router.HandleFunc("/api/v1/bronze/contract_events", queryService.HandleContractEvents)
+	log.Println("  ✓ /api/v1/bronze/ledgers")
+	log.Println("  ✓ /api/v1/bronze/transactions")
+	log.Println("  ✓ /api/v1/bronze/operations")
+	log.Println("  ✓ /api/v1/bronze/effects")
+	log.Println("  ✓ /api/v1/bronze/trades")
+	log.Println("  ✓ /api/v1/bronze/accounts")
+	log.Println("  ✓ /api/v1/bronze/trustlines")
+	log.Println("  ✓ /api/v1/bronze/offers")
+	log.Println("  ✓ /api/v1/bronze/contract_events")
 
 	// Silver layer endpoints (if enabled)
 	if silverHandlers != nil {
 		log.Println("Registering Silver API endpoints:")
 
 		// Account endpoints
-		mux.HandleFunc("/api/v1/silver/accounts/current", silverHandlers.HandleAccountCurrent)
-		mux.HandleFunc("/api/v1/silver/accounts/history", silverHandlers.HandleAccountHistory)
-		mux.HandleFunc("/api/v1/silver/accounts/top", silverHandlers.HandleTopAccounts)
+		router.HandleFunc("/api/v1/silver/accounts/current", silverHandlers.HandleAccountCurrent)
+		router.HandleFunc("/api/v1/silver/accounts/history", silverHandlers.HandleAccountHistory)
+		router.HandleFunc("/api/v1/silver/accounts/top", silverHandlers.HandleTopAccounts)
 		log.Println("  ✓ /api/v1/silver/accounts/*")
 
 		// Operations endpoints
-		mux.HandleFunc("/api/v1/silver/operations/enriched", silverHandlers.HandleEnrichedOperations)
-		mux.HandleFunc("/api/v1/silver/operations/soroban", silverHandlers.HandleSorobanOperations)
-		mux.HandleFunc("/api/v1/silver/payments", silverHandlers.HandlePayments)
+		router.HandleFunc("/api/v1/silver/operations/enriched", silverHandlers.HandleEnrichedOperations)
+		router.HandleFunc("/api/v1/silver/operations/soroban", silverHandlers.HandleSorobanOperations)
+		router.HandleFunc("/api/v1/silver/payments", silverHandlers.HandlePayments)
 		log.Println("  ✓ /api/v1/silver/operations/*")
 		log.Println("  ✓ /api/v1/silver/payments")
 
 		// Transfer endpoints
-		mux.HandleFunc("/api/v1/silver/transfers", silverHandlers.HandleTokenTransfers)
-		mux.HandleFunc("/api/v1/silver/transfers/stats", silverHandlers.HandleTokenTransferStats)
+		router.HandleFunc("/api/v1/silver/transfers", silverHandlers.HandleTokenTransfers)
+		router.HandleFunc("/api/v1/silver/transfers/stats", silverHandlers.HandleTokenTransferStats)
 		log.Println("  ✓ /api/v1/silver/transfers/*")
 
 		// Block explorer specific endpoints
-		mux.HandleFunc("/api/v1/silver/explorer/account", silverHandlers.HandleAccountOverview)
-		mux.HandleFunc("/api/v1/silver/explorer/transaction", silverHandlers.HandleTransactionDetails)
-		mux.HandleFunc("/api/v1/silver/explorer/asset", silverHandlers.HandleAssetOverview)
+		router.HandleFunc("/api/v1/silver/explorer/account", silverHandlers.HandleAccountOverview)
+		router.HandleFunc("/api/v1/silver/explorer/transaction", silverHandlers.HandleTransactionDetails)
+		router.HandleFunc("/api/v1/silver/explorer/asset", silverHandlers.HandleAssetOverview)
 		log.Println("  ✓ /api/v1/silver/explorer/*")
+
+		// Contract call endpoints (Freighter "Contracts Involved" feature)
+		contractCallHandlers := NewContractCallHandlers(unifiedSilverReader)
+
+		// Transaction-centric endpoints with path parameters
+		router.HandleFunc("/api/v1/silver/tx/{hash}/contracts-involved", contractCallHandlers.HandleContractsInvolved).Methods("GET")
+		router.HandleFunc("/api/v1/silver/tx/{hash}/call-graph", contractCallHandlers.HandleCallGraph).Methods("GET")
+		router.HandleFunc("/api/v1/silver/tx/{hash}/hierarchy", contractCallHandlers.HandleTransactionHierarchy).Methods("GET")
+		router.HandleFunc("/api/v1/silver/tx/{hash}/contracts-summary", contractCallHandlers.HandleContractsSummary).Methods("GET")
+		log.Println("  ✓ /api/v1/silver/tx/{hash}/contracts-involved")
+		log.Println("  ✓ /api/v1/silver/tx/{hash}/call-graph")
+		log.Println("  ✓ /api/v1/silver/tx/{hash}/hierarchy")
+		log.Println("  ✓ /api/v1/silver/tx/{hash}/contracts-summary (wallet-friendly)")
+
+		// Contract-centric endpoints with path parameters
+		router.HandleFunc("/api/v1/silver/contracts/{id}/recent-calls", contractCallHandlers.HandleRecentCalls).Methods("GET")
+		router.HandleFunc("/api/v1/silver/contracts/{id}/callers", contractCallHandlers.HandleContractCallers).Methods("GET")
+		router.HandleFunc("/api/v1/silver/contracts/{id}/callees", contractCallHandlers.HandleContractCallees).Methods("GET")
+		router.HandleFunc("/api/v1/silver/contracts/{id}/call-summary", contractCallHandlers.HandleContractCallSummary).Methods("GET")
+		log.Println("  ✓ /api/v1/silver/contracts/{id}/recent-calls")
+		log.Println("  ✓ /api/v1/silver/contracts/{id}/callers")
+		log.Println("  ✓ /api/v1/silver/contracts/{id}/callees")
+		log.Println("  ✓ /api/v1/silver/contracts/{id}/call-summary")
+
 	}
 
 	// Index Plane endpoints (if enabled)
@@ -164,10 +200,10 @@ func mainWithSilver() {
 		log.Println("Registering Index Plane API endpoints:")
 
 		// Transaction hash lookup endpoints
-		mux.HandleFunc("/transactions/", indexHandlers.HandleTransactionLookup)
-		mux.HandleFunc("/api/v1/index/transactions/", indexHandlers.HandleTransactionLookup)
-		mux.HandleFunc("/api/v1/index/transactions/lookup", indexHandlers.HandleBatchTransactionLookup)
-		mux.HandleFunc("/api/v1/index/health", indexHandlers.HandleIndexHealth)
+		router.HandleFunc("/transactions/{hash}", indexHandlers.HandleTransactionLookup).Methods("GET")
+		router.HandleFunc("/api/v1/index/transactions/{hash}", indexHandlers.HandleTransactionLookup).Methods("GET")
+		router.HandleFunc("/api/v1/index/transactions/lookup", indexHandlers.HandleBatchTransactionLookup).Methods("POST")
+		router.HandleFunc("/api/v1/index/health", indexHandlers.HandleIndexHealth).Methods("GET")
 		log.Println("  ✓ /transactions/{hash} - Fast transaction hash lookup")
 		log.Println("  ✓ /api/v1/index/transactions/{hash} - Fast transaction hash lookup")
 		log.Println("  ✓ /api/v1/index/transactions/lookup - Batch hash lookup (POST)")
@@ -178,25 +214,11 @@ func mainWithSilver() {
 	if contractIndexHandlers != nil {
 		log.Println("Registering Contract Event Index API endpoints:")
 
-		// Contract event lookup endpoints
-		mux.HandleFunc("/api/v1/index/contracts/health", contractIndexHandlers.HandleContractIndexHealth)
-		mux.HandleFunc("/api/v1/index/contracts/lookup", contractIndexHandlers.HandleBatchContractLookup)
-
-		// These need to be registered with a prefix handler pattern
-		mux.HandleFunc("/api/v1/index/contracts/", func(w http.ResponseWriter, r *http.Request) {
-			// Route to appropriate handler based on suffix
-			if r.URL.Path == "/api/v1/index/contracts/lookup" {
-				contractIndexHandlers.HandleBatchContractLookup(w, r)
-			} else if r.URL.Path == "/api/v1/index/contracts/health" {
-				contractIndexHandlers.HandleContractIndexHealth(w, r)
-			} else if strings.HasSuffix(r.URL.Path, "/ledgers") {
-				contractIndexHandlers.HandleContractLedgers(w, r)
-			} else if strings.HasSuffix(r.URL.Path, "/summary") {
-				contractIndexHandlers.HandleContractEventSummary(w, r)
-			} else {
-				respondError(w, "invalid endpoint", http.StatusNotFound)
-			}
-		})
+		// Contract event lookup endpoints with path parameters
+		router.HandleFunc("/api/v1/index/contracts/health", contractIndexHandlers.HandleContractIndexHealth).Methods("GET")
+		router.HandleFunc("/api/v1/index/contracts/lookup", contractIndexHandlers.HandleBatchContractLookup).Methods("POST")
+		router.HandleFunc("/api/v1/index/contracts/{contract_id}/ledgers", contractIndexHandlers.HandleContractLedgers).Methods("GET")
+		router.HandleFunc("/api/v1/index/contracts/{contract_id}/summary", contractIndexHandlers.HandleContractEventSummary).Methods("GET")
 
 		log.Println("  ✓ /api/v1/index/contracts/{contract_id}/ledgers - Get ledgers for contract")
 		log.Println("  ✓ /api/v1/index/contracts/{contract_id}/summary - Get event summary")
@@ -206,7 +228,7 @@ func mainWithSilver() {
 
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", config.Service.Port),
-		Handler:      corsMiddleware(mux),
+		Handler:      corsMiddleware(router),
 		ReadTimeout:  time.Duration(config.Service.ReadTimeoutSeconds) * time.Second,
 		WriteTimeout: time.Duration(config.Service.WriteTimeoutSeconds) * time.Second,
 	}

@@ -282,9 +282,57 @@ type ContractInvocationRow struct {
 	FunctionName  string
 	ArgumentsJSON string
 
+	// Call graph (from Bronze layer)
+	ContractCallsJSON sql.NullString
+	ContractsInvolved []string
+	MaxCallDepth      sql.NullInt32
+
 	// Execution context
 	Successful bool
 	ClosedAt   time.Time
+
+	// Partitioning
+	LedgerRange int64
+}
+
+// ContractCallRow represents a row in the contract_invocation_calls table
+// Flattened cross-contract call relationships extracted from call graph
+type ContractCallRow struct {
+	// Identity
+	CallID int64 // Auto-generated
+
+	// TOID components (for joining back to operations)
+	LedgerSequence   int64
+	TransactionIndex int
+	OperationIndex   int
+	TransactionHash  string
+
+	// Call relationship
+	FromContract string
+	ToContract   string
+	FunctionName string
+	CallDepth    int
+	ExecutionOrder int
+
+	// Status
+	Successful bool
+	ClosedAt   time.Time
+
+	// Partitioning
+	LedgerRange int64
+}
+
+// ContractHierarchyRow represents a row in the contract_invocation_hierarchy table
+// Pre-computed ancestry chains for efficient contract relationship queries
+type ContractHierarchyRow struct {
+	// Identity
+	TransactionHash string
+	RootContract    string
+	ChildContract   string
+
+	// Hierarchy
+	PathDepth int
+	FullPath  []string // All contracts in the path from root to child
 
 	// Partitioning
 	LedgerRange int64

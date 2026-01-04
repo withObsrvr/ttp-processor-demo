@@ -520,6 +520,11 @@ CREATE UNLOGGED TABLE IF NOT EXISTS operations_row_v2 (
 			soroban_auth_required BOOLEAN,
 			soroban_arguments_json TEXT,
 
+			-- Call Graph (3) - Cross-contract call tracking
+			contract_calls_json JSONB,        -- Array of {from, to, function, depth, order}
+			contracts_involved TEXT[],        -- All contracts in the call chain
+			max_call_depth INT,               -- Maximum depth of nested calls
+
 			-- Account operations (8)
 			bump_to BIGINT,
 			set_flags INT,

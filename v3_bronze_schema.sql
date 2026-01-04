@@ -536,7 +536,12 @@ CREATE TABLE IF NOT EXISTS bronze.operations_row_v2 (
 
 			-- CYCLE 14: Incremental Versioning Support
 			era_id VARCHAR,
-			version_label VARCHAR
+			version_label VARCHAR,
+
+			-- CYCLE 15: Contract Invocation Analytics (3)
+			contract_calls_json TEXT,
+			contracts_involved VARCHAR[],
+			max_call_depth INT
 		);
 
 -- restored_keys_state_v1

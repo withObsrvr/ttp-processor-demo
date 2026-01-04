@@ -300,17 +300,21 @@ func (h *SilverHandlers) HandleAccountOverview(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Get recent transfers
-	transfers, err := h.reader.GetTokenTransfers(r.Context(), TransferFilters{
+	// Get recent transfers (both sent and received)
+	transfersFrom, _ := h.reader.GetTokenTransfers(r.Context(), TransferFilters{
 		FromAccount: accountID,
 		StartTime:   time.Now().Add(-7 * 24 * time.Hour),
 		EndTime:     time.Now(),
 		Limit:       10,
 	})
-	if err != nil {
-		respondError(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+	transfersTo, _ := h.reader.GetTokenTransfers(r.Context(), TransferFilters{
+		ToAccount: accountID,
+		StartTime: time.Now().Add(-7 * 24 * time.Hour),
+		EndTime:   time.Now(),
+		Limit:     10,
+	})
+	// Combine and dedupe transfers
+	transfers := append(transfersFrom, transfersTo...)
 
 	respondJSON(w, map[string]interface{}{
 		"account":             account,

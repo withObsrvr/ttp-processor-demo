@@ -723,17 +723,21 @@ func (w *Writer) insertOperations(ctx context.Context, tx pgx.Tx, operations []O
 			transaction_hash, transaction_index, operation_index, ledger_sequence, source_account,
 			type, type_string, created_at, transaction_successful,
 			operation_result_code, ledger_range, amount, asset, destination,
-			soroban_contract_id, soroban_function, soroban_arguments_json
+			soroban_contract_id, soroban_function, soroban_arguments_json,
+			contract_calls_json, contracts_involved, max_call_depth
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-			$11, $12, $13, $14, $15, $16, $17
+			$11, $12, $13, $14, $15, $16, $17, $18, $19, $20
 		)
 		ON CONFLICT (ledger_sequence, transaction_hash, operation_index) DO UPDATE SET
 			transaction_successful = EXCLUDED.transaction_successful,
 			transaction_index = EXCLUDED.transaction_index,
 			soroban_contract_id = EXCLUDED.soroban_contract_id,
 			soroban_function = EXCLUDED.soroban_function,
-			soroban_arguments_json = EXCLUDED.soroban_arguments_json
+			soroban_arguments_json = EXCLUDED.soroban_arguments_json,
+			contract_calls_json = EXCLUDED.contract_calls_json,
+			contracts_involved = EXCLUDED.contracts_involved,
+			max_call_depth = EXCLUDED.max_call_depth
 	`
 
 	for _, opData := range operations {
@@ -755,6 +759,9 @@ func (w *Writer) insertOperations(ctx context.Context, tx pgx.Tx, operations []O
 			opData.SorobanContractID,
 			opData.SorobanFunction,
 			opData.SorobanArgumentsJSON,
+			opData.ContractCallsJSON,
+			opData.ContractsInvolved,
+			opData.MaxCallDepth,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to insert operation %s:%d: %w", opData.TransactionHash, opData.OperationIndex, err)
