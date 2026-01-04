@@ -715,6 +715,47 @@ func (rt *RealtimeTransformer) transformContractCalls(ctx context.Context, tx *s
 					return count, fmt.Errorf("failed to write contract hierarchy: %w", err)
 				}
 			}
+		} else if contractID.Valid && contractID.String != "" {
+			// Single contract invocation with no cross-contract calls
+			// Still create a root call row so it appears in call-related queries
+			funcName := ""
+			if functionName.Valid {
+				funcName = functionName.String
+			}
+
+			rootCall := &ContractCallRow{
+				LedgerSequence:   ledgerSequence,
+				TransactionIndex: transactionIndex,
+				OperationIndex:   operationIndex,
+				TransactionHash:  transactionHash,
+				FromContract:     sourceAccount, // External caller (the account)
+				ToContract:       contractID.String,
+				FunctionName:     funcName,
+				CallDepth:        0,
+				ExecutionOrder:   0,
+				Successful:       successful,
+				ClosedAt:         closedAt,
+				LedgerRange:      ledgerRange,
+			}
+
+			if err := rt.silverWriter.WriteContractCall(ctx, tx, rootCall); err != nil {
+				return count, fmt.Errorf("failed to write root contract call: %w", err)
+			}
+			count++
+
+			// Also write a simple hierarchy entry for the root contract
+			rootHierarchy := &ContractHierarchyRow{
+				TransactionHash: transactionHash,
+				RootContract:    contractID.String,
+				ChildContract:   contractID.String, // Self-reference for root
+				PathDepth:       0,
+				FullPath:        []string{contractID.String},
+				LedgerRange:     ledgerRange,
+			}
+
+			if err := rt.silverWriter.WriteContractHierarchy(ctx, tx, rootHierarchy); err != nil {
+				return count, fmt.Errorf("failed to write root contract hierarchy: %w", err)
+			}
 		}
 	}
 
