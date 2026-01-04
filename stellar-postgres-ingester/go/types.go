@@ -23,20 +23,25 @@ type TransactionData struct {
 
 // OperationData represents a single operation (simplified - core fields only)
 type OperationData struct {
-	TransactionHash      string
-	OperationIndex       int
-	LedgerSequence       uint32
-	SourceAccount        string
-	OpType               int
-	TypeString           string
-	CreatedAt            time.Time
+	TransactionHash       string
+	TransactionIndex      int
+	OperationIndex        int
+	LedgerSequence        uint32
+	SourceAccount         string
+	OpType                int
+	TypeString            string
+	CreatedAt             time.Time
 	TransactionSuccessful bool
-	OperationResultCode  *string
-	LedgerRange          uint32
+	OperationResultCode   *string
+	LedgerRange           uint32
 	// Core operation fields
-	Amount               *int64
-	Asset                *string
-	Destination          *string
+	Amount                *int64
+	Asset                 *string
+	Destination           *string
+	// Soroban contract invocation fields
+	SorobanContractID     *string
+	SorobanFunction       *string
+	SorobanArgumentsJSON  *string
 }
 
 // EffectData represents a single effect (state changes from operations)

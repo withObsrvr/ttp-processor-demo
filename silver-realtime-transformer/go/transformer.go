@@ -181,6 +181,13 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 	}
 	totalRows += signersCount
 
+	// Transform contract invocations (Cycle 5 - Contract Invocations)
+	invocationsCount, err := rt.transformContractInvocations(ctx, tx, startLedger, endLedger)
+	if err != nil {
+		return fmt.Errorf("failed to transform contract invocations: %w", err)
+	}
+	totalRows += invocationsCount
+
 	// Update checkpoint
 	if err := rt.checkpoint.SaveWithTx(tx, endLedger); err != nil {
 		return fmt.Errorf("failed to save checkpoint: %w", err)
@@ -570,4 +577,49 @@ func (rt *RealtimeTransformer) getLastLedger() int64 {
 	defer rt.mu.RUnlock()
 
 	return rt.lastLedgerSequence
+}
+
+// transformContractInvocations transforms contract invocations for the ledger range
+func (rt *RealtimeTransformer) transformContractInvocations(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	rows, err := rt.bronzeReader.QueryContractInvocations(ctx, startLedger, endLedger)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	count := int64(0)
+
+	for rows.Next() {
+		row := &ContractInvocationRow{}
+
+		err := rows.Scan(
+			&row.LedgerSequence,
+			&row.TransactionIndex,
+			&row.OperationIndex,
+			&row.TransactionHash,
+			&row.SourceAccount,
+			&row.ContractID,
+			&row.FunctionName,
+			&row.ArgumentsJSON,
+			&row.Successful,
+			&row.ClosedAt,
+			&row.LedgerRange,
+		)
+
+		if err != nil {
+			return count, fmt.Errorf("failed to scan contract invocation row: %w", err)
+		}
+
+		if err := rt.silverWriter.WriteContractInvocation(ctx, tx, row); err != nil {
+			return count, fmt.Errorf("failed to write contract invocation: %w", err)
+		}
+
+		count++
+	}
+
+	if err := rows.Err(); err != nil {
+		return count, fmt.Errorf("error iterating contract invocations: %w", err)
+	}
+
+	return count, nil
 }

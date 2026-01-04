@@ -272,6 +272,83 @@ func eventTypeString(t xdr.ContractEventType) string {
 	}
 }
 
+// extractContractInvocationDetails extracts contract_id, function_name, and arguments from InvokeHostFunction operation
+// Returns (contract_id, function_name, arguments_json, error)
+func extractContractInvocationDetails(op xdr.Operation) (*string, *string, *string, error) {
+	// Only process InvokeHostFunction operations (type 24)
+	invokeOp, ok := op.Body.GetInvokeHostFunctionOp()
+	if !ok {
+		return nil, nil, nil, nil
+	}
+
+	// Only process InvokeContract host function (contract invocations)
+	if invokeOp.HostFunction.Type != xdr.HostFunctionTypeHostFunctionTypeInvokeContract {
+		return nil, nil, nil, nil
+	}
+
+	// Check if InvokeContract is present
+	if invokeOp.HostFunction.InvokeContract == nil {
+		return nil, nil, nil, nil
+	}
+
+	invokeContract := invokeOp.HostFunction.InvokeContract
+
+	// Extract contract address (contract_id)
+	var contractID *string
+	// Convert contract address to string
+	contractIDStr, err := invokeContract.ContractAddress.String()
+	if err == nil && contractIDStr != "" {
+		contractID = &contractIDStr
+	}
+
+	// Extract function name
+	var functionName *string
+	if invokeContract.FunctionName != "" {
+		fnName := string(invokeContract.FunctionName)
+		functionName = &fnName
+	}
+
+	// Extract arguments ScVals
+	args := invokeContract.Args
+
+	// Convert each ScVal argument to JSON
+	var argsJSON []interface{}
+	for _, arg := range args {
+		argJSON, err := ConvertScValToJSON(arg)
+		if err != nil {
+			log.Printf("Warning: Failed to convert ScVal arg to JSON: %v", err)
+			// Include error information in the JSON
+			argsJSON = append(argsJSON, map[string]interface{}{
+				"error": err.Error(),
+				"type":  arg.Type.String(),
+			})
+		} else {
+			argsJSON = append(argsJSON, argJSON)
+		}
+	}
+
+	// Marshal arguments to JSON string
+	var argsStr *string
+	if len(argsJSON) > 0 {
+		argsJSONBytes, err := json.Marshal(argsJSON)
+		if err != nil {
+			return contractID, functionName, nil, fmt.Errorf("failed to marshal arguments to JSON: %w", err)
+		}
+		s := string(argsJSONBytes)
+		argsStr = &s
+	}
+
+	return contractID, functionName, argsStr, nil
+}
+
+// extractContractInvocationArgs extracts contract invocation arguments from InvokeHostFunction operation
+// Returns JSON-encoded arguments array or nil if operation is not a contract invocation
+// DEPRECATED: Use extractContractInvocationDetails instead
+func extractContractInvocationArgs(op xdr.Operation) (*string, error) {
+	_, _, argsStr, err := extractContractInvocationDetails(op)
+	return argsStr, err
+}
+
 // Wrapper functions to adapt sac package to contract processor signature
 // Reference: ducklake-ingestion-obsrvr-v3/go/contract_data.go lines 18-28
 func sacAssetFromContractData(ledgerEntry xdr.LedgerEntry, passphrase string) *xdr.Asset {

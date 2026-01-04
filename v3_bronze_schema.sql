@@ -450,8 +450,9 @@ CREATE TABLE IF NOT EXISTS bronze.offers_snapshot_v1 (
 
 -- operations_row_v2
 CREATE TABLE IF NOT EXISTS bronze.operations_row_v2 (
-			-- Core fields (11)
+			-- Core fields (12)
 			transaction_hash VARCHAR NOT NULL,
+			transaction_index INT NOT NULL,
 			operation_index INT NOT NULL,
 			ledger_sequence BIGINT NOT NULL,
 			source_account VARCHAR NOT NULL,
@@ -512,11 +513,12 @@ CREATE TABLE IF NOT EXISTS bronze.operations_row_v2 (
 			selling_asset_code VARCHAR,
 			selling_asset_issuer VARCHAR,
 
-			-- Soroban (4)
+			-- Soroban (5)
 			soroban_operation VARCHAR,
 			soroban_function VARCHAR,
 			soroban_contract_id VARCHAR,
 			soroban_auth_required BOOLEAN,
+			soroban_arguments_json TEXT,
 
 			-- Account operations (8)
 			bump_to BIGINT,

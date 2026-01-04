@@ -559,3 +559,49 @@ func (sw *SilverWriter) UpdateAccountSignerSnapshotValidTo(ctx context.Context, 
 
 	return nil
 }
+
+// WriteContractInvocation inserts a contract invocation row
+func (sw *SilverWriter) WriteContractInvocation(ctx context.Context, tx *sql.Tx, row *ContractInvocationRow) error {
+	query := `
+		INSERT INTO contract_invocations_raw (
+			ledger_sequence,
+			transaction_index,
+			operation_index,
+			transaction_hash,
+			source_account,
+			contract_id,
+			function_name,
+			arguments_json,
+			successful,
+			closed_at,
+			ledger_range
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+		)
+		ON CONFLICT (ledger_sequence, transaction_index, operation_index) DO UPDATE SET
+			contract_id = EXCLUDED.contract_id,
+			function_name = EXCLUDED.function_name,
+			arguments_json = EXCLUDED.arguments_json,
+			successful = EXCLUDED.successful
+	`
+
+	_, err := tx.ExecContext(ctx, query,
+		row.LedgerSequence,
+		row.TransactionIndex,
+		row.OperationIndex,
+		row.TransactionHash,
+		row.SourceAccount,
+		row.ContractID,
+		row.FunctionName,
+		row.ArgumentsJSON,
+		row.Successful,
+		row.ClosedAt,
+		row.LedgerRange,
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to write contract invocation: %w", err)
+	}
+
+	return nil
+}

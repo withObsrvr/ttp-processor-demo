@@ -264,3 +264,28 @@ type AccountSignerSnapshotRow struct {
 	EraID          sql.NullString
 	VersionLabel   sql.NullString
 }
+
+// ContractInvocationRow represents a row in the contract_invocations_raw table
+// Extracted from Bronze operations_row_v2 where type = 24 (InvokeHostFunction)
+type ContractInvocationRow struct {
+	// TOID components
+	LedgerSequence   int64
+	TransactionIndex int
+	OperationIndex   int
+
+	// Transaction context
+	TransactionHash string
+	SourceAccount   string
+
+	// Contract invocation details
+	ContractID    string
+	FunctionName  string
+	ArgumentsJSON string
+
+	// Execution context
+	Successful bool
+	ClosedAt   time.Time
+
+	// Partitioning
+	LedgerRange int64
+}
