@@ -433,8 +433,28 @@ func GetFunctionNameFromScVal(val xdr.ScVal) string {
 		}
 	case xdr.ScValTypeScvBytes:
 		if val.Bytes != nil {
-			return string(*val.Bytes)
+			// Only convert to string if bytes are printable ASCII
+			// Otherwise, these are likely hashes or binary data
+			bytes := *val.Bytes
+			if isPrintableASCII(bytes) {
+				return string(bytes)
+			}
 		}
 	}
 	return ""
+}
+
+// isPrintableASCII checks if all bytes are printable ASCII characters
+func isPrintableASCII(b []byte) bool {
+	if len(b) == 0 {
+		return false
+	}
+	for _, c := range b {
+		// Printable ASCII is 0x20 (space) to 0x7E (~)
+		// Also allow common Soroban symbol characters
+		if c < 0x20 || c > 0x7E {
+			return false
+		}
+	}
+	return true
 }

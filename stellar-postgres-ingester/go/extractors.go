@@ -162,6 +162,7 @@ func (w *Writer) extractOperations(rawLedger *pb.RawLedger) ([]OperationData, er
 	defer reader.Close()
 
 	// Read all transactions and extract operations
+	txIndex := 0 // Track transaction index for TOID generation
 	for {
 		tx, err := reader.Read()
 		if err == io.EOF {
@@ -185,6 +186,7 @@ func (w *Writer) extractOperations(rawLedger *pb.RawLedger) ([]OperationData, er
 
 			opData := OperationData{
 				TransactionHash:       txHash,
+				TransactionIndex:      txIndex,
 				OperationIndex:        i,
 				LedgerSequence:        ledgerSeq,
 				SourceAccount:         sourceAccount,
@@ -253,8 +255,27 @@ func (w *Writer) extractOperations(rawLedger *pb.RawLedger) ([]OperationData, er
 				}
 			}
 
+			// Extract contract invocation details for InvokeHostFunction operations (type 24)
+			if op.Body.Type == xdr.OperationTypeInvokeHostFunction {
+				contractID, functionName, argsJSON, err := extractContractInvocationDetails(op)
+				if err != nil {
+					log.Printf("Warning: Failed to extract contract invocation details for op %s:%d: %v", txHash, i, err)
+				}
+				opData.SorobanContractID = contractID
+				opData.SorobanFunction = functionName
+				opData.SorobanArgumentsJSON = argsJSON
+
+				// Extract call graph for cross-contract call tracking (Freighter use case)
+				if err := integrateCallGraph(tx, i, op, &opData); err != nil {
+					log.Printf("Warning: Failed to integrate call graph for op %s:%d: %v", txHash, i, err)
+				}
+			}
+
 			operations = append(operations, opData)
 		}
+
+		// Increment transaction index
+		txIndex++
 	}
 
 	return operations, nil

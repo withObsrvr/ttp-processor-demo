@@ -454,3 +454,71 @@ func (br *BronzeReader) QueryAccountSignersSnapshotAll(ctx context.Context, star
 
 	return rows, nil
 }
+
+// QueryContractInvocations reads contract invocations from Bronze operations for a ledger range
+// Filters for InvokeHostFunction operations (type 24) with contract invocation data
+func (br *BronzeReader) QueryContractInvocations(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
+	query := `
+		SELECT
+			o.ledger_sequence,
+			o.transaction_index,
+			o.operation_index,
+			o.transaction_hash,
+			o.source_account,
+			o.soroban_contract_id,
+			o.soroban_function,
+			o.soroban_arguments_json,
+			o.transaction_successful,
+			o.created_at,
+			o.ledger_range
+		FROM operations_row_v2 o
+		WHERE o.ledger_sequence BETWEEN $1 AND $2
+		  AND o.type = 24  -- InvokeHostFunction
+		  AND o.soroban_contract_id IS NOT NULL
+		  AND o.soroban_function IS NOT NULL
+		  AND o.soroban_arguments_json IS NOT NULL
+		ORDER BY o.ledger_sequence, o.transaction_index, o.operation_index
+	`
+
+	rows, err := br.db.QueryContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query contract invocations: %w", err)
+	}
+
+	return rows, nil
+}
+
+// QueryContractCallGraphs reads operations with call graph data from Bronze for a ledger range
+// Filters for InvokeHostFunction operations (type 24) with cross-contract calls
+func (br *BronzeReader) QueryContractCallGraphs(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
+	query := `
+		SELECT
+			o.ledger_sequence,
+			o.transaction_index,
+			o.operation_index,
+			o.transaction_hash,
+			o.source_account,
+			o.soroban_contract_id,
+			o.soroban_function,
+			o.soroban_arguments_json,
+			o.contract_calls_json,
+			o.contracts_involved,
+			o.max_call_depth,
+			o.transaction_successful,
+			o.created_at,
+			o.ledger_range
+		FROM operations_row_v2 o
+		WHERE o.ledger_sequence BETWEEN $1 AND $2
+		  AND o.type = 24  -- InvokeHostFunction
+		  AND o.contract_calls_json IS NOT NULL
+		  AND o.max_call_depth > 0
+		ORDER BY o.ledger_sequence, o.transaction_index, o.operation_index
+	`
+
+	rows, err := br.db.QueryContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query contract call graphs: %w", err)
+	}
+
+	return rows, nil
+}

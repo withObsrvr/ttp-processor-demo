@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 // RealtimeTransformer handles real-time bronze → silver transformation
@@ -180,6 +183,20 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 		return fmt.Errorf("failed to transform account signers snapshot: %w", err)
 	}
 	totalRows += signersCount
+
+	// Transform contract invocations (Cycle 5 - Contract Invocations)
+	invocationsCount, err := rt.transformContractInvocations(ctx, tx, startLedger, endLedger)
+	if err != nil {
+		return fmt.Errorf("failed to transform contract invocations: %w", err)
+	}
+	totalRows += invocationsCount
+
+	// Transform contract calls (Cycle 6 - Cross-Contract Call Tracking for Freighter)
+	callsCount, err := rt.transformContractCalls(ctx, tx, startLedger, endLedger)
+	if err != nil {
+		return fmt.Errorf("failed to transform contract calls: %w", err)
+	}
+	totalRows += callsCount
 
 	// Update checkpoint
 	if err := rt.checkpoint.SaveWithTx(tx, endLedger); err != nil {
@@ -570,4 +587,250 @@ func (rt *RealtimeTransformer) getLastLedger() int64 {
 	defer rt.mu.RUnlock()
 
 	return rt.lastLedgerSequence
+}
+
+// transformContractInvocations transforms contract invocations for the ledger range
+func (rt *RealtimeTransformer) transformContractInvocations(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	rows, err := rt.bronzeReader.QueryContractInvocations(ctx, startLedger, endLedger)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	count := int64(0)
+
+	for rows.Next() {
+		row := &ContractInvocationRow{}
+
+		err := rows.Scan(
+			&row.LedgerSequence,
+			&row.TransactionIndex,
+			&row.OperationIndex,
+			&row.TransactionHash,
+			&row.SourceAccount,
+			&row.ContractID,
+			&row.FunctionName,
+			&row.ArgumentsJSON,
+			&row.Successful,
+			&row.ClosedAt,
+			&row.LedgerRange,
+		)
+
+		if err != nil {
+			return count, fmt.Errorf("failed to scan contract invocation row: %w", err)
+		}
+
+		if err := rt.silverWriter.WriteContractInvocation(ctx, tx, row); err != nil {
+			return count, fmt.Errorf("failed to write contract invocation: %w", err)
+		}
+
+		count++
+	}
+
+	if err := rows.Err(); err != nil {
+		return count, fmt.Errorf("error iterating contract invocations: %w", err)
+	}
+
+	return count, nil
+}
+
+// transformContractCalls transforms cross-contract call graphs for the ledger range
+// Extracts call relationships from Bronze call graph data and writes to Silver tables
+func (rt *RealtimeTransformer) transformContractCalls(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	rows, err := rt.bronzeReader.QueryContractCallGraphs(ctx, startLedger, endLedger)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	count := int64(0)
+
+	for rows.Next() {
+		var (
+			ledgerSequence   int64
+			transactionIndex int
+			operationIndex   int
+			transactionHash  string
+			sourceAccount    string
+			contractID       sql.NullString
+			functionName     sql.NullString
+			argumentsJSON    sql.NullString
+			contractCallsJSON sql.NullString
+			contractsInvolved []string
+			maxCallDepth     sql.NullInt32
+			successful       bool
+			closedAt         time.Time
+			ledgerRange      int64
+		)
+
+		err := rows.Scan(
+			&ledgerSequence,
+			&transactionIndex,
+			&operationIndex,
+			&transactionHash,
+			&sourceAccount,
+			&contractID,
+			&functionName,
+			&argumentsJSON,
+			&contractCallsJSON,
+			pq.Array(&contractsInvolved),
+			&maxCallDepth,
+			&successful,
+			&closedAt,
+			&ledgerRange,
+		)
+
+		if err != nil {
+			return count, fmt.Errorf("failed to scan contract call graph row: %w", err)
+		}
+
+		// Parse call graph JSON and write individual calls
+		if contractCallsJSON.Valid && contractCallsJSON.String != "" {
+			callRows, hierarchyRows, err := parseContractCallGraph(
+				contractCallsJSON.String,
+				transactionHash,
+				ledgerSequence,
+				transactionIndex,
+				operationIndex,
+				closedAt,
+				ledgerRange,
+				contractsInvolved,
+			)
+			if err != nil {
+				log.Printf("Warning: Failed to parse call graph for tx %s: %v", transactionHash, err)
+				continue
+			}
+
+			// Write call rows
+			for _, callRow := range callRows {
+				if err := rt.silverWriter.WriteContractCall(ctx, tx, callRow); err != nil {
+					return count, fmt.Errorf("failed to write contract call: %w", err)
+				}
+				count++
+			}
+
+			// Write hierarchy rows
+			for _, hierarchyRow := range hierarchyRows {
+				if err := rt.silverWriter.WriteContractHierarchy(ctx, tx, hierarchyRow); err != nil {
+					return count, fmt.Errorf("failed to write contract hierarchy: %w", err)
+				}
+			}
+		} else if contractID.Valid && contractID.String != "" {
+			// Single contract invocation with no cross-contract calls
+			// Still create a root call row so it appears in call-related queries
+			funcName := ""
+			if functionName.Valid {
+				funcName = functionName.String
+			}
+
+			rootCall := &ContractCallRow{
+				LedgerSequence:   ledgerSequence,
+				TransactionIndex: transactionIndex,
+				OperationIndex:   operationIndex,
+				TransactionHash:  transactionHash,
+				FromContract:     sourceAccount, // External caller (the account)
+				ToContract:       contractID.String,
+				FunctionName:     funcName,
+				CallDepth:        0,
+				ExecutionOrder:   0,
+				Successful:       successful,
+				ClosedAt:         closedAt,
+				LedgerRange:      ledgerRange,
+			}
+
+			if err := rt.silverWriter.WriteContractCall(ctx, tx, rootCall); err != nil {
+				return count, fmt.Errorf("failed to write root contract call: %w", err)
+			}
+			count++
+
+			// Also write a simple hierarchy entry for the root contract
+			rootHierarchy := &ContractHierarchyRow{
+				TransactionHash: transactionHash,
+				RootContract:    contractID.String,
+				ChildContract:   contractID.String, // Self-reference for root
+				PathDepth:       0,
+				FullPath:        []string{contractID.String},
+				LedgerRange:     ledgerRange,
+			}
+
+			if err := rt.silverWriter.WriteContractHierarchy(ctx, tx, rootHierarchy); err != nil {
+				return count, fmt.Errorf("failed to write root contract hierarchy: %w", err)
+			}
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return count, fmt.Errorf("error iterating contract call graphs: %w", err)
+	}
+
+	return count, nil
+}
+
+// parseContractCallGraph parses call graph JSON and creates ContractCallRow and ContractHierarchyRow
+func parseContractCallGraph(
+	callsJSON string,
+	transactionHash string,
+	ledgerSequence int64,
+	transactionIndex int,
+	operationIndex int,
+	closedAt time.Time,
+	ledgerRange int64,
+	contractsInvolved []string,
+) ([]*ContractCallRow, []*ContractHierarchyRow, error) {
+	// Parse JSON array of calls
+	var calls []struct {
+		FromContract   string `json:"from_contract"`
+		ToContract     string `json:"to_contract"`
+		FunctionName   string `json:"function"`
+		CallDepth      int    `json:"call_depth"`
+		ExecutionOrder int    `json:"execution_order"`
+		Successful     bool   `json:"successful"`
+	}
+
+	if err := json.Unmarshal([]byte(callsJSON), &calls); err != nil {
+		return nil, nil, fmt.Errorf("failed to unmarshal call graph JSON: %w", err)
+	}
+
+	var callRows []*ContractCallRow
+	var hierarchyRows []*ContractHierarchyRow
+
+	// Create call rows
+	for _, call := range calls {
+		callRows = append(callRows, &ContractCallRow{
+			LedgerSequence:   ledgerSequence,
+			TransactionIndex: transactionIndex,
+			OperationIndex:   operationIndex,
+			TransactionHash:  transactionHash,
+			FromContract:     call.FromContract,
+			ToContract:       call.ToContract,
+			FunctionName:     call.FunctionName,
+			CallDepth:        call.CallDepth,
+			ExecutionOrder:   call.ExecutionOrder,
+			Successful:       call.Successful,
+			ClosedAt:         closedAt,
+			LedgerRange:      ledgerRange,
+		})
+	}
+
+	// Create hierarchy rows (all unique contract pairs with their paths)
+	// For each contract involved, create hierarchy entries showing relationships
+	if len(contractsInvolved) > 1 {
+		rootContract := contractsInvolved[0] // First contract is the root
+
+		for i, childContract := range contractsInvolved[1:] {
+			// Build path from root to this child
+			path := contractsInvolved[:i+2] // Include all contracts up to this child
+
+			hierarchyRows = append(hierarchyRows, &ContractHierarchyRow{
+				TransactionHash: transactionHash,
+				RootContract:    rootContract,
+				ChildContract:   childContract,
+				PathDepth:       i + 1,
+				FullPath:        path,
+				LedgerRange:     ledgerRange,
+			})
+		}
+	}
+
+	return callRows, hierarchyRows, nil
 }

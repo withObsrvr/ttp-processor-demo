@@ -2,9 +2,11 @@
 
 Complete documentation for deploying, operating, and managing the Obsrvr Lake platform.
 
+**Last Updated:** 2026-01-04 (v2.0 - Complete reset and deployment validation)
+
 ---
 
-## 📚 Documentation Overview
+## Documentation Overview
 
 | Document | Purpose | When to Use |
 |----------|---------|-------------|
@@ -13,10 +15,11 @@ Complete documentation for deploying, operating, and managing the Obsrvr Lake pl
 | **ENVIRONMENT_STRATEGY.md** | Prod vs non-prod strategy | Planning environments, cost decisions |
 | **SILVER_API_DOCUMENTATION.md** | Query API reference | Building integrations, understanding endpoints |
 | **QUICK_REFERENCE.md** | Common API queries | Quick lookups, testing |
+| **V3_CALL_GRAPH_DEPLOYMENT.md** | Call graph feature deployment | Freighter integration, contract calls |
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### First Time Deployment
 
@@ -29,12 +32,12 @@ Complete documentation for deploying, operating, and managing the Obsrvr Lake pl
 
 - **Check health**: See "Daily Operations" in `OPERATIONS_GUIDE.md`
 - **Fix issues**: See "Troubleshooting" in `OPERATIONS_GUIDE.md`
-- **Reset data**: See "Reset Procedures" in `OPERATIONS_GUIDE.md`
+- **Reset data**: See "Complete Reset Procedure" below
 - **Query API**: Use `QUICK_REFERENCE.md`
 
 ---
 
-## 🏗️ Platform Architecture
+## Platform Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -44,60 +47,55 @@ Complete documentation for deploying, operating, and managing the Obsrvr Lake pl
                          │
                          ▼
          ┌───────────────────────────────┐
-         │  stellar-postgres-ingester    │  Port 8088
-         │  (continuous streaming)        │
+         │  stellar-live-source-datalake │  Port 50052
+         │  (gRPC ledger streaming)       │
+         └───────────────┬───────────────┘
+                         │
+                         ▼
+         ┌───────────────────────────────┐
+         │  stellar-postgres-ingester    │  Health: 8089
+         │  (Bronze layer ingestion)      │
          └───────────────┬───────────────┘
                          │
                          ▼
          ┌───────────────────────────────┐
          │   PostgreSQL stellar_hot       │  Hot Buffer
-         │   (19 Hubble tables)           │  (last ~3 hours)
-         │   - ledgers, accounts,         │
-         │     operations, transactions   │
-         └───────────────┬───────────────┘
-                         │ (every 3h)
-                         ▼
-         ┌───────────────────────────────┐
-         │  postgres-ducklake-flusher    │  Port 8090
-         │  (hot → cold archival)         │
+         │   (19 Hubble Bronze tables)    │  (last ~3 hours)
+         │   + contract_calls_json        │
+         │   + contracts_involved         │
          └───────────────┬───────────────┘
                          │
-                         ▼
-         ┌───────────────────────────────┐
-         │   DuckLake Bronze Layer        │  Cold Storage
-         │   (Parquet on Backblaze B2)    │  (historical)
-         │   - Columnar, compressed       │
-         └───────────────┬───────────────┘
-                         │
-                         ▼
-         ┌───────────────────────────────┐
-         │  bronze-silver-transformer    │  Port 8093
-         │  (raw → analytics)             │
-         └───────────────┬───────────────┘
-                         │
-                         ▼
-         ┌───────────────────────────────┐
-         │   PostgreSQL silver_hot        │  Hot Buffer
-         │   (18 Silver tables)           │  (last ~3 hours)
-         │   - accounts_current,          │
-         │     enriched_operations,       │
-         │     token_transfers            │
-         └───────────────┬───────────────┘
-                         │ (every 3h)
-                         ▼
-         ┌───────────────────────────────┐
-         │    silver-cold-flusher        │  Port 8095
-         │    (hot → cold archival)       │
-         └───────────────┬───────────────┘
-                         │
-                         ▼
-         ┌───────────────────────────────┐
-         │   DuckLake Silver Layer        │  Cold Storage
-         │   (Parquet on Backblaze B2)    │  (historical)
-         │   - Analytics-ready data       │
-         └───────────────┬───────────────┘
-                         │
-                         ▼
+            ┌────────────┼────────────┐
+            │            │            │
+            ▼            ▼            ▼
+┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐
+│ postgres-ducklake│ │silver-realtime-  │ │index-plane-      │
+│ -flusher         │ │transformer       │ │transformer       │
+│ (Bronze→Cold)    │ │ Health: 8094     │ │ Health: 8096     │
+│ Health: 8090     │ └────────┬─────────┘ └────────┬─────────┘
+└────────┬─────────┘          │                    │
+         │                    ▼                    ▼
+         │          ┌──────────────────┐ ┌──────────────────┐
+         │          │PostgreSQL        │ │DuckLake Index    │
+         │          │silver_hot        │ │(tx hash lookups) │
+         │          │(Silver analytics)│ └──────────────────┘
+         │          └────────┬─────────┘
+         │                   │
+         ▼                   ▼
+┌──────────────────┐ ┌──────────────────┐
+│ DuckLake Bronze  │ │ silver-cold-     │
+│ (Parquet on B2)  │ │ flusher          │
+│ bronze_meta      │ │ Health: 8095     │
+└──────────────────┘ └────────┬─────────┘
+                              │
+                              ▼
+                    ┌──────────────────┐
+                    │ DuckLake Silver  │
+                    │ (Parquet on B2)  │
+                    │ silver_meta      │
+                    └──────────────────┘
+                              │
+                              ▼
          ┌───────────────────────────────┐
          │    stellar-query-api          │  Port 8092
          │    (unified hot+cold queries)  │
@@ -113,15 +111,349 @@ Complete documentation for deploying, operating, and managing the Obsrvr Lake pl
                           ▼
               ┌───────────────────────┐
               │   Consumer Apps       │
+              │   - Freighter Wallet  │
               │   - Web dashboards    │
-              │   - Analytics tools   │
               │   - Block explorers   │
               └───────────────────────┘
 ```
 
 ---
 
-## 💰 Cost Breakdown
+## All Services (8 Total)
+
+| Service | Purpose | Health Port | Memory |
+|---------|---------|-------------|--------|
+| `stellar-live-source-datalake` | gRPC ledger data source | 8088 | 2048 MB |
+| `stellar-postgres-ingester` | Bronze layer ingestion | 8089 | 2048 MB |
+| `silver-realtime-transformer` | Hot Silver analytics | 8094 | 2048 MB |
+| `postgres-ducklake-flusher` | Bronze hot→cold | 8090 | 2560 MB |
+| `silver-cold-flusher` | Silver hot→cold | 8095 | 3072 MB |
+| `index-plane-transformer` | Transaction hash index | 8096 | 1024 MB |
+| `contract-event-index-transformer` | Contract event index | 8097 | 1024 MB |
+| `stellar-query-api` | REST API layer | 8092 | 1500 MB |
+
+**Total Memory Requirement:** ~15 GB (fits on 16GB droplet with headroom)
+
+---
+
+## Database Architecture
+
+### PostgreSQL Databases (3 Total)
+
+| Database | Purpose | Host Pattern |
+|----------|---------|--------------|
+| `stellar_hot` | Bronze hot buffer | `private-obsrvr-lake-hot-buffer-prod-*` |
+| `silver_hot` | Silver hot buffer | `private-obsrvr-lake-silver-hot-prod-*` |
+| `obsrvr_lake_catalog_prod` | DuckLake catalog | `private-obsrvr-lake-catalog-prod-*` |
+
+### DuckLake Catalog Schemas (3 Total)
+
+| Schema | Purpose | Data Path |
+|--------|---------|-----------|
+| `bronze_meta` | Bronze layer metadata | `s3://bucket/bronze/` |
+| `silver_meta` | Silver layer metadata | `s3://bucket/silver/` |
+| `index` | Transaction/contract indexes | `s3://bucket/index/` |
+
+### Storage (Backblaze B2)
+
+| Prefix | Content |
+|--------|---------|
+| `bronze/` | Raw Hubble tables (Parquet) |
+| `silver/` | Analytics tables (Parquet) |
+| `index/` | Lookup indexes (Parquet) |
+
+---
+
+## Complete Reset Procedure
+
+**Tested: 2026-01-04** - This procedure was validated end-to-end.
+
+### Step 1: Stop All Pipeline Services
+
+```bash
+# SSH to server
+ssh -i ssh/obsrvr-lake-prod.pem root@<DROPLET_IP>
+
+# Set Nomad environment
+export NOMAD_ADDR=http://localhost:4646
+export NOMAD_TOKEN="<your-token>"
+
+# Stop all services (except data source and query API if desired)
+nomad job stop stellar-postgres-ingester
+nomad job stop silver-realtime-transformer
+nomad job stop postgres-ducklake-flusher
+nomad job stop silver-cold-flusher
+nomad job stop index-plane-transformer
+nomad job stop contract-event-index-transformer
+```
+
+### Step 2: Truncate Bronze Hot Buffer
+
+```bash
+PGPASSWORD='<password>' psql \
+  -h private-obsrvr-lake-hot-buffer-prod-*.db.ondigitalocean.com \
+  -p 25060 -U doadmin -d stellar_hot << 'SQL'
+TRUNCATE TABLE ledgers_row_v2 CASCADE;
+TRUNCATE TABLE transactions_row_v2 CASCADE;
+TRUNCATE TABLE operations_row_v2 CASCADE;
+TRUNCATE TABLE effects_row_v2 CASCADE;
+TRUNCATE TABLE trades_row_v2 CASCADE;
+TRUNCATE TABLE accounts_snapshot_v1 CASCADE;
+TRUNCATE TABLE offers_snapshot_v1 CASCADE;
+TRUNCATE TABLE trustlines_snapshot_v1 CASCADE;
+TRUNCATE TABLE account_signers_snapshot_v1 CASCADE;
+TRUNCATE TABLE claimable_balances_snapshot_v1 CASCADE;
+TRUNCATE TABLE liquidity_pools_snapshot_v1 CASCADE;
+TRUNCATE TABLE config_settings_snapshot_v1 CASCADE;
+TRUNCATE TABLE ttl_snapshot_v1 CASCADE;
+TRUNCATE TABLE contract_events_stream_v1 CASCADE;
+TRUNCATE TABLE contract_data_snapshot_v1 CASCADE;
+TRUNCATE TABLE contract_code_snapshot_v1 CASCADE;
+TRUNCATE TABLE native_balances_snapshot_v1 CASCADE;
+TRUNCATE TABLE evicted_keys_state_v1 CASCADE;
+TRUNCATE TABLE restored_keys_state_v1 CASCADE;
+-- Reset index checkpoint
+UPDATE index.transformer_checkpoint SET last_ledger_sequence = 0;
+SQL
+```
+
+### Step 3: Truncate Silver Hot Buffer
+
+```bash
+PGPASSWORD='<password>' psql \
+  -h private-obsrvr-lake-silver-hot-prod-*.db.ondigitalocean.com \
+  -p 25060 -U doadmin -d silver_hot << 'SQL'
+TRUNCATE TABLE enriched_history_operations CASCADE;
+TRUNCATE TABLE enriched_history_operations_soroban CASCADE;
+TRUNCATE TABLE accounts_current CASCADE;
+TRUNCATE TABLE accounts_snapshot CASCADE;
+TRUNCATE TABLE trustlines_current CASCADE;
+TRUNCATE TABLE trustlines_snapshot CASCADE;
+TRUNCATE TABLE offers_current CASCADE;
+TRUNCATE TABLE offers_snapshot CASCADE;
+TRUNCATE TABLE claimable_balances_current CASCADE;
+TRUNCATE TABLE claimable_balances_snapshot CASCADE;
+TRUNCATE TABLE contract_data_current CASCADE;
+TRUNCATE TABLE account_signers_snapshot CASCADE;
+TRUNCATE TABLE token_transfers_raw CASCADE;
+TRUNCATE TABLE contract_invocations_raw CASCADE;
+TRUNCATE TABLE contract_invocation_calls CASCADE;
+TRUNCATE TABLE contract_invocation_hierarchy CASCADE;
+-- Gold layer tables (if present)
+TRUNCATE TABLE gold_token_transfers CASCADE;
+-- Reset transformer checkpoint
+DELETE FROM realtime_transformer_checkpoint;
+INSERT INTO realtime_transformer_checkpoint
+  (id, last_ledger_sequence, last_processed_at, transformer_version)
+VALUES (1, 0, NOW(), 'v3-call-graph');
+SQL
+```
+
+### Step 4: Clear Backblaze B2 Buckets
+
+Clear via B2 console or CLI:
+```bash
+# Using b2 CLI
+b2 rm --recursive b2://obsrvr-lake-testnet/bronze/
+b2 rm --recursive b2://obsrvr-lake-testnet/silver/
+b2 rm --recursive b2://obsrvr-lake-testnet/index/
+```
+
+### Step 5: Reset DuckLake Catalog (CRITICAL)
+
+**This step is essential** - without it, flushers will fail with "No snapshot found in DuckLake" error.
+
+```bash
+PGPASSWORD='<password>' psql \
+  -h private-obsrvr-lake-catalog-prod-*.db.ondigitalocean.com \
+  -p 25060 -U doadmin -d obsrvr_lake_catalog_prod << 'SQL'
+-- Reset bronze_meta
+TRUNCATE TABLE bronze_meta.ducklake_schema CASCADE;
+TRUNCATE TABLE bronze_meta.ducklake_table CASCADE;
+TRUNCATE TABLE bronze_meta.ducklake_column CASCADE;
+TRUNCATE TABLE bronze_meta.ducklake_view CASCADE;
+TRUNCATE TABLE bronze_meta.ducklake_data_file CASCADE;
+TRUNCATE TABLE bronze_meta.ducklake_snapshot CASCADE;
+TRUNCATE TABLE bronze_meta.ducklake_snapshot_changes CASCADE;
+TRUNCATE TABLE bronze_meta.ducklake_file_column_stats CASCADE;
+TRUNCATE TABLE bronze_meta.ducklake_file_partition_value CASCADE;
+TRUNCATE TABLE bronze_meta.ducklake_partition_column CASCADE;
+TRUNCATE TABLE bronze_meta.ducklake_partition_info CASCADE;
+-- Insert initial snapshot (REQUIRED)
+INSERT INTO bronze_meta.ducklake_snapshot
+  (snapshot_id, snapshot_time, schema_version, next_catalog_id, next_file_id)
+VALUES (0, NOW(), 1, 1, 1);
+
+-- Reset silver_meta (same pattern)
+TRUNCATE TABLE silver_meta.ducklake_schema CASCADE;
+TRUNCATE TABLE silver_meta.ducklake_table CASCADE;
+TRUNCATE TABLE silver_meta.ducklake_column CASCADE;
+TRUNCATE TABLE silver_meta.ducklake_view CASCADE;
+TRUNCATE TABLE silver_meta.ducklake_data_file CASCADE;
+TRUNCATE TABLE silver_meta.ducklake_snapshot CASCADE;
+TRUNCATE TABLE silver_meta.ducklake_snapshot_changes CASCADE;
+TRUNCATE TABLE silver_meta.ducklake_file_column_stats CASCADE;
+TRUNCATE TABLE silver_meta.ducklake_file_partition_value CASCADE;
+TRUNCATE TABLE silver_meta.ducklake_partition_column CASCADE;
+TRUNCATE TABLE silver_meta.ducklake_partition_info CASCADE;
+INSERT INTO silver_meta.ducklake_snapshot
+  (snapshot_id, snapshot_time, schema_version, next_catalog_id, next_file_id)
+VALUES (0, NOW(), 1, 1, 1);
+
+-- Reset index (same pattern)
+TRUNCATE TABLE index.ducklake_schema CASCADE;
+TRUNCATE TABLE index.ducklake_table CASCADE;
+TRUNCATE TABLE index.ducklake_column CASCADE;
+TRUNCATE TABLE index.ducklake_view CASCADE;
+TRUNCATE TABLE index.ducklake_data_file CASCADE;
+TRUNCATE TABLE index.ducklake_snapshot CASCADE;
+TRUNCATE TABLE index.ducklake_snapshot_changes CASCADE;
+TRUNCATE TABLE index.ducklake_file_column_stats CASCADE;
+TRUNCATE TABLE index.ducklake_file_partition_value CASCADE;
+TRUNCATE TABLE index.ducklake_partition_column CASCADE;
+TRUNCATE TABLE index.ducklake_partition_info CASCADE;
+TRUNCATE TABLE index.files CASCADE;
+TRUNCATE TABLE index.transformer_checkpoint CASCADE;
+INSERT INTO index.ducklake_snapshot
+  (snapshot_id, snapshot_time, schema_version, next_catalog_id, next_file_id)
+VALUES (0, NOW(), 1, 1, 1);
+SQL
+```
+
+### Step 6: Reset File-Based Checkpoints
+
+```bash
+# On the Nomad server
+rm -f /opt/nomad/data/host_volumes/ingester_checkpoint/checkpoint.json
+rm -f /opt/nomad/data/host_volumes/contract_index_checkpoint/checkpoint.json
+```
+
+### Step 7: Restart Services (Order Matters)
+
+```bash
+# Core pipeline first
+nomad job run /root/stellar-postgres-ingester.nomad
+sleep 10
+
+# Wait for Bronze data before starting Silver
+nomad job run /root/silver-realtime-transformer.nomad
+
+# Cold storage flushers
+nomad job run /root/postgres-ducklake-flusher.nomad
+nomad job run /root/silver-cold-flusher.nomad
+
+# Indexers
+nomad job run /root/index-plane-transformer.nomad
+nomad job run /root/contract-event-index-transformer.nomad
+```
+
+### Step 8: Verify Pipeline Health
+
+```bash
+# Check all jobs running
+nomad job status
+
+# Check Bronze progress
+PGPASSWORD='<password>' psql -h <bronze-host> -p 25060 -U doadmin -d stellar_hot \
+  -c "SELECT MIN(sequence), MAX(sequence), COUNT(*) FROM ledgers_row_v2;"
+
+# Check Silver progress
+PGPASSWORD='<password>' psql -h <silver-host> -p 25060 -U doadmin -d silver_hot \
+  -c "SELECT last_ledger_sequence FROM realtime_transformer_checkpoint;"
+
+# Check API health
+curl http://localhost:8092/health
+# Expected: {"layers":{"bronze":true,"contract_index":true,"hot":true,"index":true,"silver":true},"status":"healthy"}
+```
+
+---
+
+## Common Issues and Fixes
+
+### Issue: "No snapshot found in DuckLake"
+
+**Cause:** Catalog tables truncated without inserting initial snapshot.
+
+**Fix:** Insert initial snapshot (see Step 5 above):
+```sql
+INSERT INTO <schema>.ducklake_snapshot
+  (snapshot_id, snapshot_time, schema_version, next_catalog_id, next_file_id)
+VALUES (0, NOW(), 1, 1, 1);
+```
+
+### Issue: Memory Exhaustion on Nomad Node
+
+**Cause:** Total job memory exceeds node capacity (16GB).
+
+**Fix:** Reduce memory allocations:
+```hcl
+# In nomad job files
+resources {
+  memory = 1024  # Reduce from 2048
+}
+```
+
+Current working allocations:
+- index-plane-transformer: 1024 MB
+- contract-event-index-transformer: 1024 MB
+
+### Issue: Silver Transformer Checkpoint Error
+
+**Cause:** Checkpoint row missing after truncate.
+
+**Fix:** Re-insert checkpoint row:
+```sql
+INSERT INTO realtime_transformer_checkpoint
+  (id, last_ledger_sequence, last_processed_at, transformer_version)
+VALUES (1, 0, NOW(), 'v3-call-graph');
+```
+
+### Issue: Port 8088 Already in Use
+
+**Cause:** Both `stellar-live-source-datalake` and `stellar-postgres-ingester` tried to use 8088.
+
+**Fix:** Ingester health port changed to 8089.
+
+### Issue: Function Name Column Too Short
+
+**Cause:** Some Soroban function names are bytes hashes (>100 chars when serialized).
+
+**Fix:** Extend column to TEXT:
+```sql
+ALTER TABLE contract_invocation_calls ALTER COLUMN function_name TYPE TEXT;
+```
+
+### Issue: "duplicate key value violates unique constraint ducklake_schema_pkey"
+
+**Cause:** Partial catalog reset - truncated some tables but not schema definitions.
+
+**Fix:** Complete catalog reset (truncate ALL ducklake_* tables in the schema).
+
+---
+
+## Health Check Commands
+
+```bash
+# All services health
+curl http://localhost:8089/health  # Ingester
+curl http://localhost:8094/health  # Silver transformer
+curl http://localhost:8090/health  # Bronze flusher
+curl http://localhost:8095/health  # Silver flusher
+curl http://localhost:8096/health  # Index plane
+curl http://localhost:8097/health  # Contract index
+curl http://localhost:8092/health  # Query API
+
+# Nomad job status
+nomad job status
+
+# Docker container logs
+docker logs $(docker ps --filter "name=ingester" -q) 2>&1 | tail -20
+docker logs $(docker ps --filter "name=transformer" -q | head -1) 2>&1 | tail -20
+```
+
+---
+
+## Cost Breakdown
 
 ### Current Testnet Deployment
 
@@ -151,270 +483,79 @@ Complete documentation for deploying, operating, and managing the Obsrvr Lake pl
 
 ---
 
-## 🎯 Key Features
+## Nomad Job Files Location
 
-### Lambda Architecture (Hot + Cold)
-
-**Hot Buffer** (PostgreSQL):
-- Last ~3 hours of data
-- < 1 minute lag from blockchain
-- Fast queries (50-100ms)
-- Real-time analytics
-
-**Cold Storage** (DuckLake/Parquet):
-- Historical data (3+ hours old)
-- Compressed, columnar format
-- Stored on Backblaze B2
-- Cost-efficient long-term storage
-
-**Unified Queries**:
-- Query API automatically merges hot + cold
-- Transparent to consumers
-- Always returns latest data available
-
-### Multi-Layer Pipeline
-
-**Bronze Layer** (Raw Data):
-- Exact copy of Stellar Hubble tables
-- No transformations
-- Foundation for all downstream analytics
-
-**Silver Layer** (Analytics-Ready):
-- Denormalized, enriched data
-- Optimized for common queries
-- Pre-computed aggregations
-- Account snapshots, token transfers, enriched operations
-
-### Services
-
-1. **stellar-postgres-ingester**: Streams ledgers from Stellar RPC → PostgreSQL
-2. **postgres-ducklake-flusher**: Archives Bronze hot → cold every 3 hours
-3. **bronze-silver-transformer**: Transforms Bronze → Silver analytics
-4. **silver-cold-flusher**: Archives Silver hot → cold every 3 hours
-5. **stellar-query-api**: Serves unified hot+cold queries via REST API
-
----
-
-## 🔧 Common Operations
-
-### Check System Health
-
-```bash
-ssh root@<DROPLET_IP>
-
-# Quick health check
-curl http://localhost:8088/health  # Ingester
-curl http://localhost:8090/health  # Bronze flusher
-curl http://localhost:8093/health  # Silver transformer
-curl http://localhost:8095/health  # Silver flusher
-curl http://localhost:8092/health  # Query API
+On the Nomad server:
+```
+/root/stellar-postgres-ingester.nomad
+/root/silver-realtime-transformer.nomad
+/root/postgres-ducklake-flusher.nomad
+/root/silver-cold-flusher.nomad
+/root/index-plane-transformer.nomad
+/root/contract-event-index-transformer.nomad
+/root/stellar-query-api.nomad
 ```
 
-### Query the API
-
-```bash
-# From local machine (via SSH tunnel)
-ssh -L 8092:localhost:8092 root@<DROPLET_IP>
-
-# Get account current state
-curl 'http://localhost:8092/api/v1/silver/accounts/current?account_id=GXXX...'
-
-# Get top accounts
-curl 'http://localhost:8092/api/v1/silver/accounts/top?limit=10'
-
-# Get recent operations
-curl 'http://localhost:8092/api/v1/silver/operations/enriched?limit=10'
+In the repository:
 ```
-
-See `QUICK_REFERENCE.md` for all endpoints and examples.
-
-### Reset the System
-
-```bash
-# Full reset (deletes ALL data)
-# See OPERATIONS_GUIDE.md "Reset Procedures" for details
-
-# Stop services
-nomad job stop -purge stellar-postgres-ingester
-nomad job stop -purge postgres-ducklake-flusher
-nomad job stop -purge bronze-silver-transformer
-nomad job stop -purge silver-cold-flusher
-nomad job stop -purge stellar-query-api
-
-# Clear databases (see OPERATIONS_GUIDE.md for commands)
-
-# Redeploy (see DEPLOYMENT_GUIDE.md Phase 5)
+/home/tillman/Documents/infra/environments/prod/do-obsrvr-lake/.nomad/
 ```
 
 ---
 
-## 📊 Data Flow Timeline
+## V3 Call Graph Feature
 
-### Ingestion to Query
+The V3 Call Graph feature tracks cross-contract calls for Freighter wallet integration:
 
-```
-T+0s     Ledger closes on Stellar blockchain
-T+1s     Ingester receives ledger via RPC
-T+2s     Written to PostgreSQL stellar_hot
-T+3s     Transformer processes to silver_hot
-T+5s     Available in Query API (hot buffer)
-         ✅ User can query account state
+### New Bronze Columns (operations_row_v2)
+- `contract_calls_json` - JSON array of call graph
+- `contracts_involved` - Array of contract IDs
+- `max_call_depth` - Deepest nesting level
 
-T+3h     Bronze flusher archives to Parquet (cold)
-T+3h+5m  Silver flusher archives to Parquet (cold)
-         ✅ Historical data preserved long-term
-```
+### New Silver Tables
+- `contract_invocation_calls` - Flattened call relationships
+- `contract_invocation_hierarchy` - Pre-computed ancestry
 
-### Query Response Time
+### New API Endpoints
+- `GET /api/v1/silver/tx/{hash}/contracts-involved`
+- `GET /api/v1/silver/tx/{hash}/call-graph`
+- `GET /api/v1/freighter/tx/{hash}/contracts`
+- `GET /api/v1/silver/contracts/{id}/callers`
+- `GET /api/v1/silver/contracts/{id}/callees`
 
-**Account current** (hot only):
-- Hot hit: 50-100ms
-- Cold fallback: 200-500ms
-
-**Account history** (hot + cold):
-- Merged query: 300-700ms
-
-**Operations** (hot + cold):
-- Recent (hot): 100-200ms
-- Historical (cold): 400-800ms
+See `V3_CALL_GRAPH_DEPLOYMENT.md` for full details.
 
 ---
 
-## 🚨 Troubleshooting Quick Reference
-
-| Issue | Quick Fix |
-|-------|-----------|
-| Ingester stopped | Check Stellar RPC, restart: `nomad job restart stellar-postgres-ingester` |
-| No new data in API | Check hot buffer has data: `psql $PG_SILVER -c "SELECT COUNT(*) FROM accounts_current;"` |
-| Out of disk space | Clean Docker: `docker system prune -a`, expand volume |
-| High memory usage | Increase job memory limits in Nomad job files |
-| Can't connect to API | Check SSH tunnel or firewall rules |
-| Flusher failing | Check B2 credentials, verify catalog schema |
-
-See `OPERATIONS_GUIDE.md` for detailed troubleshooting.
-
----
-
-## 🎓 Learning Path
-
-### New to the Platform?
-
-1. **Understand the architecture** → Read this README
-2. **See it in action** → Run queries from `QUICK_REFERENCE.md`
-3. **Learn the API** → Read `SILVER_API_DOCUMENTATION.md`
-4. **Deploy your own** → Follow `DEPLOYMENT_GUIDE.md`
-
-### Already Running?
-
-1. **Daily checks** → `OPERATIONS_GUIDE.md` - Daily Operations
-2. **Troubleshooting** → `OPERATIONS_GUIDE.md` - Troubleshooting
-3. **Scaling up** → `OPERATIONS_GUIDE.md` - Scaling and Performance
-
-### Planning Production?
-
-1. **Environment strategy** → Read `ENVIRONMENT_STRATEGY.md`
-2. **Cost planning** → Review cost breakdowns above
-3. **Deployment** → Follow `DEPLOYMENT_GUIDE.md` for mainnet
-4. **Operations** → Set up monitoring from `OPERATIONS_GUIDE.md`
-
----
-
-## 🔐 Security Considerations
-
-### Credentials Management
-
-- **Never commit credentials** to git
-- Use Nomad Variables for secrets (encrypted at rest)
-- Rotate database passwords quarterly
-- Restrict SSH access to your IP only
-
-### Network Security
-
-- PostgreSQL: VPC-only (no public internet)
-- API: Behind firewall or reverse proxy with SSL
-- Nomad: Restrict to trusted IPs
-- B2: Use application keys with limited scope
-
-### Access Control
-
-- Droplet: SSH key authentication only (no passwords)
-- Nomad: Enable ACLs for production
-- PostgreSQL: Separate users for services (least privilege)
-- B2: Separate buckets per environment
-
----
-
-## 📈 Monitoring Recommendations
-
-### Metrics to Track
-
-- **Ingestion lag**: Current ledger vs Stellar network
-- **Hot buffer size**: Should stay ~3 hours of data
-- **Flush success rate**: Bronze and Silver flushers
-- **API latency**: P50, P95, P99 response times
-- **Database size**: Growth rate and capacity planning
-- **B2 storage**: Cost and growth trends
-
-### Alerts to Set
-
-- Ingester stopped for > 5 minutes
-- Hot buffer > 6 hours of data (flusher failing)
-- API error rate > 1%
-- Disk usage > 80%
-- Database connections > 80% of max
-
-Tools: Prometheus + Grafana (see `OPERATIONS_GUIDE.md` for setup)
-
----
-
-## 🤝 Support and Resources
-
-### Documentation
-
-- **Stellar**: stellar.org/developers
-- **DuckDB**: duckdb.org/docs
-- **Nomad**: nomadproject.io/docs
-- **DigitalOcean**: docs.digitalocean.com
-
-### Community
-
-- **Stellar Discord**: discord.gg/stellar
-- **Stellar Stack Exchange**: stellar.stackexchange.com
-
-### This Platform
-
-- Issues/Questions: Create issues in repository
-- Updates: Check git log for latest changes
-
----
-
-## 📝 Document Versions
+## Document Versions
 
 | Document | Last Updated | Version |
 |----------|--------------|---------|
-| README_DEPLOYMENT.md | 2026-01-01 | 1.0 |
+| README_DEPLOYMENT.md | 2026-01-04 | 2.0 |
 | DEPLOYMENT_GUIDE.md | 2026-01-01 | 1.0 |
 | OPERATIONS_GUIDE.md | 2026-01-01 | 1.0 |
 | ENVIRONMENT_STRATEGY.md | 2026-01-01 | 1.0 |
 | SILVER_API_DOCUMENTATION.md | 2026-01-01 | 1.0 |
 | QUICK_REFERENCE.md | 2026-01-01 | 1.0 |
+| V3_CALL_GRAPH_DEPLOYMENT.md | 2026-01-04 | 1.0 |
 
 ---
 
-## ✅ Next Steps
+## Changelog
 
-1. **Read** `ENVIRONMENT_STRATEGY.md` to decide: testnet only or prod+non-prod
-2. **Deploy** following `DEPLOYMENT_GUIDE.md` if starting fresh
-3. **Test** using `QUICK_REFERENCE.md` queries
-4. **Operate** using `OPERATIONS_GUIDE.md` for daily tasks
-5. **Monitor** and optimize as described above
+### v2.0 (2026-01-04)
+- Complete reset procedure validated end-to-end
+- Added 8-service architecture (was 5)
+- Added DuckLake catalog reset steps (critical for clean slate)
+- Added memory allocation documentation
+- Added common issues section with fixes
+- Updated architecture diagram with all services
+- Added V3 Call Graph feature documentation
+- Added port assignments for all services
+
+### v1.0 (2026-01-01)
+- Initial documentation
 
 ---
 
-## 🎉 You're Ready!
-
-This platform provides a complete Stellar data pipeline from ingestion to analytics. The hot+cold architecture balances real-time access with cost-efficient long-term storage.
-
-For questions or issues, refer to the appropriate document above or create an issue in the repository.
-
-Happy querying! 🚀
+Happy deploying!

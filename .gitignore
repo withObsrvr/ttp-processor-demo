@@ -270,3 +270,7 @@ stellar-postgres-ingester/checkpoint.json
 stellar-query-api/stellar-query-api-silver
 stellar-postgres-ingester/checkpoint.json
 PR_REVIEW_CHANGES.md
+DEPLOYMENT_HANDOFF.md
+DEPLOY_CONTRACT_INVOCATIONS.md
+GOLD_LAYER_EXAMPLES.md
+V3_CALL_GRAPH_DEPLOYMENT.md

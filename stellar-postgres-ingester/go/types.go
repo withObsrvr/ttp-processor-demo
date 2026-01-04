@@ -23,20 +23,29 @@ type TransactionData struct {
 
 // OperationData represents a single operation (simplified - core fields only)
 type OperationData struct {
-	TransactionHash      string
-	OperationIndex       int
-	LedgerSequence       uint32
-	SourceAccount        string
-	OpType               int
-	TypeString           string
-	CreatedAt            time.Time
+	TransactionHash       string
+	TransactionIndex      int
+	OperationIndex        int
+	LedgerSequence        uint32
+	SourceAccount         string
+	OpType                int
+	TypeString            string
+	CreatedAt             time.Time
 	TransactionSuccessful bool
-	OperationResultCode  *string
-	LedgerRange          uint32
+	OperationResultCode   *string
+	LedgerRange           uint32
 	// Core operation fields
-	Amount               *int64
-	Asset                *string
-	Destination          *string
+	Amount                *int64
+	Asset                 *string
+	Destination           *string
+	// Soroban contract invocation fields
+	SorobanContractID    *string
+	SorobanFunction      *string
+	SorobanArgumentsJSON *string
+	// Call graph fields (cross-contract call tracking)
+	ContractCallsJSON  *string   // JSON array of {from, to, function, depth, order}
+	ContractsInvolved  []string  // All contracts in the call chain
+	MaxCallDepth       *int      // Maximum depth of nested calls
 }
 
 // EffectData represents a single effect (state changes from operations)
@@ -399,6 +408,25 @@ type ContractEventData struct {
 	// Metadata (2 fields)
 	CreatedAt   time.Time
 	LedgerRange uint32
+}
+
+// ContractCall represents a single cross-contract call in the call graph
+// Used for tracking nested invocations (e.g., Soroswap -> Aquarius -> Token)
+type ContractCall struct {
+	FromContract   string      `json:"from_contract"`       // Caller contract ID
+	ToContract     string      `json:"to_contract"`         // Callee contract ID
+	FunctionName   string      `json:"function"`            // Function being called
+	Arguments      interface{} `json:"arguments,omitempty"` // Function arguments (decoded from ScVal)
+	CallDepth      int         `json:"call_depth"`          // Depth in call hierarchy (1 = direct, 2 = nested)
+	ExecutionOrder int         `json:"execution_order"`     // Order of execution within transaction
+	Successful     bool        `json:"successful"`          // Whether this call succeeded
+}
+
+// CallGraphResult contains the extracted call graph for an operation
+type CallGraphResult struct {
+	Calls             []ContractCall // Flattened list of calls
+	ContractsInvolved []string       // All unique contract IDs in the call chain
+	MaxDepth          int            // Maximum call depth
 }
 
 // ContractDataData represents Soroban contract data snapshot (contract_data_snapshot_v1)

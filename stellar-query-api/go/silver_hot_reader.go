@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 )
 
 // SilverHotReader queries PostgreSQL silver_hot for recent analytics data
@@ -172,8 +172,8 @@ func (h *SilverHotReader) GetEnrichedOperations(ctx context.Context, filters Ope
 	args := []interface{}{}
 
 	if filters.AccountID != "" {
-		query += " AND source_account = $" + fmt.Sprint(len(args)+1)
-		args = append(args, filters.AccountID)
+		query += " AND (source_account = $" + fmt.Sprint(len(args)+1) + " OR destination = $" + fmt.Sprint(len(args)+2) + ")"
+		args = append(args, filters.AccountID, filters.AccountID)
 	}
 
 	if filters.TxHash != "" {
@@ -300,4 +300,300 @@ func (h *SilverHotReader) GetTokenTransfers(ctx context.Context, filters Transfe
 	}
 
 	return transfers, nil
+}
+
+// ============================================
+// CONTRACT CALL QUERIES (Freighter Support)
+// ============================================
+
+// GetContractsInvolved returns all unique contracts involved in a transaction
+func (h *SilverHotReader) GetContractsInvolved(ctx context.Context, txHash string) ([]string, error) {
+	query := `
+		SELECT DISTINCT contract_id
+		FROM (
+			SELECT from_contract AS contract_id FROM contract_invocation_calls WHERE transaction_hash = $1
+			UNION
+			SELECT to_contract AS contract_id FROM contract_invocation_calls WHERE transaction_hash = $1
+		) contracts
+		ORDER BY contract_id
+	`
+
+	rows, err := h.db.QueryContext(ctx, query, txHash)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query contracts involved: %w", err)
+	}
+	defer rows.Close()
+
+	var contracts []string
+	for rows.Next() {
+		var contractID string
+		if err := rows.Scan(&contractID); err != nil {
+			return nil, err
+		}
+		contracts = append(contracts, contractID)
+	}
+
+	return contracts, nil
+}
+
+// GetTransactionCallGraph returns the call graph for a transaction
+func (h *SilverHotReader) GetTransactionCallGraph(ctx context.Context, txHash string) ([]ContractCall, error) {
+	query := `
+		SELECT
+			from_contract,
+			to_contract,
+			function_name,
+			call_depth,
+			execution_order,
+			successful,
+			transaction_hash,
+			ledger_sequence,
+			closed_at
+		FROM contract_invocation_calls
+		WHERE transaction_hash = $1
+		ORDER BY execution_order
+	`
+
+	rows, err := h.db.QueryContext(ctx, query, txHash)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query call graph: %w", err)
+	}
+	defer rows.Close()
+
+	var calls []ContractCall
+	for rows.Next() {
+		var call ContractCall
+		var closedAt sql.NullTime
+		if err := rows.Scan(
+			&call.FromContract, &call.ToContract, &call.FunctionName,
+			&call.CallDepth, &call.ExecutionOrder, &call.Successful,
+			&call.TransactionHash, &call.LedgerSequence, &closedAt,
+		); err != nil {
+			return nil, err
+		}
+		if closedAt.Valid {
+			call.ClosedAt = closedAt.Time.Format("2006-01-02T15:04:05Z")
+		}
+		calls = append(calls, call)
+	}
+
+	return calls, nil
+}
+
+// GetTransactionHierarchy returns the contract hierarchy for a transaction
+func (h *SilverHotReader) GetTransactionHierarchy(ctx context.Context, txHash string) ([]ContractHierarchy, error) {
+	query := `
+		SELECT
+			root_contract,
+			child_contract,
+			path_depth,
+			full_path
+		FROM contract_invocation_hierarchy
+		WHERE transaction_hash = $1
+		ORDER BY path_depth
+	`
+
+	rows, err := h.db.QueryContext(ctx, query, txHash)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query hierarchy: %w", err)
+	}
+	defer rows.Close()
+
+	var hierarchies []ContractHierarchy
+	for rows.Next() {
+		var h ContractHierarchy
+		var pathArray []string
+		if err := rows.Scan(&h.RootContract, &h.ChildContract, &h.PathDepth, pq.Array(&pathArray)); err != nil {
+			return nil, err
+		}
+		h.FullPath = pathArray
+		hierarchies = append(hierarchies, h)
+	}
+
+	return hierarchies, nil
+}
+
+// GetContractRecentCalls returns recent calls for a contract
+func (h *SilverHotReader) GetContractRecentCalls(ctx context.Context, contractID string, limit int) ([]ContractCall, int, int, error) {
+	query := `
+		SELECT
+			from_contract,
+			to_contract,
+			function_name,
+			call_depth,
+			execution_order,
+			successful,
+			transaction_hash,
+			ledger_sequence,
+			closed_at
+		FROM contract_invocation_calls
+		WHERE from_contract = $1 OR to_contract = $1
+		ORDER BY closed_at DESC
+		LIMIT $2
+	`
+
+	rows, err := h.db.QueryContext(ctx, query, contractID, limit)
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("failed to query recent calls: %w", err)
+	}
+	defer rows.Close()
+
+	var calls []ContractCall
+	asCaller := 0
+	asCallee := 0
+
+	for rows.Next() {
+		var call ContractCall
+		var closedAt sql.NullTime
+		if err := rows.Scan(
+			&call.FromContract, &call.ToContract, &call.FunctionName,
+			&call.CallDepth, &call.ExecutionOrder, &call.Successful,
+			&call.TransactionHash, &call.LedgerSequence, &closedAt,
+		); err != nil {
+			return nil, 0, 0, err
+		}
+		if closedAt.Valid {
+			call.ClosedAt = closedAt.Time.Format("2006-01-02T15:04:05Z")
+		}
+		calls = append(calls, call)
+
+		if call.FromContract == contractID {
+			asCaller++
+		}
+		if call.ToContract == contractID {
+			asCallee++
+		}
+	}
+
+	return calls, asCaller, asCallee, nil
+}
+
+// GetContractCallers returns contracts that call a specific contract
+func (h *SilverHotReader) GetContractCallers(ctx context.Context, contractID string, limit int) ([]ContractRelationship, error) {
+	query := `
+		SELECT
+			from_contract AS contract_id,
+			COUNT(*) AS call_count,
+			array_agg(DISTINCT function_name) AS functions,
+			MAX(closed_at) AS last_call
+		FROM contract_invocation_calls
+		WHERE to_contract = $1
+		GROUP BY from_contract
+		ORDER BY call_count DESC
+		LIMIT $2
+	`
+
+	rows, err := h.db.QueryContext(ctx, query, contractID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query callers: %w", err)
+	}
+	defer rows.Close()
+
+	var callers []ContractRelationship
+	for rows.Next() {
+		var r ContractRelationship
+		var functionsArray []string
+		var lastCall sql.NullTime
+		if err := rows.Scan(&r.ContractID, &r.CallCount, pq.Array(&functionsArray), &lastCall); err != nil {
+			return nil, err
+		}
+		r.Functions = functionsArray
+		if lastCall.Valid {
+			r.LastCall = lastCall.Time.Format("2006-01-02T15:04:05Z")
+		}
+		callers = append(callers, r)
+	}
+
+	return callers, nil
+}
+
+// GetContractCallees returns contracts called by a specific contract
+func (h *SilverHotReader) GetContractCallees(ctx context.Context, contractID string, limit int) ([]ContractRelationship, error) {
+	query := `
+		SELECT
+			to_contract AS contract_id,
+			COUNT(*) AS call_count,
+			array_agg(DISTINCT function_name) AS functions,
+			MAX(closed_at) AS last_call
+		FROM contract_invocation_calls
+		WHERE from_contract = $1
+		GROUP BY to_contract
+		ORDER BY call_count DESC
+		LIMIT $2
+	`
+
+	rows, err := h.db.QueryContext(ctx, query, contractID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query callees: %w", err)
+	}
+	defer rows.Close()
+
+	var callees []ContractRelationship
+	for rows.Next() {
+		var r ContractRelationship
+		var functionsArray []string
+		var lastCall sql.NullTime
+		if err := rows.Scan(&r.ContractID, &r.CallCount, pq.Array(&functionsArray), &lastCall); err != nil {
+			return nil, err
+		}
+		r.Functions = functionsArray
+		if lastCall.Valid {
+			r.LastCall = lastCall.Time.Format("2006-01-02T15:04:05Z")
+		}
+		callees = append(callees, r)
+	}
+
+	return callees, nil
+}
+
+// GetContractCallSummary returns aggregated call statistics for a contract
+func (h *SilverHotReader) GetContractCallSummary(ctx context.Context, contractID string) (*ContractCallSummary, error) {
+	query := `
+		WITH caller_stats AS (
+			SELECT COUNT(*) as total_as_caller, COUNT(DISTINCT to_contract) as unique_callees
+			FROM contract_invocation_calls WHERE from_contract = $1
+		),
+		callee_stats AS (
+			SELECT COUNT(*) as total_as_callee, COUNT(DISTINCT from_contract) as unique_callers
+			FROM contract_invocation_calls WHERE to_contract = $1
+		),
+		time_stats AS (
+			SELECT MIN(closed_at) as first_seen, MAX(closed_at) as last_seen
+			FROM contract_invocation_calls WHERE from_contract = $1 OR to_contract = $1
+		)
+		SELECT
+			$1 as contract_id,
+			COALESCE((SELECT total_as_caller FROM caller_stats), 0),
+			COALESCE((SELECT total_as_callee FROM callee_stats), 0),
+			COALESCE((SELECT unique_callers FROM callee_stats), 0),
+			COALESCE((SELECT unique_callees FROM caller_stats), 0),
+			(SELECT first_seen FROM time_stats),
+			(SELECT last_seen FROM time_stats)
+	`
+
+	var summary ContractCallSummary
+	var firstSeen, lastSeen sql.NullTime
+
+	err := h.db.QueryRowContext(ctx, query, contractID).Scan(
+		&summary.ContractID,
+		&summary.TotalCallsAsCaller,
+		&summary.TotalCallsAsCallee,
+		&summary.UniqueCallers,
+		&summary.UniqueCallees,
+		&firstSeen,
+		&lastSeen,
+	)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to get call summary: %w", err)
+	}
+
+	if firstSeen.Valid {
+		summary.FirstSeen = firstSeen.Time.Format("2006-01-02T15:04:05Z")
+	}
+	if lastSeen.Valid {
+		summary.LastSeen = lastSeen.Time.Format("2006-01-02T15:04:05Z")
+	}
+
+	return &summary, nil
 }

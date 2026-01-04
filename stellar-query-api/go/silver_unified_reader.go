@@ -220,3 +220,116 @@ func (u *UnifiedSilverReader) GetTokenTransferStats(ctx context.Context, groupBy
 	// For aggregations, only query cold storage to avoid expensive computation on hot buffer
 	return u.cold.GetTokenTransferStats(ctx, groupBy, startTime, endTime)
 }
+
+// ============================================
+// CONTRACT CALL QUERIES (Freighter Support)
+// ============================================
+
+// GetContractsInvolved returns all contracts involved in a transaction
+func (u *UnifiedSilverReader) GetContractsInvolved(ctx context.Context, txHash string) ([]string, error) {
+	// Query hot first (recent transactions)
+	contracts, err := u.hot.GetContractsInvolved(ctx, txHash)
+	if err != nil {
+		log.Printf("Warning: failed to query hot storage for contracts involved: %v", err)
+		return nil, err
+	}
+
+	// If found in hot, return it
+	if len(contracts) > 0 {
+		return contracts, nil
+	}
+
+	// TODO: Fall back to cold storage for historical transactions
+	// return u.cold.GetContractsInvolved(ctx, txHash)
+	return contracts, nil
+}
+
+// GetTransactionCallGraph returns the call graph for a transaction
+func (u *UnifiedSilverReader) GetTransactionCallGraph(ctx context.Context, txHash string) ([]ContractCall, error) {
+	// Query hot first (recent transactions)
+	calls, err := u.hot.GetTransactionCallGraph(ctx, txHash)
+	if err != nil {
+		log.Printf("Warning: failed to query hot storage for call graph: %v", err)
+		return nil, err
+	}
+
+	// If found in hot, return it
+	if len(calls) > 0 {
+		return calls, nil
+	}
+
+	// TODO: Fall back to cold storage for historical transactions
+	// return u.cold.GetTransactionCallGraph(ctx, txHash)
+	return calls, nil
+}
+
+// GetTransactionHierarchy returns the contract hierarchy for a transaction
+func (u *UnifiedSilverReader) GetTransactionHierarchy(ctx context.Context, txHash string) ([]ContractHierarchy, error) {
+	// Query hot first (recent transactions)
+	hierarchies, err := u.hot.GetTransactionHierarchy(ctx, txHash)
+	if err != nil {
+		log.Printf("Warning: failed to query hot storage for hierarchy: %v", err)
+		return nil, err
+	}
+
+	// If found in hot, return it
+	if len(hierarchies) > 0 {
+		return hierarchies, nil
+	}
+
+	// TODO: Fall back to cold storage for historical transactions
+	// return u.cold.GetTransactionHierarchy(ctx, txHash)
+	return hierarchies, nil
+}
+
+// GetContractRecentCalls returns recent calls for a contract
+func (u *UnifiedSilverReader) GetContractRecentCalls(ctx context.Context, contractID string, limit int) ([]ContractCall, int, int, error) {
+	// Query hot for recent calls
+	calls, asCaller, asCallee, err := u.hot.GetContractRecentCalls(ctx, contractID, limit)
+	if err != nil {
+		log.Printf("Warning: failed to query hot storage for recent calls: %v", err)
+		return nil, 0, 0, err
+	}
+
+	// TODO: Merge with cold storage for comprehensive results
+	return calls, asCaller, asCallee, nil
+}
+
+// GetContractCallers returns contracts that call a specific contract
+func (u *UnifiedSilverReader) GetContractCallers(ctx context.Context, contractID string, limit int) ([]ContractRelationship, error) {
+	// Query hot for callers
+	callers, err := u.hot.GetContractCallers(ctx, contractID, limit)
+	if err != nil {
+		log.Printf("Warning: failed to query hot storage for callers: %v", err)
+		return nil, err
+	}
+
+	// TODO: Merge with cold storage for comprehensive results
+	return callers, nil
+}
+
+// GetContractCallees returns contracts called by a specific contract
+func (u *UnifiedSilverReader) GetContractCallees(ctx context.Context, contractID string, limit int) ([]ContractRelationship, error) {
+	// Query hot for callees
+	callees, err := u.hot.GetContractCallees(ctx, contractID, limit)
+	if err != nil {
+		log.Printf("Warning: failed to query hot storage for callees: %v", err)
+		return nil, err
+	}
+
+	// TODO: Merge with cold storage for comprehensive results
+	return callees, nil
+}
+
+// GetContractCallSummary returns aggregated call statistics for a contract
+func (u *UnifiedSilverReader) GetContractCallSummary(ctx context.Context, contractID string) (*ContractCallSummary, error) {
+	// Query hot for summary
+	summary, err := u.hot.GetContractCallSummary(ctx, contractID)
+	if err != nil {
+		log.Printf("Warning: failed to query hot storage for call summary: %v", err)
+		return nil, err
+	}
+
+	// TODO: Merge with cold storage for comprehensive statistics
+	return summary, nil
+}

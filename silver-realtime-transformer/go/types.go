@@ -264,3 +264,76 @@ type AccountSignerSnapshotRow struct {
 	EraID          sql.NullString
 	VersionLabel   sql.NullString
 }
+
+// ContractInvocationRow represents a row in the contract_invocations_raw table
+// Extracted from Bronze operations_row_v2 where type = 24 (InvokeHostFunction)
+type ContractInvocationRow struct {
+	// TOID components
+	LedgerSequence   int64
+	TransactionIndex int
+	OperationIndex   int
+
+	// Transaction context
+	TransactionHash string
+	SourceAccount   string
+
+	// Contract invocation details
+	ContractID    string
+	FunctionName  string
+	ArgumentsJSON string
+
+	// Call graph (from Bronze layer)
+	ContractCallsJSON sql.NullString
+	ContractsInvolved []string
+	MaxCallDepth      sql.NullInt32
+
+	// Execution context
+	Successful bool
+	ClosedAt   time.Time
+
+	// Partitioning
+	LedgerRange int64
+}
+
+// ContractCallRow represents a row in the contract_invocation_calls table
+// Flattened cross-contract call relationships extracted from call graph
+type ContractCallRow struct {
+	// Identity
+	CallID int64 // Auto-generated
+
+	// TOID components (for joining back to operations)
+	LedgerSequence   int64
+	TransactionIndex int
+	OperationIndex   int
+	TransactionHash  string
+
+	// Call relationship
+	FromContract string
+	ToContract   string
+	FunctionName string
+	CallDepth    int
+	ExecutionOrder int
+
+	// Status
+	Successful bool
+	ClosedAt   time.Time
+
+	// Partitioning
+	LedgerRange int64
+}
+
+// ContractHierarchyRow represents a row in the contract_invocation_hierarchy table
+// Pre-computed ancestry chains for efficient contract relationship queries
+type ContractHierarchyRow struct {
+	// Identity
+	TransactionHash string
+	RootContract    string
+	ChildContract   string
+
+	// Hierarchy
+	PathDepth int
+	FullPath  []string // All contracts in the path from root to child
+
+	// Partitioning
+	LedgerRange int64
+}

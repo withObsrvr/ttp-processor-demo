@@ -450,8 +450,9 @@ CREATE UNLOGGED TABLE IF NOT EXISTS offers_snapshot_v1 (
 
 -- operations_row_v2
 CREATE UNLOGGED TABLE IF NOT EXISTS operations_row_v2 (
-			-- Core fields (11)
+			-- Core fields (12)
 			transaction_hash TEXT NOT NULL,
+			transaction_index INT NOT NULL,
 			operation_index INT NOT NULL,
 			ledger_sequence BIGINT NOT NULL,
 			source_account TEXT NOT NULL,
@@ -512,11 +513,17 @@ CREATE UNLOGGED TABLE IF NOT EXISTS operations_row_v2 (
 			selling_asset_code TEXT,
 			selling_asset_issuer TEXT,
 
-			-- Soroban (4)
+			-- Soroban (5)
 			soroban_operation TEXT,
 			soroban_function TEXT,
 			soroban_contract_id TEXT,
 			soroban_auth_required BOOLEAN,
+			soroban_arguments_json TEXT,
+
+			-- Call Graph (3) - Cross-contract call tracking
+			contract_calls_json JSONB,        -- Array of {from, to, function, depth, order}
+			contracts_involved TEXT[],        -- All contracts in the call chain
+			max_call_depth INT,               -- Maximum depth of nested calls
 
 			-- Account operations (8)
 			bump_to BIGINT,
