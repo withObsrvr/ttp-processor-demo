@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/gorilla/mux"
 )
@@ -306,6 +307,68 @@ func (h *ContractCallHandlers) HandleContractsSummary(w http.ResponseWriter, r *
 		"total_contracts":    len(contracts),
 		"total_calls":        len(calls),
 		"display_format":     "wallet_v1",
+	})
+}
+
+// ============================================
+// CONTRACT ANALYTICS ENDPOINTS
+// ============================================
+
+// HandleContractAnalyticsSummary returns comprehensive analytics for a contract
+// GET /api/v1/silver/contracts/{id}/analytics
+// Response: Full analytics including stats, top functions, and daily trend
+func (h *ContractCallHandlers) HandleContractAnalyticsSummary(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	contractID := vars["id"]
+	if contractID == "" {
+		respondError(w, "contract_id required", http.StatusBadRequest)
+		return
+	}
+
+	summary, err := h.reader.GetContractAnalyticsSummary(r.Context(), contractID)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if summary.Stats.TotalCallsAsCaller == 0 && summary.Stats.TotalCallsAsCallee == 0 {
+		respondError(w, "no activity found for contract", http.StatusNotFound)
+		return
+	}
+
+	respondJSON(w, summary)
+}
+
+// HandleTopContracts returns the most active contracts for a given period
+// GET /api/v1/silver/contracts/top?period=24h&limit=20
+// Response: List of top contracts ranked by call count
+func (h *ContractCallHandlers) HandleTopContracts(w http.ResponseWriter, r *http.Request) {
+	// Parse query parameters
+	period := r.URL.Query().Get("period")
+	if period == "" {
+		period = "24h"
+	}
+
+	// Validate period
+	validPeriods := map[string]bool{"24h": true, "7d": true, "30d": true}
+	if !validPeriods[period] {
+		respondError(w, "invalid period: must be 24h, 7d, or 30d", http.StatusBadRequest)
+		return
+	}
+
+	limit := parseLimit(r, 20, 100)
+
+	contracts, err := h.reader.GetTopContracts(r.Context(), period, limit)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	respondJSON(w, map[string]interface{}{
+		"period":       period,
+		"contracts":    contracts,
+		"count":        len(contracts),
+		"generated_at": time.Now().UTC().Format(time.RFC3339),
 	})
 }
 
