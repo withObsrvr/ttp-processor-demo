@@ -129,7 +129,7 @@ func (h *SilverHotReader) GetTopAccounts(ctx context.Context, limit int) ([]Acco
 			last_modified_ledger,
 			updated_at
 		FROM accounts_current
-		ORDER BY CAST(balance AS BIGINT) DESC
+		ORDER BY CAST(balance AS DECIMAL) DESC
 		LIMIT $1
 	`
 

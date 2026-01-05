@@ -8,14 +8,15 @@ import (
 )
 
 type Config struct {
-	Service        ServiceConfig         `yaml:"service"`
-	Postgres       PostgresConfig        `yaml:"postgres"`
-	PostgresSilver *PostgresConfig       `yaml:"postgres_silver,omitempty"`
-	DuckLake       DuckLakeConfig        `yaml:"ducklake"`
-	DuckLakeSilver *DuckLakeConfig       `yaml:"ducklake_silver,omitempty"`
-	Index          *IndexConfig          `yaml:"index,omitempty"`
-	ContractIndex  *ContractIndexConfig  `yaml:"contract_index,omitempty"`
-	Query          QueryConfig           `yaml:"query"`
+	Service        ServiceConfig          `yaml:"service"`
+	Postgres       PostgresConfig         `yaml:"postgres"`
+	PostgresSilver *PostgresConfig        `yaml:"postgres_silver,omitempty"`
+	DuckLake       DuckLakeConfig         `yaml:"ducklake"`
+	DuckLakeSilver *DuckLakeConfig        `yaml:"ducklake_silver,omitempty"`
+	Index          *IndexConfig           `yaml:"index,omitempty"`
+	ContractIndex  *ContractIndexConfig   `yaml:"contract_index,omitempty"`
+	Query          QueryConfig            `yaml:"query"`
+	Unified        *UnifiedReaderConfig   `yaml:"unified,omitempty"` // Config for DuckDB ATTACH unified reader
 }
 
 type ServiceConfig struct {
@@ -48,9 +49,57 @@ type DuckLakeConfig struct {
 }
 
 type QueryConfig struct {
-	DefaultLimit     int `yaml:"default_limit"`
-	MaxLimit         int `yaml:"max_limit"`
-	CacheTTLSeconds  int `yaml:"cache_ttl_seconds"`
+	DefaultLimit    int        `yaml:"default_limit"`
+	MaxLimit        int        `yaml:"max_limit"`
+	CacheTTLSeconds int        `yaml:"cache_ttl_seconds"`
+	ReaderMode      ReaderMode `yaml:"reader_mode"` // legacy, unified, or hybrid
+}
+
+// ReaderMode determines which reader implementation to use for queries
+type ReaderMode string
+
+const (
+	// ReaderModeLegacy uses the current Go-layer merge (UnifiedSilverReader)
+	ReaderModeLegacy ReaderMode = "legacy"
+	// ReaderModeUnified uses the new DuckDB ATTACH model (UnifiedDuckDBReader)
+	ReaderModeUnified ReaderMode = "unified"
+	// ReaderModeHybrid runs both and compares results for validation
+	ReaderModeHybrid ReaderMode = "hybrid"
+)
+
+// UnifiedReaderConfig contains configuration for the UnifiedDuckDBReader
+// which ATTACHes both PostgreSQL (hot) and DuckLake (cold) to a single DuckDB instance
+type UnifiedReaderConfig struct {
+	Postgres UnifiedPostgresConfig `yaml:"postgres"`
+	S3       UnifiedS3Config       `yaml:"s3"`
+	DuckLake UnifiedDuckLakeConfig `yaml:"ducklake"`
+}
+
+// UnifiedPostgresConfig contains PostgreSQL connection details for hot data
+type UnifiedPostgresConfig struct {
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"`
+	Database string `yaml:"database"`
+	User     string `yaml:"user"`
+	Password string `yaml:"password"`
+	SSLMode  string `yaml:"sslmode"`
+	Schema   string `yaml:"schema"` // Optional, defaults to public
+}
+
+// UnifiedS3Config contains S3 credentials for DuckLake cold storage
+type UnifiedS3Config struct {
+	KeyID    string `yaml:"key_id"`
+	Secret   string `yaml:"secret"`
+	Region   string `yaml:"region"`
+	Endpoint string `yaml:"endpoint"`
+}
+
+// UnifiedDuckLakeConfig contains DuckLake catalog configuration
+type UnifiedDuckLakeConfig struct {
+	CatalogPath    string `yaml:"catalog_path"`
+	DataPath       string `yaml:"data_path"`
+	SchemaName     string `yaml:"schema_name"`
+	MetadataSchema string `yaml:"metadata_schema"`
 }
 
 type IndexConfig struct {

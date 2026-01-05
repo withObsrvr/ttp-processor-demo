@@ -85,7 +85,7 @@ Current state of every account that's ever existed on Stellar.
 
 ```bash
 # Get current balance
-curl "https://obsrvr-lake-testnet.withobsrvr.com/api/v1/silver/accounts/current?account_id=G..."
+curl "https://gateway.withobsrvr.com/api/v1/silver/accounts/current?account_id=G..."
 ```
 
 ### enriched_operations
@@ -104,7 +104,7 @@ Operations with human-readable fields and joined metadata.
 
 ```bash
 # Get operations for an account
-curl "https://obsrvr-lake-testnet.withobsrvr.com/api/v1/silver/operations/enriched?account_id=G..."
+curl "https://gateway.withobsrvr.com/api/v1/silver/operations/enriched?account_id=G..."
 ```
 
 ### token_transfers
@@ -122,7 +122,7 @@ Unified view of all token movements (payments, path payments, claimable balance 
 
 ```bash
 # Get USDC transfers for an account
-curl "https://obsrvr-lake-testnet.withobsrvr.com/api/v1/silver/transfers?account_id=G...&asset_code=USDC"
+curl "https://gateway.withobsrvr.com/api/v1/silver/transfers?account_id=G...&asset_code=USDC"
 ```
 
 ### contract_invocation_calls
@@ -141,7 +141,7 @@ Smart contract call graph for Soroban transactions.
 
 ```bash
 # Get call graph for a transaction
-curl "https://obsrvr-lake-testnet.withobsrvr.com/api/v1/silver/tx/{hash}/call-graph"
+curl "https://gateway.withobsrvr.com/api/v1/silver/tx/{hash}/call-graph"
 ```
 
 ## Stroops and Amounts

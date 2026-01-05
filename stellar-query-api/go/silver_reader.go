@@ -96,6 +96,25 @@ type AccountSnapshot struct {
 	ValidTo        *string `json:"valid_to,omitempty"`
 }
 
+// AccountSigner represents a signer on a Stellar account (matches Horizon format)
+type AccountSigner struct {
+	Key     string `json:"key"`
+	Weight  int    `json:"weight"`
+	Type    string `json:"type"`
+	Sponsor string `json:"sponsor,omitempty"`
+}
+
+// AccountSignersResponse contains account signer information
+type AccountSignersResponse struct {
+	AccountID  string          `json:"account_id"`
+	Signers    []AccountSigner `json:"signers"`
+	Thresholds struct {
+		LowThreshold  int `json:"low_threshold"`
+		MedThreshold  int `json:"med_threshold"`
+		HighThreshold int `json:"high_threshold"`
+	} `json:"thresholds"`
+}
+
 // GetAccountCurrent returns the current state of an account
 func (r *SilverColdReader) GetAccountCurrent(ctx context.Context, accountID string) (*AccountCurrent, error) {
 	query := fmt.Sprintf(`
@@ -186,7 +205,7 @@ func (r *SilverColdReader) GetTopAccounts(ctx context.Context, limit int) ([]Acc
 			last_modified_ledger,
 			updated_at
 		FROM %s.%s.accounts_current
-		ORDER BY CAST(balance AS BIGINT) DESC
+		ORDER BY CAST(balance AS DECIMAL) DESC
 		LIMIT ?
 	`, r.catalogName, r.schemaName)
 
