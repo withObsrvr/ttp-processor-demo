@@ -147,9 +147,11 @@ func mainWithSilver() {
 		log.Println("Registering Silver API endpoints:")
 
 		// Account endpoints
+		router.HandleFunc("/api/v1/silver/accounts", silverHandlers.HandleListAccounts)
 		router.HandleFunc("/api/v1/silver/accounts/current", silverHandlers.HandleAccountCurrent)
 		router.HandleFunc("/api/v1/silver/accounts/history", silverHandlers.HandleAccountHistory)
 		router.HandleFunc("/api/v1/silver/accounts/top", silverHandlers.HandleTopAccounts)
+		log.Println("  ✓ /api/v1/silver/accounts (list all)")
 		log.Println("  ✓ /api/v1/silver/accounts/*")
 
 		// Operations endpoints

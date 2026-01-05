@@ -301,3 +301,89 @@ func (iw *IndexWriter) Close() error {
 	}
 	return nil
 }
+
+// MergeAdjacentFiles merges small Parquet files into larger ones for better query performance
+func (iw *IndexWriter) MergeAdjacentFiles(maxFiles int) error {
+	log.Printf("🔧 Starting file merge (max_compacted_files=%d)...", maxFiles)
+
+	mergeSQL := fmt.Sprintf(`CALL ducklake_merge_adjacent_files('testnet_catalog', 'contract_events_index', schema => 'index', max_compacted_files => %d)`, maxFiles)
+
+	if _, err := iw.db.Exec(mergeSQL); err != nil {
+		return fmt.Errorf("failed to merge adjacent files: %w", err)
+	}
+
+	log.Println("✅ File merge completed successfully")
+	return nil
+}
+
+// ExpireSnapshots expires old snapshots to mark merged files for cleanup
+func (iw *IndexWriter) ExpireSnapshots(retainSnapshots int) error {
+	log.Printf("🗑️  Expiring old snapshots (catalog-level operation)...")
+
+	expireSQL := `CALL ducklake_expire_snapshots('testnet_catalog')`
+
+	if _, err := iw.db.Exec(expireSQL); err != nil {
+		return fmt.Errorf("failed to expire snapshots: %w", err)
+	}
+
+	log.Println("✅ Snapshots expired successfully")
+	return nil
+}
+
+// CleanupOrphanedFiles removes orphaned Parquet files from S3
+func (iw *IndexWriter) CleanupOrphanedFiles() error {
+	log.Println("🧹 Cleaning up orphaned files...")
+
+	cleanupSQL := `CALL ducklake_cleanup_old_files('testnet_catalog')`
+
+	if _, err := iw.db.Exec(cleanupSQL); err != nil {
+		return fmt.Errorf("failed to cleanup orphaned files: %w", err)
+	}
+
+	log.Println("✅ Orphaned files cleaned up successfully")
+	return nil
+}
+
+// PerformMaintenanceFullCycle runs merge, expire, and cleanup in sequence
+func (iw *IndexWriter) PerformMaintenanceFullCycle(maxFiles, retainSnapshots int) error {
+	log.Println("🔧 Starting full maintenance cycle (merge → expire → cleanup)...")
+
+	if err := iw.MergeAdjacentFiles(maxFiles); err != nil {
+		return fmt.Errorf("merge failed: %w", err)
+	}
+
+	if err := iw.ExpireSnapshots(retainSnapshots); err != nil {
+		return fmt.Errorf("expire snapshots failed: %w", err)
+	}
+
+	if err := iw.CleanupOrphanedFiles(); err != nil {
+		return fmt.Errorf("cleanup failed: %w", err)
+	}
+
+	log.Println("✅ Full maintenance cycle completed successfully")
+	return nil
+}
+
+// GetFileCount returns the number of Parquet files for this table
+func (iw *IndexWriter) GetFileCount() (int64, error) {
+	query := `
+		SELECT COUNT(*)
+		FROM __ducklake_metadata_testnet_catalog.index.ducklake_data_file df
+		WHERE df.table_id = (
+			SELECT table_id
+			FROM __ducklake_metadata_testnet_catalog.index.ducklake_table
+			WHERE table_name = 'contract_events_index'
+			ORDER BY table_id DESC
+			LIMIT 1
+		)
+	`
+
+	var count int64
+	err := iw.db.QueryRow(query).Scan(&count)
+	if err != nil {
+		log.Printf("⚠️  File count query failed: %v", err)
+		return 0, nil
+	}
+
+	return count, nil
+}

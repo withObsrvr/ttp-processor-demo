@@ -33,6 +33,67 @@ All endpoints return JSON with CORS enabled.
 
 ---
 
+## Cursor-Based Pagination
+
+All list endpoints support cursor-based pagination for efficiently iterating through large result sets.
+
+### How It Works
+
+1. **Initial Request:** Make a request without a cursor to get the first page
+2. **Next Page:** Use the `cursor` from the response to get the next page
+3. **Check `has_more`:** When `has_more` is `false`, you've reached the end
+
+### Pagination Parameters
+
+| Name | Type | Description |
+|------|------|-------------|
+| cursor | string | Opaque cursor from previous response |
+| limit | int | Number of records per page |
+
+### Pagination Response Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| cursor | string | Cursor for next page (only if `has_more` is true) |
+| has_more | bool | Whether more pages exist |
+
+### Example: Paginating Through Operations
+
+```bash
+# First page
+curl "http://localhost:8092/api/v1/silver/operations/enriched?account_id=GXXXXXX&limit=100"
+
+# Response includes:
+# {
+#   "operations": [...],
+#   "count": 100,
+#   "cursor": "MjEzNzkxODo1",
+#   "has_more": true
+# }
+
+# Next page using cursor
+curl "http://localhost:8092/api/v1/silver/operations/enriched?account_id=GXXXXXX&limit=100&cursor=MjEzNzkxODo1"
+```
+
+### Important Notes
+
+- **Cursor is opaque:** Don't parse or construct cursors - they may change format
+- **Mutually exclusive:** `cursor` and `start_ledger` cannot be used together
+- **Stable ordering:** Results are ordered by ledger sequence (descending)
+- **No duplicates:** Pagination ensures no duplicate records across pages
+
+### Endpoints with Cursor Support
+
+| Endpoint | Cursor Type |
+|----------|-------------|
+| `/operations/enriched` | Operation cursor |
+| `/payments` | Operation cursor |
+| `/operations/soroban` | Operation cursor |
+| `/transfers` | Transfer cursor |
+| `/accounts/history` | Account cursor |
+
+---
+
 ## Account Endpoints
 
 ### Get Current Account State
@@ -78,6 +139,7 @@ Returns historical snapshots of an account with SCD Type 2 tracking.
 |------|------|----------|---------|-------------|
 | account_id | string | Yes | - | Stellar account ID |
 | limit | int | No | 50 | Max records (1-500) |
+| cursor | string | No | - | Pagination cursor from previous response |
 
 **Example:**
 ```bash
@@ -97,7 +159,9 @@ curl "http://localhost:8092/api/v1/silver/accounts/history?account_id=GXXXXXX&li
       "valid_to": null
     }
   ],
-  "count": 1
+  "count": 1,
+  "cursor": "MjEzNzkxOA==",
+  "has_more": false
 }
 ```
 
@@ -134,11 +198,12 @@ Returns operations with full transaction and ledger context.
 |------|------|----------|---------|-------------|
 | account_id | string | No | - | Filter by account |
 | tx_hash | string | No | - | Filter by transaction |
-| start_ledger | int | No | - | Start ledger sequence |
+| start_ledger | int | No | - | Start ledger sequence (mutually exclusive with cursor) |
 | end_ledger | int | No | - | End ledger sequence |
 | payments_only | bool | No | false | Only payment operations |
 | soroban_only | bool | No | false | Only Soroban operations |
 | limit | int | No | 100 | Max records (1-1000) |
+| cursor | string | No | - | Pagination cursor from previous response |
 
 **Example:**
 ```bash
@@ -166,7 +231,9 @@ curl "http://localhost:8092/api/v1/silver/operations/enriched?account_id=GXXXXXX
       "is_soroban_op": false
     }
   ],
-  "count": 1
+  "count": 1,
+  "cursor": "MjEzNzkxODoxMjM0NTY=",
+  "has_more": true
 }
 ```
 
@@ -183,6 +250,7 @@ Convenience endpoint for payment operations only.
 |------|------|----------|---------|-------------|
 | account_id | string | No | - | Filter by account |
 | limit | int | No | 50 | Max records (1-500) |
+| cursor | string | No | - | Pagination cursor from previous response |
 
 **Example:**
 ```bash
@@ -202,6 +270,7 @@ Convenience endpoint for Soroban operations only.
 |------|------|----------|---------|-------------|
 | account_id | string | No | - | Filter by account |
 | limit | int | No | 50 | Max records (1-500) |
+| cursor | string | No | - | Pagination cursor from previous response |
 
 **Example:**
 ```bash
@@ -228,6 +297,7 @@ Returns unified view of classic Stellar payments + Soroban transfers.
 | start_time | ISO8601 | No | -24h | Start timestamp |
 | end_time | ISO8601 | No | now | End timestamp |
 | limit | int | No | 100 | Max records (1-1000) |
+| cursor | string | No | - | Pagination cursor from previous response |
 
 **Example:**
 ```bash

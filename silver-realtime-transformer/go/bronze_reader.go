@@ -37,6 +37,27 @@ func (br *BronzeReader) GetMaxLedgerSequence(ctx context.Context) (int64, error)
 	return maxSeq.Int64, nil
 }
 
+// GetMinLedgerSequence returns the minimum ledger sequence available in bronze hot
+func (br *BronzeReader) GetMinLedgerSequence(ctx context.Context) (int64, error) {
+	var minSeq sql.NullInt64
+
+	query := `
+		SELECT MIN(sequence)
+		FROM ledgers_row_v2
+	`
+
+	err := br.db.QueryRowContext(ctx, query).Scan(&minSeq)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get min ledger sequence: %w", err)
+	}
+
+	if !minSeq.Valid {
+		return 0, nil // No ledgers yet
+	}
+
+	return minSeq.Int64, nil
+}
+
 // QueryEnrichedOperations reads enriched operations from bronze hot for a ledger range
 // Maps raw stellar_hot schema to enriched silver_hot schema
 func (br *BronzeReader) QueryEnrichedOperations(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {

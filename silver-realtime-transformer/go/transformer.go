@@ -111,12 +111,31 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 		return fmt.Errorf("failed to query max ledger: %w", err)
 	}
 
+	if maxBronzeLedger == 0 {
+		// No data in bronze yet
+		return nil
+	}
+
 	if maxBronzeLedger <= lastLedger {
 		// No new data
 		return nil
 	}
 
-	startLedger := lastLedger + 1
+	var startLedger int64
+	if lastLedger == 0 {
+		// First run - start from where bronze actually begins
+		minBronzeLedger, err := rt.bronzeReader.GetMinLedgerSequence(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to query min ledger: %w", err)
+		}
+		if minBronzeLedger == 0 {
+			return nil // No data yet
+		}
+		startLedger = minBronzeLedger
+		log.Printf("🆕 First run - starting from MIN ledger in bronze: %d", startLedger)
+	} else {
+		startLedger = lastLedger + 1
+	}
 	endLedger := maxBronzeLedger
 
 	// Limit batch size
