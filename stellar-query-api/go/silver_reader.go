@@ -126,8 +126,13 @@ func (r *SilverColdReader) GetAccountCurrent(ctx context.Context, accountID stri
 	return &acc, nil
 }
 
-// GetAccountHistory returns historical snapshots of an account
+// GetAccountHistory returns historical snapshots of an account (backward compatible)
 func (r *SilverColdReader) GetAccountHistory(ctx context.Context, accountID string, limit int) ([]AccountSnapshot, error) {
+	return r.GetAccountHistoryWithCursor(ctx, accountID, limit, nil)
+}
+
+// GetAccountHistoryWithCursor returns historical snapshots with cursor-based pagination
+func (r *SilverColdReader) GetAccountHistoryWithCursor(ctx context.Context, accountID string, limit int, cursor *AccountCursor) ([]AccountSnapshot, error) {
 	query := fmt.Sprintf(`
 		SELECT
 			account_id,
@@ -138,11 +143,20 @@ func (r *SilverColdReader) GetAccountHistory(ctx context.Context, accountID stri
 			valid_to
 		FROM %s.%s.accounts_snapshot
 		WHERE account_id = ?
-		ORDER BY ledger_sequence DESC
-		LIMIT ?
 	`, r.catalogName, r.schemaName)
 
-	rows, err := r.db.QueryContext(ctx, query, accountID, limit)
+	args := []interface{}{accountID}
+
+	// Cursor-based pagination: filter for records before the cursor position
+	if cursor != nil {
+		query += " AND ledger_sequence < ?"
+		args = append(args, cursor.LedgerSequence)
+	}
+
+	query += " ORDER BY ledger_sequence DESC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -177,6 +191,126 @@ func (r *SilverColdReader) GetTopAccounts(ctx context.Context, limit int) ([]Acc
 	`, r.catalogName, r.schemaName)
 
 	rows, err := r.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var accounts []AccountCurrent
+	for rows.Next() {
+		var acc AccountCurrent
+		if err := rows.Scan(&acc.AccountID, &acc.Balance, &acc.SequenceNumber,
+			&acc.NumSubentries, &acc.LastModifiedLedger, &acc.UpdatedAt); err != nil {
+			return nil, err
+		}
+		accounts = append(accounts, acc)
+	}
+
+	return accounts, nil
+}
+
+// GetAccountsListWithCursor returns a paginated list of all accounts with cursor support
+// Uses database-level pagination for scalability (handles millions of accounts)
+func (r *SilverColdReader) GetAccountsListWithCursor(ctx context.Context, filters AccountListFilters) ([]AccountCurrent, error) {
+	// Build base query with deduplication (accounts_current may have multiple versions per account)
+	// Use ROW_NUMBER to get only the latest record per account_id
+	query := fmt.Sprintf(`
+		WITH latest_accounts AS (
+			SELECT
+				account_id,
+				balance,
+				sequence_number,
+				num_subentries,
+				last_modified_ledger,
+				updated_at,
+				ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY last_modified_ledger DESC) as rn
+			FROM %s.%s.accounts_current
+		)
+		SELECT
+			account_id,
+			balance,
+			sequence_number,
+			num_subentries,
+			last_modified_ledger,
+			updated_at
+		FROM latest_accounts
+		WHERE rn = 1
+	`, r.catalogName, r.schemaName)
+
+	args := []interface{}{}
+
+	// Apply minimum balance filter (balance is stored as decimal string in XLM)
+	if filters.MinBalance != nil {
+		// Convert stroops to XLM for comparison (divide by 10^7)
+		minBalXLM := float64(*filters.MinBalance) / 10000000.0
+		query += " AND CAST(balance AS DECIMAL) >= ?"
+		args = append(args, minBalXLM)
+	}
+
+	// Cursor-based pagination - respects current sort field and order
+	if filters.Cursor != nil {
+		// Determine effective sort settings (use cursor's sort if available, otherwise use filters)
+		sortBy := filters.SortBy
+		if sortBy == "" {
+			sortBy = "balance"
+		}
+		sortOrder := filters.SortOrder
+		if sortOrder == "" {
+			sortOrder = "desc"
+		}
+		isAsc := sortOrder == "asc"
+
+		switch sortBy {
+		case "last_modified":
+			// Paginate based on last_modified_ledger, tie-break by account_id
+			if isAsc {
+				query += " AND (last_modified_ledger > ? OR (last_modified_ledger = ? AND account_id > ?))"
+			} else {
+				query += " AND (last_modified_ledger < ? OR (last_modified_ledger = ? AND account_id > ?))"
+			}
+			args = append(args, filters.Cursor.LastModifiedLedger, filters.Cursor.LastModifiedLedger, filters.Cursor.AccountID)
+
+		case "account_id":
+			// Paginate directly on account_id
+			if isAsc {
+				query += " AND account_id > ?"
+			} else {
+				query += " AND account_id < ?"
+			}
+			args = append(args, filters.Cursor.AccountID)
+
+		default: // "balance" or empty
+			// Paginate based on balance, tie-break by account_id
+			cursorBalXLM := float64(filters.Cursor.Balance) / 10000000.0
+			if isAsc {
+				query += " AND (CAST(balance AS DECIMAL) > ? OR (CAST(balance AS DECIMAL) = ? AND account_id > ?))"
+			} else {
+				query += " AND (CAST(balance AS DECIMAL) < ? OR (CAST(balance AS DECIMAL) = ? AND account_id > ?))"
+			}
+			args = append(args, cursorBalXLM, cursorBalXLM, filters.Cursor.AccountID)
+		}
+	}
+
+	// Default sort by balance descending (balance is stored as decimal string)
+	sortBy := "CAST(balance AS DECIMAL)"
+	sortOrder := "DESC"
+
+	switch filters.SortBy {
+	case "last_modified":
+		sortBy = "last_modified_ledger"
+	case "account_id":
+		sortBy = "account_id"
+	}
+
+	if filters.SortOrder == "asc" {
+		sortOrder = "ASC"
+	}
+
+	// Add secondary sort by account_id for stable ordering
+	query += fmt.Sprintf(" ORDER BY %s %s, account_id ASC LIMIT ?", sortBy, sortOrder)
+	args = append(args, filters.Limit)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -267,6 +401,12 @@ func (r *SilverColdReader) GetEnrichedOperations(ctx context.Context, filters Op
 
 	if filters.SorobanOnly {
 		query += " AND is_soroban_op = true"
+	}
+
+	// Cursor-based pagination: filter for records before the cursor position
+	if filters.Cursor != nil {
+		query += " AND (ledger_sequence < ? OR (ledger_sequence = ? AND operation_index < ?))"
+		args = append(args, filters.Cursor.LedgerSequence, filters.Cursor.LedgerSequence, filters.Cursor.OperationIndex)
 	}
 
 	query += " ORDER BY ledger_sequence DESC, operation_index DESC LIMIT ?"
@@ -363,7 +503,13 @@ func (r *SilverColdReader) GetTokenTransfers(ctx context.Context, filters Transf
 		args = append(args, filters.EndTime.Format(time.RFC3339))
 	}
 
-	query += " ORDER BY timestamp DESC LIMIT ?"
+	// Cursor-based pagination: filter for records before the cursor position
+	if filters.Cursor != nil {
+		query += " AND (ledger_sequence < ? OR (ledger_sequence = ? AND timestamp < ?))"
+		args = append(args, filters.Cursor.LedgerSequence, filters.Cursor.LedgerSequence, filters.Cursor.Timestamp.Format(time.RFC3339Nano))
+	}
+
+	query += " ORDER BY ledger_sequence DESC, timestamp DESC LIMIT ?"
 	args = append(args, filters.Limit)
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
@@ -463,6 +609,7 @@ type OperationFilters struct {
 	PaymentsOnly bool
 	SorobanOnly  bool
 	Limit        int
+	Cursor       *OperationCursor // Decoded cursor for WHERE clause (pagination)
 }
 
 type TransferFilters struct {
@@ -473,6 +620,7 @@ type TransferFilters struct {
 	StartTime   time.Time
 	EndTime     time.Time
 	Limit       int
+	Cursor      *TransferCursor // Decoded cursor for WHERE clause (pagination)
 }
 
 type TransferStats struct {

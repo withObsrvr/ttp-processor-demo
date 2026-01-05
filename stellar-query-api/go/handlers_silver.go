@@ -48,6 +48,7 @@ func (h *SilverHandlers) HandleAccountCurrent(w http.ResponseWriter, r *http.Req
 
 // HandleAccountHistory returns historical snapshots of an account
 // GET /api/v1/silver/accounts/history?account_id=GXXXXX&limit=50
+// GET /api/v1/silver/accounts/history?cursor=xxx (cursor-based pagination)
 func (h *SilverHandlers) HandleAccountHistory(w http.ResponseWriter, r *http.Request) {
 	accountID := r.URL.Query().Get("account_id")
 	if accountID == "" {
@@ -55,19 +56,33 @@ func (h *SilverHandlers) HandleAccountHistory(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// Parse cursor for pagination
+	cursorStr := r.URL.Query().Get("cursor")
+	cursor, err := DecodeAccountCursor(cursorStr)
+	if err != nil {
+		respondError(w, "invalid cursor: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	limit := parseLimit(r, 50, 500)
 
-	history, err := h.reader.GetAccountHistory(r.Context(), accountID, limit)
+	history, nextCursor, hasMore, err := h.reader.GetAccountHistoryWithCursor(r.Context(), accountID, limit, cursor)
 	if err != nil {
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	respondJSON(w, map[string]interface{}{
+	response := map[string]interface{}{
 		"account_id": accountID,
 		"history":    history,
 		"count":      len(history),
-	})
+		"has_more":   hasMore,
+	}
+	if nextCursor != "" {
+		response["cursor"] = nextCursor
+	}
+
+	respondJSON(w, response)
 }
 
 // HandleTopAccounts returns top accounts by balance (for leaderboards)
@@ -87,6 +102,75 @@ func (h *SilverHandlers) HandleTopAccounts(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+// HandleListAccounts returns a paginated list of all accounts
+// GET /api/v1/silver/accounts?limit=100
+// GET /api/v1/silver/accounts?cursor=xxx (cursor-based pagination)
+// GET /api/v1/silver/accounts?sort_by=balance&order=desc
+// GET /api/v1/silver/accounts?min_balance=1000000000 (filter by minimum balance in stroops)
+func (h *SilverHandlers) HandleListAccounts(w http.ResponseWriter, r *http.Request) {
+	// Parse cursor for pagination
+	cursorStr := r.URL.Query().Get("cursor")
+	cursor, err := DecodeAccountListCursor(cursorStr)
+	if err != nil {
+		respondError(w, "invalid cursor: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Build filters
+	filters := AccountListFilters{
+		SortBy:    r.URL.Query().Get("sort_by"),
+		SortOrder: r.URL.Query().Get("order"),
+		Limit:     parseLimit(r, 100, 1000),
+		Cursor:    cursor,
+	}
+
+	// Parse minimum balance filter
+	if minBalStr := r.URL.Query().Get("min_balance"); minBalStr != "" {
+		minBal, err := strconv.ParseInt(minBalStr, 10, 64)
+		if err == nil && minBal >= 0 {
+			filters.MinBalance = &minBal
+		}
+	}
+
+	// Default sort by balance descending
+	if filters.SortBy == "" {
+		filters.SortBy = "balance"
+	}
+	if filters.SortOrder == "" {
+		filters.SortOrder = "desc"
+	}
+
+	// Validate cursor sort params match request sort params
+	// This prevents incorrect pagination when sort order changes between requests
+	if cursor != nil && cursor.SortBy != "" {
+		if cursor.SortBy != filters.SortBy {
+			respondError(w, "cursor was created with sort_by='"+cursor.SortBy+"' but request uses sort_by='"+filters.SortBy+"'. Cannot change sort order while paginating.", http.StatusBadRequest)
+			return
+		}
+		if cursor.SortOrder != filters.SortOrder {
+			respondError(w, "cursor was created with order='"+cursor.SortOrder+"' but request uses order='"+filters.SortOrder+"'. Cannot change sort order while paginating.", http.StatusBadRequest)
+			return
+		}
+	}
+
+	accounts, nextCursor, hasMore, err := h.reader.GetAccountsListWithCursor(r.Context(), filters)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"accounts": accounts,
+		"count":    len(accounts),
+		"has_more": hasMore,
+	}
+	if nextCursor != "" {
+		response["cursor"] = nextCursor
+	}
+
+	respondJSON(w, response)
+}
+
 // ============================================
 // OPERATIONS ENDPOINTS (Enriched)
 // ============================================
@@ -95,80 +179,137 @@ func (h *SilverHandlers) HandleTopAccounts(w http.ResponseWriter, r *http.Reques
 // GET /api/v1/silver/operations/enriched?account_id=GXXXXX&limit=100
 // GET /api/v1/silver/operations/enriched?tx_hash=TXXXXX
 // GET /api/v1/silver/operations/enriched?payments_only=true
+// GET /api/v1/silver/operations/enriched?cursor=xxx (cursor-based pagination)
 func (h *SilverHandlers) HandleEnrichedOperations(w http.ResponseWriter, r *http.Request) {
+	// Parse cursor for pagination
+	cursorStr := r.URL.Query().Get("cursor")
+	cursor, err := DecodeOperationCursor(cursorStr)
+	if err != nil {
+		respondError(w, "invalid cursor: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Validate cursor and start_ledger are mutually exclusive
+	startLedgerStr := r.URL.Query().Get("start_ledger")
+	if cursorStr != "" && startLedgerStr != "" {
+		respondError(w, "cursor and start_ledger are mutually exclusive", http.StatusBadRequest)
+		return
+	}
+
 	filters := OperationFilters{
 		AccountID:    r.URL.Query().Get("account_id"),
 		TxHash:       r.URL.Query().Get("tx_hash"),
 		PaymentsOnly: r.URL.Query().Get("payments_only") == "true",
 		SorobanOnly:  r.URL.Query().Get("soroban_only") == "true",
 		Limit:        parseLimit(r, 100, 1000),
+		Cursor:       cursor,
 	}
 
-	// Parse ledger range
-	if startStr := r.URL.Query().Get("start_ledger"); startStr != "" {
-		if start, err := strconv.ParseInt(startStr, 10, 64); err == nil {
-			filters.StartLedger = start
+	// Parse ledger range (only if no cursor)
+	if cursor == nil {
+		if startLedgerStr != "" {
+			if start, err := strconv.ParseInt(startLedgerStr, 10, 64); err == nil {
+				filters.StartLedger = start
+			}
 		}
-	}
-	if endStr := r.URL.Query().Get("end_ledger"); endStr != "" {
-		if end, err := strconv.ParseInt(endStr, 10, 64); err == nil {
-			filters.EndLedger = end
+		if endStr := r.URL.Query().Get("end_ledger"); endStr != "" {
+			if end, err := strconv.ParseInt(endStr, 10, 64); err == nil {
+				filters.EndLedger = end
+			}
 		}
 	}
 
-	operations, err := h.reader.GetEnrichedOperations(r.Context(), filters)
+	operations, nextCursor, hasMore, err := h.reader.GetEnrichedOperationsWithCursor(r.Context(), filters)
 	if err != nil {
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	respondJSON(w, map[string]interface{}{
+	response := map[string]interface{}{
 		"operations": operations,
 		"count":      len(operations),
 		"filters":    filters,
-	})
+		"has_more":   hasMore,
+	}
+	if nextCursor != "" {
+		response["cursor"] = nextCursor
+	}
+
+	respondJSON(w, response)
 }
 
 // HandlePayments is a convenience endpoint for payments only
 // GET /api/v1/silver/payments?account_id=GXXXXX&limit=50
+// GET /api/v1/silver/payments?cursor=xxx (cursor-based pagination)
 func (h *SilverHandlers) HandlePayments(w http.ResponseWriter, r *http.Request) {
+	// Parse cursor for pagination
+	cursorStr := r.URL.Query().Get("cursor")
+	cursor, err := DecodeOperationCursor(cursorStr)
+	if err != nil {
+		respondError(w, "invalid cursor: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	filters := OperationFilters{
 		AccountID:    r.URL.Query().Get("account_id"),
 		PaymentsOnly: true,
 		Limit:        parseLimit(r, 50, 500),
+		Cursor:       cursor,
 	}
 
-	operations, err := h.reader.GetEnrichedOperations(r.Context(), filters)
+	operations, nextCursor, hasMore, err := h.reader.GetEnrichedOperationsWithCursor(r.Context(), filters)
 	if err != nil {
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	respondJSON(w, map[string]interface{}{
+	response := map[string]interface{}{
 		"payments": operations,
 		"count":    len(operations),
-	})
+		"has_more": hasMore,
+	}
+	if nextCursor != "" {
+		response["cursor"] = nextCursor
+	}
+
+	respondJSON(w, response)
 }
 
 // HandleSorobanOperations is a convenience endpoint for Soroban operations only
 // GET /api/v1/silver/operations/soroban?account_id=GXXXXX&limit=50
+// GET /api/v1/silver/operations/soroban?cursor=xxx (cursor-based pagination)
 func (h *SilverHandlers) HandleSorobanOperations(w http.ResponseWriter, r *http.Request) {
+	// Parse cursor for pagination
+	cursorStr := r.URL.Query().Get("cursor")
+	cursor, err := DecodeOperationCursor(cursorStr)
+	if err != nil {
+		respondError(w, "invalid cursor: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	filters := OperationFilters{
 		AccountID:   r.URL.Query().Get("account_id"),
 		SorobanOnly: true,
 		Limit:       parseLimit(r, 50, 500),
+		Cursor:      cursor,
 	}
 
-	operations, err := h.reader.GetEnrichedOperations(r.Context(), filters)
+	operations, nextCursor, hasMore, err := h.reader.GetEnrichedOperationsWithCursor(r.Context(), filters)
 	if err != nil {
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	respondJSON(w, map[string]interface{}{
+	response := map[string]interface{}{
 		"soroban_operations": operations,
 		"count":              len(operations),
-	})
+		"has_more":           hasMore,
+	}
+	if nextCursor != "" {
+		response["cursor"] = nextCursor
+	}
+
+	respondJSON(w, response)
 }
 
 // ============================================
@@ -179,13 +320,23 @@ func (h *SilverHandlers) HandleSorobanOperations(w http.ResponseWriter, r *http.
 // GET /api/v1/silver/transfers?asset_code=USDC&limit=100
 // GET /api/v1/silver/transfers?from_account=GXXXXX
 // GET /api/v1/silver/transfers?source_type=classic
+// GET /api/v1/silver/transfers?cursor=xxx (cursor-based pagination)
 func (h *SilverHandlers) HandleTokenTransfers(w http.ResponseWriter, r *http.Request) {
+	// Parse cursor for pagination
+	cursorStr := r.URL.Query().Get("cursor")
+	cursor, err := DecodeTransferCursor(cursorStr)
+	if err != nil {
+		respondError(w, "invalid cursor: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	filters := TransferFilters{
-		SourceType:  r.URL.Query().Get("source_type"),  // "classic" or "soroban"
+		SourceType:  r.URL.Query().Get("source_type"), // "classic" or "soroban"
 		AssetCode:   r.URL.Query().Get("asset_code"),
 		FromAccount: r.URL.Query().Get("from_account"),
 		ToAccount:   r.URL.Query().Get("to_account"),
 		Limit:       parseLimit(r, 100, 1000),
+		Cursor:      cursor,
 	}
 
 	// Parse time range
@@ -206,17 +357,23 @@ func (h *SilverHandlers) HandleTokenTransfers(w http.ResponseWriter, r *http.Req
 		filters.EndTime = time.Now()
 	}
 
-	transfers, err := h.reader.GetTokenTransfers(r.Context(), filters)
+	transfers, nextCursor, hasMore, err := h.reader.GetTokenTransfersWithCursor(r.Context(), filters)
 	if err != nil {
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	respondJSON(w, map[string]interface{}{
+	response := map[string]interface{}{
 		"transfers": transfers,
 		"count":     len(transfers),
 		"filters":   filters,
-	})
+		"has_more":  hasMore,
+	}
+	if nextCursor != "" {
+		response["cursor"] = nextCursor
+	}
+
+	respondJSON(w, response)
 }
 
 // HandleTokenTransferStats returns aggregated transfer statistics

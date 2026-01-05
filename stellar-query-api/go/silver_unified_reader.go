@@ -53,12 +53,19 @@ func (u *UnifiedSilverReader) GetAccountCurrent(ctx context.Context, accountID s
 	return u.cold.GetAccountCurrent(ctx, accountID)
 }
 
-// GetAccountHistory merges hot + cold results
+// GetAccountHistory merges hot + cold results (backward compatible - no cursor)
 func (u *UnifiedSilverReader) GetAccountHistory(ctx context.Context, accountID string, limit int) ([]AccountSnapshot, error) {
-	var results []AccountSnapshot
+	results, _, _, err := u.GetAccountHistoryWithCursor(ctx, accountID, limit, nil)
+	return results, err
+}
 
-	// Query hot first
-	hotResults, err := u.hot.GetAccountHistory(ctx, accountID, limit)
+// GetAccountHistoryWithCursor returns account history with cursor-based pagination
+func (u *UnifiedSilverReader) GetAccountHistoryWithCursor(ctx context.Context, accountID string, limit int, cursor *AccountCursor) ([]AccountSnapshot, string, bool, error) {
+	var results []AccountSnapshot
+	requestedLimit := limit
+
+	// Query hot first (request one extra to detect has_more)
+	hotResults, err := u.hot.GetAccountHistory(ctx, accountID, requestedLimit+1, cursor)
 	if err != nil {
 		log.Printf("Warning: failed to query hot storage: %v", err)
 	} else {
@@ -66,8 +73,24 @@ func (u *UnifiedSilverReader) GetAccountHistory(ctx context.Context, accountID s
 	}
 
 	// Query cold if needed
-	if len(results) < limit {
-		coldResults, err := u.cold.GetAccountHistory(ctx, accountID, limit-len(results))
+	if len(results) <= requestedLimit {
+		remainingLimit := (requestedLimit + 1) - len(results)
+
+		// Determine cursor for cold query:
+		// - If we have hot results, use the last hot result's ledger to avoid overlap
+		// - If no hot results but cursor was provided, use the original cursor
+		// - If neither, query from the beginning
+		var coldCursor *AccountCursor
+		if len(results) > 0 {
+			// Continue from where hot results ended
+			lastHot := results[len(results)-1]
+			coldCursor = &AccountCursor{LedgerSequence: lastHot.LedgerSequence}
+		} else if cursor != nil {
+			// No hot results, use the original cursor
+			coldCursor = cursor
+		}
+
+		coldResults, err := u.cold.GetAccountHistoryWithCursor(ctx, accountID, remainingLimit, coldCursor)
 		if err != nil {
 			log.Printf("Warning: failed to query cold storage: %v", err)
 		} else {
@@ -75,7 +98,21 @@ func (u *UnifiedSilverReader) GetAccountHistory(ctx context.Context, accountID s
 		}
 	}
 
-	return results, nil
+	// Determine has_more and trim to requested limit
+	hasMore := len(results) > requestedLimit
+	if hasMore {
+		results = results[:requestedLimit]
+	}
+
+	// Generate next cursor from last result
+	var nextCursor string
+	if len(results) > 0 && hasMore {
+		last := results[len(results)-1]
+		c := AccountCursor{LedgerSequence: last.LedgerSequence}
+		nextCursor = c.Encode()
+	}
+
+	return results, nextCursor, hasMore, nil
 }
 
 // GetTopAccounts merges hot + cold results and sorts
@@ -149,16 +186,147 @@ func (u *UnifiedSilverReader) GetTopAccounts(ctx context.Context, limit int) ([]
 	return results, nil
 }
 
+// GetAccountsListWithCursor returns a paginated list of all accounts with cursor support
+// Uses database-level pagination for scalability (handles millions of accounts)
+func (u *UnifiedSilverReader) GetAccountsListWithCursor(ctx context.Context, filters AccountListFilters) ([]AccountCurrent, string, bool, error) {
+	requestedLimit := filters.Limit
+
+	// Query cold storage with cursor-based pagination (cold has all historical accounts)
+	// Cold storage is the source of truth for the full account list
+	// Request one extra to detect has_more
+	coldFilters := filters
+	coldFilters.Limit = requestedLimit + 1
+	coldResults, err := u.cold.GetAccountsListWithCursor(ctx, coldFilters)
+	if err != nil {
+		log.Printf("Warning: failed to query cold storage for accounts list: %v", err)
+		coldResults = nil
+	}
+
+	// Query hot storage to get recent updates (just need to match cold results)
+	hotFilters := filters
+	hotFilters.Limit = requestedLimit + 1
+	hotResults, err := u.hot.GetAccountsList(ctx, hotFilters)
+	if err != nil {
+		log.Printf("Warning: failed to query hot storage for accounts list: %v", err)
+		hotResults = nil
+	}
+
+	// Build a map of hot results for quick lookup (hot takes precedence for balance updates)
+	hotMap := make(map[string]AccountCurrent)
+	for _, acc := range hotResults {
+		hotMap[acc.AccountID] = acc
+	}
+
+	// Merge: update cold results with hot data where available
+	results := make([]AccountCurrent, 0, len(coldResults))
+	for _, acc := range coldResults {
+		if hotAcc, exists := hotMap[acc.AccountID]; exists {
+			results = append(results, hotAcc)
+		} else {
+			results = append(results, acc)
+		}
+	}
+
+	// Determine has_more and trim to requested limit
+	hasMore := len(results) > requestedLimit
+	if hasMore {
+		results = results[:requestedLimit]
+	}
+
+	// Generate next cursor from last result
+	var nextCursor string
+	if len(results) > 0 && hasMore {
+		last := results[len(results)-1]
+		balanceStroops, err := parseBalanceToStroops(last.Balance)
+		if err != nil {
+			log.Printf("Warning: failed to parse balance '%s' for cursor: %v", last.Balance, err)
+			balanceStroops = 0
+		}
+
+		// Determine effective sort settings for cursor
+		sortBy := filters.SortBy
+		if sortBy == "" {
+			sortBy = "balance"
+		}
+		sortOrder := filters.SortOrder
+		if sortOrder == "" {
+			sortOrder = "desc"
+		}
+
+		cursor := AccountListCursor{
+			Balance:            balanceStroops,
+			LastModifiedLedger: last.LastModifiedLedger,
+			AccountID:          last.AccountID,
+			SortBy:             sortBy,
+			SortOrder:          sortOrder,
+		}
+		nextCursor = cursor.Encode()
+	}
+
+	return results, nextCursor, hasMore, nil
+}
+
+// parseBalanceToStroops converts balance string (XLM format like "100.9988200") to stroops (int64)
+func parseBalanceToStroops(balanceStr string) (int64, error) {
+	// Balance is stored as XLM with 7 decimal places (e.g., "100.9988200")
+	// Convert to stroops by multiplying by 10^7
+	var intPart, decPart int64
+	var inDecimal bool
+	var decDigits int
+	var isNegative bool
+
+	for i, c := range balanceStr {
+		if c == '-' && i == 0 {
+			isNegative = true
+			continue
+		}
+		if c >= '0' && c <= '9' {
+			if inDecimal {
+				if decDigits < 7 {
+					decPart = decPart*10 + int64(c-'0')
+					decDigits++
+				}
+			} else {
+				intPart = intPart*10 + int64(c-'0')
+			}
+		} else if c == '.' {
+			inDecimal = true
+		}
+	}
+
+	// Pad decimal part to 7 digits
+	for decDigits < 7 {
+		decPart *= 10
+		decDigits++
+	}
+
+	result := intPart*10000000 + decPart
+	if isNegative {
+		result = -result
+	}
+
+	return result, nil
+}
+
 // ============================================
 // ENRICHED OPERATIONS QUERIES
 // ============================================
 
-// GetEnrichedOperations merges hot + cold results
+// GetEnrichedOperations merges hot + cold results (backward compatible - no cursor)
 func (u *UnifiedSilverReader) GetEnrichedOperations(ctx context.Context, filters OperationFilters) ([]EnrichedOperation, error) {
-	var results []EnrichedOperation
+	results, _, _, err := u.GetEnrichedOperationsWithCursor(ctx, filters)
+	return results, err
+}
 
-	// Query hot first
-	hotResults, err := u.hot.GetEnrichedOperations(ctx, filters)
+// GetEnrichedOperationsWithCursor returns enriched operations with cursor-based pagination
+func (u *UnifiedSilverReader) GetEnrichedOperationsWithCursor(ctx context.Context, filters OperationFilters) ([]EnrichedOperation, string, bool, error) {
+	var results []EnrichedOperation
+	requestedLimit := filters.Limit
+
+	// Query hot first (request one extra to detect has_more)
+	hotFilters := filters
+	hotFilters.Limit = requestedLimit + 1
+	hotResults, err := u.hot.GetEnrichedOperations(ctx, hotFilters)
 	if err != nil {
 		log.Printf("Warning: failed to query hot storage: %v", err)
 	} else {
@@ -166,10 +334,22 @@ func (u *UnifiedSilverReader) GetEnrichedOperations(ctx context.Context, filters
 	}
 
 	// Query cold if needed
-	if len(results) < filters.Limit {
-		remainingLimit := filters.Limit - len(results)
+	if len(results) <= requestedLimit {
+		remainingLimit := (requestedLimit + 1) - len(results)
 		coldFilters := filters
 		coldFilters.Limit = remainingLimit
+
+		// Determine cursor for cold query:
+		// - If we have hot results, continue from where hot results ended
+		// - If no hot results but cursor was provided, use the original cursor
+		if len(results) > 0 {
+			lastHot := results[len(results)-1]
+			coldFilters.Cursor = &OperationCursor{
+				LedgerSequence: lastHot.LedgerSequence,
+				OperationIndex: lastHot.OperationID,
+			}
+		}
+		// If no hot results, coldFilters.Cursor already has the original cursor from filters
 
 		coldResults, err := u.cold.GetEnrichedOperations(ctx, coldFilters)
 		if err != nil {
@@ -179,19 +359,45 @@ func (u *UnifiedSilverReader) GetEnrichedOperations(ctx context.Context, filters
 		}
 	}
 
-	return results, nil
+	// Determine has_more and trim to requested limit
+	hasMore := len(results) > requestedLimit
+	if hasMore {
+		results = results[:requestedLimit]
+	}
+
+	// Generate next cursor from last result
+	var nextCursor string
+	if len(results) > 0 && hasMore {
+		last := results[len(results)-1]
+		cursor := OperationCursor{
+			LedgerSequence: last.LedgerSequence,
+			OperationIndex: last.OperationID,
+		}
+		nextCursor = cursor.Encode()
+	}
+
+	return results, nextCursor, hasMore, nil
 }
 
 // ============================================
 // TOKEN TRANSFERS QUERIES
 // ============================================
 
-// GetTokenTransfers merges hot + cold results
+// GetTokenTransfers merges hot + cold results (backward compatible - no cursor)
 func (u *UnifiedSilverReader) GetTokenTransfers(ctx context.Context, filters TransferFilters) ([]TokenTransfer, error) {
-	var results []TokenTransfer
+	results, _, _, err := u.GetTokenTransfersWithCursor(ctx, filters)
+	return results, err
+}
 
-	// Query hot first
-	hotResults, err := u.hot.GetTokenTransfers(ctx, filters)
+// GetTokenTransfersWithCursor returns token transfers with cursor-based pagination
+func (u *UnifiedSilverReader) GetTokenTransfersWithCursor(ctx context.Context, filters TransferFilters) ([]TokenTransfer, string, bool, error) {
+	var results []TokenTransfer
+	requestedLimit := filters.Limit
+
+	// Query hot first (request one extra to detect has_more)
+	hotFilters := filters
+	hotFilters.Limit = requestedLimit + 1
+	hotResults, err := u.hot.GetTokenTransfers(ctx, hotFilters)
 	if err != nil {
 		log.Printf("Warning: failed to query hot storage: %v", err)
 	} else {
@@ -199,10 +405,32 @@ func (u *UnifiedSilverReader) GetTokenTransfers(ctx context.Context, filters Tra
 	}
 
 	// Query cold if needed
-	if len(results) < filters.Limit {
-		remainingLimit := filters.Limit - len(results)
+	if len(results) <= requestedLimit {
+		remainingLimit := (requestedLimit + 1) - len(results)
 		coldFilters := filters
 		coldFilters.Limit = remainingLimit
+
+		// Determine cursor for cold query:
+		// - If we have hot results, continue from where hot results ended
+		// - If no hot results but cursor was provided, use the original cursor
+		if len(results) > 0 {
+			lastHot := results[len(results)-1]
+			// Parse timestamp string to time.Time for cursor
+			ts, err := time.Parse(time.RFC3339Nano, lastHot.Timestamp)
+			if err != nil {
+				// Try alternate format
+				ts, err = time.Parse(time.RFC3339, lastHot.Timestamp)
+				if err != nil {
+					log.Printf("Warning: failed to parse timestamp '%s' for cursor: %v", lastHot.Timestamp, err)
+					// Fall back to using ledger sequence only (timestamp will be zero)
+				}
+			}
+			coldFilters.Cursor = &TransferCursor{
+				LedgerSequence: lastHot.LedgerSequence,
+				Timestamp:      ts,
+			}
+		}
+		// If no hot results, coldFilters.Cursor already has the original cursor from filters
 
 		coldResults, err := u.cold.GetTokenTransfers(ctx, coldFilters)
 		if err != nil {
@@ -212,7 +440,33 @@ func (u *UnifiedSilverReader) GetTokenTransfers(ctx context.Context, filters Tra
 		}
 	}
 
-	return results, nil
+	// Determine has_more and trim to requested limit
+	hasMore := len(results) > requestedLimit
+	if hasMore {
+		results = results[:requestedLimit]
+	}
+
+	// Generate next cursor from last result
+	var nextCursor string
+	if len(results) > 0 && hasMore {
+		last := results[len(results)-1]
+		// Parse timestamp string to time.Time for cursor
+		ts, err := time.Parse(time.RFC3339Nano, last.Timestamp)
+		if err != nil {
+			ts, err = time.Parse(time.RFC3339, last.Timestamp)
+			if err != nil {
+				log.Printf("Warning: failed to parse timestamp '%s' for next cursor: %v", last.Timestamp, err)
+				// Still generate cursor with zero timestamp - pagination will use ledger sequence
+			}
+		}
+		cursor := TransferCursor{
+			LedgerSequence: last.LedgerSequence,
+			Timestamp:      ts,
+		}
+		nextCursor = cursor.Encode()
+	}
+
+	return results, nextCursor, hasMore, nil
 }
 
 // GetTokenTransferStats delegates to cold storage only (aggregations are expensive)
