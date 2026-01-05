@@ -140,6 +140,19 @@ func (h *SilverHandlers) HandleListAccounts(w http.ResponseWriter, r *http.Reque
 		filters.SortOrder = "desc"
 	}
 
+	// Validate cursor sort params match request sort params
+	// This prevents incorrect pagination when sort order changes between requests
+	if cursor != nil && cursor.SortBy != "" {
+		if cursor.SortBy != filters.SortBy {
+			respondError(w, "cursor was created with sort_by='"+cursor.SortBy+"' but request uses sort_by='"+filters.SortBy+"'. Cannot change sort order while paginating.", http.StatusBadRequest)
+			return
+		}
+		if cursor.SortOrder != filters.SortOrder {
+			respondError(w, "cursor was created with order='"+cursor.SortOrder+"' but request uses order='"+filters.SortOrder+"'. Cannot change sort order while paginating.", http.StatusBadRequest)
+			return
+		}
+	}
+
 	accounts, nextCursor, hasMore, err := h.reader.GetAccountsListWithCursor(r.Context(), filters)
 	if err != nil {
 		respondError(w, err.Error(), http.StatusInternalServerError)

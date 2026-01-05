@@ -317,9 +317,14 @@ func (iw *IndexWriter) MergeAdjacentFiles(maxFiles int) error {
 }
 
 // ExpireSnapshots expires old snapshots to mark merged files for cleanup
+// Note: retainSnapshots parameter is currently not used by DuckLake's ducklake_expire_snapshots
+// procedure, which uses its own internal retention policy. The parameter is kept for API
+// compatibility and potential future DuckLake versions that may support it.
 func (iw *IndexWriter) ExpireSnapshots(retainSnapshots int) error {
-	log.Printf("🗑️  Expiring old snapshots (catalog-level operation)...")
+	log.Printf("🗑️  Expiring old snapshots (catalog-level operation, retain_snapshots=%d requested)...", retainSnapshots)
 
+	// TODO: DuckLake's ducklake_expire_snapshots doesn't currently accept a retain parameter.
+	// When DuckLake adds support for this, update the SQL to include the parameter.
 	expireSQL := `CALL ducklake_expire_snapshots('testnet_catalog')`
 
 	if _, err := iw.db.Exec(expireSQL); err != nil {

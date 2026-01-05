@@ -157,15 +157,25 @@ func (hs *HealthServer) handleMerge(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fileCountAfter, err := writer.GetFileCount()
+
+	// Calculate files merged, handling edge cases
+	var filesMerged int64
 	if err != nil {
+		// If we can't get the count after, report as unknown
 		fileCountAfter = -1
+		filesMerged = 0
+	} else if fileCountAfter > fileCountBefore {
+		// New files were written concurrently during merge
+		filesMerged = 0
+	} else {
+		filesMerged = fileCountBefore - fileCountAfter
 	}
 
 	response := map[string]interface{}{
 		"status":            "success",
 		"files_before":      fileCountBefore,
 		"files_after":       fileCountAfter,
-		"files_merged":      fileCountBefore - fileCountAfter,
+		"files_merged":      filesMerged,
 		"max_compact_files": 1000,
 	}
 
@@ -263,15 +273,25 @@ func (hs *HealthServer) handleFullMaintenance(w http.ResponseWriter, r *http.Req
 	}
 
 	fileCountAfter, err := writer.GetFileCount()
+
+	// Calculate files merged, handling edge cases
+	var filesMerged int64
 	if err != nil {
+		// If we can't get the count after, report as unknown
 		fileCountAfter = -1
+		filesMerged = 0
+	} else if fileCountAfter > fileCountBefore {
+		// New files were written concurrently during maintenance
+		filesMerged = 0
+	} else {
+		filesMerged = fileCountBefore - fileCountAfter
 	}
 
 	response := map[string]interface{}{
 		"status":            "success",
 		"files_before":      fileCountBefore,
 		"files_after":       fileCountAfter,
-		"files_merged":      fileCountBefore - fileCountAfter,
+		"files_merged":      filesMerged,
 		"max_compact_files": 1000,
 		"retain_snapshots":  20,
 		"steps_completed":   []string{"merge", "expire", "cleanup"},

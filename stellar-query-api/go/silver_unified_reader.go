@@ -76,14 +76,18 @@ func (u *UnifiedSilverReader) GetAccountHistoryWithCursor(ctx context.Context, a
 	if len(results) <= requestedLimit {
 		remainingLimit := (requestedLimit + 1) - len(results)
 
-		// Adjust cursor for cold query based on last hot result
+		// Determine cursor for cold query:
+		// - If we have hot results, use the last hot result's ledger to avoid overlap
+		// - If no hot results but cursor was provided, use the original cursor
+		// - If neither, query from the beginning
 		var coldCursor *AccountCursor
-		if cursor != nil {
-			coldCursor = cursor
-		}
 		if len(results) > 0 {
+			// Continue from where hot results ended
 			lastHot := results[len(results)-1]
 			coldCursor = &AccountCursor{LedgerSequence: lastHot.LedgerSequence}
+		} else if cursor != nil {
+			// No hot results, use the original cursor
+			coldCursor = cursor
 		}
 
 		coldResults, err := u.cold.GetAccountHistoryWithCursor(ctx, accountID, remainingLimit, coldCursor)
@@ -234,13 +238,29 @@ func (u *UnifiedSilverReader) GetAccountsListWithCursor(ctx context.Context, fil
 	if len(results) > 0 && hasMore {
 		last := results[len(results)-1]
 		balanceStroops, err := parseBalanceToStroops(last.Balance)
-		if err == nil {
-			cursor := AccountListCursor{
-				Balance:   balanceStroops,
-				AccountID: last.AccountID,
-			}
-			nextCursor = cursor.Encode()
+		if err != nil {
+			log.Printf("Warning: failed to parse balance '%s' for cursor: %v", last.Balance, err)
+			balanceStroops = 0
 		}
+
+		// Determine effective sort settings for cursor
+		sortBy := filters.SortBy
+		if sortBy == "" {
+			sortBy = "balance"
+		}
+		sortOrder := filters.SortOrder
+		if sortOrder == "" {
+			sortOrder = "desc"
+		}
+
+		cursor := AccountListCursor{
+			Balance:            balanceStroops,
+			LastModifiedLedger: last.LastModifiedLedger,
+			AccountID:          last.AccountID,
+			SortBy:             sortBy,
+			SortOrder:          sortOrder,
+		}
+		nextCursor = cursor.Encode()
 	}
 
 	return results, nextCursor, hasMore, nil
@@ -253,8 +273,13 @@ func parseBalanceToStroops(balanceStr string) (int64, error) {
 	var intPart, decPart int64
 	var inDecimal bool
 	var decDigits int
+	var isNegative bool
 
-	for _, c := range balanceStr {
+	for i, c := range balanceStr {
+		if c == '-' && i == 0 {
+			isNegative = true
+			continue
+		}
 		if c >= '0' && c <= '9' {
 			if inDecimal {
 				if decDigits < 7 {
@@ -275,7 +300,12 @@ func parseBalanceToStroops(balanceStr string) (int64, error) {
 		decDigits++
 	}
 
-	return intPart*10000000 + decPart, nil
+	result := intPart*10000000 + decPart
+	if isNegative {
+		result = -result
+	}
+
+	return result, nil
 }
 
 // ============================================
@@ -309,7 +339,9 @@ func (u *UnifiedSilverReader) GetEnrichedOperationsWithCursor(ctx context.Contex
 		coldFilters := filters
 		coldFilters.Limit = remainingLimit
 
-		// Adjust cursor for cold query based on last hot result
+		// Determine cursor for cold query:
+		// - If we have hot results, continue from where hot results ended
+		// - If no hot results but cursor was provided, use the original cursor
 		if len(results) > 0 {
 			lastHot := results[len(results)-1]
 			coldFilters.Cursor = &OperationCursor{
@@ -317,6 +349,7 @@ func (u *UnifiedSilverReader) GetEnrichedOperationsWithCursor(ctx context.Contex
 				OperationIndex: lastHot.OperationID,
 			}
 		}
+		// If no hot results, coldFilters.Cursor already has the original cursor from filters
 
 		coldResults, err := u.cold.GetEnrichedOperations(ctx, coldFilters)
 		if err != nil {
@@ -377,20 +410,27 @@ func (u *UnifiedSilverReader) GetTokenTransfersWithCursor(ctx context.Context, f
 		coldFilters := filters
 		coldFilters.Limit = remainingLimit
 
-		// Adjust cursor for cold query based on last hot result
+		// Determine cursor for cold query:
+		// - If we have hot results, continue from where hot results ended
+		// - If no hot results but cursor was provided, use the original cursor
 		if len(results) > 0 {
 			lastHot := results[len(results)-1]
 			// Parse timestamp string to time.Time for cursor
 			ts, err := time.Parse(time.RFC3339Nano, lastHot.Timestamp)
 			if err != nil {
 				// Try alternate format
-				ts, _ = time.Parse(time.RFC3339, lastHot.Timestamp)
+				ts, err = time.Parse(time.RFC3339, lastHot.Timestamp)
+				if err != nil {
+					log.Printf("Warning: failed to parse timestamp '%s' for cursor: %v", lastHot.Timestamp, err)
+					// Fall back to using ledger sequence only (timestamp will be zero)
+				}
 			}
 			coldFilters.Cursor = &TransferCursor{
 				LedgerSequence: lastHot.LedgerSequence,
 				Timestamp:      ts,
 			}
 		}
+		// If no hot results, coldFilters.Cursor already has the original cursor from filters
 
 		coldResults, err := u.cold.GetTokenTransfers(ctx, coldFilters)
 		if err != nil {
@@ -413,7 +453,11 @@ func (u *UnifiedSilverReader) GetTokenTransfersWithCursor(ctx context.Context, f
 		// Parse timestamp string to time.Time for cursor
 		ts, err := time.Parse(time.RFC3339Nano, last.Timestamp)
 		if err != nil {
-			ts, _ = time.Parse(time.RFC3339, last.Timestamp)
+			ts, err = time.Parse(time.RFC3339, last.Timestamp)
+			if err != nil {
+				log.Printf("Warning: failed to parse timestamp '%s' for next cursor: %v", last.Timestamp, err)
+				// Still generate cursor with zero timestamp - pagination will use ledger sequence
+			}
 		}
 		cursor := TransferCursor{
 			LedgerSequence: last.LedgerSequence,

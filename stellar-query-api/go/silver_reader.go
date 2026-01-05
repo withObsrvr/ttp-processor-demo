@@ -247,14 +247,48 @@ func (r *SilverColdReader) GetAccountsListWithCursor(ctx context.Context, filter
 		args = append(args, minBalXLM)
 	}
 
-	// Cursor-based pagination (for balance DESC order)
+	// Cursor-based pagination - respects current sort field and order
 	if filters.Cursor != nil {
-		// For descending balance order: get records with lower balance,
-		// or same balance but account_id comes after (for tie-breaking)
-		// Convert cursor balance (stroops) to XLM for comparison
-		cursorBalXLM := float64(filters.Cursor.Balance) / 10000000.0
-		query += " AND (CAST(balance AS DECIMAL) < ? OR (CAST(balance AS DECIMAL) = ? AND account_id > ?))"
-		args = append(args, cursorBalXLM, cursorBalXLM, filters.Cursor.AccountID)
+		// Determine effective sort settings (use cursor's sort if available, otherwise use filters)
+		sortBy := filters.SortBy
+		if sortBy == "" {
+			sortBy = "balance"
+		}
+		sortOrder := filters.SortOrder
+		if sortOrder == "" {
+			sortOrder = "desc"
+		}
+		isAsc := sortOrder == "asc"
+
+		switch sortBy {
+		case "last_modified":
+			// Paginate based on last_modified_ledger, tie-break by account_id
+			if isAsc {
+				query += " AND (last_modified_ledger > ? OR (last_modified_ledger = ? AND account_id > ?))"
+			} else {
+				query += " AND (last_modified_ledger < ? OR (last_modified_ledger = ? AND account_id > ?))"
+			}
+			args = append(args, filters.Cursor.LastModifiedLedger, filters.Cursor.LastModifiedLedger, filters.Cursor.AccountID)
+
+		case "account_id":
+			// Paginate directly on account_id
+			if isAsc {
+				query += " AND account_id > ?"
+			} else {
+				query += " AND account_id < ?"
+			}
+			args = append(args, filters.Cursor.AccountID)
+
+		default: // "balance" or empty
+			// Paginate based on balance, tie-break by account_id
+			cursorBalXLM := float64(filters.Cursor.Balance) / 10000000.0
+			if isAsc {
+				query += " AND (CAST(balance AS DECIMAL) > ? OR (CAST(balance AS DECIMAL) = ? AND account_id > ?))"
+			} else {
+				query += " AND (CAST(balance AS DECIMAL) < ? OR (CAST(balance AS DECIMAL) = ? AND account_id > ?))"
+			}
+			args = append(args, cursorBalXLM, cursorBalXLM, filters.Cursor.AccountID)
+		}
 	}
 
 	// Default sort by balance descending (balance is stored as decimal string)
