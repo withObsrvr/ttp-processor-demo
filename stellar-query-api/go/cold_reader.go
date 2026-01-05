@@ -382,6 +382,22 @@ func (c *ColdReader) QueryContractEvents(ctx context.Context, start, end int64, 
 	return rows, nil
 }
 
+// GetDistinctAccountCount returns the count of unique accounts in Bronze storage
+func (c *ColdReader) GetDistinctAccountCount(ctx context.Context) (int64, error) {
+	query := fmt.Sprintf(`
+		SELECT COUNT(DISTINCT account_id)
+		FROM %s.%s.accounts_snapshot_v1
+	`, c.config.CatalogName, c.config.SchemaName)
+
+	var count int64
+	err := c.db.QueryRowContext(ctx, query).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count distinct accounts: %w", err)
+	}
+
+	return count, nil
+}
+
 func (c *ColdReader) Close() error {
 	return c.db.Close()
 }

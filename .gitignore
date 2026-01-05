@@ -162,8 +162,10 @@ docs/shape-up-ducklake-ingestion-obsrvr-v2.md
 docs/v2-*.md
 manifest*.json
 docs/
+!stellar-query-api/docs/
 *GUIDE.md
 shape-up/
+
 
 # Completion/status docs
 ducklake-ingestion-obsrvr-v2/docs/BRONZE-LAYER-COMPLETION.md

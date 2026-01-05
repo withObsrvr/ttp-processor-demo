@@ -1,6 +1,15 @@
 # Stellar Query API
 
-Unified query API that transparently combines hot (PostgreSQL) and cold (DuckLake Bronze) data storage for Stellar blockchain data.
+Unified query API that transparently combines hot (PostgreSQL) and cold (DuckLake) data storage for Stellar blockchain data.
+
+## Documentation
+
+- **[Analyst Guide](./docs/analyst-guide/index.md)** - Quick start and common queries
+- **[Data Model](./docs/analyst-guide/data-model.md)** - Bronze/Silver and Hot/Cold explained
+- **[Common Queries](./docs/analyst-guide/common-queries.md)** - Recipes for top use cases
+- **[nebu for Analysts](./docs/analyst-guide/nebu-for-analysts.md)** - Power user CLI guide
+- **[vs Hubble](./docs/analyst-guide/vs-hubble.md)** - When to use which tool
+- **[Silver API Reference](./SILVER_API_REFERENCE.md)** - Full endpoint documentation
 
 ## Architecture
 

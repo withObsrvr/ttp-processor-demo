@@ -633,6 +633,64 @@ type TransferStats struct {
 	TotalVolume     *float64 `json:"total_volume,omitempty"`
 }
 
+// ============================================
+// NETWORK STATS QUERIES
+// ============================================
+
+// GetTotalAccountCount returns the total number of accounts from cold storage
+func (r *SilverColdReader) GetTotalAccountCount(ctx context.Context) (int64, error) {
+	query := fmt.Sprintf(`SELECT COUNT(*) FROM %s.%s.accounts_current`, r.catalogName, r.schemaName)
+	var count int64
+	err := r.db.QueryRowContext(ctx, query).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count accounts: %w", err)
+	}
+	return count, nil
+}
+
+// GetOperationStats24h returns 24h operation counts grouped by type from cold storage
+func (r *SilverColdReader) GetOperationStats24h(ctx context.Context) (map[int32]int64, error) {
+	query := fmt.Sprintf(`
+		SELECT type, COUNT(*) as count
+		FROM %s.%s.enriched_history_operations
+		WHERE ledger_closed_at > NOW() - INTERVAL '24 hours'
+		GROUP BY type
+	`, r.catalogName, r.schemaName)
+
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get operation stats: %w", err)
+	}
+	defer rows.Close()
+
+	stats := make(map[int32]int64)
+	for rows.Next() {
+		var opType int32
+		var count int64
+		if err := rows.Scan(&opType, &count); err != nil {
+			continue
+		}
+		stats[opType] = count
+	}
+	return stats, nil
+}
+
+// GetActiveAccounts24h returns count of accounts with activity in last 24h from cold storage
+func (r *SilverColdReader) GetActiveAccounts24h(ctx context.Context) (int64, error) {
+	query := fmt.Sprintf(`
+		SELECT COUNT(DISTINCT source_account)
+		FROM %s.%s.enriched_history_operations
+		WHERE ledger_closed_at > NOW() - INTERVAL '24 hours'
+	`, r.catalogName, r.schemaName)
+
+	var count int64
+	err := r.db.QueryRowContext(ctx, query).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 func operationTypeName(opType int32) string {
 	names := map[int32]string{
 		0:  "CREATE_ACCOUNT",

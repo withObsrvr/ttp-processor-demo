@@ -172,6 +172,17 @@ func mainWithSilver() {
 		router.HandleFunc("/api/v1/silver/explorer/asset", silverHandlers.HandleAssetOverview)
 		log.Println("  ✓ /api/v1/silver/explorer/*")
 
+		// Network statistics endpoint (Phase 2)
+		// Pass Bronze coldReader for accurate total account count
+		networkStatsHandler := NewNetworkStatsHandler(unifiedSilverReader, coldReader)
+		router.HandleFunc("/api/v1/silver/stats/network", networkStatsHandler.HandleNetworkStats).Methods("GET")
+		log.Println("  ✓ /api/v1/silver/stats/network (headline statistics)")
+
+		// Account activity endpoint (Phase 3)
+		accountActivityHandler := NewAccountActivityHandler(unifiedSilverReader)
+		router.HandleFunc("/api/v1/silver/accounts/{id}/activity", accountActivityHandler.HandleAccountActivity).Methods("GET")
+		log.Println("  ✓ /api/v1/silver/accounts/{id}/activity (unified timeline)")
+
 		// Contract call endpoints (Freighter "Contracts Involved" feature)
 		contractCallHandlers := NewContractCallHandlers(unifiedSilverReader)
 
@@ -185,15 +196,21 @@ func mainWithSilver() {
 		log.Println("  ✓ /api/v1/silver/tx/{hash}/hierarchy")
 		log.Println("  ✓ /api/v1/silver/tx/{hash}/contracts-summary (wallet-friendly)")
 
+		// Contract analytics endpoints (Phase 1)
+		router.HandleFunc("/api/v1/silver/contracts/top", contractCallHandlers.HandleTopContracts).Methods("GET")
+		log.Println("  ✓ /api/v1/silver/contracts/top (top active contracts)")
+
 		// Contract-centric endpoints with path parameters
 		router.HandleFunc("/api/v1/silver/contracts/{id}/recent-calls", contractCallHandlers.HandleRecentCalls).Methods("GET")
 		router.HandleFunc("/api/v1/silver/contracts/{id}/callers", contractCallHandlers.HandleContractCallers).Methods("GET")
 		router.HandleFunc("/api/v1/silver/contracts/{id}/callees", contractCallHandlers.HandleContractCallees).Methods("GET")
 		router.HandleFunc("/api/v1/silver/contracts/{id}/call-summary", contractCallHandlers.HandleContractCallSummary).Methods("GET")
+		router.HandleFunc("/api/v1/silver/contracts/{id}/analytics", contractCallHandlers.HandleContractAnalyticsSummary).Methods("GET")
 		log.Println("  ✓ /api/v1/silver/contracts/{id}/recent-calls")
 		log.Println("  ✓ /api/v1/silver/contracts/{id}/callers")
 		log.Println("  ✓ /api/v1/silver/contracts/{id}/callees")
 		log.Println("  ✓ /api/v1/silver/contracts/{id}/call-summary")
+		log.Println("  ✓ /api/v1/silver/contracts/{id}/analytics (comprehensive analytics)")
 
 	}
 
