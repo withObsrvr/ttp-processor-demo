@@ -178,8 +178,18 @@ func mainWithSilver() {
 		router.HandleFunc("/api/v1/silver/accounts/current", silverHandlers.HandleAccountCurrent)
 		router.HandleFunc("/api/v1/silver/accounts/history", silverHandlers.HandleAccountHistory)
 		router.HandleFunc("/api/v1/silver/accounts/top", silverHandlers.HandleTopAccounts)
+		router.HandleFunc("/api/v1/silver/accounts/signers", silverHandlers.HandleAccountSigners)
+		router.HandleFunc("/api/v1/silver/accounts/{id}/balances", silverHandlers.HandleAccountBalances).Methods("GET")
 		log.Println("  ✓ /api/v1/silver/accounts (list all)")
 		log.Println("  ✓ /api/v1/silver/accounts/*")
+		log.Println("  ✓ /api/v1/silver/accounts/signers")
+		log.Println("  ✓ /api/v1/silver/accounts/{id}/balances")
+
+		// Token/Asset endpoints
+		router.HandleFunc("/api/v1/silver/assets/{asset}/holders", silverHandlers.HandleTokenHolders).Methods("GET")
+		router.HandleFunc("/api/v1/silver/assets/{asset}/stats", silverHandlers.HandleTokenStats).Methods("GET")
+		log.Println("  ✓ /api/v1/silver/assets/{asset}/holders")
+		log.Println("  ✓ /api/v1/silver/assets/{asset}/stats")
 
 		// Operations endpoints
 		router.HandleFunc("/api/v1/silver/operations/enriched", silverHandlers.HandleEnrichedOperations)

@@ -41,11 +41,18 @@ Silver tables are pre-processed for common analytics queries. Use Silver when yo
 ┌─────────────────────────────────────────────────────────────────┐
 │ SILVER LAYER                                                     │
 │                                                                  │
-│ Tables:                                                          │
-│   accounts_current           - Latest balance for each account  │
+│ Core Tables:                                                     │
+│   accounts_current           - Latest state for each account    │
+│                                (balance, signers, thresholds)   │
 │   enriched_operations        - Operations with decoded types    │
 │   token_transfers            - Unified payment/path payment     │
 │   contract_invocation_calls  - Smart contract call graph        │
+│                                                                  │
+│ Additional Tables:                                               │
+│   trustlines_current         - Current trustline states         │
+│   offers_current             - Current DEX order book offers    │
+│   claimable_balances_current - Current claimable balances       │
+│   contract_data_current      - Current Soroban contract state   │
 │                                                                  │
 │ API: /api/v1/silver/*                                           │
 └─────────────────────────────────────────────────────────────────┘
@@ -82,10 +89,18 @@ Current state of every account that's ever existed on Stellar.
 | `sequence_number` | Account sequence for transaction signing |
 | `num_subentries` | Count of trustlines, offers, signers, data |
 | `last_modified_ledger` | When account was last changed |
+| `signers` | JSON array of account signers with weights and types |
+| `master_weight` | Weight of the master key (default: 1) |
+| `low_threshold` | Threshold for low-security operations |
+| `med_threshold` | Threshold for medium-security operations |
+| `high_threshold` | Threshold for high-security operations |
 
 ```bash
 # Get current balance
 curl "https://gateway.withobsrvr.com/api/v1/silver/accounts/current?account_id=G..."
+
+# Get account signers and thresholds
+curl "https://gateway.withobsrvr.com/api/v1/silver/accounts/signers?account_id=G..."
 ```
 
 ### enriched_operations

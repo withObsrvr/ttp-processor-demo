@@ -212,23 +212,47 @@ type AccountSnapshotRow struct {
 
 // TrustlineSnapshotRow represents a row in the trustlines_snapshot table (SCD Type 2)
 type TrustlineSnapshotRow struct {
-	AccountID                      string
-	AssetCode                      string
-	AssetIssuer                    string
-	AssetType                      string
-	Balance                        string
-	TrustLimit                     string
-	BuyingLiabilities              string
-	SellingLiabilities             string
-	Authorized                     bool
+	AccountID                       string
+	AssetCode                       string
+	AssetIssuer                     string
+	AssetType                       string
+	Balance                         string
+	TrustLimit                      string
+	BuyingLiabilities               string
+	SellingLiabilities              string
+	Authorized                      bool
 	AuthorizedToMaintainLiabilities bool
-	ClawbackEnabled                bool
-	LedgerSequence                 int64
-	ClosedAt                       time.Time // from JOIN with ledgers
-	CreatedAt                      time.Time
-	LedgerRange                    int64
-	EraID                          sql.NullString
-	VersionLabel                   sql.NullString
+	ClawbackEnabled                 bool
+	LedgerSequence                  int64
+	ClosedAt                        time.Time // from JOIN with ledgers
+	CreatedAt                       time.Time
+	LedgerRange                     int64
+	EraID                           sql.NullString
+	VersionLabel                    sql.NullString
+}
+
+// TrustlineCurrentRow represents a row in the trustlines_current table
+type TrustlineCurrentRow struct {
+	AccountID                       string
+	AssetType                       string
+	AssetIssuer                     string
+	AssetCode                       string
+	LiquidityPoolID                 sql.NullString // NULL for classic trustlines
+	Balance                         string         // stored as TEXT in bronze, converted to BIGINT for silver
+	TrustLineLimit                  string
+	BuyingLiabilities               string
+	SellingLiabilities              string
+	Flags                           int // Computed from: authorized(1) + auth_to_maintain(2) + clawback(4)
+	LastModifiedLedger              int64
+	LedgerSequence                  int64
+	CreatedAt                       time.Time
+	Sponsor                         sql.NullString
+	LedgerRange                     int64
+
+	// Temporary fields for bronze parsing (not written to silver)
+	Authorized                      bool
+	AuthorizedToMaintainLiabilities bool
+	ClawbackEnabled                 bool
 }
 
 // OfferSnapshotRow represents a row in the offers_snapshot table (SCD Type 2)
@@ -250,6 +274,28 @@ type OfferSnapshotRow struct {
 	LedgerRange        int64
 	EraID              sql.NullString
 	VersionLabel       sql.NullString
+}
+
+// OfferCurrentRow represents a row in the offers_current table
+type OfferCurrentRow struct {
+	OfferID            int64
+	SellerID           string
+	SellingAssetType   string
+	SellingAssetCode   sql.NullString
+	SellingAssetIssuer sql.NullString
+	BuyingAssetType    string
+	BuyingAssetCode    sql.NullString
+	BuyingAssetIssuer  sql.NullString
+	Amount             string // stored as TEXT in bronze, converted to BIGINT for silver
+	PriceN             int    // Parsed from price string or defaulted
+	PriceD             int    // Parsed from price string or defaulted
+	Price              string // stored as TEXT in bronze, converted to DECIMAL for silver
+	Flags              int
+	LastModifiedLedger int64
+	LedgerSequence     int64
+	CreatedAt          time.Time
+	Sponsor            sql.NullString
+	LedgerRange        int64
 }
 
 // AccountSignerSnapshotRow represents a row in the account_signers_snapshot table (SCD Type 2)

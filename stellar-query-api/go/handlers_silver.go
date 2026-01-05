@@ -6,7 +6,10 @@ import (
 	"net/http"
 	"reflect"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/gorilla/mux"
 )
 
 // SilverHandlers contains HTTP handlers for Silver layer queries
@@ -300,6 +303,202 @@ func (h *SilverHandlers) HandleListAccounts(w http.ResponseWriter, r *http.Reque
 	}
 	if nextCursor != "" {
 		response["cursor"] = nextCursor
+	}
+
+	respondJSON(w, response)
+}
+
+// HandleAccountSigners returns the signers for an account (Horizon-compatible format)
+// GET /api/v1/silver/accounts/{id}/signers
+func (h *SilverHandlers) HandleAccountSigners(w http.ResponseWriter, r *http.Request) {
+	// Extract account_id from path or query param
+	accountID := r.URL.Query().Get("account_id")
+	if accountID == "" {
+		// Try to get from path variable (for /accounts/{id}/signers pattern)
+		// The mux should have extracted it
+		respondError(w, "account_id required", http.StatusBadRequest)
+		return
+	}
+
+	var response *AccountSignersResponse
+	var err error
+
+	switch h.readerMode {
+	case ReaderModeUnified, ReaderModeHybrid:
+		// Use unified reader for both unified and hybrid modes
+		response, err = h.unifiedReader.GetAccountSigners(r.Context(), accountID)
+	default:
+		// Legacy mode - unified reader still works, just use it
+		if h.unifiedReader != nil {
+			response, err = h.unifiedReader.GetAccountSigners(r.Context(), accountID)
+		} else {
+			respondError(w, "signers endpoint requires unified reader", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if response == nil {
+		respondError(w, "account not found", http.StatusNotFound)
+		return
+	}
+
+	respondJSON(w, response)
+}
+
+// HandleTokenStats returns aggregated statistics for a specific token
+// GET /api/v1/silver/assets/{asset}/stats
+// Asset format: XLM (for native) or CODE:ISSUER (for credit assets)
+func (h *SilverHandlers) HandleTokenStats(w http.ResponseWriter, r *http.Request) {
+	// Extract asset from path parameter
+	vars := mux.Vars(r)
+	assetParam := vars["asset"]
+	if assetParam == "" {
+		respondError(w, "asset parameter required (format: CODE:ISSUER or XLM)", http.StatusBadRequest)
+		return
+	}
+
+	// Parse asset parameter
+	var assetCode, assetIssuer string
+	if assetParam == "XLM" || assetParam == "native" {
+		assetCode = "XLM"
+	} else {
+		// Expected format: CODE:ISSUER
+		parts := strings.SplitN(assetParam, ":", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			respondError(w, "invalid asset format, expected CODE:ISSUER or XLM", http.StatusBadRequest)
+			return
+		}
+		assetCode = parts[0]
+		assetIssuer = parts[1]
+	}
+
+	var response *TokenStatsResponse
+	var err error
+
+	// Use unified reader
+	if h.unifiedReader != nil {
+		response, err = h.unifiedReader.GetTokenStats(r.Context(), assetCode, assetIssuer)
+	} else {
+		respondError(w, "stats endpoint requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	respondJSON(w, response)
+}
+
+// HandleTokenHolders returns holders of a specific token
+// GET /api/v1/silver/assets/{asset}/holders
+// Asset format: XLM (for native) or CODE:ISSUER (for credit assets)
+// Query params: limit, cursor, min_balance
+func (h *SilverHandlers) HandleTokenHolders(w http.ResponseWriter, r *http.Request) {
+	// Extract asset from path parameter
+	vars := mux.Vars(r)
+	assetParam := vars["asset"]
+	if assetParam == "" {
+		respondError(w, "asset parameter required (format: CODE:ISSUER or XLM)", http.StatusBadRequest)
+		return
+	}
+
+	// Parse asset parameter
+	var assetCode, assetIssuer string
+	if assetParam == "XLM" || assetParam == "native" {
+		assetCode = "XLM"
+	} else {
+		// Expected format: CODE:ISSUER
+		parts := strings.SplitN(assetParam, ":", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			respondError(w, "invalid asset format, expected CODE:ISSUER or XLM", http.StatusBadRequest)
+			return
+		}
+		assetCode = parts[0]
+		assetIssuer = parts[1]
+	}
+
+	// Parse cursor for pagination
+	cursorStr := r.URL.Query().Get("cursor")
+	cursor, err := DecodeTokenHoldersCursor(cursorStr)
+	if err != nil {
+		respondError(w, "invalid cursor: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Build filters
+	filters := TokenHoldersFilters{
+		AssetCode:   assetCode,
+		AssetIssuer: assetIssuer,
+		Limit:       parseLimit(r, 100, 1000),
+		Cursor:      cursor,
+	}
+
+	// Parse minimum balance filter (in stroops)
+	if minBalStr := r.URL.Query().Get("min_balance"); minBalStr != "" {
+		minBal, err := strconv.ParseInt(minBalStr, 10, 64)
+		if err == nil && minBal >= 0 {
+			filters.MinBalance = &minBal
+		}
+	}
+
+	var response *TokenHoldersResponse
+
+	// Use unified reader
+	if h.unifiedReader != nil {
+		response, err = h.unifiedReader.GetTokenHolders(r.Context(), filters)
+	} else {
+		respondError(w, "holders endpoint requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	respondJSON(w, response)
+}
+
+// HandleAccountBalances returns all balances (XLM + trustlines) for an account
+// GET /api/v1/silver/accounts/{id}/balances
+func (h *SilverHandlers) HandleAccountBalances(w http.ResponseWriter, r *http.Request) {
+	// Extract account_id from path parameter
+	vars := mux.Vars(r)
+	accountID := vars["id"]
+	if accountID == "" {
+		// Fallback to query param
+		accountID = r.URL.Query().Get("account_id")
+	}
+	if accountID == "" {
+		respondError(w, "account_id required", http.StatusBadRequest)
+		return
+	}
+
+	var response *AccountBalancesResponse
+	var err error
+
+	// Use unified reader
+	if h.unifiedReader != nil {
+		response, err = h.unifiedReader.GetAccountBalances(r.Context(), accountID)
+	} else {
+		respondError(w, "balances endpoint requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			respondError(w, "account not found", http.StatusNotFound)
+			return
+		}
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	respondJSON(w, response)

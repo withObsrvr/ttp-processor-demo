@@ -39,6 +39,13 @@ type AccountListCursor struct {
 	SortOrder          string // The sort order used when this cursor was generated (asc/desc)
 }
 
+// TokenHoldersCursor represents a cursor for paginating token holders
+// Encodes balance and account_id for stable pagination
+type TokenHoldersCursor struct {
+	Balance   int64
+	AccountID string
+}
+
 // Encode encodes an operation cursor to an opaque base64 string
 func (c OperationCursor) Encode() string {
 	raw := fmt.Sprintf("%d:%d", c.LedgerSequence, c.OperationIndex)
@@ -204,5 +211,40 @@ func DecodeAccountListCursor(cursor string) (*AccountListCursor, error) {
 		SortBy:             parts[2],
 		SortOrder:          parts[3],
 		AccountID:          parts[4],
+	}, nil
+}
+
+// Encode encodes a token holders cursor to an opaque base64 string
+// Format: balance:account_id
+func (c TokenHoldersCursor) Encode() string {
+	raw := fmt.Sprintf("%d:%s", c.Balance, c.AccountID)
+	return base64.URLEncoding.EncodeToString([]byte(raw))
+}
+
+// DecodeTokenHoldersCursor decodes a base64 cursor string into a TokenHoldersCursor
+// Returns nil if the cursor string is empty
+func DecodeTokenHoldersCursor(cursor string) (*TokenHoldersCursor, error) {
+	if cursor == "" {
+		return nil, nil
+	}
+
+	decoded, err := base64.URLEncoding.DecodeString(cursor)
+	if err != nil {
+		return nil, fmt.Errorf("invalid cursor encoding: %w", err)
+	}
+
+	parts := strings.SplitN(string(decoded), ":", 2)
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("invalid cursor format: expected balance:account_id")
+	}
+
+	balance, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid balance in cursor: %w", err)
+	}
+
+	return &TokenHoldersCursor{
+		Balance:   balance,
+		AccountID: parts[1],
 	}, nil
 }

@@ -413,6 +413,70 @@ func (br *BronzeReader) QueryTrustlinesSnapshotAll(ctx context.Context, startLed
 	return rows, nil
 }
 
+// QueryTrustlinesSnapshot reads trustline snapshots (deduplicated by account+asset)
+// Used for trustlines_current upsert
+func (br *BronzeReader) QueryTrustlinesSnapshot(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
+	query := `
+		SELECT DISTINCT ON (account_id, asset_type, asset_code, asset_issuer)
+			account_id,
+			asset_type,
+			asset_issuer,
+			asset_code,
+			balance,
+			trust_limit,
+			buying_liabilities,
+			selling_liabilities,
+			authorized,
+			authorized_to_maintain_liabilities,
+			clawback_enabled,
+			ledger_sequence,
+			created_at,
+			ledger_range
+		FROM trustlines_snapshot_v1
+		WHERE ledger_sequence BETWEEN $1 AND $2
+		ORDER BY account_id, asset_type, asset_code, asset_issuer, ledger_sequence DESC
+	`
+
+	rows, err := br.db.QueryContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query trustlines snapshot: %w", err)
+	}
+
+	return rows, nil
+}
+
+// QueryOffersSnapshot reads offer snapshots (deduplicated by offer_id)
+// Used for offers_current upsert
+func (br *BronzeReader) QueryOffersSnapshot(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
+	query := `
+		SELECT DISTINCT ON (offer_id)
+			offer_id,
+			seller_account,
+			selling_asset_type,
+			selling_asset_code,
+			selling_asset_issuer,
+			buying_asset_type,
+			buying_asset_code,
+			buying_asset_issuer,
+			amount,
+			price,
+			flags,
+			ledger_sequence,
+			created_at,
+			ledger_range
+		FROM offers_snapshot_v1
+		WHERE ledger_sequence BETWEEN $1 AND $2
+		ORDER BY offer_id, ledger_sequence DESC
+	`
+
+	rows, err := br.db.QueryContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query offers snapshot: %w", err)
+	}
+
+	return rows, nil
+}
+
 // QueryOffersSnapshotAll reads all offer snapshot changes (not deduplicated)
 // Used for SCD Type 2 incremental append
 func (br *BronzeReader) QueryOffersSnapshotAll(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {

@@ -61,9 +61,9 @@ The API automatically queries both hot and cold storage, merging results seamles
 ## What's Next?
 
 - [Data Model](./data-model.md) - Understand Bronze vs Silver layers
-- [Common Queries](./common-queries.md) - Recipes for the top 10 use cases
+- [API Reference](./common-queries.md) - Complete endpoint documentation with examples
 - [nebu for Analysts](./nebu-for-analysts.md) - Build custom data pipelines (power users)
-- [Full API Reference](../SILVER_API_REFERENCE.md) - Complete endpoint documentation
+- [Hubble Comparison](./vs-hubble.md) - How Obsrvr Lake compares to Stellar Hubble
 
 ## Networks
 

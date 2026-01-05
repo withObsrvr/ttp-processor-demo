@@ -175,6 +175,20 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 	}
 	totalRows += accountsCount
 
+	// Transform trustlines current (UPSERT pattern)
+	trustlinesCurrentCount, err := rt.transformTrustlinesCurrent(ctx, tx, startLedger, endLedger)
+	if err != nil {
+		return fmt.Errorf("failed to transform trustlines current: %w", err)
+	}
+	totalRows += trustlinesCurrentCount
+
+	// Transform offers current (UPSERT pattern)
+	offersCurrentCount, err := rt.transformOffersCurrent(ctx, tx, startLedger, endLedger)
+	if err != nil {
+		return fmt.Errorf("failed to transform offers current: %w", err)
+	}
+	totalRows += offersCurrentCount
+
 	// Transform accounts snapshot (SCD Type 2 - Cycle 3)
 	snapshotCount, err := rt.transformAccountsSnapshot(ctx, tx, startLedger, endLedger)
 	if err != nil {
@@ -378,6 +392,112 @@ func (rt *RealtimeTransformer) transformAccountsCurrent(ctx context.Context, tx 
 
 	if err := rows.Err(); err != nil {
 		return count, fmt.Errorf("error iterating accounts: %w", err)
+	}
+
+	return count, nil
+}
+
+// transformTrustlinesCurrent upserts trustlines current state for the ledger range
+func (rt *RealtimeTransformer) transformTrustlinesCurrent(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	rows, err := rt.bronzeReader.QueryTrustlinesSnapshot(ctx, startLedger, endLedger)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	count := int64(0)
+
+	for rows.Next() {
+		row := &TrustlineCurrentRow{}
+
+		err := rows.Scan(
+			&row.AccountID, &row.AssetType, &row.AssetIssuer, &row.AssetCode,
+			&row.Balance, &row.TrustLineLimit, &row.BuyingLiabilities, &row.SellingLiabilities,
+			&row.Authorized, &row.AuthorizedToMaintainLiabilities, &row.ClawbackEnabled,
+			&row.LedgerSequence, &row.CreatedAt, &row.LedgerRange,
+		)
+
+		if err != nil {
+			return count, fmt.Errorf("failed to scan trustline row: %w", err)
+		}
+
+		// Set last_modified_ledger to the ledger_sequence
+		row.LastModifiedLedger = row.LedgerSequence
+
+		// Compute flags from boolean fields (Stellar flag encoding)
+		// 1 = authorized, 2 = authorized_to_maintain_liabilities, 4 = clawback_enabled
+		row.Flags = 0
+		if row.Authorized {
+			row.Flags |= 1
+		}
+		if row.AuthorizedToMaintainLiabilities {
+			row.Flags |= 2
+		}
+		if row.ClawbackEnabled {
+			row.Flags |= 4
+		}
+
+		// LiquidityPoolID and Sponsor are NULL for classic trustlines from bronze
+		// They remain as sql.NullString with Valid=false
+
+		if err := rt.silverWriter.WriteTrustlineCurrent(ctx, tx, row); err != nil {
+			return count, fmt.Errorf("failed to write trustline current: %w", err)
+		}
+
+		count++
+	}
+
+	if err := rows.Err(); err != nil {
+		return count, fmt.Errorf("error iterating trustlines: %w", err)
+	}
+
+	return count, nil
+}
+
+// transformOffersCurrent upserts offers current state for the ledger range
+func (rt *RealtimeTransformer) transformOffersCurrent(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	rows, err := rt.bronzeReader.QueryOffersSnapshot(ctx, startLedger, endLedger)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	count := int64(0)
+
+	for rows.Next() {
+		row := &OfferCurrentRow{}
+
+		err := rows.Scan(
+			&row.OfferID, &row.SellerID, &row.SellingAssetType, &row.SellingAssetCode, &row.SellingAssetIssuer,
+			&row.BuyingAssetType, &row.BuyingAssetCode, &row.BuyingAssetIssuer,
+			&row.Amount, &row.Price, &row.Flags,
+			&row.LedgerSequence, &row.CreatedAt, &row.LedgerRange,
+		)
+
+		if err != nil {
+			return count, fmt.Errorf("failed to scan offer row: %w", err)
+		}
+
+		// Set last_modified_ledger to the ledger_sequence
+		row.LastModifiedLedger = row.LedgerSequence
+
+		// Parse price string to price_n/price_d (defaults to 0/0 if not parseable)
+		// Bronze stores price as decimal string, we default price_n=0, price_d=1
+		row.PriceN = 0
+		row.PriceD = 1
+
+		// Sponsor is NULL from bronze
+		// It remains as sql.NullString with Valid=false
+
+		if err := rt.silverWriter.WriteOfferCurrent(ctx, tx, row); err != nil {
+			return count, fmt.Errorf("failed to write offer current: %w", err)
+		}
+
+		count++
+	}
+
+	if err := rows.Err(); err != nil {
+		return count, fmt.Errorf("error iterating offers: %w", err)
 	}
 
 	return count, nil

@@ -115,6 +115,75 @@ type AccountSignersResponse struct {
 	} `json:"thresholds"`
 }
 
+// Balance represents a single balance (XLM or trustline)
+type Balance struct {
+	AssetType     string  `json:"asset_type"`
+	AssetCode     string  `json:"asset_code"`
+	AssetIssuer   *string `json:"asset_issuer,omitempty"`
+	Balance       string  `json:"balance"`
+	BalanceStroops int64  `json:"balance_stroops"`
+	Limit         *string `json:"limit,omitempty"`
+	IsAuthorized  *bool   `json:"is_authorized,omitempty"`
+}
+
+// AccountBalancesResponse contains all balances for an account
+type AccountBalancesResponse struct {
+	AccountID     string    `json:"account_id"`
+	Balances      []Balance `json:"balances"`
+	TotalBalances int       `json:"total_balances"`
+}
+
+// TokenHolder represents an account holding a specific token
+type TokenHolder struct {
+	AccountID      string `json:"account_id"`
+	Balance        string `json:"balance"`
+	BalanceStroops int64  `json:"balance_stroops"`
+	Rank           int    `json:"rank"`
+}
+
+// AssetInfo contains asset identification information
+type AssetInfo struct {
+	Code   string  `json:"code"`
+	Issuer *string `json:"issuer,omitempty"`
+	Type   string  `json:"type"`
+}
+
+// TokenHoldersResponse contains holders of a specific token
+type TokenHoldersResponse struct {
+	Asset        AssetInfo     `json:"asset"`
+	Holders      []TokenHolder `json:"holders"`
+	TotalHolders int           `json:"total_holders"`
+	Cursor       string        `json:"cursor,omitempty"`
+	HasMore      bool          `json:"has_more"`
+}
+
+// TokenHoldersFilters contains filter options for token holders query
+type TokenHoldersFilters struct {
+	AssetCode   string
+	AssetIssuer string
+	MinBalance  *int64 // Minimum balance in stroops
+	Limit       int
+	Cursor      *TokenHoldersCursor
+}
+
+// TokenStats contains aggregated statistics for a token
+type TokenStats struct {
+	TotalHolders        int64   `json:"total_holders"`         // Accounts with balance > 0
+	TotalTrustlines     int64   `json:"total_trustlines"`      // All trustlines (including 0 balance)
+	CirculatingSupply   string  `json:"circulating_supply"`    // Total supply in circulation
+	Top10Concentration  float64 `json:"top_10_concentration"`  // Fraction held by top 10 holders
+	Transfers24h        int64   `json:"transfers_24h"`         // Transfer count in last 24h
+	Volume24h           string  `json:"volume_24h"`            // Transfer volume in last 24h
+	UniqueAccounts24h   int64   `json:"unique_accounts_24h"`   // Unique accounts in last 24h
+}
+
+// TokenStatsResponse contains token statistics with asset info
+type TokenStatsResponse struct {
+	Asset       AssetInfo  `json:"asset"`
+	Stats       TokenStats `json:"stats"`
+	GeneratedAt string     `json:"generated_at"`
+}
+
 // GetAccountCurrent returns the current state of an account
 func (r *SilverColdReader) GetAccountCurrent(ctx context.Context, accountID string) (*AccountCurrent, error) {
 	query := fmt.Sprintf(`

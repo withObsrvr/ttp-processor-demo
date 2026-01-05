@@ -278,3 +278,5 @@ GOLD_LAYER_EXAMPLES.md
 V3_CALL_GRAPH_DEPLOYMENT.md
 stellar-query-api/go/stellar-query-api
 contract-event-index-transformer/go/contract-event-index-transformer
+silver-realtime-transformer/go/silver-realtime-transformer
+stellar-query-api/stellar-query-api

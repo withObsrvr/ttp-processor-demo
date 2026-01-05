@@ -266,6 +266,94 @@ func (sw *SilverWriter) WriteAccountCurrent(ctx context.Context, tx *sql.Tx, row
 	return nil
 }
 
+// WriteTrustlineCurrent upserts a trustline current state row
+func (sw *SilverWriter) WriteTrustlineCurrent(ctx context.Context, tx *sql.Tx, row *TrustlineCurrentRow) error {
+	query := `
+		INSERT INTO trustlines_current (
+			account_id, asset_type, asset_issuer, asset_code, liquidity_pool_id,
+			balance, trust_line_limit, buying_liabilities, selling_liabilities,
+			flags, last_modified_ledger, ledger_sequence, created_at, sponsor, ledger_range
+		) VALUES (
+			$1, $2, $3, $4, $5,
+			ROUND($6::NUMERIC * 10000000)::BIGINT,
+			ROUND($7::NUMERIC * 10000000)::BIGINT,
+			ROUND($8::NUMERIC * 10000000)::BIGINT,
+			ROUND($9::NUMERIC * 10000000)::BIGINT,
+			$10, $11, $12, $13, $14, $15
+		)
+		ON CONFLICT (account_id, asset_type, COALESCE(asset_code, ''), COALESCE(asset_issuer, ''), COALESCE(liquidity_pool_id, '')) DO UPDATE SET
+			balance = EXCLUDED.balance,
+			trust_line_limit = EXCLUDED.trust_line_limit,
+			buying_liabilities = EXCLUDED.buying_liabilities,
+			selling_liabilities = EXCLUDED.selling_liabilities,
+			flags = EXCLUDED.flags,
+			last_modified_ledger = EXCLUDED.last_modified_ledger,
+			ledger_sequence = EXCLUDED.ledger_sequence,
+			sponsor = EXCLUDED.sponsor,
+			ledger_range = EXCLUDED.ledger_range,
+			updated_at = NOW()
+	`
+
+	_, err := tx.ExecContext(ctx, query,
+		row.AccountID, row.AssetType, row.AssetIssuer, row.AssetCode, row.LiquidityPoolID,
+		row.Balance, row.TrustLineLimit, row.BuyingLiabilities, row.SellingLiabilities,
+		row.Flags, row.LastModifiedLedger, row.LedgerSequence, row.CreatedAt, row.Sponsor, row.LedgerRange,
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to write trustline current: %w", err)
+	}
+
+	return nil
+}
+
+// WriteOfferCurrent upserts an offer current state row
+func (sw *SilverWriter) WriteOfferCurrent(ctx context.Context, tx *sql.Tx, row *OfferCurrentRow) error {
+	query := `
+		INSERT INTO offers_current (
+			offer_id, seller_id, selling_asset_type, selling_asset_code, selling_asset_issuer,
+			buying_asset_type, buying_asset_code, buying_asset_issuer,
+			amount, price_n, price_d, price, flags,
+			last_modified_ledger, ledger_sequence, created_at, sponsor, ledger_range
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8,
+			ROUND($9::NUMERIC * 10000000)::BIGINT, $10, $11, $12::DECIMAL, $13,
+			$14, $15, $16, $17, $18
+		)
+		ON CONFLICT (offer_id) DO UPDATE SET
+			seller_id = EXCLUDED.seller_id,
+			selling_asset_type = EXCLUDED.selling_asset_type,
+			selling_asset_code = EXCLUDED.selling_asset_code,
+			selling_asset_issuer = EXCLUDED.selling_asset_issuer,
+			buying_asset_type = EXCLUDED.buying_asset_type,
+			buying_asset_code = EXCLUDED.buying_asset_code,
+			buying_asset_issuer = EXCLUDED.buying_asset_issuer,
+			amount = EXCLUDED.amount,
+			price_n = EXCLUDED.price_n,
+			price_d = EXCLUDED.price_d,
+			price = EXCLUDED.price,
+			flags = EXCLUDED.flags,
+			last_modified_ledger = EXCLUDED.last_modified_ledger,
+			ledger_sequence = EXCLUDED.ledger_sequence,
+			sponsor = EXCLUDED.sponsor,
+			ledger_range = EXCLUDED.ledger_range,
+			updated_at = NOW()
+	`
+
+	_, err := tx.ExecContext(ctx, query,
+		row.OfferID, row.SellerID, row.SellingAssetType, row.SellingAssetCode, row.SellingAssetIssuer,
+		row.BuyingAssetType, row.BuyingAssetCode, row.BuyingAssetIssuer,
+		row.Amount, row.PriceN, row.PriceD, row.Price, row.Flags,
+		row.LastModifiedLedger, row.LedgerSequence, row.CreatedAt, row.Sponsor, row.LedgerRange,
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to write offer current: %w", err)
+	}
+
+	return nil
+}
+
 // WriteAccountSnapshot appends an account snapshot row (SCD Type 2 - Step 1: INSERT)
 func (sw *SilverWriter) WriteAccountSnapshot(ctx context.Context, tx *sql.Tx, row *AccountSnapshotRow) error {
 	query := `
