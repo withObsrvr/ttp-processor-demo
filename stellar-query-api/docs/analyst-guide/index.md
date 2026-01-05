@@ -13,19 +13,19 @@ Obsrvr Lake provides analytics-ready access to Stellar and Soroban blockchain da
 Get the current balance of any Stellar account:
 
 ```bash
-curl "https://obsrvr-lake-testnet.withobsrvr.com/api/v1/silver/accounts/current?account_id=GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR"
+curl "https://gateway.withobsrvr.com/api/v1/silver/accounts/current?account_id=GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR"
 ```
 
 Get the top 10 most active smart contracts in the last 24 hours:
 
 ```bash
-curl "https://obsrvr-lake-testnet.withobsrvr.com/api/v1/silver/contracts/top?period=24h&limit=10"
+curl "https://gateway.withobsrvr.com/api/v1/silver/contracts/top?period=24h&limit=10"
 ```
 
 Get detailed analytics for a specific contract:
 
 ```bash
-curl "https://obsrvr-lake-testnet.withobsrvr.com/api/v1/silver/contracts/CAUGJT4GREIY3WHOUUU5RIUDGSPVREF5CDCYJOWMHOVT2GWQT5JEETGJ/analytics"
+curl "https://gateway.withobsrvr.com/api/v1/silver/contracts/CAUGJT4GREIY3WHOUUU5RIUDGSPVREF5CDCYJOWMHOVT2GWQT5JEETGJ/analytics"
 ```
 
 ## Architecture Overview
@@ -69,7 +69,7 @@ The API automatically queries both hot and cold storage, merging results seamles
 
 | Network | Base URL |
 |---------|----------|
-| Testnet | `https://obsrvr-lake-testnet.withobsrvr.com` |
+| Testnet | `https://gateway.withobsrvr.com` |
 | Mainnet | Coming soon |
 
 ## Getting Help

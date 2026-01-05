@@ -51,6 +51,12 @@ func mainWithSilver() {
 	// Create Silver reader if configured (hot + cold)
 	var silverHandlers *SilverHandlers
 	var unifiedSilverReader *UnifiedSilverReader
+	var unifiedDuckDBReader *UnifiedDuckDBReader
+	readerMode := config.Query.ReaderMode
+	if readerMode == "" {
+		readerMode = ReaderModeLegacy // Default to legacy for backward compatibility
+	}
+
 	if config.DuckLakeSilver != nil && config.PostgresSilver != nil {
 		// Create hot reader (PostgreSQL silver_hot)
 		silverHotReader, err := NewSilverHotReader(*config.PostgresSilver)
@@ -68,10 +74,29 @@ func mainWithSilver() {
 		defer silverColdReader.Close()
 		log.Println("✅ Connected to DuckLake Silver (cold storage)")
 
-		// Create unified reader
+		// Create legacy unified reader (always needed for legacy/hybrid modes)
 		unifiedSilverReader = NewUnifiedSilverReader(silverHotReader, silverColdReader)
-		silverHandlers = NewSilverHandlers(unifiedSilverReader)
-		log.Println("✅ Silver API handlers initialized (hot + cold)")
+		log.Println("✅ Legacy UnifiedSilverReader initialized (Go-layer merge)")
+
+		// Create new unified DuckDB reader if configured and mode requires it
+		if (readerMode == ReaderModeUnified || readerMode == ReaderModeHybrid) && config.Unified != nil {
+			var err error
+			unifiedDuckDBReader, err = NewUnifiedDuckDBReader(*config.Unified)
+			if err != nil {
+				if readerMode == ReaderModeUnified {
+					log.Fatalf("Failed to create UnifiedDuckDBReader (required for unified mode): %v", err)
+				}
+				log.Printf("⚠️  Failed to create UnifiedDuckDBReader, falling back to legacy: %v", err)
+				readerMode = ReaderModeLegacy
+			} else {
+				defer unifiedDuckDBReader.Close()
+				log.Println("✅ UnifiedDuckDBReader initialized (DuckDB ATTACH mode)")
+			}
+		}
+
+		// Create handlers based on reader mode
+		silverHandlers = NewSilverHandlers(unifiedSilverReader, unifiedDuckDBReader, readerMode)
+		log.Printf("✅ Silver API handlers initialized (reader_mode: %s)", readerMode)
 	} else {
 		log.Println("⚠️  Silver layer not fully configured - Silver endpoints disabled")
 		log.Println("     Requires both postgres_silver and ducklake_silver in config")
@@ -119,6 +144,8 @@ func mainWithSilver() {
 		config.DuckLakeSilver != nil,
 		config.Index != nil && config.Index.Enabled && indexHandlers != nil,
 		config.ContractIndex != nil && config.ContractIndex.Enabled && contractIndexHandlers != nil,
+		readerMode,
+		unifiedDuckDBReader,
 	))
 
 	// Bronze layer endpoints - /api/v1/bronze/*
@@ -280,7 +307,7 @@ func mainWithSilver() {
 	log.Println("✅ Server exited gracefully")
 }
 
-func handleHealthWithSilverAndIndexAndContractIndex(silverEnabled, indexEnabled, contractIndexEnabled bool) http.HandlerFunc {
+func handleHealthWithSilverAndIndexAndContractIndex(silverEnabled, indexEnabled, contractIndexEnabled bool, readerMode ReaderMode, unifiedReader *UnifiedDuckDBReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -294,6 +321,19 @@ func handleHealthWithSilverAndIndexAndContractIndex(silverEnabled, indexEnabled,
 				"index":          indexEnabled,
 				"contract_index": contractIndexEnabled,
 			},
+			"reader_mode": string(readerMode),
+		}
+
+		// Add unified reader health if available
+		if unifiedReader != nil {
+			ctx := r.Context()
+			if healthStatus, err := unifiedReader.HealthCheck(ctx); err == nil {
+				response["unified_reader"] = healthStatus
+			} else {
+				response["unified_reader"] = map[string]string{
+					"error": err.Error(),
+				}
+			}
 		}
 
 		json.NewEncoder(w).Encode(response)
