@@ -209,6 +209,76 @@ func mainWithSilver() {
 		router.HandleFunc("/api/v1/silver/explorer/asset", silverHandlers.HandleAssetOverview)
 		log.Println("  ✓ /api/v1/silver/explorer/*")
 
+		// Phase 6: State Table Endpoints - Offers
+		router.HandleFunc("/api/v1/silver/offers", silverHandlers.HandleOffers).Methods("GET")
+		router.HandleFunc("/api/v1/silver/offers/pair", silverHandlers.HandleOffersByPair).Methods("GET")
+		router.HandleFunc("/api/v1/silver/offers/{id}", silverHandlers.HandleOfferByID).Methods("GET")
+		log.Println("  ✓ /api/v1/silver/offers (list, filter by seller)")
+		log.Println("  ✓ /api/v1/silver/offers/pair (filter by trading pair)")
+		log.Println("  ✓ /api/v1/silver/offers/{id} (single lookup)")
+
+		// Phase 6: State Table Endpoints - Liquidity Pools
+		router.HandleFunc("/api/v1/silver/liquidity-pools", silverHandlers.HandleLiquidityPools).Methods("GET")
+		router.HandleFunc("/api/v1/silver/liquidity-pools/asset", silverHandlers.HandleLiquidityPoolsByAsset).Methods("GET")
+		router.HandleFunc("/api/v1/silver/liquidity-pools/{id}", silverHandlers.HandleLiquidityPoolByID).Methods("GET")
+		log.Println("  ✓ /api/v1/silver/liquidity-pools (list)")
+		log.Println("  ✓ /api/v1/silver/liquidity-pools/asset (filter by asset)")
+		log.Println("  ✓ /api/v1/silver/liquidity-pools/{id} (single lookup)")
+
+		// Phase 6: State Table Endpoints - Claimable Balances
+		router.HandleFunc("/api/v1/silver/claimable-balances", silverHandlers.HandleClaimableBalances).Methods("GET")
+		router.HandleFunc("/api/v1/silver/claimable-balances/asset", silverHandlers.HandleClaimableBalancesByAsset).Methods("GET")
+		router.HandleFunc("/api/v1/silver/claimable-balances/{id}", silverHandlers.HandleClaimableBalanceByID).Methods("GET")
+		log.Println("  ✓ /api/v1/silver/claimable-balances (list, filter by sponsor)")
+		log.Println("  ✓ /api/v1/silver/claimable-balances/asset (filter by asset)")
+		log.Println("  ✓ /api/v1/silver/claimable-balances/{id} (single lookup)")
+
+		// Phase 7: Event Table Endpoints - Trades
+		router.HandleFunc("/api/v1/silver/trades", silverHandlers.HandleTrades).Methods("GET")
+		router.HandleFunc("/api/v1/silver/trades/by-pair", silverHandlers.HandleTradesByPair).Methods("GET")
+		router.HandleFunc("/api/v1/silver/trades/stats", silverHandlers.HandleTradeStats).Methods("GET")
+		log.Println("  ✓ /api/v1/silver/trades (list, filter by account/time)")
+		log.Println("  ✓ /api/v1/silver/trades/by-pair (filter by asset pair)")
+		log.Println("  ✓ /api/v1/silver/trades/stats (aggregated statistics)")
+
+		// Phase 7: Event Table Endpoints - Effects
+		router.HandleFunc("/api/v1/silver/effects", silverHandlers.HandleEffects).Methods("GET")
+		router.HandleFunc("/api/v1/silver/effects/types", silverHandlers.HandleEffectTypes).Methods("GET")
+		router.HandleFunc("/api/v1/silver/effects/transaction/{tx_hash}", silverHandlers.HandleEffectsByTransaction).Methods("GET")
+		log.Println("  ✓ /api/v1/silver/effects (list, filter by account/type/time)")
+		log.Println("  ✓ /api/v1/silver/effects/types (effect type counts)")
+		log.Println("  ✓ /api/v1/silver/effects/transaction/{tx_hash} (effects by transaction)")
+
+		// Phase 8: Soroban Table Endpoints - Contract Code
+		router.HandleFunc("/api/v1/silver/soroban/contract-code", silverHandlers.HandleContractCode).Methods("GET")
+		log.Println("  ✓ /api/v1/silver/soroban/contract-code (WASM metadata lookup)")
+
+		// Phase 8: Soroban Table Endpoints - TTL
+		router.HandleFunc("/api/v1/silver/soroban/ttl", silverHandlers.HandleTTL).Methods("GET")
+		router.HandleFunc("/api/v1/silver/soroban/ttl/expiring", silverHandlers.HandleTTLExpiring).Methods("GET")
+		router.HandleFunc("/api/v1/silver/soroban/ttl/expired", silverHandlers.HandleTTLExpired).Methods("GET")
+		log.Println("  ✓ /api/v1/silver/soroban/ttl (single TTL lookup)")
+		log.Println("  ✓ /api/v1/silver/soroban/ttl/expiring (entries expiring within N ledgers)")
+		log.Println("  ✓ /api/v1/silver/soroban/ttl/expired (already expired entries)")
+
+		// Phase 8: Soroban Table Endpoints - Evictions/Restorations
+		router.HandleFunc("/api/v1/silver/soroban/evicted-keys", silverHandlers.HandleEvictedKeys).Methods("GET")
+		router.HandleFunc("/api/v1/silver/soroban/restored-keys", silverHandlers.HandleRestoredKeys).Methods("GET")
+		log.Println("  ✓ /api/v1/silver/soroban/evicted-keys (eviction events)")
+		log.Println("  ✓ /api/v1/silver/soroban/restored-keys (restoration events)")
+
+		// Phase 8: Soroban Table Endpoints - Config
+		router.HandleFunc("/api/v1/silver/soroban/config", silverHandlers.HandleSorobanConfig).Methods("GET")
+		router.HandleFunc("/api/v1/silver/soroban/config/limits", silverHandlers.HandleSorobanConfigLimits).Methods("GET")
+		log.Println("  ✓ /api/v1/silver/soroban/config (network configuration)")
+		log.Println("  ✓ /api/v1/silver/soroban/config/limits (simplified limits view)")
+
+		// Phase 8: Soroban Table Endpoints - Contract Data
+		router.HandleFunc("/api/v1/silver/soroban/contract-data", silverHandlers.HandleContractData).Methods("GET")
+		router.HandleFunc("/api/v1/silver/soroban/contract-data/entry", silverHandlers.HandleContractDataEntry).Methods("GET")
+		log.Println("  ✓ /api/v1/silver/soroban/contract-data (contract storage)")
+		log.Println("  ✓ /api/v1/silver/soroban/contract-data/entry (single entry lookup)")
+
 		// Network statistics endpoint (Phase 2)
 		// Pass Bronze coldReader for accurate total account count
 		networkStatsHandler := NewNetworkStatsHandler(unifiedSilverReader, coldReader)

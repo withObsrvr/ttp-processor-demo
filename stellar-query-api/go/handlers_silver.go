@@ -1209,8 +1209,1247 @@ func (h *SilverHandlers) HandleAssetOverview(w http.ResponseWriter, r *http.Requ
 }
 
 // ============================================
+// PHASE 6: STATE TABLE ENDPOINTS
+// ============================================
+
+// HandleOffers returns paginated list of offers
+// GET /api/v1/silver/offers?seller_id=GXXXXX&limit=100
+// GET /api/v1/silver/offers?cursor=xxx (cursor-based pagination)
+func (h *SilverHandlers) HandleOffers(w http.ResponseWriter, r *http.Request) {
+	// Parse cursor for pagination
+	cursorStr := r.URL.Query().Get("cursor")
+	cursor, err := DecodeOfferCursor(cursorStr)
+	if err != nil {
+		respondError(w, "invalid cursor: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Build filters
+	filters := OfferFilters{
+		SellerID: r.URL.Query().Get("seller_id"),
+		Limit:    parseLimit(r, 100, 1000),
+		Cursor:   cursor,
+	}
+
+	var offers []OfferCurrent
+	var nextCursor string
+	var hasMore bool
+
+	// Use unified reader (state tables are unified-only)
+	if h.unifiedReader != nil {
+		offers, nextCursor, hasMore, err = h.unifiedReader.GetOffers(r.Context(), filters)
+	} else {
+		respondError(w, "offers endpoint requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"offers":   offers,
+		"count":    len(offers),
+		"has_more": hasMore,
+	}
+	if nextCursor != "" {
+		response["cursor"] = nextCursor
+	}
+
+	respondJSON(w, response)
+}
+
+// HandleOfferByID returns a single offer by ID
+// GET /api/v1/silver/offers/{id}
+func (h *SilverHandlers) HandleOfferByID(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	offerIDStr := vars["id"]
+	if offerIDStr == "" {
+		respondError(w, "offer_id required", http.StatusBadRequest)
+		return
+	}
+
+	offerID, err := strconv.ParseInt(offerIDStr, 10, 64)
+	if err != nil {
+		respondError(w, "invalid offer_id: must be a number", http.StatusBadRequest)
+		return
+	}
+
+	var offer *OfferCurrent
+
+	if h.unifiedReader != nil {
+		offer, err = h.unifiedReader.GetOfferByID(r.Context(), offerID)
+	} else {
+		respondError(w, "offers endpoint requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if offer == nil {
+		respondError(w, "offer not found", http.StatusNotFound)
+		return
+	}
+
+	respondJSON(w, map[string]interface{}{
+		"offer": offer,
+	})
+}
+
+// HandleOffersByPair returns offers for a trading pair
+// GET /api/v1/silver/offers/pair?selling=XLM&buying=USDC:GXXXXX&limit=100
+func (h *SilverHandlers) HandleOffersByPair(w http.ResponseWriter, r *http.Request) {
+	sellingParam := r.URL.Query().Get("selling")
+	buyingParam := r.URL.Query().Get("buying")
+
+	if sellingParam == "" || buyingParam == "" {
+		respondError(w, "selling and buying parameters required (format: CODE:ISSUER or XLM)", http.StatusBadRequest)
+		return
+	}
+
+	// Parse selling asset
+	sellingCode, sellingIssuer := parseAssetParam(sellingParam)
+	if sellingCode == "" {
+		respondError(w, "invalid selling asset format", http.StatusBadRequest)
+		return
+	}
+
+	// Parse buying asset
+	buyingCode, buyingIssuer := parseAssetParam(buyingParam)
+	if buyingCode == "" {
+		respondError(w, "invalid buying asset format", http.StatusBadRequest)
+		return
+	}
+
+	// Parse cursor for pagination
+	cursorStr := r.URL.Query().Get("cursor")
+	cursor, err := DecodeOfferCursor(cursorStr)
+	if err != nil {
+		respondError(w, "invalid cursor: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	filters := OfferFilters{
+		SellingAssetCode:   sellingCode,
+		SellingAssetIssuer: sellingIssuer,
+		BuyingAssetCode:    buyingCode,
+		BuyingAssetIssuer:  buyingIssuer,
+		Limit:              parseLimit(r, 100, 1000),
+		Cursor:             cursor,
+	}
+
+	var offers []OfferCurrent
+	var nextCursor string
+	var hasMore bool
+
+	if h.unifiedReader != nil {
+		offers, nextCursor, hasMore, err = h.unifiedReader.GetOffers(r.Context(), filters)
+	} else {
+		respondError(w, "offers endpoint requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"offers":   offers,
+		"count":    len(offers),
+		"has_more": hasMore,
+		"pair": map[string]interface{}{
+			"selling": sellingParam,
+			"buying":  buyingParam,
+		},
+	}
+	if nextCursor != "" {
+		response["cursor"] = nextCursor
+	}
+
+	respondJSON(w, response)
+}
+
+// HandleLiquidityPools returns paginated list of liquidity pools
+// GET /api/v1/silver/liquidity-pools?limit=100
+// GET /api/v1/silver/liquidity-pools?cursor=xxx (cursor-based pagination)
+func (h *SilverHandlers) HandleLiquidityPools(w http.ResponseWriter, r *http.Request) {
+	// Parse cursor for pagination
+	cursorStr := r.URL.Query().Get("cursor")
+	cursor, err := DecodeLiquidityPoolCursor(cursorStr)
+	if err != nil {
+		respondError(w, "invalid cursor: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	filters := LiquidityPoolFilters{
+		Limit:  parseLimit(r, 100, 1000),
+		Cursor: cursor,
+	}
+
+	var pools []LiquidityPoolCurrent
+	var nextCursor string
+	var hasMore bool
+
+	if h.unifiedReader != nil {
+		pools, nextCursor, hasMore, err = h.unifiedReader.GetLiquidityPools(r.Context(), filters)
+	} else {
+		respondError(w, "liquidity-pools endpoint requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"liquidity_pools": pools,
+		"count":           len(pools),
+		"has_more":        hasMore,
+	}
+	if nextCursor != "" {
+		response["cursor"] = nextCursor
+	}
+
+	respondJSON(w, response)
+}
+
+// HandleLiquidityPoolByID returns a single liquidity pool by ID
+// GET /api/v1/silver/liquidity-pools/{id}
+func (h *SilverHandlers) HandleLiquidityPoolByID(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	poolID := vars["id"]
+	if poolID == "" {
+		respondError(w, "pool_id required", http.StatusBadRequest)
+		return
+	}
+
+	var pool *LiquidityPoolCurrent
+	var err error
+
+	if h.unifiedReader != nil {
+		pool, err = h.unifiedReader.GetLiquidityPoolByID(r.Context(), poolID)
+	} else {
+		respondError(w, "liquidity-pools endpoint requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if pool == nil {
+		respondError(w, "liquidity pool not found", http.StatusNotFound)
+		return
+	}
+
+	respondJSON(w, map[string]interface{}{
+		"liquidity_pool": pool,
+	})
+}
+
+// HandleLiquidityPoolsByAsset returns liquidity pools containing an asset
+// GET /api/v1/silver/liquidity-pools/asset?asset=USDC:GXXXXX&limit=100
+func (h *SilverHandlers) HandleLiquidityPoolsByAsset(w http.ResponseWriter, r *http.Request) {
+	assetParam := r.URL.Query().Get("asset")
+	if assetParam == "" {
+		respondError(w, "asset parameter required (format: CODE:ISSUER or XLM)", http.StatusBadRequest)
+		return
+	}
+
+	assetCode, assetIssuer := parseAssetParam(assetParam)
+	if assetCode == "" {
+		respondError(w, "invalid asset format", http.StatusBadRequest)
+		return
+	}
+
+	// Parse cursor for pagination
+	cursorStr := r.URL.Query().Get("cursor")
+	cursor, err := DecodeLiquidityPoolCursor(cursorStr)
+	if err != nil {
+		respondError(w, "invalid cursor: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	filters := LiquidityPoolFilters{
+		AssetCode:   assetCode,
+		AssetIssuer: assetIssuer,
+		Limit:       parseLimit(r, 100, 1000),
+		Cursor:      cursor,
+	}
+
+	var pools []LiquidityPoolCurrent
+	var nextCursor string
+	var hasMore bool
+
+	if h.unifiedReader != nil {
+		pools, nextCursor, hasMore, err = h.unifiedReader.GetLiquidityPools(r.Context(), filters)
+	} else {
+		respondError(w, "liquidity-pools endpoint requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"liquidity_pools": pools,
+		"count":           len(pools),
+		"has_more":        hasMore,
+		"asset":           assetParam,
+	}
+	if nextCursor != "" {
+		response["cursor"] = nextCursor
+	}
+
+	respondJSON(w, response)
+}
+
+// HandleClaimableBalances returns paginated list of claimable balances
+// GET /api/v1/silver/claimable-balances?sponsor=GXXXXX&limit=100
+// GET /api/v1/silver/claimable-balances?cursor=xxx (cursor-based pagination)
+func (h *SilverHandlers) HandleClaimableBalances(w http.ResponseWriter, r *http.Request) {
+	// Parse cursor for pagination
+	cursorStr := r.URL.Query().Get("cursor")
+	cursor, err := DecodeClaimableBalanceCursor(cursorStr)
+	if err != nil {
+		respondError(w, "invalid cursor: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	filters := ClaimableBalanceFilters{
+		Sponsor: r.URL.Query().Get("sponsor"),
+		Limit:   parseLimit(r, 100, 1000),
+		Cursor:  cursor,
+	}
+
+	var balances []ClaimableBalanceCurrent
+	var nextCursor string
+	var hasMore bool
+
+	if h.unifiedReader != nil {
+		balances, nextCursor, hasMore, err = h.unifiedReader.GetClaimableBalances(r.Context(), filters)
+	} else {
+		respondError(w, "claimable-balances endpoint requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"claimable_balances": balances,
+		"count":              len(balances),
+		"has_more":           hasMore,
+	}
+	if nextCursor != "" {
+		response["cursor"] = nextCursor
+	}
+
+	respondJSON(w, response)
+}
+
+// HandleClaimableBalanceByID returns a single claimable balance by ID
+// GET /api/v1/silver/claimable-balances/{id}
+func (h *SilverHandlers) HandleClaimableBalanceByID(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	balanceID := vars["id"]
+	if balanceID == "" {
+		respondError(w, "balance_id required", http.StatusBadRequest)
+		return
+	}
+
+	var balance *ClaimableBalanceCurrent
+	var err error
+
+	if h.unifiedReader != nil {
+		balance, err = h.unifiedReader.GetClaimableBalanceByID(r.Context(), balanceID)
+	} else {
+		respondError(w, "claimable-balances endpoint requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if balance == nil {
+		respondError(w, "claimable balance not found", http.StatusNotFound)
+		return
+	}
+
+	respondJSON(w, map[string]interface{}{
+		"claimable_balance": balance,
+	})
+}
+
+// HandleClaimableBalancesByAsset returns claimable balances for an asset
+// GET /api/v1/silver/claimable-balances/asset?asset=USDC:GXXXXX&limit=100
+func (h *SilverHandlers) HandleClaimableBalancesByAsset(w http.ResponseWriter, r *http.Request) {
+	assetParam := r.URL.Query().Get("asset")
+	if assetParam == "" {
+		respondError(w, "asset parameter required (format: CODE:ISSUER or XLM)", http.StatusBadRequest)
+		return
+	}
+
+	assetCode, assetIssuer := parseAssetParam(assetParam)
+	if assetCode == "" {
+		respondError(w, "invalid asset format", http.StatusBadRequest)
+		return
+	}
+
+	// Parse cursor for pagination
+	cursorStr := r.URL.Query().Get("cursor")
+	cursor, err := DecodeClaimableBalanceCursor(cursorStr)
+	if err != nil {
+		respondError(w, "invalid cursor: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	filters := ClaimableBalanceFilters{
+		AssetCode:   assetCode,
+		AssetIssuer: assetIssuer,
+		Limit:       parseLimit(r, 100, 1000),
+		Cursor:      cursor,
+	}
+
+	var balances []ClaimableBalanceCurrent
+	var nextCursor string
+	var hasMore bool
+
+	if h.unifiedReader != nil {
+		balances, nextCursor, hasMore, err = h.unifiedReader.GetClaimableBalances(r.Context(), filters)
+	} else {
+		respondError(w, "claimable-balances endpoint requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"claimable_balances": balances,
+		"count":              len(balances),
+		"has_more":           hasMore,
+		"asset":              assetParam,
+	}
+	if nextCursor != "" {
+		response["cursor"] = nextCursor
+	}
+
+	respondJSON(w, response)
+}
+
+// ============================================
+// PHASE 7: EVENT TABLE ENDPOINTS
+// ============================================
+
+// HandleTrades returns paginated list of trades
+// GET /api/v1/silver/trades?account_id=GXXXXX&limit=100
+// GET /api/v1/silver/trades?seller_account=GXXXXX
+// GET /api/v1/silver/trades?buyer_account=GXXXXX
+// GET /api/v1/silver/trades?start_time=2026-01-01T00:00:00Z&end_time=2026-01-06T00:00:00Z
+func (h *SilverHandlers) HandleTrades(w http.ResponseWriter, r *http.Request) {
+	// Parse cursor for pagination
+	cursorStr := r.URL.Query().Get("cursor")
+	cursor, err := DecodeTradeCursor(cursorStr)
+	if err != nil {
+		respondError(w, "invalid cursor: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Build filters
+	filters := TradeFilters{
+		AccountID:     r.URL.Query().Get("account_id"),
+		SellerAccount: r.URL.Query().Get("seller_account"),
+		BuyerAccount:  r.URL.Query().Get("buyer_account"),
+		Limit:         parseLimit(r, 100, 1000),
+		Cursor:        cursor,
+	}
+
+	// Parse time range
+	if startStr := r.URL.Query().Get("start_time"); startStr != "" {
+		if start, err := time.Parse(time.RFC3339, startStr); err == nil {
+			filters.StartTime = start
+		}
+	}
+	if endStr := r.URL.Query().Get("end_time"); endStr != "" {
+		if end, err := time.Parse(time.RFC3339, endStr); err == nil {
+			filters.EndTime = end
+		}
+	}
+
+	var trades []SilverTrade
+	var nextCursor string
+	var hasMore bool
+
+	if h.unifiedReader != nil {
+		trades, nextCursor, hasMore, err = h.unifiedReader.GetTrades(r.Context(), filters)
+	} else {
+		respondError(w, "trades endpoint requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"trades":   trades,
+		"count":    len(trades),
+		"has_more": hasMore,
+	}
+	if nextCursor != "" {
+		response["cursor"] = nextCursor
+	}
+
+	respondJSON(w, response)
+}
+
+// HandleTradesByPair returns trades for a specific trading pair
+// GET /api/v1/silver/trades/by-pair?selling_asset=XLM&buying_asset=USDC:GXXXXX
+func (h *SilverHandlers) HandleTradesByPair(w http.ResponseWriter, r *http.Request) {
+	sellingParam := r.URL.Query().Get("selling_asset")
+	buyingParam := r.URL.Query().Get("buying_asset")
+
+	if sellingParam == "" || buyingParam == "" {
+		respondError(w, "selling_asset and buying_asset parameters required (format: CODE:ISSUER or XLM)", http.StatusBadRequest)
+		return
+	}
+
+	sellingCode, sellingIssuer := parseAssetParam(sellingParam)
+	if sellingCode == "" {
+		respondError(w, "invalid selling_asset format", http.StatusBadRequest)
+		return
+	}
+
+	buyingCode, buyingIssuer := parseAssetParam(buyingParam)
+	if buyingCode == "" {
+		respondError(w, "invalid buying_asset format", http.StatusBadRequest)
+		return
+	}
+
+	// Parse cursor for pagination
+	cursorStr := r.URL.Query().Get("cursor")
+	cursor, err := DecodeTradeCursor(cursorStr)
+	if err != nil {
+		respondError(w, "invalid cursor: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	filters := TradeFilters{
+		SellingAssetCode:   sellingCode,
+		SellingAssetIssuer: sellingIssuer,
+		BuyingAssetCode:    buyingCode,
+		BuyingAssetIssuer:  buyingIssuer,
+		Limit:              parseLimit(r, 100, 1000),
+		Cursor:             cursor,
+	}
+
+	// Parse time range
+	if startStr := r.URL.Query().Get("start_time"); startStr != "" {
+		if start, err := time.Parse(time.RFC3339, startStr); err == nil {
+			filters.StartTime = start
+		}
+	}
+	if endStr := r.URL.Query().Get("end_time"); endStr != "" {
+		if end, err := time.Parse(time.RFC3339, endStr); err == nil {
+			filters.EndTime = end
+		}
+	}
+
+	var trades []SilverTrade
+	var nextCursor string
+	var hasMore bool
+
+	if h.unifiedReader != nil {
+		trades, nextCursor, hasMore, err = h.unifiedReader.GetTrades(r.Context(), filters)
+	} else {
+		respondError(w, "trades endpoint requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"trades":   trades,
+		"count":    len(trades),
+		"has_more": hasMore,
+		"pair": map[string]interface{}{
+			"selling_asset": sellingParam,
+			"buying_asset":  buyingParam,
+		},
+	}
+	if nextCursor != "" {
+		response["cursor"] = nextCursor
+	}
+
+	respondJSON(w, response)
+}
+
+// HandleTradeStats returns aggregated trade statistics
+// GET /api/v1/silver/trades/stats?group_by=asset_pair&start_time=2026-01-01T00:00:00Z
+func (h *SilverHandlers) HandleTradeStats(w http.ResponseWriter, r *http.Request) {
+	groupBy := r.URL.Query().Get("group_by")
+	if groupBy == "" {
+		groupBy = "asset_pair"
+	}
+
+	// Validate group_by
+	validGroupBy := map[string]bool{"asset_pair": true, "hour": true, "day": true}
+	if !validGroupBy[groupBy] {
+		respondError(w, "invalid group_by, must be: asset_pair, hour, or day", http.StatusBadRequest)
+		return
+	}
+
+	// Parse time range (default to last 24 hours)
+	startTime := time.Now().Add(-24 * time.Hour)
+	if startStr := r.URL.Query().Get("start_time"); startStr != "" {
+		if start, err := time.Parse(time.RFC3339, startStr); err == nil {
+			startTime = start
+		}
+	}
+
+	endTime := time.Now()
+	if endStr := r.URL.Query().Get("end_time"); endStr != "" {
+		if end, err := time.Parse(time.RFC3339, endStr); err == nil {
+			endTime = end
+		}
+	}
+
+	var stats []TradeStats
+	var err error
+
+	if h.unifiedReader != nil {
+		stats, err = h.unifiedReader.GetTradeStats(r.Context(), groupBy, startTime, endTime)
+	} else {
+		respondError(w, "trades stats endpoint requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	respondJSON(w, map[string]interface{}{
+		"stats":      stats,
+		"count":      len(stats),
+		"group_by":   groupBy,
+		"start_time": startTime.Format(time.RFC3339),
+		"end_time":   endTime.Format(time.RFC3339),
+	})
+}
+
+// HandleEffects returns paginated list of effects
+// GET /api/v1/silver/effects?account_id=GXXXXX&limit=100
+// GET /api/v1/silver/effects?effect_type=account_credited
+// GET /api/v1/silver/effects?effect_type=2
+func (h *SilverHandlers) HandleEffects(w http.ResponseWriter, r *http.Request) {
+	// Parse cursor for pagination
+	cursorStr := r.URL.Query().Get("cursor")
+	cursor, err := DecodeEffectCursor(cursorStr)
+	if err != nil {
+		respondError(w, "invalid cursor: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	filters := EffectFilters{
+		AccountID:  r.URL.Query().Get("account_id"),
+		EffectType: r.URL.Query().Get("effect_type"),
+		Limit:      parseLimit(r, 100, 1000),
+		Cursor:     cursor,
+	}
+
+	// Parse ledger_sequence
+	if ledgerStr := r.URL.Query().Get("ledger_sequence"); ledgerStr != "" {
+		if ledger, err := strconv.ParseInt(ledgerStr, 10, 64); err == nil {
+			filters.LedgerSequence = ledger
+		}
+	}
+
+	// Parse time range
+	if startStr := r.URL.Query().Get("start_time"); startStr != "" {
+		if start, err := time.Parse(time.RFC3339, startStr); err == nil {
+			filters.StartTime = start
+		}
+	}
+	if endStr := r.URL.Query().Get("end_time"); endStr != "" {
+		if end, err := time.Parse(time.RFC3339, endStr); err == nil {
+			filters.EndTime = end
+		}
+	}
+
+	var effects []SilverEffect
+	var nextCursor string
+	var hasMore bool
+
+	if h.unifiedReader != nil {
+		effects, nextCursor, hasMore, err = h.unifiedReader.GetEffects(r.Context(), filters)
+	} else {
+		respondError(w, "effects endpoint requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"effects":  effects,
+		"count":    len(effects),
+		"has_more": hasMore,
+	}
+	if nextCursor != "" {
+		response["cursor"] = nextCursor
+	}
+
+	respondJSON(w, response)
+}
+
+// HandleEffectTypes returns list of all effect types with counts
+// GET /api/v1/silver/effects/types
+func (h *SilverHandlers) HandleEffectTypes(w http.ResponseWriter, r *http.Request) {
+	var types []EffectTypeCount
+	var total int64
+	var err error
+
+	if h.unifiedReader != nil {
+		types, total, err = h.unifiedReader.GetEffectTypes(r.Context())
+	} else {
+		respondError(w, "effect types endpoint requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	respondJSON(w, map[string]interface{}{
+		"effect_types":  types,
+		"total_effects": total,
+		"generated_at":  time.Now().Format(time.RFC3339),
+	})
+}
+
+// HandleEffectsByTransaction returns all effects for a specific transaction
+// GET /api/v1/silver/effects/transaction/{tx_hash}
+func (h *SilverHandlers) HandleEffectsByTransaction(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	txHash := vars["tx_hash"]
+	if txHash == "" {
+		respondError(w, "tx_hash required", http.StatusBadRequest)
+		return
+	}
+
+	filters := EffectFilters{
+		TransactionHash: txHash,
+		Limit:           1000, // Get all effects for the transaction
+	}
+
+	var effects []SilverEffect
+	var err error
+
+	if h.unifiedReader != nil {
+		effects, _, _, err = h.unifiedReader.GetEffects(r.Context(), filters)
+	} else {
+		respondError(w, "effects endpoint requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	respondJSON(w, map[string]interface{}{
+		"transaction_hash": txHash,
+		"effects":          effects,
+		"count":            len(effects),
+	})
+}
+
+// ============================================
+// PHASE 8: SOROBAN TABLE ENDPOINTS
+// ============================================
+
+// HandleContractCode returns contract code metadata by hash
+// GET /api/v1/silver/soroban/contract-code?hash=...
+func (h *SilverHandlers) HandleContractCode(w http.ResponseWriter, r *http.Request) {
+	hash := r.URL.Query().Get("hash")
+	if hash == "" {
+		respondError(w, "hash parameter required", http.StatusBadRequest)
+		return
+	}
+
+	var code *ContractCode
+	var err error
+
+	if h.unifiedReader != nil {
+		code, err = h.unifiedReader.GetContractCode(r.Context(), hash)
+	} else {
+		respondError(w, "contract-code endpoint requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if code == nil {
+		respondError(w, "contract code not found", http.StatusNotFound)
+		return
+	}
+
+	respondJSON(w, map[string]interface{}{
+		"contract_code": code,
+	})
+}
+
+// HandleTTL returns TTL entry for a specific key hash
+// GET /api/v1/silver/soroban/ttl?key_hash=...
+func (h *SilverHandlers) HandleTTL(w http.ResponseWriter, r *http.Request) {
+	keyHash := r.URL.Query().Get("key_hash")
+	if keyHash == "" {
+		respondError(w, "key_hash parameter required", http.StatusBadRequest)
+		return
+	}
+
+	var ttl *TTLEntry
+	var err error
+
+	if h.unifiedReader != nil {
+		ttl, err = h.unifiedReader.GetTTL(r.Context(), keyHash)
+	} else {
+		respondError(w, "ttl endpoint requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if ttl == nil {
+		respondError(w, "TTL entry not found", http.StatusNotFound)
+		return
+	}
+
+	respondJSON(w, map[string]interface{}{
+		"ttl": ttl,
+	})
+}
+
+// HandleTTLExpiring returns TTL entries expiring within a given number of ledgers
+// GET /api/v1/silver/soroban/ttl/expiring?within_ledgers=10000&limit=100
+func (h *SilverHandlers) HandleTTLExpiring(w http.ResponseWriter, r *http.Request) {
+	// Parse within_ledgers parameter
+	withinLedgersStr := r.URL.Query().Get("within_ledgers")
+	if withinLedgersStr == "" {
+		respondError(w, "within_ledgers parameter required", http.StatusBadRequest)
+		return
+	}
+
+	withinLedgers, err := strconv.ParseInt(withinLedgersStr, 10, 64)
+	if err != nil || withinLedgers <= 0 {
+		respondError(w, "within_ledgers must be a positive integer", http.StatusBadRequest)
+		return
+	}
+
+	// Parse cursor for pagination
+	cursorStr := r.URL.Query().Get("cursor")
+	cursor, err := DecodeTTLCursor(cursorStr)
+	if err != nil {
+		respondError(w, "invalid cursor: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	filters := TTLFilters{
+		WithinLedgers: withinLedgers,
+		Limit:         parseLimit(r, 100, 1000),
+		Cursor:        cursor,
+	}
+
+	var entries []TTLEntry
+	var nextCursor string
+	var hasMore bool
+
+	if h.unifiedReader != nil {
+		// Get current ledger first
+		currentLedger, err := h.unifiedReader.GetCurrentLedger(r.Context())
+		if err != nil {
+			respondError(w, "failed to get current ledger: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		entries, nextCursor, hasMore, err = h.unifiedReader.GetTTLExpiring(r.Context(), currentLedger, filters)
+		if err != nil {
+			respondError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		respondError(w, "ttl endpoint requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"ttl_entries":    entries,
+		"count":          len(entries),
+		"within_ledgers": withinLedgers,
+		"has_more":       hasMore,
+	}
+	if nextCursor != "" {
+		response["cursor"] = nextCursor
+	}
+
+	respondJSON(w, response)
+}
+
+// HandleTTLExpired returns already expired TTL entries
+// GET /api/v1/silver/soroban/ttl/expired?limit=100
+func (h *SilverHandlers) HandleTTLExpired(w http.ResponseWriter, r *http.Request) {
+	// Parse cursor for pagination
+	cursorStr := r.URL.Query().Get("cursor")
+	cursor, err := DecodeTTLCursor(cursorStr)
+	if err != nil {
+		respondError(w, "invalid cursor: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	filters := TTLFilters{
+		ExpiredOnly: true,
+		Limit:       parseLimit(r, 100, 1000),
+		Cursor:      cursor,
+	}
+
+	var entries []TTLEntry
+	var nextCursor string
+	var hasMore bool
+
+	if h.unifiedReader != nil {
+		entries, nextCursor, hasMore, err = h.unifiedReader.GetTTLExpired(r.Context(), filters)
+	} else {
+		respondError(w, "ttl endpoint requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"ttl_entries": entries,
+		"count":       len(entries),
+		"has_more":    hasMore,
+	}
+	if nextCursor != "" {
+		response["cursor"] = nextCursor
+	}
+
+	respondJSON(w, response)
+}
+
+// HandleEvictedKeys returns evicted contract keys
+// GET /api/v1/silver/soroban/evicted-keys?contract_id=C...&limit=100
+func (h *SilverHandlers) HandleEvictedKeys(w http.ResponseWriter, r *http.Request) {
+	// Parse cursor for pagination
+	cursorStr := r.URL.Query().Get("cursor")
+	cursor, err := DecodeEvictionCursor(cursorStr)
+	if err != nil {
+		respondError(w, "invalid cursor: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	filters := EvictionFilters{
+		ContractID: r.URL.Query().Get("contract_id"),
+		Limit:      parseLimit(r, 100, 1000),
+		Cursor:     cursor,
+	}
+
+	var keys []EvictedKey
+	var nextCursor string
+	var hasMore bool
+
+	if h.unifiedReader != nil {
+		keys, nextCursor, hasMore, err = h.unifiedReader.GetEvictedKeys(r.Context(), filters)
+	} else {
+		respondError(w, "evicted-keys endpoint requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"evicted_keys": keys,
+		"count":        len(keys),
+		"has_more":     hasMore,
+	}
+	if nextCursor != "" {
+		response["cursor"] = nextCursor
+	}
+	if filters.ContractID != "" {
+		response["contract_id"] = filters.ContractID
+	}
+
+	respondJSON(w, response)
+}
+
+// HandleRestoredKeys returns restored contract keys
+// GET /api/v1/silver/soroban/restored-keys?contract_id=C...&limit=100
+func (h *SilverHandlers) HandleRestoredKeys(w http.ResponseWriter, r *http.Request) {
+	// Parse cursor for pagination
+	cursorStr := r.URL.Query().Get("cursor")
+	cursor, err := DecodeEvictionCursor(cursorStr)
+	if err != nil {
+		respondError(w, "invalid cursor: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	filters := EvictionFilters{
+		ContractID: r.URL.Query().Get("contract_id"),
+		Limit:      parseLimit(r, 100, 1000),
+		Cursor:     cursor,
+	}
+
+	var keys []RestoredKey
+	var nextCursor string
+	var hasMore bool
+
+	if h.unifiedReader != nil {
+		keys, nextCursor, hasMore, err = h.unifiedReader.GetRestoredKeys(r.Context(), filters)
+	} else {
+		respondError(w, "restored-keys endpoint requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"restored_keys": keys,
+		"count":         len(keys),
+		"has_more":      hasMore,
+	}
+	if nextCursor != "" {
+		response["cursor"] = nextCursor
+	}
+	if filters.ContractID != "" {
+		response["contract_id"] = filters.ContractID
+	}
+
+	respondJSON(w, response)
+}
+
+// HandleSorobanConfig returns current Soroban network configuration
+// GET /api/v1/silver/soroban/config
+func (h *SilverHandlers) HandleSorobanConfig(w http.ResponseWriter, r *http.Request) {
+	var config *SorobanConfig
+	var err error
+
+	if h.unifiedReader != nil {
+		config, err = h.unifiedReader.GetSorobanConfig(r.Context())
+	} else {
+		respondError(w, "config endpoint requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if config == nil {
+		respondError(w, "Soroban configuration not found", http.StatusNotFound)
+		return
+	}
+
+	respondJSON(w, map[string]interface{}{
+		"config": config,
+	})
+}
+
+// HandleSorobanConfigLimits returns a simplified view of Soroban limits
+// GET /api/v1/silver/soroban/config/limits
+func (h *SilverHandlers) HandleSorobanConfigLimits(w http.ResponseWriter, r *http.Request) {
+	var config *SorobanConfig
+	var err error
+
+	if h.unifiedReader != nil {
+		config, err = h.unifiedReader.GetSorobanConfig(r.Context())
+	} else {
+		respondError(w, "config endpoint requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if config == nil {
+		respondError(w, "Soroban configuration not found", http.StatusNotFound)
+		return
+	}
+
+	// Return simplified limits view
+	respondJSON(w, map[string]interface{}{
+		"instructions": config.Instructions,
+		"memory":       config.Memory,
+		"ledger":       config.LedgerLimits,
+		"transaction":  config.TxLimits,
+		"contract":     config.Contract,
+		"updated_at":   config.UpdatedAt,
+	})
+}
+
+// HandleContractData returns contract data entries
+// GET /api/v1/silver/soroban/contract-data?contract_id=C...&limit=100
+// GET /api/v1/silver/soroban/contract-data?contract_id=C...&durability=persistent
+func (h *SilverHandlers) HandleContractData(w http.ResponseWriter, r *http.Request) {
+	contractID := r.URL.Query().Get("contract_id")
+	if contractID == "" {
+		respondError(w, "contract_id parameter required", http.StatusBadRequest)
+		return
+	}
+
+	// Parse cursor for pagination
+	cursorStr := r.URL.Query().Get("cursor")
+	cursor, err := DecodeContractDataCursor(cursorStr)
+	if err != nil {
+		respondError(w, "invalid cursor: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Validate durability if provided
+	durability := r.URL.Query().Get("durability")
+	if durability != "" && durability != "persistent" && durability != "temporary" {
+		respondError(w, "durability must be 'persistent' or 'temporary'", http.StatusBadRequest)
+		return
+	}
+
+	filters := ContractDataFilters{
+		ContractID: contractID,
+		KeyHash:    r.URL.Query().Get("key_hash"),
+		Durability: durability,
+		Limit:      parseLimit(r, 100, 1000),
+		Cursor:     cursor,
+	}
+
+	var data []ContractData
+	var nextCursor string
+	var hasMore bool
+
+	if h.unifiedReader != nil {
+		data, nextCursor, hasMore, err = h.unifiedReader.GetContractData(r.Context(), filters)
+	} else {
+		respondError(w, "contract-data endpoint requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"contract_data": data,
+		"count":         len(data),
+		"has_more":      hasMore,
+		"contract_id":   contractID,
+	}
+	if nextCursor != "" {
+		response["cursor"] = nextCursor
+	}
+	if durability != "" {
+		response["durability"] = durability
+	}
+
+	respondJSON(w, response)
+}
+
+// HandleContractDataEntry returns a single contract data entry by contract_id and key_hash
+// GET /api/v1/silver/soroban/contract-data/entry?contract_id=C...&key_hash=...
+func (h *SilverHandlers) HandleContractDataEntry(w http.ResponseWriter, r *http.Request) {
+	contractID := r.URL.Query().Get("contract_id")
+	keyHash := r.URL.Query().Get("key_hash")
+
+	if contractID == "" || keyHash == "" {
+		respondError(w, "contract_id and key_hash parameters required", http.StatusBadRequest)
+		return
+	}
+
+	filters := ContractDataFilters{
+		ContractID: contractID,
+		KeyHash:    keyHash,
+		Limit:      1,
+	}
+
+	var data []ContractData
+	var err error
+
+	if h.unifiedReader != nil {
+		data, _, _, err = h.unifiedReader.GetContractData(r.Context(), filters)
+	} else {
+		respondError(w, "contract-data endpoint requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if len(data) == 0 {
+		respondError(w, "contract data entry not found", http.StatusNotFound)
+		return
+	}
+
+	respondJSON(w, map[string]interface{}{
+		"contract_data": data[0],
+	})
+}
+
+// ============================================
 // HELPER FUNCTIONS
 // ============================================
+
+// parseAssetParam parses an asset parameter in format CODE:ISSUER or XLM/native
+func parseAssetParam(assetParam string) (code string, issuer string) {
+	if assetParam == "XLM" || assetParam == "native" {
+		return "XLM", ""
+	}
+	parts := strings.SplitN(assetParam, ":", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", ""
+	}
+	return parts[0], parts[1]
+}
 
 func parseLimit(r *http.Request, defaultLimit, maxLimit int) int {
 	limitStr := r.URL.Query().Get("limit")

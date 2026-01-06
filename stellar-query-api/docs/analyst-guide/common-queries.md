@@ -839,6 +839,500 @@ curl -H "Authorization: Api-Key $API_KEY" \
 
 ---
 
+### DEX Offers Endpoints
+
+#### List Offers
+
+Returns DEX order book offers with optional filtering.
+
+```bash
+GET /api/v1/silver/offers?seller_id={account_id}&limit={limit}&cursor={cursor}
+```
+
+**Parameters:**
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `seller_id` | No | Filter by seller account |
+| `limit` | No | Max results (default: 100, max: 1000) |
+| `cursor` | No | Pagination cursor |
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/offers?limit=50"
+```
+
+**Response:**
+```json
+{
+  "offers": [
+    {
+      "offer_id": 32,
+      "seller_id": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+      "selling": {
+        "code": "USDC",
+        "issuer": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+        "type": "credit_alphanum4"
+      },
+      "buying": {
+        "code": "XLM",
+        "type": "native"
+      },
+      "amount": "1000.0000000",
+      "price": "0.1000000",
+      "price_r": {"n": 1, "d": 10},
+      "last_modified_ledger": 341708
+    }
+  ],
+  "count": 1,
+  "cursor": "MTIzNDU=",
+  "has_more": true
+}
+```
+
+---
+
+#### Get Offers by Trading Pair
+
+Returns offers for a specific trading pair.
+
+```bash
+GET /api/v1/silver/offers/pair?selling={asset}&buying={asset}&limit={limit}&cursor={cursor}
+```
+
+**Asset Format:**
+- Native: `XLM` or `native`
+- Credit: `CODE:ISSUER` (e.g., `USDC:GA5ZSEJYB37...`)
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/offers/pair?selling=XLM&buying=USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"
+```
+
+---
+
+#### Get Single Offer
+
+```bash
+GET /api/v1/silver/offers/{offer_id}
+```
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/offers/32"
+```
+
+---
+
+### Liquidity Pool Endpoints
+
+#### List Liquidity Pools
+
+Returns AMM liquidity pools.
+
+```bash
+GET /api/v1/silver/liquidity-pools?limit={limit}&cursor={cursor}
+```
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/liquidity-pools?limit=20"
+```
+
+**Response:**
+```json
+{
+  "liquidity_pools": [
+    {
+      "pool_id": "4cd1f6defba237eecbc5fefe259f89ebc4b5edd49116beb5536c4034fc48d63f",
+      "pool_type": "constant_product",
+      "fee_bp": 30,
+      "trustline_count": 1,
+      "total_shares": "824548.7936328",
+      "reserves": [
+        {
+          "asset": {"code": "XLM", "type": "native"},
+          "amount": "787612.8481550"
+        },
+        {
+          "asset": {"code": "USDC", "issuer": "GBBD47...", "type": "credit_alphanum4"},
+          "amount": "884041.9339546"
+        }
+      ],
+      "last_modified_ledger": 341605
+    }
+  ],
+  "count": 1,
+  "cursor": "NGNkMWY2...",
+  "has_more": true
+}
+```
+
+---
+
+#### Get Liquidity Pools by Asset
+
+Returns pools containing a specific asset.
+
+```bash
+GET /api/v1/silver/liquidity-pools/asset?asset={asset}&limit={limit}&cursor={cursor}
+```
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/liquidity-pools/asset?asset=USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"
+```
+
+---
+
+#### Get Single Liquidity Pool
+
+```bash
+GET /api/v1/silver/liquidity-pools/{pool_id}
+```
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/liquidity-pools/4cd1f6defba237eecbc5fefe259f89ebc4b5edd49116beb5536c4034fc48d63f"
+```
+
+---
+
+### Claimable Balance Endpoints
+
+#### List Claimable Balances
+
+Returns claimable balances with optional sponsor filter.
+
+```bash
+GET /api/v1/silver/claimable-balances?sponsor={account_id}&limit={limit}&cursor={cursor}
+```
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/claimable-balances?limit=50"
+```
+
+**Response:**
+```json
+{
+  "claimable_balances": [
+    {
+      "balance_id": "0df201fa1b4d55ea53338618f126407dd010de2d4af183b5a827f9d2e915a9da",
+      "sponsor": "GD5BHGR576NGTAYDSL4QWMJPNIRGRDY4GBCLBHA4OEFCPMR4XWEEPFDB",
+      "asset": {
+        "code": "SKY",
+        "issuer": "GBNXP4SXWU4BNQPYJOE26R2IHELYQUAFPGIJ3RDITDG3JYHG7H4L3TET",
+        "type": "credit_alphanum4"
+      },
+      "amount": "10.0000000",
+      "claimants_count": 2,
+      "flags": 0,
+      "last_modified_ledger": 341088
+    }
+  ],
+  "count": 1,
+  "has_more": false
+}
+```
+
+---
+
+#### Get Claimable Balances by Asset
+
+```bash
+GET /api/v1/silver/claimable-balances/asset?asset={asset}&limit={limit}&cursor={cursor}
+```
+
+---
+
+#### Get Single Claimable Balance
+
+```bash
+GET /api/v1/silver/claimable-balances/{balance_id}
+```
+
+---
+
+### Trade Endpoints
+
+#### List Trades
+
+Returns DEX trade history with optional filtering.
+
+```bash
+GET /api/v1/silver/trades?seller_account={account}&buyer_account={account}&selling_asset={asset}&buying_asset={asset}&trade_type={type}&limit={limit}&cursor={cursor}
+```
+
+**Parameters:**
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `seller_account` | No | Filter by seller account |
+| `buyer_account` | No | Filter by buyer account |
+| `selling_asset` | No | Filter by sold asset (CODE:ISSUER or XLM) |
+| `buying_asset` | No | Filter by bought asset |
+| `trade_type` | No | Filter by type: `orderbook` or `liquidity_pool` |
+| `limit` | No | Max results (default: 100, max: 1000) |
+| `cursor` | No | Pagination cursor |
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/trades?selling_asset=XLM&buying_asset=USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5&limit=50"
+```
+
+**Response:**
+```json
+{
+  "trades": [
+    {
+      "history_operation_id": 123456789,
+      "order": 0,
+      "ledger_closed_at": "2026-01-05T12:30:00Z",
+      "seller": {
+        "account_id": "GABC...",
+        "asset": {"code": "XLM", "type": "native"},
+        "amount": "100.0000000"
+      },
+      "buyer": {
+        "account_id": "GDEF...",
+        "asset": {"code": "USDC", "issuer": "GBBD47...", "type": "credit_alphanum4"},
+        "amount": "10.0000000"
+      },
+      "price": "0.1000000",
+      "trade_type": "orderbook"
+    }
+  ],
+  "count": 1,
+  "cursor": "MTIzNDU2Nzg5OjA=",
+  "has_more": true
+}
+```
+
+---
+
+### Effects Endpoints
+
+#### List Effects
+
+Returns operation side effects with optional filtering.
+
+```bash
+GET /api/v1/silver/effects?account_id={account}&effect_type={type}&limit={limit}&cursor={cursor}
+```
+
+**Parameters:**
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `account_id` | No | Filter by account |
+| `effect_type` | No | Filter by effect type (e.g., `account_credited`, `trade`) |
+| `limit` | No | Max results (default: 100, max: 1000) |
+| `cursor` | No | Pagination cursor |
+
+**Common Effect Types:**
+- `account_created`, `account_removed`
+- `account_credited`, `account_debited`
+- `trustline_created`, `trustline_updated`, `trustline_removed`
+- `trade`, `offer_created`, `offer_removed`
+- `data_created`, `data_updated`, `data_removed`
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/effects?account_id=GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR&limit=50"
+```
+
+---
+
+### Soroban Endpoints
+
+#### Get Contract Code Metadata
+
+Returns WASM metadata for deployed contracts.
+
+```bash
+GET /api/v1/silver/soroban/contract-code?hash={wasm_hash}
+```
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/soroban/contract-code?hash=3a7b5b6b6ede5f5f17484d10b777e3d7680c24a7b4f6a92cea419469b6e88421"
+```
+
+**Response:**
+```json
+{
+  "contract_code": {
+    "hash": "3a7b5b6b6ede5f5f17484d10b777e3d7680c24a7b4f6a92cea419469b6e88421",
+    "metrics": {
+      "n_functions": 132,
+      "n_instructions": 21604,
+      "n_data_segments": 3,
+      "n_exports": 42,
+      "n_imports": 36
+    },
+    "last_modified_ledger": 338326
+  }
+}
+```
+
+---
+
+#### Get TTL Entry
+
+Returns Time-To-Live info for contract storage entries.
+
+```bash
+GET /api/v1/silver/soroban/ttl?key_hash={key_hash}
+```
+
+---
+
+#### Get Expiring TTL Entries
+
+Returns entries expiring within N ledgers (critical for monitoring).
+
+```bash
+GET /api/v1/silver/soroban/ttl/expiring?within_ledgers={n}&limit={limit}&cursor={cursor}
+```
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/soroban/ttl/expiring?within_ledgers=100000&limit=50"
+```
+
+**Response:**
+```json
+{
+  "ttl_entries": [
+    {
+      "key_hash": "04513904c5115e1ea69b0ce47ad264ebd95e791f5e9a29515a09b073a0e2ac63",
+      "live_until_ledger": 338630,
+      "ledgers_remaining": 5000,
+      "expired": false,
+      "last_modified_ledger": 337911
+    }
+  ],
+  "count": 5,
+  "within_ledgers": 100000,
+  "has_more": true,
+  "cursor": "MzM4NjMwOmIyMTA5NjJm..."
+}
+```
+
+---
+
+#### Get Expired TTL Entries
+
+```bash
+GET /api/v1/silver/soroban/ttl/expired?limit={limit}&cursor={cursor}
+```
+
+---
+
+#### Get Evicted Keys
+
+Returns contract data entries that expired and were evicted.
+
+```bash
+GET /api/v1/silver/soroban/evicted-keys?contract_id={contract_id}&limit={limit}&cursor={cursor}
+```
+
+---
+
+#### Get Restored Keys
+
+Returns contract data entries that were restored after eviction.
+
+```bash
+GET /api/v1/silver/soroban/restored-keys?contract_id={contract_id}&limit={limit}&cursor={cursor}
+```
+
+---
+
+#### Get Soroban Network Config
+
+Returns Soroban network configuration parameters.
+
+```bash
+GET /api/v1/silver/soroban/config
+```
+
+**Response:**
+```json
+{
+  "config": {
+    "instructions": {
+      "ledger_max": 100000000,
+      "tx_max": 100000000,
+      "fee_rate_per_increment": 25
+    },
+    "memory": {
+      "tx_limit_bytes": 41943040
+    },
+    "ledger_limits": {
+      "max_read_entries": 200,
+      "max_read_bytes": 200000,
+      "max_write_entries": 100,
+      "max_write_bytes": 66560
+    },
+    "contract": {
+      "max_size_bytes": 65536
+    }
+  }
+}
+```
+
+---
+
+#### Get Soroban Config Limits (Simplified)
+
+```bash
+GET /api/v1/silver/soroban/config/limits
+```
+
+---
+
+#### Get Contract Data
+
+Returns contract storage entries.
+
+```bash
+GET /api/v1/silver/soroban/contract-data?contract_id={contract_id}&durability={durability}&limit={limit}&cursor={cursor}
+```
+
+**Parameters:**
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `contract_id` | Yes | Contract address (C...) |
+| `durability` | No | Filter: `persistent` or `temporary` |
+| `limit` | No | Max results (default: 100, max: 1000) |
+| `cursor` | No | Pagination cursor |
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/soroban/contract-data?contract_id=CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG6QB3RVFT5RMCDH74N2&limit=50"
+```
+
+---
+
+#### Get Single Contract Data Entry
+
+```bash
+GET /api/v1/silver/soroban/contract-data/entry?contract_id={contract_id}&key_hash={key_hash}
+```
+
+---
+
 ### Block Explorer Endpoints
 
 #### Get Account Overview

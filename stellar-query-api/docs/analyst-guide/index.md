@@ -13,19 +13,22 @@ Obsrvr Lake provides analytics-ready access to Stellar and Soroban blockchain da
 Get the current balance of any Stellar account:
 
 ```bash
-curl "https://gateway.withobsrvr.com/api/v1/silver/accounts/current?account_id=GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR"
+curl -H "Authorization: Api-Key YOUR_API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/accounts/current?account_id=GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR"
 ```
 
 Get the top 10 most active smart contracts in the last 24 hours:
 
 ```bash
-curl "https://gateway.withobsrvr.com/api/v1/silver/contracts/top?period=24h&limit=10"
+curl -H "Authorization: Api-Key YOUR_API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/contracts/top?period=24h&limit=10"
 ```
 
 Get detailed analytics for a specific contract:
 
 ```bash
-curl "https://gateway.withobsrvr.com/api/v1/silver/contracts/CAUGJT4GREIY3WHOUUU5RIUDGSPVREF5CDCYJOWMHOVT2GWQT5JEETGJ/analytics"
+curl -H "Authorization: Api-Key YOUR_API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/contracts/CAUGJT4GREIY3WHOUUU5RIUDGSPVREF5CDCYJOWMHOVT2GWQT5JEETGJ/analytics"
 ```
 
 ## Architecture Overview
@@ -48,10 +51,11 @@ curl "https://gateway.withobsrvr.com/api/v1/silver/contracts/CAUGJT4GREIY3WHOUUU
 │                                                                     │
 │   ┌─────────────────────────────────────────────────────────────┐ │
 │   │ BRONZE (Raw)               │ SILVER (Analytics-ready)       │ │
-│   │ ledgers, transactions,     │ accounts_current,              │ │
-│   │ operations, effects,       │ enriched_operations,           │ │
-│   │ trades, accounts           │ token_transfers,               │ │
-│   │                            │ contract_invocation_calls      │ │
+│   │ ledgers, transactions,     │ accounts_current, trades,      │ │
+│   │ operations, effects,       │ enriched_operations, effects,  │ │
+│   │ trades, accounts,          │ token_transfers, ttl_current,  │ │
+│   │ contract_events            │ liquidity_pools_current, ...   │ │
+│   │                            │ (17 tables total)              │ │
 │   └─────────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -69,8 +73,10 @@ The API automatically queries both hot and cold storage, merging results seamles
 
 | Network | Base URL |
 |---------|----------|
-| Testnet | `https://gateway.withobsrvr.com` |
+| Testnet | `https://gateway.withobsrvr.com/lake/v1/testnet` |
 | Mainnet | Coming soon |
+
+All requests require an API key header: `Authorization: Api-Key YOUR_API_KEY`
 
 ## Getting Help
 

@@ -383,3 +383,226 @@ type ContractHierarchyRow struct {
 	// Partitioning
 	LedgerRange int64
 }
+
+// LiquidityPoolCurrentRow represents a row in the liquidity_pools_current table
+type LiquidityPoolCurrentRow struct {
+	LiquidityPoolID   string
+	PoolType          string
+	Fee               int
+	TrustlineCount    int
+	TotalPoolShares   int64
+	AssetAType        string
+	AssetACode        sql.NullString
+	AssetAIssuer      sql.NullString
+	AssetAAmount      int64
+	AssetBType        string
+	AssetBCode        sql.NullString
+	AssetBIssuer      sql.NullString
+	AssetBAmount      int64
+	LastModifiedLedger int64
+	LedgerSequence    int64
+	ClosedAt          time.Time
+	CreatedAt         time.Time
+	LedgerRange       int64
+}
+
+// ClaimableBalanceCurrentRow represents a row in the claimable_balances_current table
+type ClaimableBalanceCurrentRow struct {
+	BalanceID          string
+	Sponsor            string
+	AssetType          string
+	AssetCode          sql.NullString
+	AssetIssuer        sql.NullString
+	Amount             int64
+	ClaimantsCount     int
+	Flags              int
+	LastModifiedLedger int64
+	LedgerSequence     int64
+	ClosedAt           time.Time
+	CreatedAt          time.Time
+	LedgerRange        int64
+}
+
+// NativeBalanceCurrentRow represents a row in the native_balances_current table
+type NativeBalanceCurrentRow struct {
+	AccountID          string
+	Balance            int64
+	BuyingLiabilities  int64
+	SellingLiabilities int64
+	NumSubentries      int
+	NumSponsoring      int
+	NumSponsored       int
+	SequenceNumber     sql.NullInt64
+	LastModifiedLedger int64
+	LedgerSequence     int64
+	LedgerRange        int64
+}
+
+// TradeRow represents a row in the trades table (event stream - append only)
+// Extracted from Bronze trades_row_v1
+type TradeRow struct {
+	LedgerSequence     int64
+	TransactionHash    string
+	OperationIndex     int
+	TradeIndex         int
+	TradeType          string
+	TradeTimestamp     time.Time
+	SellerAccount      string
+	SellingAssetCode   sql.NullString
+	SellingAssetIssuer sql.NullString
+	SellingAmount      string // Decimal string from bronze
+	BuyerAccount       string
+	BuyingAssetCode    sql.NullString
+	BuyingAssetIssuer  sql.NullString
+	BuyingAmount       string // Decimal string from bronze
+	Price              string // Decimal string from bronze
+	CreatedAt          time.Time
+	LedgerRange        sql.NullInt64
+}
+
+// EffectRow represents a row in the effects table (event stream - append only)
+// Extracted from Bronze effects_row_v1
+type EffectRow struct {
+	LedgerSequence   int64
+	TransactionHash  string
+	OperationIndex   int
+	EffectIndex      int
+	EffectType       int
+	EffectTypeString string
+	AccountID        sql.NullString
+	Amount           sql.NullString
+	AssetCode        sql.NullString
+	AssetIssuer      sql.NullString
+	AssetType        sql.NullString
+	TrustlineLimit   sql.NullString
+	AuthorizeFlag    sql.NullBool
+	ClawbackFlag     sql.NullBool
+	SignerAccount    sql.NullString
+	SignerWeight     sql.NullInt32
+	OfferID          sql.NullInt64
+	SellerAccount    sql.NullString
+	CreatedAt        time.Time
+	LedgerRange      sql.NullInt64
+}
+
+// =============================================================================
+// Phase 3: Soroban Tables
+// =============================================================================
+
+// ContractDataCurrentRow represents a row in the contract_data_current table
+// Extracted from Bronze contract_data_snapshot_v1 (UPSERT pattern)
+type ContractDataCurrentRow struct {
+	ContractID         string
+	Key                sql.NullString // XDR encoded key
+	KeyHash            string
+	Durability         string // "temporary" or "persistent"
+	AssetType          sql.NullString
+	AssetCode          sql.NullString
+	AssetIssuer        sql.NullString
+	DataValue          sql.NullString // XDR encoded value (contract_data_xdr)
+	LastModifiedLedger int64
+	LedgerSequence     int64
+	ClosedAt           time.Time
+	CreatedAt          time.Time
+	LedgerRange        int64
+}
+
+// ContractCodeCurrentRow represents a row in the contract_code_current table
+// Extracted from Bronze contract_code_snapshot_v1 (UPSERT pattern)
+type ContractCodeCurrentRow struct {
+	ContractCodeHash   string
+	ContractCodeExtV   sql.NullString
+	NDataSegmentBytes  sql.NullInt32
+	NDataSegments      sql.NullInt32
+	NElemSegments      sql.NullInt32
+	NExports           sql.NullInt32
+	NFunctions         sql.NullInt32
+	NGlobals           sql.NullInt32
+	NImports           sql.NullInt32
+	NInstructions      sql.NullInt32
+	NTableEntries      sql.NullInt32
+	NTypes             sql.NullInt32
+	LastModifiedLedger int64
+	LedgerSequence     int64
+	ClosedAt           time.Time
+	CreatedAt          time.Time
+	LedgerRange        int64
+}
+
+// TTLCurrentRow represents a row in the ttl_current table
+// Extracted from Bronze ttl_snapshot_v1 (UPSERT pattern)
+type TTLCurrentRow struct {
+	KeyHash             string
+	LiveUntilLedgerSeq  int64
+	TTLRemaining        sql.NullInt32 // Computed: live_until_ledger_seq - ledger_sequence
+	Expired             bool
+	LastModifiedLedger  int64
+	LedgerSequence      int64
+	ClosedAt            time.Time
+	CreatedAt           time.Time
+	LedgerRange         int64
+}
+
+// EvictedKeyRow represents a row in the evicted_keys table (event stream - append only)
+// Extracted from Bronze evicted_keys_state_v1
+type EvictedKeyRow struct {
+	ContractID     string
+	KeyHash        string
+	LedgerSequence int64
+	ClosedAt       time.Time
+	CreatedAt      time.Time
+	LedgerRange    int64
+}
+
+// RestoredKeyRow represents a row in the restored_keys table (event stream - append only)
+// Extracted from Bronze restored_keys_state_v1
+type RestoredKeyRow struct {
+	ContractID     string
+	KeyHash        string
+	LedgerSequence int64
+	ClosedAt       time.Time
+	CreatedAt      time.Time
+	LedgerRange    int64
+}
+
+// =============================================================================
+// Phase 4: Config Settings
+// =============================================================================
+
+// ConfigSettingsCurrentRow represents a row in the config_settings_current table
+// Extracted from Bronze config_settings_snapshot_v1 (UPSERT pattern)
+// Contains Soroban network configuration parameters
+type ConfigSettingsCurrentRow struct {
+	ConfigSettingID int
+
+	// Instruction limits
+	LedgerMaxInstructions           sql.NullInt64
+	TxMaxInstructions               sql.NullInt64
+	FeeRatePerInstructionsIncrement sql.NullInt64
+	TxMemoryLimit                   sql.NullInt64
+
+	// Ledger read/write limits
+	LedgerMaxReadLedgerEntries  sql.NullInt64
+	LedgerMaxReadBytes          sql.NullInt64
+	LedgerMaxWriteLedgerEntries sql.NullInt64
+	LedgerMaxWriteBytes         sql.NullInt64
+
+	// Transaction read/write limits
+	TxMaxReadLedgerEntries  sql.NullInt64
+	TxMaxReadBytes          sql.NullInt64
+	TxMaxWriteLedgerEntries sql.NullInt64
+	TxMaxWriteBytes         sql.NullInt64
+
+	// Contract limits
+	ContractMaxSizeBytes sql.NullInt64
+
+	// Raw XDR for additional settings
+	ConfigSettingXDR string
+
+	// Metadata
+	LastModifiedLedger int
+	LedgerSequence     int64
+	ClosedAt           time.Time
+	CreatedAt          time.Time
+	LedgerRange        int64
+}

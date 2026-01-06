@@ -317,7 +317,7 @@ func (sw *SilverWriter) WriteOfferCurrent(ctx context.Context, tx *sql.Tx, row *
 			last_modified_ledger, ledger_sequence, created_at, sponsor, ledger_range
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8,
-			ROUND($9::NUMERIC * 10000000)::BIGINT, $10, $11, $12::DECIMAL, $13,
+			$9::BIGINT, $10, $11, $12::DECIMAL, $13,
 			$14, $15, $16, $17, $18
 		)
 		ON CONFLICT (offer_id) DO UPDATE SET
@@ -767,6 +767,407 @@ func (sw *SilverWriter) WriteContractHierarchy(ctx context.Context, tx *sql.Tx, 
 
 	if err != nil {
 		return fmt.Errorf("failed to write contract hierarchy: %w", err)
+	}
+
+	return nil
+}
+
+// WriteLiquidityPoolCurrent upserts a liquidity pool current state row
+func (sw *SilverWriter) WriteLiquidityPoolCurrent(ctx context.Context, tx *sql.Tx, row *LiquidityPoolCurrentRow) error {
+	query := `
+		INSERT INTO liquidity_pools_current (
+			liquidity_pool_id, pool_type, fee, trustline_count, total_pool_shares,
+			asset_a_type, asset_a_code, asset_a_issuer, asset_a_amount,
+			asset_b_type, asset_b_code, asset_b_issuer, asset_b_amount,
+			last_modified_ledger, ledger_sequence, closed_at, created_at, ledger_range
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
+		)
+		ON CONFLICT (liquidity_pool_id) DO UPDATE SET
+			pool_type = EXCLUDED.pool_type,
+			fee = EXCLUDED.fee,
+			trustline_count = EXCLUDED.trustline_count,
+			total_pool_shares = EXCLUDED.total_pool_shares,
+			asset_a_type = EXCLUDED.asset_a_type,
+			asset_a_code = EXCLUDED.asset_a_code,
+			asset_a_issuer = EXCLUDED.asset_a_issuer,
+			asset_a_amount = EXCLUDED.asset_a_amount,
+			asset_b_type = EXCLUDED.asset_b_type,
+			asset_b_code = EXCLUDED.asset_b_code,
+			asset_b_issuer = EXCLUDED.asset_b_issuer,
+			asset_b_amount = EXCLUDED.asset_b_amount,
+			last_modified_ledger = EXCLUDED.last_modified_ledger,
+			ledger_sequence = EXCLUDED.ledger_sequence,
+			closed_at = EXCLUDED.closed_at,
+			ledger_range = EXCLUDED.ledger_range,
+			updated_at = NOW()
+	`
+
+	_, err := tx.ExecContext(ctx, query,
+		row.LiquidityPoolID, row.PoolType, row.Fee, row.TrustlineCount, row.TotalPoolShares,
+		row.AssetAType, row.AssetACode, row.AssetAIssuer, row.AssetAAmount,
+		row.AssetBType, row.AssetBCode, row.AssetBIssuer, row.AssetBAmount,
+		row.LedgerSequence, row.LedgerSequence, row.ClosedAt, row.CreatedAt, row.LedgerRange,
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to write liquidity pool current: %w", err)
+	}
+
+	return nil
+}
+
+// WriteClaimableBalanceCurrent upserts a claimable balance current state row
+func (sw *SilverWriter) WriteClaimableBalanceCurrent(ctx context.Context, tx *sql.Tx, row *ClaimableBalanceCurrentRow) error {
+	query := `
+		INSERT INTO claimable_balances_current (
+			balance_id, sponsor, asset_type, asset_code, asset_issuer, amount,
+			claimants_count, flags, last_modified_ledger, ledger_sequence,
+			closed_at, created_at, ledger_range
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+		)
+		ON CONFLICT (balance_id) DO UPDATE SET
+			sponsor = EXCLUDED.sponsor,
+			asset_type = EXCLUDED.asset_type,
+			asset_code = EXCLUDED.asset_code,
+			asset_issuer = EXCLUDED.asset_issuer,
+			amount = EXCLUDED.amount,
+			claimants_count = EXCLUDED.claimants_count,
+			flags = EXCLUDED.flags,
+			last_modified_ledger = EXCLUDED.last_modified_ledger,
+			ledger_sequence = EXCLUDED.ledger_sequence,
+			closed_at = EXCLUDED.closed_at,
+			ledger_range = EXCLUDED.ledger_range,
+			updated_at = NOW()
+	`
+
+	_, err := tx.ExecContext(ctx, query,
+		row.BalanceID, row.Sponsor, row.AssetType, row.AssetCode, row.AssetIssuer, row.Amount,
+		row.ClaimantsCount, row.Flags, row.LedgerSequence, row.LedgerSequence,
+		row.ClosedAt, row.CreatedAt, row.LedgerRange,
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to write claimable balance current: %w", err)
+	}
+
+	return nil
+}
+
+// WriteNativeBalanceCurrent upserts a native balance current state row
+func (sw *SilverWriter) WriteNativeBalanceCurrent(ctx context.Context, tx *sql.Tx, row *NativeBalanceCurrentRow) error {
+	query := `
+		INSERT INTO native_balances_current (
+			account_id, balance, buying_liabilities, selling_liabilities,
+			num_subentries, num_sponsoring, num_sponsored, sequence_number,
+			last_modified_ledger, ledger_sequence, ledger_range
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+		)
+		ON CONFLICT (account_id) DO UPDATE SET
+			balance = EXCLUDED.balance,
+			buying_liabilities = EXCLUDED.buying_liabilities,
+			selling_liabilities = EXCLUDED.selling_liabilities,
+			num_subentries = EXCLUDED.num_subentries,
+			num_sponsoring = EXCLUDED.num_sponsoring,
+			num_sponsored = EXCLUDED.num_sponsored,
+			sequence_number = EXCLUDED.sequence_number,
+			last_modified_ledger = EXCLUDED.last_modified_ledger,
+			ledger_sequence = EXCLUDED.ledger_sequence,
+			ledger_range = EXCLUDED.ledger_range,
+			updated_at = NOW()
+	`
+
+	_, err := tx.ExecContext(ctx, query,
+		row.AccountID, row.Balance, row.BuyingLiabilities, row.SellingLiabilities,
+		row.NumSubentries, row.NumSponsoring, row.NumSponsored, row.SequenceNumber,
+		row.LastModifiedLedger, row.LedgerSequence, row.LedgerRange,
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to write native balance current: %w", err)
+	}
+
+	return nil
+}
+
+// WriteTrade inserts a trade event row (append-only event stream)
+func (sw *SilverWriter) WriteTrade(ctx context.Context, tx *sql.Tx, row *TradeRow) error {
+	query := `
+		INSERT INTO trades (
+			ledger_sequence, transaction_hash, operation_index, trade_index,
+			trade_type, trade_timestamp, seller_account,
+			selling_asset_code, selling_asset_issuer, selling_amount,
+			buyer_account, buying_asset_code, buying_asset_issuer, buying_amount,
+			price, created_at, ledger_range
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10::BIGINT, $11, $12, $13, $14::BIGINT, $15::DECIMAL, $16, $17
+		)
+		ON CONFLICT (ledger_sequence, transaction_hash, operation_index, trade_index) DO NOTHING
+	`
+
+	_, err := tx.ExecContext(ctx, query,
+		row.LedgerSequence, row.TransactionHash, row.OperationIndex, row.TradeIndex,
+		row.TradeType, row.TradeTimestamp, row.SellerAccount,
+		row.SellingAssetCode, row.SellingAssetIssuer, row.SellingAmount,
+		row.BuyerAccount, row.BuyingAssetCode, row.BuyingAssetIssuer, row.BuyingAmount,
+		row.Price, row.CreatedAt, row.LedgerRange,
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to write trade: %w", err)
+	}
+
+	return nil
+}
+
+// WriteEffect inserts an effect event row (append-only event stream)
+func (sw *SilverWriter) WriteEffect(ctx context.Context, tx *sql.Tx, row *EffectRow) error {
+	query := `
+		INSERT INTO effects (
+			ledger_sequence, transaction_hash, operation_index, effect_index,
+			effect_type, effect_type_string, account_id,
+			amount, asset_code, asset_issuer, asset_type,
+			trustline_limit, authorize_flag, clawback_flag,
+			signer_account, signer_weight, offer_id, seller_account,
+			created_at, ledger_range
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
+		)
+		ON CONFLICT (ledger_sequence, transaction_hash, operation_index, effect_index) DO NOTHING
+	`
+
+	_, err := tx.ExecContext(ctx, query,
+		row.LedgerSequence, row.TransactionHash, row.OperationIndex, row.EffectIndex,
+		row.EffectType, row.EffectTypeString, row.AccountID,
+		row.Amount, row.AssetCode, row.AssetIssuer, row.AssetType,
+		row.TrustlineLimit, row.AuthorizeFlag, row.ClawbackFlag,
+		row.SignerAccount, row.SignerWeight, row.OfferID, row.SellerAccount,
+		row.CreatedAt, row.LedgerRange,
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to write effect: %w", err)
+	}
+
+	return nil
+}
+
+// =============================================================================
+// Phase 3: Soroban Tables
+// =============================================================================
+
+// WriteContractDataCurrent upserts a contract data current state row
+func (sw *SilverWriter) WriteContractDataCurrent(ctx context.Context, tx *sql.Tx, row *ContractDataCurrentRow) error {
+	query := `
+		INSERT INTO contract_data_current (
+			contract_id, key_hash, durability, asset_type, asset_code, asset_issuer,
+			data_value, last_modified_ledger, ledger_sequence, closed_at, created_at, ledger_range
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+		)
+		ON CONFLICT (contract_id, key_hash) DO UPDATE SET
+			durability = EXCLUDED.durability,
+			asset_type = EXCLUDED.asset_type,
+			asset_code = EXCLUDED.asset_code,
+			asset_issuer = EXCLUDED.asset_issuer,
+			data_value = EXCLUDED.data_value,
+			last_modified_ledger = EXCLUDED.last_modified_ledger,
+			ledger_sequence = EXCLUDED.ledger_sequence,
+			closed_at = EXCLUDED.closed_at,
+			ledger_range = EXCLUDED.ledger_range,
+			updated_at = NOW()
+	`
+
+	_, err := tx.ExecContext(ctx, query,
+		row.ContractID, row.KeyHash, row.Durability, row.AssetType, row.AssetCode, row.AssetIssuer,
+		row.DataValue, row.LastModifiedLedger, row.LedgerSequence, row.ClosedAt, row.CreatedAt, row.LedgerRange,
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to write contract data current: %w", err)
+	}
+
+	return nil
+}
+
+// WriteContractCodeCurrent upserts a contract code current state row
+func (sw *SilverWriter) WriteContractCodeCurrent(ctx context.Context, tx *sql.Tx, row *ContractCodeCurrentRow) error {
+	query := `
+		INSERT INTO contract_code_current (
+			contract_code_hash, contract_code_ext_v,
+			n_data_segment_bytes, n_data_segments, n_elem_segments, n_exports,
+			n_functions, n_globals, n_imports, n_instructions, n_table_entries, n_types,
+			last_modified_ledger, ledger_sequence, closed_at, created_at, ledger_range
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+		)
+		ON CONFLICT (contract_code_hash) DO UPDATE SET
+			contract_code_ext_v = EXCLUDED.contract_code_ext_v,
+			n_data_segment_bytes = EXCLUDED.n_data_segment_bytes,
+			n_data_segments = EXCLUDED.n_data_segments,
+			n_elem_segments = EXCLUDED.n_elem_segments,
+			n_exports = EXCLUDED.n_exports,
+			n_functions = EXCLUDED.n_functions,
+			n_globals = EXCLUDED.n_globals,
+			n_imports = EXCLUDED.n_imports,
+			n_instructions = EXCLUDED.n_instructions,
+			n_table_entries = EXCLUDED.n_table_entries,
+			n_types = EXCLUDED.n_types,
+			last_modified_ledger = EXCLUDED.last_modified_ledger,
+			ledger_sequence = EXCLUDED.ledger_sequence,
+			closed_at = EXCLUDED.closed_at,
+			ledger_range = EXCLUDED.ledger_range,
+			updated_at = NOW()
+	`
+
+	_, err := tx.ExecContext(ctx, query,
+		row.ContractCodeHash, row.ContractCodeExtV,
+		row.NDataSegmentBytes, row.NDataSegments, row.NElemSegments, row.NExports,
+		row.NFunctions, row.NGlobals, row.NImports, row.NInstructions, row.NTableEntries, row.NTypes,
+		row.LastModifiedLedger, row.LedgerSequence, row.ClosedAt, row.CreatedAt, row.LedgerRange,
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to write contract code current: %w", err)
+	}
+
+	return nil
+}
+
+// WriteTTLCurrent upserts a TTL current state row
+func (sw *SilverWriter) WriteTTLCurrent(ctx context.Context, tx *sql.Tx, row *TTLCurrentRow) error {
+	query := `
+		INSERT INTO ttl_current (
+			key_hash, live_until_ledger_seq, ttl_remaining, expired,
+			last_modified_ledger, ledger_sequence, closed_at, created_at, ledger_range
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9
+		)
+		ON CONFLICT (key_hash) DO UPDATE SET
+			live_until_ledger_seq = EXCLUDED.live_until_ledger_seq,
+			ttl_remaining = EXCLUDED.ttl_remaining,
+			expired = EXCLUDED.expired,
+			last_modified_ledger = EXCLUDED.last_modified_ledger,
+			ledger_sequence = EXCLUDED.ledger_sequence,
+			closed_at = EXCLUDED.closed_at,
+			ledger_range = EXCLUDED.ledger_range,
+			updated_at = NOW()
+	`
+
+	_, err := tx.ExecContext(ctx, query,
+		row.KeyHash, row.LiveUntilLedgerSeq, row.TTLRemaining, row.Expired,
+		row.LastModifiedLedger, row.LedgerSequence, row.ClosedAt, row.CreatedAt, row.LedgerRange,
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to write TTL current: %w", err)
+	}
+
+	return nil
+}
+
+// WriteEvictedKey inserts an evicted key event row (append-only event stream)
+func (sw *SilverWriter) WriteEvictedKey(ctx context.Context, tx *sql.Tx, row *EvictedKeyRow) error {
+	query := `
+		INSERT INTO evicted_keys (
+			contract_id, key_hash, ledger_sequence, closed_at, created_at, ledger_range
+		) VALUES (
+			$1, $2, $3, $4, $5, $6
+		)
+		ON CONFLICT (contract_id, key_hash, ledger_sequence) DO NOTHING
+	`
+
+	_, err := tx.ExecContext(ctx, query,
+		row.ContractID, row.KeyHash, row.LedgerSequence, row.ClosedAt, row.CreatedAt, row.LedgerRange,
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to write evicted key: %w", err)
+	}
+
+	return nil
+}
+
+// WriteRestoredKey inserts a restored key event row (append-only event stream)
+func (sw *SilverWriter) WriteRestoredKey(ctx context.Context, tx *sql.Tx, row *RestoredKeyRow) error {
+	query := `
+		INSERT INTO restored_keys (
+			contract_id, key_hash, ledger_sequence, closed_at, created_at, ledger_range
+		) VALUES (
+			$1, $2, $3, $4, $5, $6
+		)
+		ON CONFLICT (contract_id, key_hash, ledger_sequence) DO NOTHING
+	`
+
+	_, err := tx.ExecContext(ctx, query,
+		row.ContractID, row.KeyHash, row.LedgerSequence, row.ClosedAt, row.CreatedAt, row.LedgerRange,
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to write restored key: %w", err)
+	}
+
+	return nil
+}
+
+// =============================================================================
+// Phase 4: Config Settings
+// =============================================================================
+
+// WriteConfigSettingsCurrent upserts a config settings current state row
+func (sw *SilverWriter) WriteConfigSettingsCurrent(ctx context.Context, tx *sql.Tx, row *ConfigSettingsCurrentRow) error {
+	query := `
+		INSERT INTO config_settings_current (
+			config_setting_id,
+			ledger_max_instructions, tx_max_instructions,
+			fee_rate_per_instructions_increment, tx_memory_limit,
+			ledger_max_read_ledger_entries, ledger_max_read_bytes,
+			ledger_max_write_ledger_entries, ledger_max_write_bytes,
+			tx_max_read_ledger_entries, tx_max_read_bytes,
+			tx_max_write_ledger_entries, tx_max_write_bytes,
+			contract_max_size_bytes, config_setting_xdr,
+			last_modified_ledger, ledger_sequence, closed_at, created_at, ledger_range
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
+		)
+		ON CONFLICT (config_setting_id) DO UPDATE SET
+			ledger_max_instructions = EXCLUDED.ledger_max_instructions,
+			tx_max_instructions = EXCLUDED.tx_max_instructions,
+			fee_rate_per_instructions_increment = EXCLUDED.fee_rate_per_instructions_increment,
+			tx_memory_limit = EXCLUDED.tx_memory_limit,
+			ledger_max_read_ledger_entries = EXCLUDED.ledger_max_read_ledger_entries,
+			ledger_max_read_bytes = EXCLUDED.ledger_max_read_bytes,
+			ledger_max_write_ledger_entries = EXCLUDED.ledger_max_write_ledger_entries,
+			ledger_max_write_bytes = EXCLUDED.ledger_max_write_bytes,
+			tx_max_read_ledger_entries = EXCLUDED.tx_max_read_ledger_entries,
+			tx_max_read_bytes = EXCLUDED.tx_max_read_bytes,
+			tx_max_write_ledger_entries = EXCLUDED.tx_max_write_ledger_entries,
+			tx_max_write_bytes = EXCLUDED.tx_max_write_bytes,
+			contract_max_size_bytes = EXCLUDED.contract_max_size_bytes,
+			config_setting_xdr = EXCLUDED.config_setting_xdr,
+			last_modified_ledger = EXCLUDED.last_modified_ledger,
+			ledger_sequence = EXCLUDED.ledger_sequence,
+			closed_at = EXCLUDED.closed_at,
+			ledger_range = EXCLUDED.ledger_range,
+			updated_at = NOW()
+	`
+
+	_, err := tx.ExecContext(ctx, query,
+		row.ConfigSettingID,
+		row.LedgerMaxInstructions, row.TxMaxInstructions,
+		row.FeeRatePerInstructionsIncrement, row.TxMemoryLimit,
+		row.LedgerMaxReadLedgerEntries, row.LedgerMaxReadBytes,
+		row.LedgerMaxWriteLedgerEntries, row.LedgerMaxWriteBytes,
+		row.TxMaxReadLedgerEntries, row.TxMaxReadBytes,
+		row.TxMaxWriteLedgerEntries, row.TxMaxWriteBytes,
+		row.ContractMaxSizeBytes, row.ConfigSettingXDR,
+		row.LastModifiedLedger, row.LedgerSequence, row.ClosedAt, row.CreatedAt, row.LedgerRange,
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to write config settings current: %w", err)
 	}
 
 	return nil

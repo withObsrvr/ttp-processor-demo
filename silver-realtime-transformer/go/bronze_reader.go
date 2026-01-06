@@ -607,3 +607,360 @@ func (br *BronzeReader) QueryContractCallGraphs(ctx context.Context, startLedger
 
 	return rows, nil
 }
+
+// QueryLiquidityPoolsSnapshot reads liquidity pool snapshots (deduplicated by liquidity_pool_id)
+// Used for liquidity_pools_current upsert
+func (br *BronzeReader) QueryLiquidityPoolsSnapshot(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
+	query := `
+		SELECT DISTINCT ON (liquidity_pool_id)
+			liquidity_pool_id,
+			pool_type,
+			fee,
+			trustline_count,
+			total_pool_shares,
+			asset_a_type,
+			asset_a_code,
+			asset_a_issuer,
+			asset_a_amount,
+			asset_b_type,
+			asset_b_code,
+			asset_b_issuer,
+			asset_b_amount,
+			ledger_sequence,
+			closed_at,
+			created_at,
+			ledger_range
+		FROM liquidity_pools_snapshot_v1
+		WHERE ledger_sequence BETWEEN $1 AND $2
+		ORDER BY liquidity_pool_id, ledger_sequence DESC
+	`
+
+	rows, err := br.db.QueryContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query liquidity pools snapshot: %w", err)
+	}
+
+	return rows, nil
+}
+
+// QueryClaimableBalancesSnapshot reads claimable balance snapshots (deduplicated by balance_id)
+// Used for claimable_balances_current upsert
+func (br *BronzeReader) QueryClaimableBalancesSnapshot(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
+	query := `
+		SELECT DISTINCT ON (balance_id)
+			balance_id,
+			sponsor,
+			asset_type,
+			asset_code,
+			asset_issuer,
+			amount,
+			claimants_count,
+			flags,
+			ledger_sequence,
+			closed_at,
+			created_at,
+			ledger_range
+		FROM claimable_balances_snapshot_v1
+		WHERE ledger_sequence BETWEEN $1 AND $2
+		ORDER BY balance_id, ledger_sequence DESC
+	`
+
+	rows, err := br.db.QueryContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query claimable balances snapshot: %w", err)
+	}
+
+	return rows, nil
+}
+
+// QueryNativeBalancesSnapshot reads native balance snapshots (deduplicated by account_id)
+// Used for native_balances_current upsert
+func (br *BronzeReader) QueryNativeBalancesSnapshot(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
+	query := `
+		SELECT DISTINCT ON (account_id)
+			account_id,
+			balance,
+			buying_liabilities,
+			selling_liabilities,
+			num_subentries,
+			num_sponsoring,
+			num_sponsored,
+			sequence_number,
+			last_modified_ledger,
+			ledger_sequence,
+			ledger_range
+		FROM native_balances_snapshot_v1
+		WHERE ledger_sequence BETWEEN $1 AND $2
+		ORDER BY account_id, ledger_sequence DESC
+	`
+
+	rows, err := br.db.QueryContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query native balances snapshot: %w", err)
+	}
+
+	return rows, nil
+}
+
+// QueryTrades reads trade events from Bronze for a ledger range
+// Event stream table - no deduplication, ordered by ledger and trade index
+func (br *BronzeReader) QueryTrades(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
+	query := `
+		SELECT
+			ledger_sequence,
+			transaction_hash,
+			operation_index,
+			trade_index,
+			trade_type,
+			trade_timestamp,
+			seller_account,
+			selling_asset_code,
+			selling_asset_issuer,
+			selling_amount,
+			buyer_account,
+			buying_asset_code,
+			buying_asset_issuer,
+			buying_amount,
+			price,
+			created_at,
+			ledger_range
+		FROM trades_row_v1
+		WHERE ledger_sequence BETWEEN $1 AND $2
+		ORDER BY ledger_sequence, operation_index, trade_index
+	`
+
+	rows, err := br.db.QueryContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query trades: %w", err)
+	}
+
+	return rows, nil
+}
+
+// QueryEffects reads effect events from Bronze for a ledger range
+// Event stream table - no deduplication, ordered by ledger and effect index
+func (br *BronzeReader) QueryEffects(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
+	query := `
+		SELECT
+			ledger_sequence,
+			transaction_hash,
+			operation_index,
+			effect_index,
+			effect_type,
+			effect_type_string,
+			account_id,
+			amount,
+			asset_code,
+			asset_issuer,
+			asset_type,
+			trustline_limit,
+			authorize_flag,
+			clawback_flag,
+			signer_account,
+			signer_weight,
+			offer_id,
+			seller_account,
+			created_at,
+			ledger_range
+		FROM effects_row_v1
+		WHERE ledger_sequence BETWEEN $1 AND $2
+		ORDER BY ledger_sequence, operation_index, effect_index
+	`
+
+	rows, err := br.db.QueryContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query effects: %w", err)
+	}
+
+	return rows, nil
+}
+
+// =============================================================================
+// Phase 3: Soroban Tables
+// =============================================================================
+
+// QueryContractDataSnapshot reads contract data snapshots (deduplicated by contract_id + key_hash)
+// Used for contract_data_current upsert
+func (br *BronzeReader) QueryContractDataSnapshot(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
+	query := `
+		SELECT DISTINCT ON (contract_id, ledger_key_hash)
+			contract_id,
+			ledger_key_hash AS key_hash,
+			contract_durability AS durability,
+			asset_type,
+			asset_code,
+			asset_issuer,
+			contract_data_xdr AS data_value,
+			last_modified_ledger,
+			ledger_sequence,
+			closed_at,
+			created_at,
+			ledger_range
+		FROM contract_data_snapshot_v1
+		WHERE ledger_sequence BETWEEN $1 AND $2
+		  AND deleted = false
+		ORDER BY contract_id, ledger_key_hash, ledger_sequence DESC
+	`
+
+	rows, err := br.db.QueryContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query contract data snapshot: %w", err)
+	}
+
+	return rows, nil
+}
+
+// QueryContractCodeSnapshot reads contract code snapshots (deduplicated by contract_code_hash)
+// Used for contract_code_current upsert
+func (br *BronzeReader) QueryContractCodeSnapshot(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
+	query := `
+		SELECT DISTINCT ON (contract_code_hash)
+			contract_code_hash,
+			contract_code_ext_v,
+			n_data_segment_bytes,
+			n_data_segments,
+			n_elem_segments,
+			n_exports,
+			n_functions,
+			n_globals,
+			n_imports,
+			n_instructions,
+			n_table_entries,
+			n_types,
+			last_modified_ledger,
+			ledger_sequence,
+			closed_at,
+			created_at,
+			ledger_range
+		FROM contract_code_snapshot_v1
+		WHERE ledger_sequence BETWEEN $1 AND $2
+		  AND deleted = false
+		ORDER BY contract_code_hash, ledger_sequence DESC
+	`
+
+	rows, err := br.db.QueryContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query contract code snapshot: %w", err)
+	}
+
+	return rows, nil
+}
+
+// QueryTTLSnapshot reads TTL snapshots (deduplicated by key_hash)
+// Used for ttl_current upsert
+func (br *BronzeReader) QueryTTLSnapshot(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
+	query := `
+		SELECT DISTINCT ON (key_hash)
+			key_hash,
+			live_until_ledger_seq,
+			ttl_remaining,
+			expired,
+			last_modified_ledger,
+			ledger_sequence,
+			closed_at,
+			created_at,
+			ledger_range
+		FROM ttl_snapshot_v1
+		WHERE ledger_sequence BETWEEN $1 AND $2
+		  AND deleted = false
+		ORDER BY key_hash, ledger_sequence DESC
+	`
+
+	rows, err := br.db.QueryContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query TTL snapshot: %w", err)
+	}
+
+	return rows, nil
+}
+
+// QueryEvictedKeys reads evicted key events from Bronze for a ledger range
+// Event stream table - no deduplication, ordered by ledger
+func (br *BronzeReader) QueryEvictedKeys(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
+	query := `
+		SELECT
+			contract_id,
+			key_hash,
+			ledger_sequence,
+			closed_at,
+			created_at,
+			ledger_range
+		FROM evicted_keys_state_v1
+		WHERE ledger_sequence BETWEEN $1 AND $2
+		ORDER BY ledger_sequence, contract_id, key_hash
+	`
+
+	rows, err := br.db.QueryContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query evicted keys: %w", err)
+	}
+
+	return rows, nil
+}
+
+// QueryRestoredKeys reads restored key events from Bronze for a ledger range
+// Event stream table - no deduplication, ordered by ledger
+func (br *BronzeReader) QueryRestoredKeys(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
+	query := `
+		SELECT
+			contract_id,
+			key_hash,
+			ledger_sequence,
+			closed_at,
+			created_at,
+			ledger_range
+		FROM restored_keys_state_v1
+		WHERE ledger_sequence BETWEEN $1 AND $2
+		ORDER BY ledger_sequence, contract_id, key_hash
+	`
+
+	rows, err := br.db.QueryContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query restored keys: %w", err)
+	}
+
+	return rows, nil
+}
+
+// =============================================================================
+// Phase 4: Config Settings
+// =============================================================================
+
+// QueryConfigSettingsSnapshot reads config settings snapshots (deduplicated by config_setting_id)
+// Used for config_settings_current upsert
+func (br *BronzeReader) QueryConfigSettingsSnapshot(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
+	query := `
+		SELECT DISTINCT ON (config_setting_id)
+			config_setting_id,
+			ledger_max_instructions,
+			tx_max_instructions,
+			fee_rate_per_instructions_increment,
+			tx_memory_limit,
+			ledger_max_read_ledger_entries,
+			ledger_max_read_bytes,
+			ledger_max_write_ledger_entries,
+			ledger_max_write_bytes,
+			tx_max_read_ledger_entries,
+			tx_max_read_bytes,
+			tx_max_write_ledger_entries,
+			tx_max_write_bytes,
+			contract_max_size_bytes,
+			config_setting_xdr,
+			last_modified_ledger,
+			ledger_sequence,
+			closed_at,
+			created_at,
+			ledger_range
+		FROM config_settings_snapshot_v1
+		WHERE ledger_sequence BETWEEN $1 AND $2
+		  AND deleted = false
+		ORDER BY config_setting_id, ledger_sequence DESC
+	`
+
+	rows, err := br.db.QueryContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query config settings snapshot: %w", err)
+	}
+
+	return rows, nil
+}

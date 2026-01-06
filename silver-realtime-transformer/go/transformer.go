@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -230,6 +232,83 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 		return fmt.Errorf("failed to transform contract calls: %w", err)
 	}
 	totalRows += callsCount
+
+	// Transform liquidity pools current (Phase 1 - Core State Tables)
+	liquidityPoolsCount, err := rt.transformLiquidityPoolsCurrent(ctx, tx, startLedger, endLedger)
+	if err != nil {
+		return fmt.Errorf("failed to transform liquidity pools current: %w", err)
+	}
+	totalRows += liquidityPoolsCount
+
+	// Transform claimable balances current (Phase 1 - Core State Tables)
+	claimableBalancesCount, err := rt.transformClaimableBalancesCurrent(ctx, tx, startLedger, endLedger)
+	if err != nil {
+		return fmt.Errorf("failed to transform claimable balances current: %w", err)
+	}
+	totalRows += claimableBalancesCount
+
+	// Transform native balances current (Phase 1 - Core State Tables)
+	nativeBalancesCount, err := rt.transformNativeBalancesCurrent(ctx, tx, startLedger, endLedger)
+	if err != nil {
+		return fmt.Errorf("failed to transform native balances current: %w", err)
+	}
+	totalRows += nativeBalancesCount
+
+	// Transform trades (Phase 2 - Event Tables)
+	tradesCount, err := rt.transformTrades(ctx, tx, startLedger, endLedger)
+	if err != nil {
+		return fmt.Errorf("failed to transform trades: %w", err)
+	}
+	totalRows += tradesCount
+
+	// Transform effects (Phase 2 - Event Tables)
+	effectsCount, err := rt.transformEffects(ctx, tx, startLedger, endLedger)
+	if err != nil {
+		return fmt.Errorf("failed to transform effects: %w", err)
+	}
+	totalRows += effectsCount
+
+	// Transform contract data current (Phase 3 - Soroban Tables)
+	contractDataCount, err := rt.transformContractDataCurrent(ctx, tx, startLedger, endLedger)
+	if err != nil {
+		return fmt.Errorf("failed to transform contract data current: %w", err)
+	}
+	totalRows += contractDataCount
+
+	// Transform contract code current (Phase 3 - Soroban Tables)
+	contractCodeCount, err := rt.transformContractCodeCurrent(ctx, tx, startLedger, endLedger)
+	if err != nil {
+		return fmt.Errorf("failed to transform contract code current: %w", err)
+	}
+	totalRows += contractCodeCount
+
+	// Transform TTL current (Phase 3 - Soroban Tables)
+	ttlCount, err := rt.transformTTLCurrent(ctx, tx, startLedger, endLedger)
+	if err != nil {
+		return fmt.Errorf("failed to transform TTL current: %w", err)
+	}
+	totalRows += ttlCount
+
+	// Transform evicted keys (Phase 3 - Soroban Tables)
+	evictedKeysCount, err := rt.transformEvictedKeys(ctx, tx, startLedger, endLedger)
+	if err != nil {
+		return fmt.Errorf("failed to transform evicted keys: %w", err)
+	}
+	totalRows += evictedKeysCount
+
+	// Transform restored keys (Phase 3 - Soroban Tables)
+	restoredKeysCount, err := rt.transformRestoredKeys(ctx, tx, startLedger, endLedger)
+	if err != nil {
+		return fmt.Errorf("failed to transform restored keys: %w", err)
+	}
+	totalRows += restoredKeysCount
+
+	// Transform config settings current (Phase 4 - Config Settings)
+	configSettingsCount, err := rt.transformConfigSettingsCurrent(ctx, tx, startLedger, endLedger)
+	if err != nil {
+		return fmt.Errorf("failed to transform config settings current: %w", err)
+	}
+	totalRows += configSettingsCount
 
 	// Update checkpoint
 	if err := rt.checkpoint.SaveWithTx(tx, endLedger); err != nil {
@@ -481,10 +560,24 @@ func (rt *RealtimeTransformer) transformOffersCurrent(ctx context.Context, tx *s
 		// Set last_modified_ledger to the ledger_sequence
 		row.LastModifiedLedger = row.LedgerSequence
 
-		// Parse price string to price_n/price_d (defaults to 0/0 if not parseable)
-		// Bronze stores price as decimal string, we default price_n=0, price_d=1
+		// Parse price string to price_n/price_d and computed decimal
+		// Bronze stores price as fractional string like "10/1" or "1/2"
 		row.PriceN = 0
 		row.PriceD = 1
+		if parts := strings.Split(row.Price, "/"); len(parts) == 2 {
+			if n, err := strconv.Atoi(parts[0]); err == nil {
+				row.PriceN = n
+			}
+			if d, err := strconv.Atoi(parts[1]); err == nil && d > 0 {
+				row.PriceD = d
+			}
+		}
+		// Compute decimal price from fraction
+		if row.PriceD > 0 {
+			row.Price = fmt.Sprintf("%.7f", float64(row.PriceN)/float64(row.PriceD))
+		} else {
+			row.Price = "0"
+		}
 
 		// Sponsor is NULL from bronze
 		// It remains as sql.NullString with Valid=false
@@ -905,6 +998,124 @@ func (rt *RealtimeTransformer) transformContractCalls(ctx context.Context, tx *s
 	return count, nil
 }
 
+// transformLiquidityPoolsCurrent upserts liquidity pools current state for the ledger range
+func (rt *RealtimeTransformer) transformLiquidityPoolsCurrent(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	rows, err := rt.bronzeReader.QueryLiquidityPoolsSnapshot(ctx, startLedger, endLedger)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	count := int64(0)
+
+	for rows.Next() {
+		row := &LiquidityPoolCurrentRow{}
+
+		err := rows.Scan(
+			&row.LiquidityPoolID, &row.PoolType, &row.Fee, &row.TrustlineCount, &row.TotalPoolShares,
+			&row.AssetAType, &row.AssetACode, &row.AssetAIssuer, &row.AssetAAmount,
+			&row.AssetBType, &row.AssetBCode, &row.AssetBIssuer, &row.AssetBAmount,
+			&row.LedgerSequence, &row.ClosedAt, &row.CreatedAt, &row.LedgerRange,
+		)
+
+		if err != nil {
+			return count, fmt.Errorf("failed to scan liquidity pool row: %w", err)
+		}
+
+		// Set last_modified_ledger to the ledger_sequence
+		row.LastModifiedLedger = row.LedgerSequence
+
+		if err := rt.silverWriter.WriteLiquidityPoolCurrent(ctx, tx, row); err != nil {
+			return count, fmt.Errorf("failed to write liquidity pool current: %w", err)
+		}
+
+		count++
+	}
+
+	if err := rows.Err(); err != nil {
+		return count, fmt.Errorf("error iterating liquidity pools: %w", err)
+	}
+
+	return count, nil
+}
+
+// transformClaimableBalancesCurrent upserts claimable balances current state for the ledger range
+func (rt *RealtimeTransformer) transformClaimableBalancesCurrent(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	rows, err := rt.bronzeReader.QueryClaimableBalancesSnapshot(ctx, startLedger, endLedger)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	count := int64(0)
+
+	for rows.Next() {
+		row := &ClaimableBalanceCurrentRow{}
+
+		err := rows.Scan(
+			&row.BalanceID, &row.Sponsor, &row.AssetType, &row.AssetCode, &row.AssetIssuer,
+			&row.Amount, &row.ClaimantsCount, &row.Flags,
+			&row.LedgerSequence, &row.ClosedAt, &row.CreatedAt, &row.LedgerRange,
+		)
+
+		if err != nil {
+			return count, fmt.Errorf("failed to scan claimable balance row: %w", err)
+		}
+
+		// Set last_modified_ledger to the ledger_sequence
+		row.LastModifiedLedger = row.LedgerSequence
+
+		if err := rt.silverWriter.WriteClaimableBalanceCurrent(ctx, tx, row); err != nil {
+			return count, fmt.Errorf("failed to write claimable balance current: %w", err)
+		}
+
+		count++
+	}
+
+	if err := rows.Err(); err != nil {
+		return count, fmt.Errorf("error iterating claimable balances: %w", err)
+	}
+
+	return count, nil
+}
+
+// transformNativeBalancesCurrent upserts native balances current state for the ledger range
+func (rt *RealtimeTransformer) transformNativeBalancesCurrent(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	rows, err := rt.bronzeReader.QueryNativeBalancesSnapshot(ctx, startLedger, endLedger)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	count := int64(0)
+
+	for rows.Next() {
+		row := &NativeBalanceCurrentRow{}
+
+		err := rows.Scan(
+			&row.AccountID, &row.Balance, &row.BuyingLiabilities, &row.SellingLiabilities,
+			&row.NumSubentries, &row.NumSponsoring, &row.NumSponsored, &row.SequenceNumber,
+			&row.LastModifiedLedger, &row.LedgerSequence, &row.LedgerRange,
+		)
+
+		if err != nil {
+			return count, fmt.Errorf("failed to scan native balance row: %w", err)
+		}
+
+		if err := rt.silverWriter.WriteNativeBalanceCurrent(ctx, tx, row); err != nil {
+			return count, fmt.Errorf("failed to write native balance current: %w", err)
+		}
+
+		count++
+	}
+
+	if err := rows.Err(); err != nil {
+		return count, fmt.Errorf("error iterating native balances: %w", err)
+	}
+
+	return count, nil
+}
+
 // parseContractCallGraph parses call graph JSON and creates ContractCallRow and ContractHierarchyRow
 func parseContractCallGraph(
 	callsJSON string,
@@ -972,4 +1183,330 @@ func parseContractCallGraph(
 	}
 
 	return callRows, hierarchyRows, nil
+}
+
+// transformTrades inserts trade events for the ledger range (append-only event stream)
+func (rt *RealtimeTransformer) transformTrades(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	rows, err := rt.bronzeReader.QueryTrades(ctx, startLedger, endLedger)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	count := int64(0)
+
+	for rows.Next() {
+		row := &TradeRow{}
+
+		err := rows.Scan(
+			&row.LedgerSequence, &row.TransactionHash, &row.OperationIndex, &row.TradeIndex,
+			&row.TradeType, &row.TradeTimestamp, &row.SellerAccount,
+			&row.SellingAssetCode, &row.SellingAssetIssuer, &row.SellingAmount,
+			&row.BuyerAccount, &row.BuyingAssetCode, &row.BuyingAssetIssuer, &row.BuyingAmount,
+			&row.Price, &row.CreatedAt, &row.LedgerRange,
+		)
+
+		if err != nil {
+			return count, fmt.Errorf("failed to scan trade row: %w", err)
+		}
+
+		// Parse price string (fractional format like "537735/2882858") to decimal
+		if parts := strings.Split(row.Price, "/"); len(parts) == 2 {
+			n, err1 := strconv.ParseFloat(parts[0], 64)
+			d, err2 := strconv.ParseFloat(parts[1], 64)
+			if err1 == nil && err2 == nil && d > 0 {
+				row.Price = fmt.Sprintf("%.7f", n/d)
+			} else {
+				row.Price = "0"
+			}
+		}
+		// If price is not a fraction, assume it's already a decimal and leave as-is
+
+		if err := rt.silverWriter.WriteTrade(ctx, tx, row); err != nil {
+			return count, fmt.Errorf("failed to write trade: %w", err)
+		}
+
+		count++
+	}
+
+	if err := rows.Err(); err != nil {
+		return count, fmt.Errorf("error iterating trades: %w", err)
+	}
+
+	return count, nil
+}
+
+// transformEffects inserts effect events for the ledger range (append-only event stream)
+func (rt *RealtimeTransformer) transformEffects(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	rows, err := rt.bronzeReader.QueryEffects(ctx, startLedger, endLedger)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	count := int64(0)
+
+	for rows.Next() {
+		row := &EffectRow{}
+
+		err := rows.Scan(
+			&row.LedgerSequence, &row.TransactionHash, &row.OperationIndex, &row.EffectIndex,
+			&row.EffectType, &row.EffectTypeString, &row.AccountID,
+			&row.Amount, &row.AssetCode, &row.AssetIssuer, &row.AssetType,
+			&row.TrustlineLimit, &row.AuthorizeFlag, &row.ClawbackFlag,
+			&row.SignerAccount, &row.SignerWeight, &row.OfferID, &row.SellerAccount,
+			&row.CreatedAt, &row.LedgerRange,
+		)
+
+		if err != nil {
+			return count, fmt.Errorf("failed to scan effect row: %w", err)
+		}
+
+		if err := rt.silverWriter.WriteEffect(ctx, tx, row); err != nil {
+			return count, fmt.Errorf("failed to write effect: %w", err)
+		}
+
+		count++
+	}
+
+	if err := rows.Err(); err != nil {
+		return count, fmt.Errorf("error iterating effects: %w", err)
+	}
+
+	return count, nil
+}
+
+// =============================================================================
+// Phase 3: Soroban Tables
+// =============================================================================
+
+// transformContractDataCurrent upserts contract data current state for the ledger range
+func (rt *RealtimeTransformer) transformContractDataCurrent(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	rows, err := rt.bronzeReader.QueryContractDataSnapshot(ctx, startLedger, endLedger)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	count := int64(0)
+
+	for rows.Next() {
+		row := &ContractDataCurrentRow{}
+
+		err := rows.Scan(
+			&row.ContractID, &row.KeyHash, &row.Durability,
+			&row.AssetType, &row.AssetCode, &row.AssetIssuer,
+			&row.DataValue, &row.LastModifiedLedger, &row.LedgerSequence,
+			&row.ClosedAt, &row.CreatedAt, &row.LedgerRange,
+		)
+
+		if err != nil {
+			return count, fmt.Errorf("failed to scan contract data row: %w", err)
+		}
+
+		if err := rt.silverWriter.WriteContractDataCurrent(ctx, tx, row); err != nil {
+			return count, fmt.Errorf("failed to write contract data current: %w", err)
+		}
+
+		count++
+	}
+
+	if err := rows.Err(); err != nil {
+		return count, fmt.Errorf("error iterating contract data: %w", err)
+	}
+
+	return count, nil
+}
+
+// transformContractCodeCurrent upserts contract code current state for the ledger range
+func (rt *RealtimeTransformer) transformContractCodeCurrent(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	rows, err := rt.bronzeReader.QueryContractCodeSnapshot(ctx, startLedger, endLedger)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	count := int64(0)
+
+	for rows.Next() {
+		row := &ContractCodeCurrentRow{}
+
+		err := rows.Scan(
+			&row.ContractCodeHash, &row.ContractCodeExtV,
+			&row.NDataSegmentBytes, &row.NDataSegments, &row.NElemSegments, &row.NExports,
+			&row.NFunctions, &row.NGlobals, &row.NImports, &row.NInstructions, &row.NTableEntries, &row.NTypes,
+			&row.LastModifiedLedger, &row.LedgerSequence, &row.ClosedAt, &row.CreatedAt, &row.LedgerRange,
+		)
+
+		if err != nil {
+			return count, fmt.Errorf("failed to scan contract code row: %w", err)
+		}
+
+		if err := rt.silverWriter.WriteContractCodeCurrent(ctx, tx, row); err != nil {
+			return count, fmt.Errorf("failed to write contract code current: %w", err)
+		}
+
+		count++
+	}
+
+	if err := rows.Err(); err != nil {
+		return count, fmt.Errorf("error iterating contract code: %w", err)
+	}
+
+	return count, nil
+}
+
+// transformTTLCurrent upserts TTL current state for the ledger range
+func (rt *RealtimeTransformer) transformTTLCurrent(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	rows, err := rt.bronzeReader.QueryTTLSnapshot(ctx, startLedger, endLedger)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	count := int64(0)
+
+	for rows.Next() {
+		row := &TTLCurrentRow{}
+
+		err := rows.Scan(
+			&row.KeyHash, &row.LiveUntilLedgerSeq, &row.TTLRemaining, &row.Expired,
+			&row.LastModifiedLedger, &row.LedgerSequence, &row.ClosedAt, &row.CreatedAt, &row.LedgerRange,
+		)
+
+		if err != nil {
+			return count, fmt.Errorf("failed to scan TTL row: %w", err)
+		}
+
+		if err := rt.silverWriter.WriteTTLCurrent(ctx, tx, row); err != nil {
+			return count, fmt.Errorf("failed to write TTL current: %w", err)
+		}
+
+		count++
+	}
+
+	if err := rows.Err(); err != nil {
+		return count, fmt.Errorf("error iterating TTL entries: %w", err)
+	}
+
+	return count, nil
+}
+
+// transformEvictedKeys inserts evicted key events for the ledger range (append-only event stream)
+func (rt *RealtimeTransformer) transformEvictedKeys(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	rows, err := rt.bronzeReader.QueryEvictedKeys(ctx, startLedger, endLedger)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	count := int64(0)
+
+	for rows.Next() {
+		row := &EvictedKeyRow{}
+
+		err := rows.Scan(
+			&row.ContractID, &row.KeyHash, &row.LedgerSequence,
+			&row.ClosedAt, &row.CreatedAt, &row.LedgerRange,
+		)
+
+		if err != nil {
+			return count, fmt.Errorf("failed to scan evicted key row: %w", err)
+		}
+
+		if err := rt.silverWriter.WriteEvictedKey(ctx, tx, row); err != nil {
+			return count, fmt.Errorf("failed to write evicted key: %w", err)
+		}
+
+		count++
+	}
+
+	if err := rows.Err(); err != nil {
+		return count, fmt.Errorf("error iterating evicted keys: %w", err)
+	}
+
+	return count, nil
+}
+
+// transformRestoredKeys inserts restored key events for the ledger range (append-only event stream)
+func (rt *RealtimeTransformer) transformRestoredKeys(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	rows, err := rt.bronzeReader.QueryRestoredKeys(ctx, startLedger, endLedger)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	count := int64(0)
+
+	for rows.Next() {
+		row := &RestoredKeyRow{}
+
+		err := rows.Scan(
+			&row.ContractID, &row.KeyHash, &row.LedgerSequence,
+			&row.ClosedAt, &row.CreatedAt, &row.LedgerRange,
+		)
+
+		if err != nil {
+			return count, fmt.Errorf("failed to scan restored key row: %w", err)
+		}
+
+		if err := rt.silverWriter.WriteRestoredKey(ctx, tx, row); err != nil {
+			return count, fmt.Errorf("failed to write restored key: %w", err)
+		}
+
+		count++
+	}
+
+	if err := rows.Err(); err != nil {
+		return count, fmt.Errorf("error iterating restored keys: %w", err)
+	}
+
+	return count, nil
+}
+
+// =============================================================================
+// Phase 4: Config Settings
+// =============================================================================
+
+// transformConfigSettingsCurrent upserts config settings current state for the ledger range
+func (rt *RealtimeTransformer) transformConfigSettingsCurrent(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	rows, err := rt.bronzeReader.QueryConfigSettingsSnapshot(ctx, startLedger, endLedger)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	count := int64(0)
+
+	for rows.Next() {
+		row := &ConfigSettingsCurrentRow{}
+
+		err := rows.Scan(
+			&row.ConfigSettingID,
+			&row.LedgerMaxInstructions, &row.TxMaxInstructions,
+			&row.FeeRatePerInstructionsIncrement, &row.TxMemoryLimit,
+			&row.LedgerMaxReadLedgerEntries, &row.LedgerMaxReadBytes,
+			&row.LedgerMaxWriteLedgerEntries, &row.LedgerMaxWriteBytes,
+			&row.TxMaxReadLedgerEntries, &row.TxMaxReadBytes,
+			&row.TxMaxWriteLedgerEntries, &row.TxMaxWriteBytes,
+			&row.ContractMaxSizeBytes, &row.ConfigSettingXDR,
+			&row.LastModifiedLedger, &row.LedgerSequence, &row.ClosedAt, &row.CreatedAt, &row.LedgerRange,
+		)
+
+		if err != nil {
+			return count, fmt.Errorf("failed to scan config settings row: %w", err)
+		}
+
+		if err := rt.silverWriter.WriteConfigSettingsCurrent(ctx, tx, row); err != nil {
+			return count, fmt.Errorf("failed to write config settings current: %w", err)
+		}
+
+		count++
+	}
+
+	if err := rows.Err(); err != nil {
+		return count, fmt.Errorf("error iterating config settings: %w", err)
+	}
+
+	return count, nil
 }

@@ -172,6 +172,7 @@ ducklake-ingestion-obsrvr-v2/docs/BRONZE-LAYER-COMPLETION.md
 ducklake-ingestion-obsrvr-v2/docs/IMPLEMENTATION-STATUS.md
 ducklake-ingestion-obsrvr-v2/docs/SHAPE-UP-CYCLES-15-21.md
 ducklake-ingestion-obsrvr-v2/docs/ROADMAP_TO_100_HUBBLE.md
+handoffs/
 
 # ============================================================================
 # Backup Files
@@ -280,3 +281,4 @@ stellar-query-api/go/stellar-query-api
 contract-event-index-transformer/go/contract-event-index-transformer
 silver-realtime-transformer/go/silver-realtime-transformer
 stellar-query-api/stellar-query-api
+silver-realtime-transformer/silver-realtime-transformer

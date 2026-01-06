@@ -362,16 +362,16 @@ CREATE INDEX IF NOT EXISTS idx_contract_data_last_modified ON contract_data_curr
 -- Current state of claimable balances
 CREATE TABLE IF NOT EXISTS claimable_balances_current (
     balance_id VARCHAR(100) PRIMARY KEY,
-    claimants TEXT,
+    sponsor VARCHAR(56),
     asset_type VARCHAR(20),
     asset_code VARCHAR(12),
     asset_issuer VARCHAR(56),
-    asset VARCHAR(100),
     amount BIGINT,
-    sponsor VARCHAR(56),
+    claimants_count INTEGER,
     flags INTEGER,
     last_modified_ledger BIGINT NOT NULL,
     ledger_sequence BIGINT NOT NULL,
+    closed_at TIMESTAMP,
     created_at TIMESTAMP,
     ledger_range BIGINT,
 
@@ -383,6 +383,277 @@ CREATE TABLE IF NOT EXISTS claimable_balances_current (
 CREATE INDEX IF NOT EXISTS idx_claimable_sponsor ON claimable_balances_current(sponsor);
 CREATE INDEX IF NOT EXISTS idx_claimable_asset ON claimable_balances_current(asset_code, asset_issuer);
 CREATE INDEX IF NOT EXISTS idx_claimable_last_modified ON claimable_balances_current(last_modified_ledger DESC);
+
+-- Table: liquidity_pools_current
+-- Current state of all liquidity pools
+CREATE TABLE IF NOT EXISTS liquidity_pools_current (
+    liquidity_pool_id VARCHAR(100) PRIMARY KEY,
+    pool_type VARCHAR(50),
+    fee INTEGER,
+    trustline_count INTEGER,
+    total_pool_shares BIGINT,
+    asset_a_type VARCHAR(20),
+    asset_a_code VARCHAR(12),
+    asset_a_issuer VARCHAR(56),
+    asset_a_amount BIGINT,
+    asset_b_type VARCHAR(20),
+    asset_b_code VARCHAR(12),
+    asset_b_issuer VARCHAR(56),
+    asset_b_amount BIGINT,
+    last_modified_ledger BIGINT NOT NULL,
+    ledger_sequence BIGINT NOT NULL,
+    closed_at TIMESTAMP,
+    created_at TIMESTAMP,
+    ledger_range BIGINT,
+
+    -- Metadata
+    inserted_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_lp_asset_a ON liquidity_pools_current(asset_a_code, asset_a_issuer);
+CREATE INDEX IF NOT EXISTS idx_lp_asset_b ON liquidity_pools_current(asset_b_code, asset_b_issuer);
+CREATE INDEX IF NOT EXISTS idx_lp_last_modified ON liquidity_pools_current(last_modified_ledger DESC);
+
+-- Table: native_balances_current
+-- Current state of native XLM balances (extracted from accounts)
+CREATE TABLE IF NOT EXISTS native_balances_current (
+    account_id VARCHAR(56) PRIMARY KEY,
+    balance BIGINT,
+    buying_liabilities BIGINT,
+    selling_liabilities BIGINT,
+    num_subentries INTEGER,
+    num_sponsoring INTEGER,
+    num_sponsored INTEGER,
+    sequence_number BIGINT,
+    last_modified_ledger BIGINT NOT NULL,
+    ledger_sequence BIGINT NOT NULL,
+    ledger_range BIGINT,
+
+    -- Metadata
+    inserted_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_native_balance ON native_balances_current(balance DESC);
+CREATE INDEX IF NOT EXISTS idx_native_last_modified ON native_balances_current(last_modified_ledger DESC);
+
+-- ============================================================================
+-- PHASE 2: EVENT STREAM TABLES (2 tables)
+-- ============================================================================
+
+-- Table: trades
+-- DEX trade history (append-only event stream)
+CREATE TABLE IF NOT EXISTS trades (
+    ledger_sequence BIGINT NOT NULL,
+    transaction_hash TEXT NOT NULL,
+    operation_index INTEGER NOT NULL,
+    trade_index INTEGER NOT NULL,
+    trade_type TEXT NOT NULL,
+    trade_timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
+    seller_account TEXT NOT NULL,
+    selling_asset_code TEXT,
+    selling_asset_issuer TEXT,
+    selling_amount BIGINT NOT NULL,
+    buyer_account TEXT NOT NULL,
+    buying_asset_code TEXT,
+    buying_asset_issuer TEXT,
+    buying_amount BIGINT NOT NULL,
+    price DECIMAL(20,7) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    ledger_range BIGINT,
+    inserted_at TIMESTAMP DEFAULT NOW(),
+    PRIMARY KEY (ledger_sequence, transaction_hash, operation_index, trade_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_trades_seller_account ON trades(seller_account, trade_timestamp);
+CREATE INDEX IF NOT EXISTS idx_trades_buyer_account ON trades(buyer_account, trade_timestamp);
+CREATE INDEX IF NOT EXISTS idx_trades_asset_pair ON trades(selling_asset_code, buying_asset_code, trade_timestamp);
+CREATE INDEX IF NOT EXISTS idx_trades_ledger_range ON trades(ledger_range);
+
+-- Table: effects
+-- State change events (append-only event stream)
+CREATE TABLE IF NOT EXISTS effects (
+    ledger_sequence BIGINT NOT NULL,
+    transaction_hash TEXT NOT NULL,
+    operation_index INTEGER NOT NULL,
+    effect_index INTEGER NOT NULL,
+    effect_type INTEGER NOT NULL,
+    effect_type_string TEXT NOT NULL,
+    account_id TEXT,
+    amount TEXT,
+    asset_code TEXT,
+    asset_issuer TEXT,
+    asset_type TEXT,
+    trustline_limit TEXT,
+    authorize_flag BOOLEAN,
+    clawback_flag BOOLEAN,
+    signer_account TEXT,
+    signer_weight INTEGER,
+    offer_id BIGINT,
+    seller_account TEXT,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    ledger_range BIGINT,
+    inserted_at TIMESTAMP DEFAULT NOW(),
+    PRIMARY KEY (ledger_sequence, transaction_hash, operation_index, effect_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_effects_account_id ON effects(account_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_effects_type ON effects(effect_type, created_at);
+CREATE INDEX IF NOT EXISTS idx_effects_ledger_range ON effects(ledger_range);
+
+-- ============================================================================
+-- PHASE 3: SOROBAN TABLES (5 tables)
+-- ============================================================================
+
+-- Table: contract_data_current
+-- Current state of contract storage entries (UPSERT pattern)
+CREATE TABLE IF NOT EXISTS contract_data_current (
+    contract_id TEXT NOT NULL,
+    key_hash TEXT NOT NULL,
+    durability TEXT NOT NULL,  -- "temporary" or "persistent"
+    asset_type TEXT,
+    asset_code TEXT,
+    asset_issuer TEXT,
+    data_value TEXT,  -- XDR encoded value
+    last_modified_ledger BIGINT NOT NULL,
+    ledger_sequence BIGINT NOT NULL,
+    closed_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    ledger_range BIGINT NOT NULL,
+    updated_at TIMESTAMP DEFAULT NOW(),
+    PRIMARY KEY (contract_id, key_hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_contract_data_contract_id ON contract_data_current(contract_id);
+CREATE INDEX IF NOT EXISTS idx_contract_data_asset ON contract_data_current(asset_code, asset_issuer) WHERE asset_code IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_contract_data_durability ON contract_data_current(durability);
+CREATE INDEX IF NOT EXISTS idx_contract_data_ledger_range ON contract_data_current(ledger_range);
+
+-- Table: contract_code_current
+-- Current state of deployed contract WASM code (UPSERT pattern)
+CREATE TABLE IF NOT EXISTS contract_code_current (
+    contract_code_hash TEXT PRIMARY KEY,
+    contract_code_ext_v TEXT,
+    n_data_segment_bytes INTEGER,
+    n_data_segments INTEGER,
+    n_elem_segments INTEGER,
+    n_exports INTEGER,
+    n_functions INTEGER,
+    n_globals INTEGER,
+    n_imports INTEGER,
+    n_instructions INTEGER,
+    n_table_entries INTEGER,
+    n_types INTEGER,
+    last_modified_ledger BIGINT NOT NULL,
+    ledger_sequence BIGINT NOT NULL,
+    closed_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    ledger_range BIGINT NOT NULL,
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_contract_code_ledger_range ON contract_code_current(ledger_range);
+CREATE INDEX IF NOT EXISTS idx_contract_code_n_functions ON contract_code_current(n_functions);
+
+-- Table: ttl_current
+-- Current state of TTL entries for contract storage (UPSERT pattern)
+CREATE TABLE IF NOT EXISTS ttl_current (
+    key_hash TEXT PRIMARY KEY,
+    live_until_ledger_seq BIGINT NOT NULL,
+    ttl_remaining INTEGER,
+    expired BOOLEAN NOT NULL,
+    last_modified_ledger BIGINT NOT NULL,
+    ledger_sequence BIGINT NOT NULL,
+    closed_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    ledger_range BIGINT NOT NULL,
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ttl_expiration ON ttl_current(live_until_ledger_seq);
+CREATE INDEX IF NOT EXISTS idx_ttl_expired ON ttl_current(expired) WHERE expired = true;
+CREATE INDEX IF NOT EXISTS idx_ttl_ledger_range ON ttl_current(ledger_range);
+
+-- Table: evicted_keys
+-- Evicted contract storage key events (append-only event stream)
+CREATE TABLE IF NOT EXISTS evicted_keys (
+    contract_id TEXT NOT NULL,
+    key_hash TEXT NOT NULL,
+    ledger_sequence BIGINT NOT NULL,
+    closed_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    ledger_range BIGINT NOT NULL,
+    inserted_at TIMESTAMP DEFAULT NOW(),
+    PRIMARY KEY (contract_id, key_hash, ledger_sequence)
+);
+
+CREATE INDEX IF NOT EXISTS idx_evicted_keys_contract ON evicted_keys(contract_id);
+CREATE INDEX IF NOT EXISTS idx_evicted_keys_ledger_range ON evicted_keys(ledger_range);
+CREATE INDEX IF NOT EXISTS idx_evicted_keys_closed_at ON evicted_keys(closed_at DESC);
+
+-- Table: restored_keys
+-- Restored contract storage key events (append-only event stream)
+CREATE TABLE IF NOT EXISTS restored_keys (
+    contract_id TEXT NOT NULL,
+    key_hash TEXT NOT NULL,
+    ledger_sequence BIGINT NOT NULL,
+    closed_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    ledger_range BIGINT NOT NULL,
+    inserted_at TIMESTAMP DEFAULT NOW(),
+    PRIMARY KEY (contract_id, key_hash, ledger_sequence)
+);
+
+CREATE INDEX IF NOT EXISTS idx_restored_keys_contract ON restored_keys(contract_id);
+CREATE INDEX IF NOT EXISTS idx_restored_keys_ledger_range ON restored_keys(ledger_range);
+CREATE INDEX IF NOT EXISTS idx_restored_keys_closed_at ON restored_keys(closed_at DESC);
+
+-- ============================================================================
+-- PHASE 4: CONFIG SETTINGS (1 table)
+-- ============================================================================
+
+-- Table: config_settings_current
+-- Current Soroban network configuration parameters (UPSERT pattern)
+-- Extracted from Bronze config_settings_snapshot_v1
+CREATE TABLE IF NOT EXISTS config_settings_current (
+    config_setting_id INTEGER PRIMARY KEY,
+
+    -- Instruction limits
+    ledger_max_instructions BIGINT,
+    tx_max_instructions BIGINT,
+    fee_rate_per_instructions_increment BIGINT,
+    tx_memory_limit BIGINT,
+
+    -- Ledger read/write limits
+    ledger_max_read_ledger_entries BIGINT,
+    ledger_max_read_bytes BIGINT,
+    ledger_max_write_ledger_entries BIGINT,
+    ledger_max_write_bytes BIGINT,
+
+    -- Transaction read/write limits
+    tx_max_read_ledger_entries BIGINT,
+    tx_max_read_bytes BIGINT,
+    tx_max_write_ledger_entries BIGINT,
+    tx_max_write_bytes BIGINT,
+
+    -- Contract limits
+    contract_max_size_bytes BIGINT,
+
+    -- Raw XDR for additional settings
+    config_setting_xdr TEXT NOT NULL,
+
+    -- Metadata
+    last_modified_ledger INTEGER NOT NULL,
+    ledger_sequence BIGINT NOT NULL,
+    closed_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    ledger_range BIGINT NOT NULL,
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_config_settings_ledger_range ON config_settings_current(ledger_range);
+CREATE INDEX IF NOT EXISTS idx_config_settings_ledger_sequence ON config_settings_current(ledger_sequence);
 
 -- ============================================================================
 -- CHECKPOINT TABLE

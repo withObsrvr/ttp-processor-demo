@@ -43,16 +43,28 @@ Silver tables are pre-processed for common analytics queries. Use Silver when yo
 │                                                                  │
 │ Core Tables:                                                     │
 │   accounts_current           - Latest state for each account    │
-│                                (balance, signers, thresholds)   │
 │   enriched_operations        - Operations with decoded types    │
 │   token_transfers            - Unified payment/path payment     │
 │   contract_invocation_calls  - Smart contract call graph        │
 │                                                                  │
-│ Additional Tables:                                               │
+│ State Tables (Current Values):                                   │
 │   trustlines_current         - Current trustline states         │
 │   offers_current             - Current DEX order book offers    │
 │   claimable_balances_current - Current claimable balances       │
-│   contract_data_current      - Current Soroban contract state   │
+│   liquidity_pools_current    - Current AMM pool states          │
+│   native_balances_current    - Current XLM balances             │
+│                                                                  │
+│ Event Tables (Append-Only):                                      │
+│   trades                     - DEX trade history                 │
+│   effects                    - Operation side effects            │
+│                                                                  │
+│ Soroban Tables:                                                  │
+│   contract_data_current      - Current contract state data       │
+│   contract_code_current      - Deployed contract WASM code       │
+│   ttl_current                - Contract data TTL/expiration      │
+│   evicted_keys               - Expired contract data entries     │
+│   restored_keys              - Restored contract data entries    │
+│   config_settings_current    - Network configuration params      │
 │                                                                  │
 │ API: /api/v1/silver/*                                           │
 └─────────────────────────────────────────────────────────────────┘
@@ -158,6 +170,142 @@ Smart contract call graph for Soroban transactions.
 # Get call graph for a transaction
 curl "https://gateway.withobsrvr.com/api/v1/silver/tx/{hash}/call-graph"
 ```
+
+### liquidity_pools_current
+
+Current state of AMM (Automated Market Maker) liquidity pools.
+
+| Column | Description |
+|--------|-------------|
+| `liquidity_pool_id` | Unique pool identifier (hash) |
+| `type` | Pool type (constant_product) |
+| `fee` | Fee in basis points (30 = 0.3%) |
+| `trustline_count` | Number of accounts holding pool shares |
+| `total_pool_shares` | Total pool shares outstanding |
+| `asset_a_type` | First asset type (native, credit_alphanum4, etc.) |
+| `asset_a_code` | First asset code |
+| `asset_a_issuer` | First asset issuer |
+| `asset_a_amount` | Amount of first asset in pool |
+| `asset_b_type` | Second asset type |
+| `asset_b_code` | Second asset code |
+| `asset_b_issuer` | Second asset issuer |
+| `asset_b_amount` | Amount of second asset in pool |
+| `last_modified_ledger` | When pool was last changed |
+
+### native_balances_current
+
+Current XLM balances for all accounts. More efficient than accounts_current when you only need balances.
+
+| Column | Description |
+|--------|-------------|
+| `account_id` | Stellar public key (G...) |
+| `balance` | XLM balance in stroops |
+| `last_modified_ledger` | When balance was last changed |
+
+### trades
+
+DEX trade history (append-only event stream).
+
+| Column | Description |
+|--------|-------------|
+| `history_operation_id` | Operation that created this trade |
+| `order` | Order within the operation |
+| `ledger_closed_at` | Timestamp of trade |
+| `selling_account_id` | Account that sold |
+| `selling_asset_type` | Sold asset type |
+| `selling_asset_code` | Sold asset code |
+| `selling_asset_issuer` | Sold asset issuer |
+| `selling_amount` | Amount sold |
+| `buying_account_id` | Account that bought |
+| `buying_asset_type` | Bought asset type |
+| `buying_asset_code` | Bought asset code |
+| `buying_asset_issuer` | Bought asset issuer |
+| `buying_amount` | Amount bought |
+| `price_n` | Price numerator |
+| `price_d` | Price denominator |
+| `type` | Trade type (orderbook, liquidity_pool) |
+| `liquidity_pool_id` | Pool ID if AMM trade (null for orderbook) |
+
+### effects
+
+Operation side effects (append-only event stream). Effects provide granular details about what changed.
+
+| Column | Description |
+|--------|-------------|
+| `history_operation_id` | Parent operation |
+| `order` | Order within operation |
+| `type` | Effect type (account_created, trustline_created, etc.) |
+| `type_string` | Human-readable effect type |
+| `details` | JSON with effect-specific data |
+| `ledger_sequence` | Block number |
+| `closed_at` | Timestamp |
+
+### contract_code_current
+
+Deployed Soroban smart contract WASM code.
+
+| Column | Description |
+|--------|-------------|
+| `contract_code_hash` | Hash of the WASM code |
+| `contract_code_ext_v` | Extension version |
+| `last_modified_ledger` | When code was deployed/updated |
+| `ledger_entry_change` | Change type (created, updated) |
+
+### ttl_current
+
+Time-to-live (TTL) for Soroban contract data entries. Tracks when data expires.
+
+| Column | Description |
+|--------|-------------|
+| `key_hash` | Hash of the contract data key |
+| `live_until_ledger_seq` | Ledger when entry expires |
+| `last_modified_ledger` | When TTL was last updated |
+| `ledger_entry_change` | Change type |
+
+### evicted_keys
+
+Contract data entries that have expired and been evicted from the ledger.
+
+| Column | Description |
+|--------|-------------|
+| `contract_id` | Contract that owned the data |
+| `key_hash` | Hash of the evicted key |
+| `ledger_sequence` | Ledger when eviction occurred |
+| `closed_at` | Timestamp of eviction |
+
+### restored_keys
+
+Contract data entries that have been restored after eviction.
+
+| Column | Description |
+|--------|-------------|
+| `contract_id` | Contract that owns the data |
+| `key_hash` | Hash of the restored key |
+| `ledger_sequence` | Ledger when restoration occurred |
+| `closed_at` | Timestamp of restoration |
+
+### config_settings_current
+
+Soroban network configuration parameters. These control limits and fees for smart contracts.
+
+| Column | Description |
+|--------|-------------|
+| `config_setting_id` | Configuration parameter ID |
+| `ledger_max_instructions` | Max instructions per ledger |
+| `tx_max_instructions` | Max instructions per transaction |
+| `fee_rate_per_instructions_increment` | Fee rate for instructions |
+| `tx_memory_limit` | Max memory per transaction |
+| `ledger_max_read_ledger_entries` | Max ledger entries read per ledger |
+| `ledger_max_read_bytes` | Max bytes read per ledger |
+| `ledger_max_write_ledger_entries` | Max ledger entries written per ledger |
+| `ledger_max_write_bytes` | Max bytes written per ledger |
+| `tx_max_read_ledger_entries` | Max ledger entries read per transaction |
+| `tx_max_read_bytes` | Max bytes read per transaction |
+| `tx_max_write_ledger_entries` | Max ledger entries written per transaction |
+| `tx_max_write_bytes` | Max bytes written per transaction |
+| `contract_max_size_bytes` | Max WASM contract size |
+| `config_setting_xdr` | Raw XDR for additional settings |
+| `last_modified_ledger` | When setting was last changed |
 
 ## Stroops and Amounts
 

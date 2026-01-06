@@ -814,3 +814,300 @@ func operationTypeName(opType int32) string {
 	}
 	return fmt.Sprintf("UNKNOWN_%d", opType)
 }
+
+// ============================================
+// PHASE 6: STATE TABLE TYPES (Offers, Liquidity Pools, Claimable Balances)
+// ============================================
+
+// OfferCurrent represents the current state of a DEX offer
+type OfferCurrent struct {
+	OfferID            int64    `json:"offer_id"`
+	SellerID           string   `json:"seller_id"`
+	Selling            AssetInfo `json:"selling"`
+	Buying             AssetInfo `json:"buying"`
+	Amount             string   `json:"amount"`
+	Price              string   `json:"price"`
+	PriceR             PriceR   `json:"price_r"`
+	LastModifiedLedger int64    `json:"last_modified_ledger"`
+	Sponsor            *string  `json:"sponsor,omitempty"`
+}
+
+// PriceR represents a rational price (numerator/denominator)
+type PriceR struct {
+	N int `json:"n"`
+	D int `json:"d"`
+}
+
+// OfferFilters contains filter options for offer queries
+type OfferFilters struct {
+	SellerID           string
+	SellingAssetCode   string
+	SellingAssetIssuer string
+	BuyingAssetCode    string
+	BuyingAssetIssuer  string
+	Limit              int
+	Cursor             *OfferCursor
+}
+
+// LiquidityPoolCurrent represents the current state of a liquidity pool
+type LiquidityPoolCurrent struct {
+	PoolID             string            `json:"pool_id"`
+	PoolType           string            `json:"pool_type"`
+	FeeBP              int               `json:"fee_bp"`
+	TrustlineCount     int               `json:"trustline_count"`
+	TotalShares        string            `json:"total_shares"`
+	Reserves           []PoolReserve     `json:"reserves"`
+	LastModifiedLedger int64             `json:"last_modified_ledger"`
+}
+
+// PoolReserve represents a reserve in a liquidity pool
+type PoolReserve struct {
+	Asset  AssetInfo `json:"asset"`
+	Amount string    `json:"amount"`
+}
+
+// LiquidityPoolFilters contains filter options for liquidity pool queries
+type LiquidityPoolFilters struct {
+	AssetCode   string
+	AssetIssuer string
+	Limit       int
+	Cursor      *LiquidityPoolCursor
+}
+
+// ClaimableBalanceCurrent represents the current state of a claimable balance
+type ClaimableBalanceCurrent struct {
+	BalanceID          string    `json:"balance_id"`
+	Sponsor            *string   `json:"sponsor,omitempty"`
+	Asset              AssetInfo `json:"asset"`
+	Amount             string    `json:"amount"`
+	ClaimantsCount     int       `json:"claimants_count"`
+	Flags              int       `json:"flags"`
+	LastModifiedLedger int64     `json:"last_modified_ledger"`
+}
+
+// ClaimableBalanceFilters contains filter options for claimable balance queries
+type ClaimableBalanceFilters struct {
+	Sponsor     string
+	AssetCode   string
+	AssetIssuer string
+	Limit       int
+	Cursor      *ClaimableBalanceCursor
+}
+
+// ============================================
+// PHASE 7: EVENT TABLE TYPES
+// ============================================
+
+// SilverTrade represents a trade from the Silver trades table
+type SilverTrade struct {
+	LedgerSequence  int64     `json:"ledger_sequence"`
+	TransactionHash string    `json:"transaction_hash"`
+	OperationIndex  int       `json:"operation_index"`
+	TradeIndex      int       `json:"trade_index"`
+	TradeType       string    `json:"trade_type"` // "orderbook" or "liquidity_pool"
+	Timestamp       time.Time `json:"timestamp"`
+	Seller          struct {
+		AccountID string `json:"account_id"`
+	} `json:"seller"`
+	Selling struct {
+		Asset  AssetInfo `json:"asset"`
+		Amount string    `json:"amount"`
+	} `json:"selling"`
+	Buyer struct {
+		AccountID string `json:"account_id"`
+	} `json:"buyer"`
+	Buying struct {
+		Asset  AssetInfo `json:"asset"`
+		Amount string    `json:"amount"`
+	} `json:"buying"`
+	Price string `json:"price"`
+}
+
+// TradeFilters contains filter options for trade queries
+type TradeFilters struct {
+	SellerAccount      string
+	BuyerAccount       string
+	AccountID          string // Either seller OR buyer
+	SellingAssetCode   string
+	SellingAssetIssuer string
+	BuyingAssetCode    string
+	BuyingAssetIssuer  string
+	StartTime          time.Time
+	EndTime            time.Time
+	Limit              int
+	Cursor             *TradeCursor
+}
+
+// TradeStats represents aggregated trade statistics
+type TradeStats struct {
+	Group         string  `json:"group"`
+	TradeCount    int64   `json:"trade_count"`
+	VolumeSelling string  `json:"volume_selling"`
+	VolumeBuying  string  `json:"volume_buying"`
+	UniqueSellers int64   `json:"unique_sellers"`
+	UniqueBuyers  int64   `json:"unique_buyers"`
+	AvgPrice      *string `json:"avg_price,omitempty"`
+}
+
+// SilverEffect represents an effect from the Silver effects table
+type SilverEffect struct {
+	LedgerSequence   int64     `json:"ledger_sequence"`
+	TransactionHash  string    `json:"transaction_hash"`
+	OperationIndex   int       `json:"operation_index"`
+	EffectIndex      int       `json:"effect_index"`
+	EffectType       int       `json:"effect_type"`
+	EffectTypeString string    `json:"effect_type_string"`
+	AccountID        *string   `json:"account_id,omitempty"`
+	Asset            *AssetInfo `json:"asset,omitempty"`
+	Amount           *string   `json:"amount,omitempty"`
+	TrustlineLimit   *string   `json:"trustline_limit,omitempty"`
+	AuthorizeFlag    *bool     `json:"authorize_flag,omitempty"`
+	ClawbackFlag     *bool     `json:"clawback_flag,omitempty"`
+	SignerAccount    *string   `json:"signer_account,omitempty"`
+	SignerWeight     *int      `json:"signer_weight,omitempty"`
+	OfferID          *int64    `json:"offer_id,omitempty"`
+	SellerAccount    *string   `json:"seller_account,omitempty"`
+	Timestamp        time.Time `json:"timestamp"`
+}
+
+// EffectFilters contains filter options for effect queries
+type EffectFilters struct {
+	AccountID       string
+	EffectType      string // Can be int (as string) or effect type name
+	LedgerSequence  int64
+	TransactionHash string
+	StartTime       time.Time
+	EndTime         time.Time
+	Limit           int
+	Cursor          *EffectCursor
+}
+
+// EffectTypeCount represents an effect type with its count
+type EffectTypeCount struct {
+	Type  int    `json:"type"`
+	Name  string `json:"name"`
+	Count int64  `json:"count"`
+}
+
+// ============================================
+// PHASE 8: SOROBAN TABLE TYPES
+// ============================================
+
+// ContractCode represents a deployed Soroban WASM contract
+type ContractCode struct {
+	Hash    string              `json:"hash"`
+	Metrics ContractCodeMetrics `json:"metrics"`
+	LastModifiedLedger int64   `json:"last_modified_ledger"`
+	CreatedAt          time.Time `json:"created_at"`
+}
+
+// ContractCodeMetrics contains WASM complexity metrics
+type ContractCodeMetrics struct {
+	NFunctions        int `json:"n_functions"`
+	NInstructions     int `json:"n_instructions"`
+	NDataSegments     int `json:"n_data_segments"`
+	NDataSegmentBytes int `json:"n_data_segment_bytes"`
+	NElemSegments     int `json:"n_elem_segments"`
+	NExports          int `json:"n_exports"`
+	NGlobals          int `json:"n_globals"`
+	NImports          int `json:"n_imports"`
+	NTableEntries     int `json:"n_table_entries"`
+	NTypes            int `json:"n_types"`
+}
+
+// TTLEntry represents a TTL entry for a Soroban storage key
+type TTLEntry struct {
+	KeyHash            string    `json:"key_hash"`
+	LiveUntilLedger    int64     `json:"live_until_ledger"`
+	LedgersRemaining   int64     `json:"ledgers_remaining,omitempty"`
+	Expired            bool      `json:"expired"`
+	LastModifiedLedger int64     `json:"last_modified_ledger"`
+	ClosedAt           time.Time `json:"closed_at"`
+}
+
+// TTLFilters contains filter options for TTL queries
+type TTLFilters struct {
+	KeyHash       string
+	WithinLedgers int64  // Entries expiring within N ledgers
+	ExpiredOnly   bool   // Only show expired entries
+	Limit         int
+	Cursor        *TTLCursor
+}
+
+// EvictedKey represents a storage key that was evicted
+type EvictedKey struct {
+	ContractID     string    `json:"contract_id"`
+	KeyHash        string    `json:"key_hash"`
+	LedgerSequence int64     `json:"ledger_sequence"`
+	ClosedAt       time.Time `json:"closed_at"`
+}
+
+// EvictionFilters contains filter options for eviction/restoration queries
+type EvictionFilters struct {
+	ContractID string
+	Limit      int
+	Cursor     *EvictionCursor
+}
+
+// RestoredKey represents a storage key that was restored
+type RestoredKey struct {
+	ContractID     string    `json:"contract_id"`
+	KeyHash        string    `json:"key_hash"`
+	LedgerSequence int64     `json:"ledger_sequence"`
+	ClosedAt       time.Time `json:"closed_at"`
+}
+
+// SorobanConfig represents Soroban network configuration
+type SorobanConfig struct {
+	Instructions  SorobanInstructionLimits `json:"instructions"`
+	Memory        SorobanMemoryLimits      `json:"memory"`
+	LedgerLimits  SorobanIOLimits          `json:"ledger_limits"`
+	TxLimits      SorobanIOLimits          `json:"tx_limits"`
+	Contract      SorobanContractLimits    `json:"contract"`
+	LastModifiedLedger int64               `json:"last_modified_ledger"`
+	UpdatedAt     time.Time                `json:"updated_at"`
+}
+
+// SorobanInstructionLimits contains instruction-related limits
+type SorobanInstructionLimits struct {
+	LedgerMax          int64 `json:"ledger_max"`
+	TxMax              int64 `json:"tx_max"`
+	FeeRatePerIncrement int64 `json:"fee_rate_per_increment"`
+}
+
+// SorobanMemoryLimits contains memory-related limits
+type SorobanMemoryLimits struct {
+	TxLimitBytes int64 `json:"tx_limit_bytes"`
+}
+
+// SorobanIOLimits contains read/write limits
+type SorobanIOLimits struct {
+	MaxReadEntries  int64 `json:"max_read_entries"`
+	MaxReadBytes    int64 `json:"max_read_bytes"`
+	MaxWriteEntries int64 `json:"max_write_entries"`
+	MaxWriteBytes   int64 `json:"max_write_bytes"`
+}
+
+// SorobanContractLimits contains contract-related limits
+type SorobanContractLimits struct {
+	MaxSizeBytes int64 `json:"max_size_bytes"`
+}
+
+// ContractData represents a contract storage entry
+type ContractData struct {
+	ContractID         string     `json:"contract_id"`
+	KeyHash            string     `json:"key_hash"`
+	Durability         string     `json:"durability"`
+	DataValueXDR       *string    `json:"data_value_xdr,omitempty"`
+	Asset              *AssetInfo `json:"asset,omitempty"`
+	LastModifiedLedger int64      `json:"last_modified_ledger"`
+}
+
+// ContractDataFilters contains filter options for contract data queries
+type ContractDataFilters struct {
+	ContractID string
+	KeyHash    string
+	Durability string // "persistent" or "temporary"
+	Limit      int
+	Cursor     *ContractDataCursor
+}
