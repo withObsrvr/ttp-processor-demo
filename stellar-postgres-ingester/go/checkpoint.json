@@ -1,9 +1,0 @@
-{
-  "last_ledger": 1005349,
-  "last_ledger_hash": "b901694945e053279c64e24896a49b2d95fe230979ed73bb340e1b6ec0e19307",
-  "last_ledger_range": 1000000,
-  "last_update_time": "2025-12-15T21:59:20Z",
-  "total_ledgers": 5350,
-  "total_transactions": 5462,
-  "total_operations": 6132
-}
