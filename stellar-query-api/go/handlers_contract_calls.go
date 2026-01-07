@@ -350,9 +350,9 @@ func (h *ContractCallHandlers) HandleTopContracts(w http.ResponseWriter, r *http
 	}
 
 	// Validate period
-	validPeriods := map[string]bool{"24h": true, "7d": true, "30d": true}
+	validPeriods := map[string]bool{"24h": true, "7d": true, "30d": true, "all": true}
 	if !validPeriods[period] {
-		respondError(w, "invalid period: must be 24h, 7d, or 30d", http.StatusBadRequest)
+		respondError(w, "invalid period: must be 24h, 7d, 30d, or all", http.StatusBadRequest)
 		return
 	}
 

@@ -54,8 +54,21 @@ func (h *HotReader) GetLowWatermark() (int64, error) {
 	return watermark.Int64, nil
 }
 
-func (h *HotReader) QueryLedgers(ctx context.Context, start, end int64, limit int) (*sql.Rows, error) {
-	query := `
+func (h *HotReader) QueryLedgers(ctx context.Context, start, end int64, limit int, sort string) (*sql.Rows, error) {
+	// Map sort parameter to ORDER BY clause
+	orderBy := "sequence ASC" // default
+	switch sort {
+	case "sequence_desc":
+		orderBy = "sequence DESC"
+	case "closed_at_asc":
+		orderBy = "closed_at ASC"
+	case "closed_at_desc":
+		orderBy = "closed_at DESC"
+	case "tx_count_desc":
+		orderBy = "transaction_count DESC, sequence DESC"
+	}
+
+	query := fmt.Sprintf(`
 		SELECT
 			sequence,
 			ledger_hash,
@@ -82,9 +95,9 @@ func (h *HotReader) QueryLedgers(ctx context.Context, start, end int64, limit in
 			COALESCE(ingestion_timestamp, closed_at) as created_at
 		FROM ledgers_row_v2
 		WHERE sequence >= $1 AND sequence <= $2
-		ORDER BY sequence ASC
+		ORDER BY %s
 		LIMIT $3
-	`
+	`, orderBy)
 
 	rows, err := h.db.QueryContext(ctx, query, start, end, limit)
 	if err != nil {
@@ -332,7 +345,7 @@ func (h *HotReader) QueryContractEvents(ctx context.Context, start, end int64, l
 			event_index,
 			event_type,
 			topics_json,
-			data_json,
+			data_decoded,
 			closed_at,
 			ledger_range,
 			era_id,

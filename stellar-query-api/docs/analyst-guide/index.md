@@ -2,6 +2,13 @@
 
 Obsrvr Lake provides analytics-ready access to Stellar and Soroban blockchain data. This guide helps analysts, developers, and data teams get started quickly.
 
+## New to Obsrvr Lake?
+
+| Resource | Time | Description |
+|----------|------|-------------|
+| [Getting Started](./getting-started.md) | 1 hour | Structured onboarding with hands-on examples |
+| [First 10 Queries](./first-10-queries.md) | 15 min | Copy-paste ready queries for common tasks |
+
 ## Who is this for?
 
 - **Analysts** exploring on-chain activity, token flows, and contract interactions
@@ -55,7 +62,7 @@ curl -H "Authorization: Api-Key YOUR_API_KEY" \
 │   │ operations, effects,       │ enriched_operations, effects,  │ │
 │   │ trades, accounts,          │ token_transfers, ttl_current,  │ │
 │   │ contract_events            │ liquidity_pools_current, ...   │ │
-│   │                            │ (17 tables total)              │ │
+│   │                            │ (18 tables total)              │ │
 │   └─────────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -64,7 +71,12 @@ The API automatically queries both hot and cold storage, merging results seamles
 
 ## What's Next?
 
-- [Data Model](./data-model.md) - Understand Bronze vs Silver layers
+**Start Here:**
+- [Getting Started](./getting-started.md) - One-hour structured onboarding
+- [First 10 Queries](./first-10-queries.md) - Essential queries for common tasks
+
+**Deep Dives:**
+- [Data Model](./data-model.md) - Understand Bronze vs Silver layers (19 + 18 tables)
 - [API Reference](./common-queries.md) - Complete endpoint documentation with examples
 - [nebu for Analysts](./nebu-for-analysts.md) - Build custom data pipelines (power users)
 - [Hubble Comparison](./vs-hubble.md) - How Obsrvr Lake compares to Stellar Hubble

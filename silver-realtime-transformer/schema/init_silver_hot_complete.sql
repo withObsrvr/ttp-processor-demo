@@ -26,11 +26,11 @@ CREATE TABLE IF NOT EXISTS enriched_history_operations (
     -- Asset fields (various operations)
     source_account_muxed VARCHAR(100),
     asset VARCHAR(100),
-    asset_type VARCHAR(20),
+    asset_type VARCHAR(25),
     asset_code VARCHAR(12),
     asset_issuer VARCHAR(56),
     source_asset VARCHAR(100),
-    source_asset_type VARCHAR(20),
+    source_asset_type VARCHAR(25),
     source_asset_code VARCHAR(12),
     source_asset_issuer VARCHAR(56),
 
@@ -50,11 +50,11 @@ CREATE TABLE IF NOT EXISTS enriched_history_operations (
     -- Offer fields
     offer_id BIGINT,
     selling_asset VARCHAR(100),
-    selling_asset_type VARCHAR(20),
+    selling_asset_type VARCHAR(25),
     selling_asset_code VARCHAR(12),
     selling_asset_issuer VARCHAR(56),
     buying_asset VARCHAR(100),
-    buying_asset_type VARCHAR(20),
+    buying_asset_type VARCHAR(25),
     buying_asset_code VARCHAR(12),
     buying_asset_issuer VARCHAR(56),
     price_n INTEGER,
@@ -259,7 +259,7 @@ CREATE INDEX IF NOT EXISTS idx_accounts_sponsor ON accounts_current(sponsor);
 -- Current state of all trustlines
 CREATE TABLE IF NOT EXISTS trustlines_current (
     account_id VARCHAR(56) NOT NULL,
-    asset_type VARCHAR(20) NOT NULL,
+    asset_type VARCHAR(25) NOT NULL,
     asset_issuer VARCHAR(56),
     asset_code VARCHAR(12),
     liquidity_pool_id VARCHAR(100),
@@ -298,10 +298,10 @@ CREATE INDEX IF NOT EXISTS idx_trustlines_last_modified ON trustlines_current(la
 CREATE TABLE IF NOT EXISTS offers_current (
     offer_id BIGINT PRIMARY KEY,
     seller_id VARCHAR(56) NOT NULL,
-    selling_asset_type VARCHAR(20),
+    selling_asset_type VARCHAR(25),
     selling_asset_code VARCHAR(12),
     selling_asset_issuer VARCHAR(56),
-    buying_asset_type VARCHAR(20),
+    buying_asset_type VARCHAR(25),
     buying_asset_code VARCHAR(12),
     buying_asset_issuer VARCHAR(56),
     amount BIGINT,
@@ -325,45 +325,12 @@ CREATE INDEX IF NOT EXISTS idx_offers_selling_asset ON offers_current(selling_as
 CREATE INDEX IF NOT EXISTS idx_offers_buying_asset ON offers_current(buying_asset_code, buying_asset_issuer);
 CREATE INDEX IF NOT EXISTS idx_offers_last_modified ON offers_current(last_modified_ledger DESC);
 
--- Table: contract_data_current
--- Current state of Soroban contract data entries
-CREATE TABLE IF NOT EXISTS contract_data_current (
-    contract_id VARCHAR(100) NOT NULL,
-    contract_key_type VARCHAR(50) NOT NULL,
-    contract_durability VARCHAR(20),
-    asset VARCHAR(100),
-    asset_code VARCHAR(12),
-    asset_issuer VARCHAR(56),
-    asset_type VARCHAR(20),
-    balance_holder VARCHAR(100),
-    contract_data_xdr TEXT,
-    last_modified_ledger BIGINT NOT NULL,
-    ledger_sequence BIGINT NOT NULL,
-    created_at TIMESTAMP,
-    ledger_range BIGINT,
-
-    -- Metadata
-    inserted_at TIMESTAMP DEFAULT NOW(),
-    updated_at TIMESTAMP DEFAULT NOW()
-);
-
--- Unique index for contract data (handles NULLs properly)
-CREATE UNIQUE INDEX IF NOT EXISTS idx_contract_data_unique
-ON contract_data_current(
-    contract_id,
-    contract_key_type,
-    COALESCE(contract_durability, '')
-);
-
-CREATE INDEX IF NOT EXISTS idx_contract_data_contract ON contract_data_current(contract_id);
-CREATE INDEX IF NOT EXISTS idx_contract_data_last_modified ON contract_data_current(last_modified_ledger DESC);
-
 -- Table: claimable_balances_current
 -- Current state of claimable balances
 CREATE TABLE IF NOT EXISTS claimable_balances_current (
     balance_id VARCHAR(100) PRIMARY KEY,
     sponsor VARCHAR(56),
-    asset_type VARCHAR(20),
+    asset_type VARCHAR(25),
     asset_code VARCHAR(12),
     asset_issuer VARCHAR(56),
     amount BIGINT,
@@ -392,11 +359,11 @@ CREATE TABLE IF NOT EXISTS liquidity_pools_current (
     fee INTEGER,
     trustline_count INTEGER,
     total_pool_shares BIGINT,
-    asset_a_type VARCHAR(20),
+    asset_a_type VARCHAR(25),
     asset_a_code VARCHAR(12),
     asset_a_issuer VARCHAR(56),
     asset_a_amount BIGINT,
-    asset_b_type VARCHAR(20),
+    asset_b_type VARCHAR(25),
     asset_b_code VARCHAR(12),
     asset_b_issuer VARCHAR(56),
     asset_b_amount BIGINT,

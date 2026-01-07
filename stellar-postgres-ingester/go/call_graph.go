@@ -134,8 +134,24 @@ func extractCrossContractCallsFromDiagnosticEvents(
 				nextContractID, err := strkey.Encode(strkey.VersionByteContract, nextEvent.Event.ContractId[:])
 				if err == nil && nextContractID != eventContractID {
 					// This fn_call is calling another contract
-					functionName := extractFunctionNameFromDiagnosticEvent(diagEvent.Event)
+					// Try to get function name from callee's fn_call event first (more accurate)
+					var functionName string
+					nextFirstTopic := extractFirstTopic(nextEvent.Event)
+					if nextFirstTopic == "fn_call" {
+						functionName = extractFunctionNameFromDiagnosticEvent(nextEvent.Event)
+					}
+					// Fallback to caller's event if callee's doesn't have it
+					if functionName == "" || functionName == "unknown" {
+						functionName = extractFunctionNameFromDiagnosticEvent(diagEvent.Event)
+					}
 					arguments := extractArgumentsFromDiagnosticEvent(diagEvent.Event)
+
+					// Final fallback: extract fn_name from arguments (auth entries)
+					if functionName == "" || functionName == "unknown" {
+						if argFnName := extractFunctionNameFromArguments(arguments); argFnName != "" {
+							functionName = argFnName
+						}
+					}
 
 					call := ContractCall{
 						FromContract:   eventContractID,
@@ -165,6 +181,13 @@ func extractCrossContractCallsFromDiagnosticEvents(
 			if fromContract != eventContractID {
 				functionName := extractFunctionNameFromDiagnosticEvent(diagEvent.Event)
 				arguments := extractArgumentsFromDiagnosticEvent(diagEvent.Event)
+
+				// Fallback: extract fn_name from arguments (auth entries)
+				if functionName == "" || functionName == "unknown" {
+					if argFnName := extractFunctionNameFromArguments(arguments); argFnName != "" {
+						functionName = argFnName
+					}
+				}
 
 				call := ContractCall{
 					FromContract:   fromContract,
@@ -235,41 +258,42 @@ func extractCallsFromAuthInvocation(
 		return calls
 	}
 
-	// Process sub-invocations
-	for _, subInvocation := range invocation.SubInvocations {
-		if subInvocation.Function.Type == xdr.SorobanAuthorizedFunctionTypeSorobanAuthorizedFunctionTypeContractFn {
-			contractFn := subInvocation.Function.ContractFn
-
-			// Get contract ID
+	// First, capture this invocation's function call (the root or current node)
+	// This was previously missing - we only captured sub-invocations
+	if invocation.Function.Type == xdr.SorobanAuthorizedFunctionTypeSorobanAuthorizedFunctionTypeContractFn {
+		contractFn := invocation.Function.ContractFn
+		if contractFn != nil {
 			toContractID, err := strkey.Encode(strkey.VersionByteContract, contractFn.ContractAddress.ContractId[:])
-			if err != nil {
-				continue
+			if err == nil && toContractID != fromContract {
+				// Only record if it's a cross-contract call (different from/to)
+				functionName := string(contractFn.FunctionName)
+				call := ContractCall{
+					FromContract:   fromContract,
+					ToContract:     toContractID,
+					FunctionName:   functionName,
+					CallDepth:      depth,
+					ExecutionOrder: *executionOrder,
+					Successful:     true,
+				}
+				calls = append(calls, call)
+				*executionOrder++
+
+				// Update fromContract for sub-invocations
+				fromContract = toContractID
 			}
-
-			// Get function name
-			functionName := string(contractFn.FunctionName)
-
-			call := ContractCall{
-				FromContract:   fromContract,
-				ToContract:     toContractID,
-				FunctionName:   functionName,
-				CallDepth:      depth,
-				ExecutionOrder: *executionOrder,
-				Successful:     true, // Auth entries are for successful calls
-			}
-
-			calls = append(calls, call)
-			*executionOrder++
-
-			// Recursively process sub-invocations of this sub-invocation
-			subCalls := extractCallsFromAuthInvocation(
-				&subInvocation,
-				toContractID,
-				depth+1,
-				executionOrder,
-			)
-			calls = append(calls, subCalls...)
 		}
+	}
+
+	// Process sub-invocations recursively
+	// The recursive call will capture each sub-invocation's function via the code above
+	for _, subInvocation := range invocation.SubInvocations {
+		subCalls := extractCallsFromAuthInvocation(
+			&subInvocation,
+			fromContract, // Pass current contract as the caller
+			depth+1,
+			executionOrder,
+		)
+		calls = append(calls, subCalls...)
 	}
 
 	return calls
@@ -334,6 +358,45 @@ func extractArgumentsFromDiagnosticEvent(event xdr.ContractEvent) interface{} {
 	}
 
 	return decoded
+}
+
+// extractFunctionNameFromArguments searches the arguments structure for fn_name
+// This is a fallback when diagnostic event extraction fails
+// The fn_name is typically found in authorization entries nested in the arguments
+func extractFunctionNameFromArguments(arguments interface{}) string {
+	if arguments == nil {
+		return ""
+	}
+
+	// Recursively search for fn_name in the structure
+	return findFnNameRecursive(arguments)
+}
+
+// findFnNameRecursive recursively searches a JSON-like structure for fn_name
+func findFnNameRecursive(v interface{}) string {
+	switch val := v.(type) {
+	case map[string]interface{}:
+		// Check if this map has fn_name
+		if fnName, ok := val["fn_name"]; ok {
+			if str, ok := fnName.(string); ok && str != "" {
+				return str
+			}
+		}
+		// Recursively search all values
+		for _, v := range val {
+			if result := findFnNameRecursive(v); result != "" {
+				return result
+			}
+		}
+	case []interface{}:
+		// Search through array elements
+		for _, item := range val {
+			if result := findFnNameRecursive(item); result != "" {
+				return result
+			}
+		}
+	}
+	return ""
 }
 
 // deduplicateCalls removes duplicate calls (same from->to->function at same depth)

@@ -85,7 +85,20 @@ func (c *ColdReader) initialize(ctx context.Context) error {
 	return nil
 }
 
-func (c *ColdReader) QueryLedgers(ctx context.Context, start, end int64, limit int) (*sql.Rows, error) {
+func (c *ColdReader) QueryLedgers(ctx context.Context, start, end int64, limit int, sort string) (*sql.Rows, error) {
+	// Map sort parameter to ORDER BY clause
+	orderBy := "sequence ASC" // default
+	switch sort {
+	case "sequence_desc":
+		orderBy = "sequence DESC"
+	case "closed_at_asc":
+		orderBy = "closed_at ASC"
+	case "closed_at_desc":
+		orderBy = "closed_at DESC"
+	case "tx_count_desc":
+		orderBy = "transaction_count DESC, sequence DESC"
+	}
+
 	query := fmt.Sprintf(`
 		SELECT
 			sequence,
@@ -113,9 +126,9 @@ func (c *ColdReader) QueryLedgers(ctx context.Context, start, end int64, limit i
 			ingestion_timestamp as created_at
 		FROM %s.%s.ledgers_row_v2
 		WHERE sequence >= ? AND sequence <= ?
-		ORDER BY sequence ASC
+		ORDER BY %s
 		LIMIT ?
-	`, c.config.CatalogName, c.config.SchemaName)
+	`, c.config.CatalogName, c.config.SchemaName, orderBy)
 
 	rows, err := c.db.QueryContext(ctx, query, start, end, limit)
 	if err != nil {
@@ -363,7 +376,7 @@ func (c *ColdReader) QueryContractEvents(ctx context.Context, start, end int64, 
 			event_index,
 			event_type,
 			topics_json,
-			data_json,
+			data_decoded,
 			closed_at,
 			ledger_range,
 			era_id,

@@ -60,6 +60,7 @@ type TopContract struct {
 	TotalCalls    int    `json:"total_calls"`
 	UniqueCallers int    `json:"unique_callers"`
 	TopFunction   string `json:"top_function,omitempty"`
+	UnknownCalls  int    `json:"unknown_calls"` // Calls where function name couldn't be extracted (typically depth-1 diagnostic events)
 	LastActivity  string `json:"last_activity,omitempty"`
 }
 
@@ -174,57 +175,116 @@ func (h *SilverHotReader) GetContractAnalyticsSummary(ctx context.Context, contr
 
 // GetTopContracts returns the most active contracts for a given period
 func (h *SilverHotReader) GetTopContracts(ctx context.Context, period string, limit int) ([]TopContract, error) {
-	// Determine time interval based on period
-	var interval string
-	switch period {
-	case "24h":
-		interval = "1 day"
-	case "7d":
-		interval = "7 days"
-	case "30d":
-		interval = "30 days"
-	default:
-		interval = "1 day" // default to 24h
-	}
+	var query string
 
-	query := fmt.Sprintf(`
-		WITH contract_calls AS (
+	if period == "all" {
+		// Query all data without time filter
+		query = `
+			WITH contract_calls AS (
+				SELECT
+					contract_id,
+					COUNT(*) as total_calls,
+					COUNT(DISTINCT caller) as unique_callers,
+					MAX(closed_at) as last_activity
+				FROM (
+					SELECT to_contract as contract_id, from_contract as caller, closed_at
+					FROM contract_invocation_calls
+				) sub
+				GROUP BY contract_id
+			),
+			unknown_counts AS (
+				SELECT to_contract as contract_id, COUNT(*) as unknown_calls
+				FROM contract_invocation_calls
+				WHERE function_name = 'unknown'
+				GROUP BY to_contract
+			),
+			top_functions AS (
+				SELECT DISTINCT ON (to_contract)
+					to_contract as contract_id,
+					function_name as top_function
+				FROM (
+					SELECT to_contract, function_name, COUNT(*) as cnt
+					FROM contract_invocation_calls
+					WHERE function_name IS NOT NULL AND function_name != '' AND function_name != 'unknown'
+					GROUP BY to_contract, function_name
+					ORDER BY to_contract, cnt DESC
+				) ranked
+			)
 			SELECT
-				contract_id,
-				COUNT(*) as total_calls,
-				COUNT(DISTINCT caller) as unique_callers,
-				MAX(closed_at) as last_activity
-			FROM (
-				SELECT to_contract as contract_id, from_contract as caller, closed_at
+				cc.contract_id,
+				cc.total_calls,
+				cc.unique_callers,
+				COALESCE(tf.top_function, '') as top_function,
+				COALESCE(uc.unknown_calls, 0) as unknown_calls,
+				cc.last_activity
+			FROM contract_calls cc
+			LEFT JOIN top_functions tf ON cc.contract_id = tf.contract_id
+			LEFT JOIN unknown_counts uc ON cc.contract_id = uc.contract_id
+			ORDER BY cc.total_calls DESC
+			LIMIT $1
+		`
+	} else {
+		// Determine time interval based on period
+		var interval string
+		switch period {
+		case "24h":
+			interval = "1 day"
+		case "7d":
+			interval = "7 days"
+		case "30d":
+			interval = "30 days"
+		default:
+			interval = "1 day" // default to 24h
+		}
+
+		query = fmt.Sprintf(`
+			WITH contract_calls AS (
+				SELECT
+					contract_id,
+					COUNT(*) as total_calls,
+					COUNT(DISTINCT caller) as unique_callers,
+					MAX(closed_at) as last_activity
+				FROM (
+					SELECT to_contract as contract_id, from_contract as caller, closed_at
+					FROM contract_invocation_calls
+					WHERE closed_at >= NOW() - INTERVAL '%s'
+				) sub
+				GROUP BY contract_id
+			),
+			unknown_counts AS (
+				SELECT to_contract as contract_id, COUNT(*) as unknown_calls
 				FROM contract_invocation_calls
 				WHERE closed_at >= NOW() - INTERVAL '%s'
-			) sub
-			GROUP BY contract_id
-		),
-		top_functions AS (
-			SELECT DISTINCT ON (to_contract)
-				to_contract as contract_id,
-				function_name as top_function
-			FROM (
-				SELECT to_contract, function_name, COUNT(*) as cnt
-				FROM contract_invocation_calls
-				WHERE closed_at >= NOW() - INTERVAL '%s'
-				  AND function_name IS NOT NULL AND function_name != ''
-				GROUP BY to_contract, function_name
-				ORDER BY to_contract, cnt DESC
-			) ranked
-		)
-		SELECT
-			cc.contract_id,
-			cc.total_calls,
-			cc.unique_callers,
-			COALESCE(tf.top_function, '') as top_function,
-			cc.last_activity
-		FROM contract_calls cc
-		LEFT JOIN top_functions tf ON cc.contract_id = tf.contract_id
-		ORDER BY cc.total_calls DESC
-		LIMIT $1
-	`, interval, interval)
+				  AND function_name = 'unknown'
+				GROUP BY to_contract
+			),
+			top_functions AS (
+				SELECT DISTINCT ON (to_contract)
+					to_contract as contract_id,
+					function_name as top_function
+				FROM (
+					SELECT to_contract, function_name, COUNT(*) as cnt
+					FROM contract_invocation_calls
+					WHERE closed_at >= NOW() - INTERVAL '%s'
+					  AND function_name IS NOT NULL AND function_name != '' AND function_name != 'unknown'
+					GROUP BY to_contract, function_name
+					ORDER BY to_contract, cnt DESC
+				) ranked
+			)
+			SELECT
+				cc.contract_id,
+				cc.total_calls,
+				cc.unique_callers,
+				COALESCE(tf.top_function, '') as top_function,
+				COALESCE(uc.unknown_calls, 0) as unknown_calls,
+				cc.last_activity
+			FROM contract_calls cc
+			LEFT JOIN top_functions tf ON cc.contract_id = tf.contract_id
+			LEFT JOIN unknown_counts uc ON cc.contract_id = uc.contract_id
+			ORDER BY cc.total_calls DESC
+			LIMIT $1
+		`, interval, interval, interval)
+	}
 
 	rows, err := h.db.QueryContext(ctx, query, limit)
 	if err != nil {
@@ -236,7 +296,7 @@ func (h *SilverHotReader) GetTopContracts(ctx context.Context, period string, li
 	for rows.Next() {
 		var tc TopContract
 		var lastActivity sql.NullTime
-		if err := rows.Scan(&tc.ContractID, &tc.TotalCalls, &tc.UniqueCallers, &tc.TopFunction, &lastActivity); err != nil {
+		if err := rows.Scan(&tc.ContractID, &tc.TotalCalls, &tc.UniqueCallers, &tc.TopFunction, &tc.UnknownCalls, &lastActivity); err != nil {
 			return nil, err
 		}
 		if lastActivity.Valid {

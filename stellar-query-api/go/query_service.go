@@ -80,6 +80,7 @@ func (qs *QueryService) HandleLedgers(w http.ResponseWriter, r *http.Request) {
 	startStr := r.URL.Query().Get("start")
 	endStr := r.URL.Query().Get("end")
 	limitStr := r.URL.Query().Get("limit")
+	sortParam := r.URL.Query().Get("sort")
 
 	if startStr == "" || endStr == "" {
 		http.Error(w, "Missing required parameters: start, end", http.StatusBadRequest)
@@ -106,6 +107,22 @@ func (qs *QueryService) HandleLedgers(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Validate and normalize sort parameter
+	validSorts := map[string]bool{
+		"sequence_asc":    true,
+		"sequence_desc":   true,
+		"closed_at_asc":   true,
+		"closed_at_desc":  true,
+		"tx_count_desc":   true,
+	}
+	if sortParam == "" {
+		sortParam = "sequence_asc" // default
+	}
+	if !validSorts[sortParam] {
+		http.Error(w, "Invalid sort parameter: must be sequence_asc, sequence_desc, closed_at_asc, closed_at_desc, or tx_count_desc", http.StatusBadRequest)
+		return
+	}
+
 	// Determine which sources to query
 	queryHot, queryCold, hotStart, hotEnd, coldStart, coldEnd := qs.determineSource(start, end)
 
@@ -114,34 +131,73 @@ func (qs *QueryService) HandleLedgers(w http.ResponseWriter, r *http.Request) {
 
 	var results []map[string]interface{}
 
-	// Query cold storage first (historical data)
-	if queryCold {
-		coldRows, err := qs.cold.QueryLedgers(ctx, coldStart, coldEnd, limit)
-		if err != nil {
-			log.Printf("Error querying cold storage: %v", err)
-		} else {
-			coldResults, err := scanLedgers(coldRows)
-			coldRows.Close()
+	// Determine query order based on sort direction
+	// For descending sorts, query hot (recent) first to get most recent data
+	// For ascending sorts, query cold (historical) first
+	isDescending := sortParam == "sequence_desc" || sortParam == "closed_at_desc" || sortParam == "tx_count_desc"
+
+	if isDescending {
+		// Query hot storage first (recent data) for descending sorts
+		if queryHot {
+			hotRows, err := qs.hot.QueryLedgers(ctx, hotStart, hotEnd, limit, sortParam)
 			if err != nil {
-				log.Printf("Error scanning cold results: %v", err)
+				log.Printf("Error querying hot storage: %v", err)
 			} else {
-				results = append(results, coldResults...)
+				hotResults, err := scanLedgers(hotRows)
+				hotRows.Close()
+				if err != nil {
+					log.Printf("Error scanning hot results: %v", err)
+				} else {
+					results = append(results, hotResults...)
+				}
 			}
 		}
-	}
 
-	// Query hot storage (recent data)
-	if queryHot {
-		hotRows, err := qs.hot.QueryLedgers(ctx, hotStart, hotEnd, limit-len(results))
-		if err != nil {
-			log.Printf("Error querying hot storage: %v", err)
-		} else {
-			hotResults, err := scanLedgers(hotRows)
-			hotRows.Close()
+		// Query cold storage if we need more results
+		if queryCold && len(results) < limit {
+			coldRows, err := qs.cold.QueryLedgers(ctx, coldStart, coldEnd, limit-len(results), sortParam)
 			if err != nil {
-				log.Printf("Error scanning hot results: %v", err)
+				log.Printf("Error querying cold storage: %v", err)
 			} else {
-				results = append(results, hotResults...)
+				coldResults, err := scanLedgers(coldRows)
+				coldRows.Close()
+				if err != nil {
+					log.Printf("Error scanning cold results: %v", err)
+				} else {
+					results = append(results, coldResults...)
+				}
+			}
+		}
+	} else {
+		// Query cold storage first (historical data) for ascending sorts
+		if queryCold {
+			coldRows, err := qs.cold.QueryLedgers(ctx, coldStart, coldEnd, limit, sortParam)
+			if err != nil {
+				log.Printf("Error querying cold storage: %v", err)
+			} else {
+				coldResults, err := scanLedgers(coldRows)
+				coldRows.Close()
+				if err != nil {
+					log.Printf("Error scanning cold results: %v", err)
+				} else {
+					results = append(results, coldResults...)
+				}
+			}
+		}
+
+		// Query hot storage if we need more results
+		if queryHot && len(results) < limit {
+			hotRows, err := qs.hot.QueryLedgers(ctx, hotStart, hotEnd, limit-len(results), sortParam)
+			if err != nil {
+				log.Printf("Error querying hot storage: %v", err)
+			} else {
+				hotResults, err := scanLedgers(hotRows)
+				hotRows.Close()
+				if err != nil {
+					log.Printf("Error scanning hot results: %v", err)
+				} else {
+					results = append(results, hotResults...)
+				}
 			}
 		}
 	}
@@ -153,6 +209,7 @@ func (qs *QueryService) HandleLedgers(w http.ResponseWriter, r *http.Request) {
 		"count":   len(results),
 		"start":   start,
 		"end":     end,
+		"sort":    sortParam,
 	})
 }
 

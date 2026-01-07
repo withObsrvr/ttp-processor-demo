@@ -13,18 +13,30 @@ Bronze tables mirror Stellar's native data model. Use Bronze when you need:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ BRONZE LAYER                                                     │
+│ BRONZE LAYER (19 tables)                                         │
 │                                                                  │
-│ Tables:                                                          │
-│   ledgers          - Block metadata (sequence, close time)       │
-│   transactions     - Transaction envelopes and results           │
-│   operations       - Individual operations within transactions   │
-│   effects          - Side effects of operations                  │
-│   trades           - DEX trades                                  │
-│   accounts         - Account snapshots (per ledger)              │
-│   trustlines       - Asset trustlines                           │
-│   offers           - Order book offers                          │
-│   contract_events  - Raw Soroban contract events                │
+│ Event Stream Tables (append-only, ordered by ledger):            │
+│   ledgers_row_v2           - Block metadata and protocol info    │
+│   transactions_row_v2      - Transaction envelopes and results   │
+│   operations_row_v2        - Individual operations               │
+│   effects_row_v1           - Side effects of operations          │
+│   trades_row_v1            - DEX trades                          │
+│   contract_events_stream_v1 - Soroban contract events            │
+│   evicted_keys_state_v1    - Expired contract data keys          │
+│   restored_keys_state_v1   - Restored contract data keys         │
+│                                                                  │
+│ Snapshot Tables (current state, deduplicated by key):            │
+│   accounts_snapshot_v1     - Account state snapshots             │
+│   trustlines_snapshot_v1   - Asset trustline snapshots           │
+│   account_signers_snapshot_v1 - Account signer snapshots         │
+│   native_balances_snapshot_v1 - XLM balance snapshots            │
+│   offers_snapshot_v1       - DEX offer snapshots                 │
+│   liquidity_pools_snapshot_v1 - AMM pool snapshots               │
+│   claimable_balances_snapshot_v1 - Claimable balance snapshots   │
+│   contract_data_snapshot_v1 - Soroban contract data              │
+│   contract_code_snapshot_v1 - Soroban WASM code metadata         │
+│   ttl_snapshot_v1          - Contract data TTL snapshots         │
+│   config_settings_snapshot_v1 - Network config parameters        │
 │                                                                  │
 │ API: /api/v1/bronze/*                                           │
 └─────────────────────────────────────────────────────────────────┘
@@ -39,13 +51,14 @@ Silver tables are pre-processed for common analytics queries. Use Silver when yo
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ SILVER LAYER                                                     │
+│ SILVER LAYER (18 tables)                                         │
 │                                                                  │
 │ Core Tables:                                                     │
 │   accounts_current           - Latest state for each account    │
-│   enriched_operations        - Operations with decoded types    │
-│   token_transfers            - Unified payment/path payment     │
-│   contract_invocation_calls  - Smart contract call graph        │
+│   enriched_history_operations - Operations with decoded types   │
+│   enriched_history_operations_soroban - Soroban ops only        │
+│   token_transfers_raw        - Unified payment/path payment     │
+│   contract_invocations_raw   - Smart contract call graph        │
 │                                                                  │
 │ State Tables (Current Values):                                   │
 │   trustlines_current         - Current trustline states         │
@@ -109,66 +122,98 @@ Current state of every account that's ever existed on Stellar.
 
 ```bash
 # Get current balance
-curl "https://gateway.withobsrvr.com/api/v1/silver/accounts/current?account_id=G..."
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/accounts/current?account_id=G..."
 
 # Get account signers and thresholds
-curl "https://gateway.withobsrvr.com/api/v1/silver/accounts/signers?account_id=G..."
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/accounts/signers?account_id=G..."
 ```
 
-### enriched_operations
+### enriched_history_operations
 
 Operations with human-readable fields and joined metadata.
 
 | Column | Description |
 |--------|-------------|
-| `operation_id` | Unique operation identifier |
-| `type` | Operation type (payment, create_account, etc.) |
-| `source_account` | Account that submitted the operation |
-| `transaction_hash` | Parent transaction |
-| `details` | Type-specific decoded details (JSON) |
+| `transaction_hash` | Parent transaction hash |
+| `operation_index` | Index within transaction |
 | `ledger_sequence` | Block number |
-| `closed_at` | Timestamp |
+| `source_account` | Account that submitted the operation |
+| `type` | Operation type code |
+| `type_string` | Human-readable operation type (payment, create_account, etc.) |
+| `created_at` | Timestamp |
+| `transaction_successful` | Whether the transaction succeeded |
+| `is_payment_op` | True for payment operations |
+| `is_soroban_op` | True for Soroban contract operations |
 
 ```bash
 # Get operations for an account
-curl "https://gateway.withobsrvr.com/api/v1/silver/operations/enriched?account_id=G..."
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/operations/enriched?account_id=G..."
 ```
 
-### token_transfers
+### enriched_history_operations_soroban
+
+Filtered view containing only Soroban smart contract operations. Same schema as `enriched_history_operations` but pre-filtered for contract invocations.
+
+| Column | Description |
+|--------|-------------|
+| `contract_id` | Target contract address (C...) |
+| `function_name` | Function being called |
+| `host_function_type` | Type of host function invocation |
+| `parameters` | Function parameters (JSON) |
+
+```bash
+# Get Soroban operations for an account
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/operations/soroban?account_id=G..."
+```
+
+### token_transfers_raw
 
 Unified view of all token movements (payments, path payments, claimable balance claims).
 
 | Column | Description |
 |--------|-------------|
+| `timestamp` | Transfer timestamp |
+| `transaction_hash` | Transaction containing the transfer |
+| `ledger_sequence` | Block number |
+| `source_type` | Transfer type: `classic` or `soroban` |
 | `from_account` | Sender |
 | `to_account` | Recipient |
 | `asset_code` | Asset code (XLM, USDC, etc.) |
 | `asset_issuer` | Asset issuer (null for XLM) |
-| `amount` | Amount transferred |
-| `transaction_hash` | Transaction containing the transfer |
+| `amount` | Amount transferred in stroops |
+| `token_contract_id` | Contract ID for Soroban tokens |
 
 ```bash
 # Get USDC transfers for an account
-curl "https://gateway.withobsrvr.com/api/v1/silver/transfers?account_id=G...&asset_code=USDC"
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/transfers?account_id=G...&asset_code=USDC"
 ```
 
-### contract_invocation_calls
+### contract_invocations_raw
 
-Smart contract call graph for Soroban transactions.
+Soroban contract invocations with TOID support for precise ordering.
 
 | Column | Description |
 |--------|-------------|
-| `transaction_hash` | Transaction containing the call |
-| `from_contract` | Calling contract (C...) |
-| `to_contract` | Called contract (C...) |
+| `ledger_sequence` | Block number |
+| `transaction_index` | Index within ledger |
+| `operation_index` | Index within transaction |
+| `transaction_hash` | Transaction hash |
+| `source_account` | Account that submitted the transaction |
+| `contract_id` | Target contract address (C...) |
 | `function_name` | Function being called |
-| `call_depth` | Nesting level (0 = top-level) |
-| `execution_order` | Order of execution within transaction |
+| `arguments_json` | Function arguments (JSON) |
 | `successful` | Whether the call succeeded |
+| `closed_at` | Timestamp |
 
 ```bash
 # Get call graph for a transaction
-curl "https://gateway.withobsrvr.com/api/v1/silver/tx/{hash}/call-graph"
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/tx/{hash}/call-graph"
 ```
 
 ### liquidity_pools_current
@@ -334,7 +379,8 @@ All list endpoints support cursor-based pagination:
 
 ```bash
 # First page
-curl ".../api/v1/silver/transfers?limit=100"
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/transfers?limit=100"
 
 # Response includes cursor
 {
@@ -344,7 +390,8 @@ curl ".../api/v1/silver/transfers?limit=100"
 }
 
 # Next page
-curl ".../api/v1/silver/transfers?limit=100&cursor=MjEzNzkxODo1"
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/transfers?limit=100&cursor=MjEzNzkxODo1"
 ```
 
 Continue until `has_more: false`.
