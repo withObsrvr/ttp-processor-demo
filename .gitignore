@@ -284,3 +284,5 @@ obsrvr-lake/silver-realtime-transformer/go/silver-realtime-transformer
 obsrvr-lake/stellar-query-api/stellar-query-api
 obsrvr-lake/silver-realtime-transformer/silver-realtime-transformer
 obsrvr-lake/postgres-ducklake-flusher/config.yaml
+obsrvr-lake/ttp1.png
+obsrvr-lake/ttp2.png
