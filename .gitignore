@@ -248,7 +248,6 @@ ducklake-ingestion-obsrvr-v3/go/go
 obsrvr-lake/stellar-postgres-ingester/bin/stellar-postgres-ingester
 ttp-processor-sdk/go/bin/ttp-processor.dynamic
 bin/
-stellar-query-api
 ttp-processor-sdk/bin/ttp-processor
 obsrvr-lake/stellar-query-api/config.yaml
 obsrvr-lake/silver-transformer/silver-transformer
@@ -286,3 +285,6 @@ obsrvr-lake/silver-realtime-transformer/silver-realtime-transformer
 obsrvr-lake/postgres-ducklake-flusher/config.yaml
 obsrvr-lake/ttp1.png
 obsrvr-lake/ttp2.png
+obsrvr-lake/stellar-query-api/SILVER_API_REFERENCE.md
+obsrvr-lake/stellar-query-api/SILVER_API_EXAMPLES.md
+obsrvr-lake/stellar-query-api/SILVER_API_DOCUMENTATION.md
