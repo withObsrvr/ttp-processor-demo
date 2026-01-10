@@ -1,0 +1,27 @@
+service:
+  name: stellar-postgres-ingester
+  health_port: 8088
+
+source:
+  endpoint: "localhost:50053"
+  network_passphrase: "Test SDF Network ; September 2015"
+  start_ledger: 1000000
+  end_ledger: 0  # 0 = continuous (live mode)
+
+postgres:
+  host: localhost
+  port: 5434
+  database: stellar_hot
+  user: stellar
+  password: stellar_dev_password
+  sslmode: disable
+  batch_size: 50              # Ledgers per batch
+  commit_interval_seconds: 5  # Auto-commit interval
+  max_retries: 3              # Retry attempts on errors
+
+checkpoint:
+  file_path: "/var/lib/stellar-postgres-ingester/checkpoint.json"
+
+logging:
+  level: "info"
+  format: "text"
