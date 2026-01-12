@@ -1,0 +1,41 @@
+# Single-stage build - simpler but larger image
+FROM golang:1.23-bullseye
+
+# Install runtime and build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    tzdata \
+    git \
+    gcc \
+    g++ \
+    libstdc++-10-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Enable Go toolchain auto-download
+ENV GOTOOLCHAIN=auto
+
+# Copy go module files
+COPY go/go.mod go/go.sum ./
+RUN go mod download
+
+# Copy source code
+COPY go/*.go ./
+
+# Build the service
+RUN CGO_ENABLED=1 go build -o index-plane-transformer .
+
+# Copy configuration template
+COPY config.yaml /local/config.yaml
+
+WORKDIR /root
+
+# Copy binary to root
+RUN cp /app/index-plane-transformer .
+
+# Expose health check port
+EXPOSE 8096
+
+# Run the service
+CMD ["./index-plane-transformer", "-config", "/local/config.yaml"]
