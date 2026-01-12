@@ -333,6 +333,28 @@ func mainWithSilver() {
 		log.Println("  ✓ /api/v1/gold/snapshots/portfolio (all balances at timestamp)")
 		log.Println("  ✓ /api/v1/gold/snapshots/accounts/batch (batch account lookup)")
 
+		// Gold Compliance Archive API endpoints
+		complianceHandlers := NewComplianceHandlers(unifiedSilverReader)
+		log.Println("Registering Gold Compliance API endpoints:")
+
+		router.HandleFunc("/api/v1/gold/compliance/transactions", complianceHandlers.HandleTransactionArchive).Methods("GET")
+		router.HandleFunc("/api/v1/gold/compliance/balances", complianceHandlers.HandleBalanceArchive).Methods("GET")
+		router.HandleFunc("/api/v1/gold/compliance/supply", complianceHandlers.HandleSupplyTimeline).Methods("GET")
+
+		// Week 2 - Full archive and lineage endpoints
+		router.HandleFunc("/api/v1/gold/compliance/archive", complianceHandlers.HandleFullArchive).Methods("POST")
+		router.HandleFunc("/api/v1/gold/compliance/archive/{id}", complianceHandlers.HandleArchiveStatus).Methods("GET")
+		router.HandleFunc("/api/v1/gold/compliance/archive/{id}/download/{artifact}", complianceHandlers.HandleArchiveDownload).Methods("GET")
+		router.HandleFunc("/api/v1/gold/compliance/lineage", complianceHandlers.HandleLineage).Methods("GET")
+
+		log.Println("  ✓ /api/v1/gold/compliance/transactions (asset transaction archive)")
+		log.Println("  ✓ /api/v1/gold/compliance/balances (point-in-time holder snapshot)")
+		log.Println("  ✓ /api/v1/gold/compliance/supply (supply timeline)")
+		log.Println("  ✓ /api/v1/gold/compliance/archive (POST: async full package)")
+		log.Println("  ✓ /api/v1/gold/compliance/archive/{id} (GET: archive status)")
+		log.Println("  ✓ /api/v1/gold/compliance/archive/{id}/download/{artifact} (GET: download artifact)")
+		log.Println("  ✓ /api/v1/gold/compliance/lineage (GET: archive audit trail)")
+
 	}
 
 	// Index Plane endpoints (if enabled)
@@ -379,6 +401,7 @@ func mainWithSilver() {
 		if silverHandlers != nil {
 			log.Printf("📊 Silver layer endpoints available at /api/v1/silver/*")
 			log.Printf("🥇 Gold layer endpoints available at /api/v1/gold/*")
+			log.Printf("📋 Compliance endpoints available at /api/v1/gold/compliance/*")
 		}
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server error: %v", err)
@@ -414,6 +437,7 @@ func handleHealthWithSilverAndIndexAndContractIndex(silverEnabled, indexEnabled,
 				"bronze":         true,
 				"silver":         silverEnabled,
 				"gold":           silverEnabled, // Gold requires Silver
+				"compliance":     silverEnabled, // Compliance requires Silver
 				"index":          indexEnabled,
 				"contract_index": contractIndexEnabled,
 			},
