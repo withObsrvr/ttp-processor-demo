@@ -86,7 +86,9 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.claimable_balances_current (
     created_at TIMESTAMP,
     ledger_range BIGINT,
     inserted_at TIMESTAMP,
-    updated_at TIMESTAMP
+    updated_at TIMESTAMP,
+    claimants_count INTEGER,
+    closed_at TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS testnet_catalog.silver.claimable_balances_snapshot (
@@ -107,19 +109,17 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.claimable_balances_snapshot (
 
 CREATE TABLE IF NOT EXISTS testnet_catalog.silver.contract_data_current (
     contract_id VARCHAR,
-    contract_key_type VARCHAR,
-    contract_durability VARCHAR,
-    asset VARCHAR,
+    key_hash VARCHAR,
+    durability VARCHAR,
+    asset_type VARCHAR,
     asset_code VARCHAR,
     asset_issuer VARCHAR,
-    asset_type VARCHAR,
-    balance_holder VARCHAR,
-    contract_data_xdr VARCHAR,
+    data_value VARCHAR,
     last_modified_ledger BIGINT,
     ledger_sequence BIGINT,
+    closed_at TIMESTAMP,
     created_at TIMESTAMP,
     ledger_range BIGINT,
-    inserted_at TIMESTAMP,
     updated_at TIMESTAMP
 );
 
