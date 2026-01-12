@@ -319,6 +319,20 @@ func mainWithSilver() {
 		log.Println("  ✓ /api/v1/silver/contracts/{id}/call-summary")
 		log.Println("  ✓ /api/v1/silver/contracts/{id}/analytics (comprehensive analytics)")
 
+		// Gold layer endpoints (Snapshot API) - uses Silver data
+		goldHandlers := NewGoldHandlers(unifiedSilverReader)
+		log.Println("Registering Gold API endpoints:")
+
+		router.HandleFunc("/api/v1/gold/snapshots/account", goldHandlers.HandleAccountSnapshot).Methods("GET")
+		router.HandleFunc("/api/v1/gold/snapshots/balance", goldHandlers.HandleAssetHolders).Methods("GET")
+		router.HandleFunc("/api/v1/gold/snapshots/portfolio", goldHandlers.HandlePortfolioSnapshot).Methods("GET")
+		router.HandleFunc("/api/v1/gold/snapshots/accounts/batch", goldHandlers.HandleBatchAccounts).Methods("POST")
+
+		log.Println("  ✓ /api/v1/gold/snapshots/account (account state at timestamp)")
+		log.Println("  ✓ /api/v1/gold/snapshots/balance (asset holders at timestamp)")
+		log.Println("  ✓ /api/v1/gold/snapshots/portfolio (all balances at timestamp)")
+		log.Println("  ✓ /api/v1/gold/snapshots/accounts/batch (batch account lookup)")
+
 	}
 
 	// Index Plane endpoints (if enabled)
@@ -364,6 +378,7 @@ func mainWithSilver() {
 		log.Printf("🚀 API server listening on :%d", config.Service.Port)
 		if silverHandlers != nil {
 			log.Printf("📊 Silver layer endpoints available at /api/v1/silver/*")
+			log.Printf("🥇 Gold layer endpoints available at /api/v1/gold/*")
 		}
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server error: %v", err)
@@ -398,6 +413,7 @@ func handleHealthWithSilverAndIndexAndContractIndex(silverEnabled, indexEnabled,
 				"hot":            true,
 				"bronze":         true,
 				"silver":         silverEnabled,
+				"gold":           silverEnabled, // Gold requires Silver
 				"index":          indexEnabled,
 				"contract_index": contractIndexEnabled,
 			},
