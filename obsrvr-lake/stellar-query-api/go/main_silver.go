@@ -186,8 +186,11 @@ func mainWithSilver() {
 		log.Println("  ✓ /api/v1/silver/accounts/{id}/balances")
 
 		// Token/Asset endpoints
+		// IMPORTANT: /assets must be registered BEFORE /assets/{asset}/* to avoid path matching issues
+		router.HandleFunc("/api/v1/silver/assets", silverHandlers.HandleAssetList).Methods("GET")
 		router.HandleFunc("/api/v1/silver/assets/{asset}/holders", silverHandlers.HandleTokenHolders).Methods("GET")
 		router.HandleFunc("/api/v1/silver/assets/{asset}/stats", silverHandlers.HandleTokenStats).Methods("GET")
+		log.Println("  ✓ /api/v1/silver/assets (list all assets)")
 		log.Println("  ✓ /api/v1/silver/assets/{asset}/holders")
 		log.Println("  ✓ /api/v1/silver/assets/{asset}/stats")
 

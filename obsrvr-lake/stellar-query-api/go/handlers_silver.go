@@ -350,6 +350,83 @@ func (h *SilverHandlers) HandleAccountSigners(w http.ResponseWriter, r *http.Req
 	respondJSON(w, response)
 }
 
+// HandleAssetList returns a paginated list of all assets on the network
+// GET /api/v1/silver/assets?limit=100&sort_by=holder_count&order=desc
+// Query params: limit, cursor, sort_by, order, min_holders, min_volume_24h, asset_type, search
+func (h *SilverHandlers) HandleAssetList(w http.ResponseWriter, r *http.Request) {
+	// Parse cursor for pagination
+	cursorStr := r.URL.Query().Get("cursor")
+	cursor, err := DecodeAssetListCursor(cursorStr)
+	if err != nil {
+		respondError(w, "invalid cursor: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Build filters
+	filters := AssetListFilters{
+		SortBy:    r.URL.Query().Get("sort_by"),
+		SortOrder: r.URL.Query().Get("order"),
+		AssetType: r.URL.Query().Get("asset_type"),
+		Search:    r.URL.Query().Get("search"),
+		Limit:     parseLimit(r, 100, 1000),
+		Cursor:    cursor,
+	}
+
+	// Parse minimum holders filter
+	if minHoldersStr := r.URL.Query().Get("min_holders"); minHoldersStr != "" {
+		minHolders, err := strconv.ParseInt(minHoldersStr, 10, 64)
+		if err == nil && minHolders >= 0 {
+			filters.MinHolders = &minHolders
+		}
+	}
+
+	// Parse minimum 24h volume filter (in stroops)
+	if minVolStr := r.URL.Query().Get("min_volume_24h"); minVolStr != "" {
+		minVol, err := strconv.ParseInt(minVolStr, 10, 64)
+		if err == nil && minVol >= 0 {
+			filters.MinVolume24h = &minVol
+		}
+	}
+
+	// Default sort by holder_count descending
+	if filters.SortBy == "" {
+		filters.SortBy = "holder_count"
+	}
+	if filters.SortOrder == "" {
+		filters.SortOrder = "desc"
+	}
+
+	// Validate cursor sort params match request sort params
+	if cursor != nil && cursor.SortBy != "" {
+		if cursor.SortBy != filters.SortBy {
+			respondError(w, "cursor was created with sort_by='"+cursor.SortBy+"' but request uses sort_by='"+filters.SortBy+"'. Cannot change sort order while paginating.", http.StatusBadRequest)
+			return
+		}
+		if cursor.SortOrder != filters.SortOrder {
+			respondError(w, "cursor was created with order='"+cursor.SortOrder+"' but request uses order='"+filters.SortOrder+"'. Cannot change sort order while paginating.", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Query asset list from unified reader (uses DuckDB to query both hot + cold)
+	// Falls back to legacy reader if unified reader is not available
+	var response *AssetListResponse
+	var queryErr error
+
+	if h.unifiedReader != nil {
+		response, queryErr = h.unifiedReader.GetAssetList(r.Context(), filters)
+	} else {
+		response, queryErr = h.legacyReader.GetAssetList(r.Context(), filters)
+	}
+
+	if queryErr != nil {
+		respondError(w, queryErr.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	respondJSON(w, response)
+}
+
 // HandleTokenStats returns aggregated statistics for a specific token
 // GET /api/v1/silver/assets/{asset}/stats
 // Asset format: XLM (for native) or CODE:ISSUER (for credit assets)
