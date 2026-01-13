@@ -3661,13 +3661,106 @@ func (r *UnifiedDuckDBReader) GetAssetList(ctx context.Context, filters AssetLis
 		nextCursor = cursor.Encode()
 	}
 
+	// Get total count of assets matching filters (excluding pagination)
+	totalCount, err := r.GetAssetCount(ctx, filters)
+	if err != nil {
+		log.Printf("Warning: failed to get asset count: %v", err)
+		// Fall back to page count if count query fails
+		totalCount = len(assets)
+	}
+
 	return &AssetListResponse{
 		Assets:      assets,
-		TotalAssets: len(assets),
+		TotalAssets: totalCount,
 		Cursor:      nextCursor,
 		HasMore:     hasMore,
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 	}, nil
+}
+
+// GetAssetCount returns the total count of assets matching the given filters (ignoring pagination)
+func (r *UnifiedDuckDBReader) GetAssetCount(ctx context.Context, filters AssetListFilters) (int, error) {
+	// Build count query with same filters as main query, but no pagination/sorting
+	query := fmt.Sprintf(`
+		WITH combined_trustlines AS (
+			SELECT account_id, asset_code, asset_issuer, asset_type,
+			       CAST(balance AS BIGINT) as balance, last_modified_ledger, 1 as source
+			FROM %s.trustlines_current
+			WHERE asset_code IS NOT NULL AND asset_code != ''
+			UNION ALL
+			SELECT account_id, asset_code, asset_issuer, asset_type,
+			       CAST(balance AS BIGINT) as balance, last_modified_ledger, 2 as source
+			FROM %s.trustlines_current
+			WHERE asset_code IS NOT NULL AND asset_code != ''
+		),
+		deduplicated_trustlines AS (
+			SELECT DISTINCT ON (account_id, asset_code, asset_issuer)
+			       account_id, asset_code, asset_issuer, asset_type, balance
+			FROM combined_trustlines
+			ORDER BY account_id, asset_code, asset_issuer, last_modified_ledger DESC, source ASC
+		),
+		asset_stats AS (
+			SELECT
+				asset_code,
+				asset_issuer,
+				asset_type,
+				COUNT(*) FILTER (WHERE balance > 0) as holder_count
+			FROM deduplicated_trustlines
+			GROUP BY asset_code, asset_issuer, asset_type
+		),
+		transfer_stats AS (
+			SELECT
+				asset_code,
+				asset_issuer,
+				COALESCE(SUM(amount), 0) as volume_24h
+			FROM %s.token_transfers_raw
+			WHERE timestamp >= NOW() - INTERVAL '24 hours'
+			  AND transaction_successful = true
+			GROUP BY asset_code, asset_issuer
+		)
+		SELECT COUNT(*)
+		FROM asset_stats a
+		LEFT JOIN transfer_stats t
+			ON a.asset_code = t.asset_code
+			AND COALESCE(a.asset_issuer, '') = COALESCE(t.asset_issuer, '')
+		WHERE a.holder_count > 0
+	`, r.hotSchema, r.coldSchema, r.hotSchema)
+
+	args := []interface{}{}
+	argIndex := 1
+
+	// Apply same filters as main query (excluding pagination/cursor)
+	if filters.MinHolders != nil && *filters.MinHolders > 0 {
+		query += fmt.Sprintf(" AND a.holder_count >= $%d", argIndex)
+		args = append(args, *filters.MinHolders)
+		argIndex++
+	}
+
+	if filters.MinVolume24h != nil && *filters.MinVolume24h > 0 {
+		query += fmt.Sprintf(" AND COALESCE(t.volume_24h, 0) >= $%d", argIndex)
+		args = append(args, *filters.MinVolume24h)
+		argIndex++
+	}
+
+	if filters.AssetType != "" {
+		query += fmt.Sprintf(" AND a.asset_type = $%d", argIndex)
+		args = append(args, filters.AssetType)
+		argIndex++
+	}
+
+	if filters.Search != "" {
+		query += fmt.Sprintf(" AND UPPER(a.asset_code) LIKE UPPER($%d)", argIndex)
+		args = append(args, filters.Search+"%")
+		argIndex++
+	}
+
+	var count int
+	err := r.db.QueryRowContext(ctx, query, args...).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count assets: %w", err)
+	}
+
+	return count, nil
 }
 
 // formatStroopsLocal converts stroops to formatted string (7 decimal places)
