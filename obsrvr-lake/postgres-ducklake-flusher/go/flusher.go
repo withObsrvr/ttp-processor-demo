@@ -112,6 +112,7 @@ func (f *Flusher) Flush(ctx context.Context) (*FlushMetrics, error) {
 	postgresDSN := f.config.Postgres.GetPostgresDSN()
 
 	var totalRowsFlushed int64
+	successfullyFlushedTables := make([]string, 0, len(tables))
 	for _, tableName := range tables {
 		rowsFlushed, err := f.duckdb.FlushTableFromPostgres(ctx, postgresDSN, tableName, watermark)
 		if err != nil {
@@ -122,14 +123,15 @@ func (f *Flusher) Flush(ctx context.Context) (*FlushMetrics, error) {
 
 		totalRowsFlushed += rowsFlushed
 		metrics.TablesSuccess++
+		successfullyFlushedTables = append(successfullyFlushedTables, tableName)
 	}
 
 	metrics.RowsFlushed = totalRowsFlushed
 	log.Printf("Flushed %d rows from %d tables to DuckLake", totalRowsFlushed, metrics.TablesSuccess)
 
-	// 3. Delete flushed data from PostgreSQL
-	if totalRowsFlushed > 0 {
-		rowsDeleted, err := f.deleteFromPostgres(ctx, watermark)
+	// 3. Delete flushed data from PostgreSQL - ONLY for successfully flushed tables
+	if len(successfullyFlushedTables) > 0 {
+		rowsDeleted, err := f.deleteFromPostgresSelective(ctx, watermark, successfullyFlushedTables)
 		if err != nil {
 			return nil, fmt.Errorf("failed to delete from PostgreSQL: %w", err)
 		}
@@ -164,9 +166,8 @@ func (f *Flusher) Flush(ctx context.Context) (*FlushMetrics, error) {
 	return metrics, nil
 }
 
-// deleteFromPostgres deletes flushed data from all PostgreSQL tables
-func (f *Flusher) deleteFromPostgres(ctx context.Context, watermark int64) (int64, error) {
-	tables := GetTablesToFlush()
+// deleteFromPostgresSelective deletes flushed data only from successfully flushed PostgreSQL tables
+func (f *Flusher) deleteFromPostgresSelective(ctx context.Context, watermark int64, tables []string) (int64, error) {
 	var totalRowsDeleted int64
 
 	for _, tableName := range tables {
@@ -192,6 +193,12 @@ func (f *Flusher) deleteFromPostgres(ctx context.Context, watermark int64) (int6
 	}
 
 	return totalRowsDeleted, nil
+}
+
+// deleteFromPostgres deletes flushed data from all PostgreSQL tables (deprecated - use deleteFromPostgresSelective)
+func (f *Flusher) deleteFromPostgres(ctx context.Context, watermark int64) (int64, error) {
+	tables := GetTablesToFlush()
+	return f.deleteFromPostgresSelective(ctx, watermark, tables)
 }
 
 // vacuum runs VACUUM ANALYZE on all tables

@@ -24,8 +24,17 @@ func NewContractCallHandlers(reader *UnifiedSilverReader) *ContractCallHandlers 
 // ============================================
 
 // HandleContractsInvolved returns all contracts involved in a transaction
-// GET /api/v1/silver/tx/{hash}/contracts-involved
-// Response: { "contracts_involved": ["CXXX...", "CYYY...", "CZZZ..."], "count": 3 }
+// @Summary Get contracts involved in transaction
+// @Description Returns list of all contract addresses involved in a transaction (for Freighter wallet)
+// @Tags Contracts
+// @Accept json
+// @Produce json
+// @Param hash path string true "Transaction hash"
+// @Success 200 {object} map[string]interface{} "List of contracts involved"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 404 {object} map[string]interface{} "No contracts found"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/tx/{hash}/contracts-involved [get]
 func (h *ContractCallHandlers) HandleContractsInvolved(w http.ResponseWriter, r *http.Request) {
 	// Extract transaction hash from path using gorilla/mux
 	vars := mux.Vars(r)
@@ -54,8 +63,16 @@ func (h *ContractCallHandlers) HandleContractsInvolved(w http.ResponseWriter, r 
 }
 
 // HandleCallGraph returns the call graph for a transaction
-// GET /api/v1/silver/tx/{hash}/call-graph
-// Response: { "calls": [{ "from": "CXXX", "to": "CYYY", "function": "swap", "depth": 1, "order": 0 }, ...] }
+// @Summary Get transaction call graph
+// @Description Returns contract-to-contract call graph showing execution flow
+// @Tags Contracts
+// @Accept json
+// @Produce json
+// @Param hash path string true "Transaction hash"
+// @Success 200 {object} map[string]interface{} "Call graph with from/to/function/depth/order"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/tx/{hash}/call-graph [get]
 func (h *ContractCallHandlers) HandleCallGraph(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	txHash := vars["hash"]
@@ -91,8 +108,16 @@ func (h *ContractCallHandlers) HandleCallGraph(w http.ResponseWriter, r *http.Re
 }
 
 // HandleTransactionHierarchy returns the contract hierarchy for a transaction
-// GET /api/v1/silver/tx/{hash}/hierarchy
-// Response: { "hierarchies": [{ "root": "CXXX", "child": "CYYY", "path": ["CXXX", "CYYY"], "depth": 1 }, ...] }
+// @Summary Get transaction contract hierarchy
+// @Description Returns hierarchical view of contract calls with root/child relationships
+// @Tags Contracts
+// @Accept json
+// @Produce json
+// @Param hash path string true "Transaction hash"
+// @Success 200 {object} map[string]interface{} "Contract hierarchy with root/child/path/depth"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/tx/{hash}/hierarchy [get]
 func (h *ContractCallHandlers) HandleTransactionHierarchy(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	txHash := vars["hash"]
@@ -130,8 +155,17 @@ func (h *ContractCallHandlers) HandleTransactionHierarchy(w http.ResponseWriter,
 // ============================================
 
 // HandleRecentCalls returns recent calls for a specific contract
-// GET /api/v1/silver/contracts/{id}/recent-calls?limit=100
-// Response: { "calls": [...], "as_caller": 45, "as_callee": 55 }
+// @Summary Get recent contract calls
+// @Description Returns recent calls involving a specific contract (as caller and callee)
+// @Tags Contracts
+// @Accept json
+// @Produce json
+// @Param id path string true "Contract ID (C... address)"
+// @Param limit query int false "Maximum results to return (default: 100, max: 1000)"
+// @Success 200 {object} map[string]interface{} "Recent calls with as_caller and as_callee counts"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/contracts/{id}/recent-calls [get]
 func (h *ContractCallHandlers) HandleRecentCalls(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	contractID := vars["id"]
@@ -173,8 +207,17 @@ func (h *ContractCallHandlers) HandleRecentCalls(w http.ResponseWriter, r *http.
 }
 
 // HandleContractCallers returns contracts that call a specific contract
-// GET /api/v1/silver/contracts/{id}/callers?limit=50
-// Response: { "callers": [{ "contract_id": "CXXX", "call_count": 100, "functions": ["swap", "quote"] }] }
+// @Summary Get contract callers
+// @Description Returns list of contracts that have called a specific contract
+// @Tags Contracts
+// @Accept json
+// @Produce json
+// @Param id path string true "Contract ID (C... address)"
+// @Param limit query int false "Maximum results to return (default: 50, max: 200)"
+// @Success 200 {object} map[string]interface{} "List of caller contracts with call counts and functions"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/contracts/{id}/callers [get]
 func (h *ContractCallHandlers) HandleContractCallers(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	contractID := vars["id"]
@@ -199,8 +242,17 @@ func (h *ContractCallHandlers) HandleContractCallers(w http.ResponseWriter, r *h
 }
 
 // HandleContractCallees returns contracts called by a specific contract
-// GET /api/v1/silver/contracts/{id}/callees?limit=50
-// Response: { "callees": [{ "contract_id": "CYYY", "call_count": 80, "functions": ["transfer"] }] }
+// @Summary Get contract callees
+// @Description Returns list of contracts that have been called by a specific contract
+// @Tags Contracts
+// @Accept json
+// @Produce json
+// @Param id path string true "Contract ID (C... address)"
+// @Param limit query int false "Maximum results to return (default: 50, max: 200)"
+// @Success 200 {object} map[string]interface{} "List of callee contracts with call counts and functions"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/contracts/{id}/callees [get]
 func (h *ContractCallHandlers) HandleContractCallees(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	contractID := vars["id"]
@@ -225,8 +277,16 @@ func (h *ContractCallHandlers) HandleContractCallees(w http.ResponseWriter, r *h
 }
 
 // HandleContractCallSummary returns aggregated call statistics for a contract
-// GET /api/v1/silver/contracts/{id}/call-summary
-// Response: { "total_calls_as_caller": 150, "total_calls_as_callee": 200, "unique_callers": 10, "unique_callees": 5 }
+// @Summary Get contract call summary
+// @Description Returns aggregated call statistics for a specific contract
+// @Tags Contracts
+// @Accept json
+// @Produce json
+// @Param id path string true "Contract ID (C... address)"
+// @Success 200 {object} ContractCallSummary "Call summary with totals and unique counts"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/contracts/{id}/call-summary [get]
 func (h *ContractCallHandlers) HandleContractCallSummary(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	contractID := vars["id"]
@@ -249,8 +309,16 @@ func (h *ContractCallHandlers) HandleContractCallSummary(w http.ResponseWriter, 
 // ============================================
 
 // HandleContractsSummary returns contracts in wallet-friendly format
-// GET /api/v1/silver/tx/{hash}/contracts-summary
-// Response optimized for wallet display (Freighter, etc.)
+// @Summary Get wallet-friendly contracts summary
+// @Description Returns contracts involved in a transaction optimized for wallet display (Freighter, etc.)
+// @Tags Contracts
+// @Accept json
+// @Produce json
+// @Param hash path string true "Transaction hash"
+// @Success 200 {object} map[string]interface{} "Wallet-friendly contract summary"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/tx/{hash}/contracts-summary [get]
 func (h *ContractCallHandlers) HandleContractsSummary(w http.ResponseWriter, r *http.Request) {
 	// Extract transaction hash from path using gorilla/mux
 	vars := mux.Vars(r)
@@ -315,8 +383,17 @@ func (h *ContractCallHandlers) HandleContractsSummary(w http.ResponseWriter, r *
 // ============================================
 
 // HandleContractAnalyticsSummary returns comprehensive analytics for a contract
-// GET /api/v1/silver/contracts/{id}/analytics
-// Response: Full analytics including stats, top functions, and daily trend
+// @Summary Get contract analytics
+// @Description Returns comprehensive analytics including stats, top functions, and daily trends
+// @Tags Contracts
+// @Accept json
+// @Produce json
+// @Param id path string true "Contract ID (C... address)"
+// @Success 200 {object} map[string]interface{} "Full analytics with stats, top functions, and trends"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 404 {object} map[string]interface{} "No activity found for contract"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/contracts/{id}/analytics [get]
 func (h *ContractCallHandlers) HandleContractAnalyticsSummary(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	contractID := vars["id"]
@@ -340,8 +417,17 @@ func (h *ContractCallHandlers) HandleContractAnalyticsSummary(w http.ResponseWri
 }
 
 // HandleTopContracts returns the most active contracts for a given period
-// GET /api/v1/silver/contracts/top?period=24h&limit=20
-// Response: List of top contracts ranked by call count
+// @Summary Get top contracts by activity
+// @Description Returns most active contracts ranked by call count for a given period
+// @Tags Contracts
+// @Accept json
+// @Produce json
+// @Param period query string false "Time period: 24h (default), 7d, 30d, all"
+// @Param limit query int false "Maximum results to return (default: 20, max: 100)"
+// @Success 200 {object} map[string]interface{} "List of top contracts with call counts"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/contracts/top [get]
 func (h *ContractCallHandlers) HandleTopContracts(w http.ResponseWriter, r *http.Request) {
 	// Parse query parameters
 	period := r.URL.Query().Get("period")

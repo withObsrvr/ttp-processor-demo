@@ -1,8 +1,8 @@
 FROM golang:1.24-bookworm AS builder
 
-# Install build dependencies
+# Install build dependencies (gcc/g++ required for DuckDB CGO)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git make && \
+    git make gcc g++ && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
@@ -14,8 +14,8 @@ RUN go mod download
 # Copy source code
 COPY go/ ./
 
-# Build binary
-RUN CGO_ENABLED=0 go build -o silver-realtime-transformer
+# Build binary (CGO required for DuckDB)
+RUN CGO_ENABLED=1 go build -o silver-realtime-transformer
 
 FROM debian:bookworm-slim
 

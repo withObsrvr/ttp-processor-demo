@@ -13,7 +13,40 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	httpSwagger "github.com/swaggo/http-swagger"
+
+	_ "github.com/withobsrvr/stellar-query-api/docs" // swagger docs
 )
+
+// @title Stellar Query API
+// @version 1.0
+// @description API for querying Stellar blockchain data across Bronze, Silver, and Gold data layers.
+// @description
+// @description ## Data Layers
+// @description - **Bronze**: Raw blockchain data (ledgers, transactions, operations, effects)
+// @description - **Silver**: Enriched and processed data (accounts, assets, transfers, trades)
+// @description - **Gold**: Analytical views (snapshots, compliance reports)
+// @description - **Index Plane**: Fast lookup services (transaction hash, contract events)
+// @description
+// @description ## Amount Formatting
+// @description All amounts are returned in decimal format with 7 decimal places (Stellar stroops conversion).
+// @description Example: Raw stroops `10000000` is formatted as `"1.0000000"`
+
+// @contact.name OBSRVR Team
+// @contact.url https://obsrvr.com
+// @contact.email support@obsrvr.com
+
+// @license.name Apache 2.0
+// @license.url https://www.apache.org/licenses/LICENSE-2.0.html
+
+// @host gateway.withobsrvr.com
+// @BasePath /
+// @schemes https
+
+// @securityDefinitions.apikey ApiKeyAuth
+// @in header
+// @name Authorization
+// @description API Key authentication. Format: "Api-Key YOUR_API_KEY"
 
 func mainWithSilver() {
 	configPath := flag.String("config", "config.yaml", "Path to config file")
@@ -147,6 +180,15 @@ func mainWithSilver() {
 		readerMode,
 		unifiedDuckDBReader,
 	))
+
+	// Swagger UI endpoint
+	router.PathPrefix("/swagger/").Handler(httpSwagger.Handler(
+		httpSwagger.URL("/swagger/doc.json"),
+		httpSwagger.DeepLinking(true),
+		httpSwagger.DocExpansion("list"),
+		httpSwagger.DomID("swagger-ui"),
+	))
+	log.Println("📖 Swagger UI available at /swagger/index.html")
 
 	// Bronze layer endpoints - /api/v1/bronze/*
 	log.Println("Registering Bronze API endpoints:")

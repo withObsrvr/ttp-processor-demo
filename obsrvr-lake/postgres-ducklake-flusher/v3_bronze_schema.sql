@@ -142,7 +142,13 @@ CREATE TABLE IF NOT EXISTS bronze.operations_row_v2 (
     data_name TEXT,
     data_value TEXT,
     era_id TEXT,
-    version_label TEXT
+    version_label TEXT,
+    -- Added via migrations (5 new columns for contract invocation tracking)
+    transaction_index INTEGER,
+    soroban_arguments_json TEXT,
+    contract_calls_json TEXT,
+    contracts_involved TEXT,
+    max_call_depth INTEGER
 );
 
 -- Effects (FIXED: matches PostgreSQL exactly - 22 columns)

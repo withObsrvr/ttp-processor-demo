@@ -46,7 +46,17 @@ func parseSnapshotTimestamp(r *http.Request) (time.Time, error) {
 // ============================================
 
 // HandleAccountSnapshot returns account state at a specific point in time
-// GET /api/v1/gold/snapshots/account?account_id=GXXXXX&timestamp=2025-12-31T23:59:59Z
+// @Summary Get account snapshot at timestamp
+// @Description Returns the state of an account at a specific point in time (point-in-time query)
+// @Tags Gold
+// @Accept json
+// @Produce json
+// @Param account_id query string true "Stellar account ID (G...)"
+// @Param timestamp query string true "Point in time: RFC3339 (2025-12-31T23:59:59Z) or date (2025-12-31)"
+// @Success 200 {object} map[string]interface{} "Account state at timestamp"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/gold/snapshots/account [get]
 func (h *GoldHandlers) HandleAccountSnapshot(w http.ResponseWriter, r *http.Request) {
 	accountID := r.URL.Query().Get("account_id")
 	if accountID == "" {
@@ -73,7 +83,17 @@ func (h *GoldHandlers) HandleAccountSnapshot(w http.ResponseWriter, r *http.Requ
 }
 
 // HandlePortfolioSnapshot returns all balances for an account at a specific point in time
-// GET /api/v1/gold/snapshots/portfolio?account_id=GXXXXX&timestamp=2025-12-31T23:59:59Z
+// @Summary Get portfolio snapshot at timestamp
+// @Description Returns all asset balances for an account at a specific point in time (point-in-time query)
+// @Tags Gold
+// @Accept json
+// @Produce json
+// @Param account_id query string true "Stellar account ID (G...)"
+// @Param timestamp query string true "Point in time: RFC3339 (2025-12-31T23:59:59Z) or date (2025-12-31)"
+// @Success 200 {object} map[string]interface{} "Portfolio balances at timestamp"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/gold/snapshots/portfolio [get]
 func (h *GoldHandlers) HandlePortfolioSnapshot(w http.ResponseWriter, r *http.Request) {
 	accountID := r.URL.Query().Get("account_id")
 	if accountID == "" {
@@ -100,7 +120,20 @@ func (h *GoldHandlers) HandlePortfolioSnapshot(w http.ResponseWriter, r *http.Re
 }
 
 // HandleAssetHolders returns all holders of an asset at a specific point in time
-// GET /api/v1/gold/snapshots/balance?asset_code=USDC&asset_issuer=GA5ZSE...&timestamp=2025-12-31T23:59:59Z
+// @Summary Get asset holders at timestamp
+// @Description Returns all holders of an asset at a specific point in time with their balances
+// @Tags Gold
+// @Accept json
+// @Produce json
+// @Param asset_code query string true "Asset code (e.g., USDC, XLM)"
+// @Param asset_issuer query string false "Asset issuer account ID (required for non-native assets)"
+// @Param timestamp query string true "Point in time: RFC3339 (2025-12-31T23:59:59Z) or date (2025-12-31)"
+// @Param limit query int false "Maximum results to return (default: 1000, max: 10000)"
+// @Param min_balance query string false "Minimum balance filter (in stroops)"
+// @Success 200 {object} map[string]interface{} "List of asset holders at timestamp"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/gold/snapshots/balance [get]
 func (h *GoldHandlers) HandleAssetHolders(w http.ResponseWriter, r *http.Request) {
 	assetCode := r.URL.Query().Get("asset_code")
 	if assetCode == "" {
@@ -138,8 +171,16 @@ func (h *GoldHandlers) HandleAssetHolders(w http.ResponseWriter, r *http.Request
 }
 
 // HandleBatchAccounts returns state for multiple accounts at a specific point in time
-// POST /api/v1/gold/snapshots/accounts/batch
-// Request body: {"account_ids": ["GABC...", "GDEF..."], "timestamp": "2025-12-31T23:59:59Z"}
+// @Summary Get batch account snapshots at timestamp
+// @Description Returns state for multiple accounts (up to 100) at a specific point in time
+// @Tags Gold
+// @Accept json
+// @Produce json
+// @Param request body BatchAccountsRequest true "Batch request with account IDs and timestamp"
+// @Success 200 {object} map[string]interface{} "Account states at timestamp"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/gold/snapshots/accounts/batch [post]
 func (h *GoldHandlers) HandleBatchAccounts(w http.ResponseWriter, r *http.Request) {
 	// Parse request body
 	var req BatchAccountsRequest

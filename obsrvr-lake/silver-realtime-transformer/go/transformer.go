@@ -10,38 +10,39 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/lib/pq"
 )
 
 // RealtimeTransformer handles real-time bronze → silver transformation
 type RealtimeTransformer struct {
-	config         *Config
-	bronzeReader   *BronzeReader
-	silverWriter   *SilverWriter
-	checkpoint     *CheckpointManager
-	silverDB       *sql.DB
-	stopChan       chan struct{}
+	config        *Config
+	sourceManager *SourceManager
+	silverWriter  *SilverWriter
+	checkpoint    *CheckpointManager
+	silverDB      *sql.DB
+	stopChan      chan struct{}
 
 	// Stats
-	mu                          sync.RWMutex
-	transformationsTotal        int64
-	transformationErrors        int64
-	lastLedgerSequence          int64
-	lastTransformationTime      time.Time
-	lastTransformationDuration  time.Duration
-	lastTransformationRowCount  int64
+	mu                         sync.RWMutex
+	transformationsTotal       int64
+	transformationErrors       int64
+	lastLedgerSequence         int64
+	lastTransformationTime     time.Time
+	lastTransformationDuration time.Duration
+	lastTransformationRowCount int64
+
+	// Gap detection
+	consecutiveEmptyPolls int
 }
 
 // NewRealtimeTransformer creates a new realtime transformer
-func NewRealtimeTransformer(config *Config, bronzeReader *BronzeReader, silverWriter *SilverWriter, checkpoint *CheckpointManager, silverDB *sql.DB) *RealtimeTransformer {
+func NewRealtimeTransformer(config *Config, sourceManager *SourceManager, silverWriter *SilverWriter, checkpoint *CheckpointManager, silverDB *sql.DB) *RealtimeTransformer {
 	return &RealtimeTransformer{
-		config:       config,
-		bronzeReader: bronzeReader,
-		silverWriter: silverWriter,
-		checkpoint:   checkpoint,
-		silverDB:     silverDB,
-		stopChan:     make(chan struct{}),
+		config:        config,
+		sourceManager: sourceManager,
+		silverWriter:  silverWriter,
+		checkpoint:    checkpoint,
+		silverDB:      silverDB,
+		stopChan:      make(chan struct{}),
 	}
 }
 
@@ -107,8 +108,8 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 	// Get current checkpoint
 	lastLedger := rt.getLastLedger()
 
-	// Check for new data in bronze hot
-	maxBronzeLedger, err := rt.bronzeReader.GetMaxLedgerSequence(ctx)
+	// Check for new data using the source manager (handles hot/cold switching)
+	maxBronzeLedger, err := rt.sourceManager.GetMaxLedgerSequence(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to query max ledger: %w", err)
 	}
@@ -126,7 +127,7 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 	var startLedger int64
 	if lastLedger == 0 {
 		// First run - start from where bronze actually begins
-		minBronzeLedger, err := rt.bronzeReader.GetMinLedgerSequence(ctx)
+		minBronzeLedger, err := rt.sourceManager.GetMinLedgerSequence(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to query min ledger: %w", err)
 		}
@@ -140,12 +141,21 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 	}
 	endLedger := maxBronzeLedger
 
-	// Limit batch size
-	if endLedger-startLedger+1 > int64(rt.config.Performance.BatchSize) {
-		endLedger = startLedger + int64(rt.config.Performance.BatchSize) - 1
+	// Limit batch size (use backfill batch size if in backfill mode)
+	batchSize := rt.config.Performance.BatchSize
+	if rt.sourceManager.GetMode() == SourceModeBackfill {
+		batchSize = rt.config.GetBackfillBatchSize()
+	}
+	if endLedger-startLedger+1 > int64(batchSize) {
+		endLedger = startLedger + int64(batchSize) - 1
 	}
 
-	log.Printf("📊 New data available (ledgers %d to %d)", startLedger, endLedger)
+	// Log with source mode indicator
+	modeIndicator := "🔥" // Hot
+	if rt.sourceManager.GetMode() == SourceModeBackfill {
+		modeIndicator = "❄️" // Cold/Backfill
+	}
+	log.Printf("%s New data available (ledgers %d to %d) [mode: %s]", modeIndicator, startLedger, endLedger, rt.sourceManager.GetMode())
 
 	// Start transaction for atomic writes + checkpoint
 	tx, err := rt.silverDB.BeginTx(ctx, nil)
@@ -310,6 +320,62 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 	}
 	totalRows += configSettingsCount
 
+	// Only advance checkpoint if actual data was transformed
+	// This prevents runaway cursor advancement when source is down
+	if totalRows == 0 {
+		// No data found - don't advance checkpoint, rollback transaction
+		tx.Rollback()
+		rt.consecutiveEmptyPolls++
+		log.Printf("⏸️  No data found for ledgers %d-%d in %v (source may be unavailable), not advancing checkpoint (empty polls: %d)",
+			startLedger, endLedger, time.Since(startTime), rt.consecutiveEmptyPolls)
+
+		// Check for gap if we've exceeded the threshold
+		maxEmptyPolls := rt.config.GapDetection.MaxEmptyPolls
+		if maxEmptyPolls == 0 {
+			maxEmptyPolls = 10 // Default threshold
+		}
+
+		if rt.consecutiveEmptyPolls >= maxEmptyPolls {
+			// Use SourceManager to check for gap and potentially switch to backfill mode
+			switched, err := rt.sourceManager.CheckAndSwitchMode(ctx, lastLedger, false)
+			if err != nil {
+				log.Printf("⚠️  Failed to check/switch mode: %v", err)
+				return nil
+			}
+
+			if switched {
+				// Mode changed - reset empty poll counter
+				rt.consecutiveEmptyPolls = 0
+			} else if rt.sourceManager.GetMode() == SourceModeHot {
+				// Still in hot mode but no data - might be a gap without cold fallback
+				// Fall back to legacy auto-skip behavior if configured
+				if rt.config.GapDetection.AutoSkip && !rt.config.Fallback.Enabled {
+					hotMinLedger := rt.sourceManager.GetHotMinLedger()
+					if hotMinLedger > startLedger {
+						gapSize := hotMinLedger - startLedger
+						newCheckpoint := hotMinLedger - 1
+						log.Printf("🔄 AUTO-SKIP (no cold fallback): Advancing checkpoint from %d to %d (skipping %d ledgers)",
+							lastLedger, newCheckpoint, gapSize)
+
+						if err := rt.checkpoint.Save(newCheckpoint); err != nil {
+							log.Printf("❌ Failed to update checkpoint: %v", err)
+							return fmt.Errorf("failed to skip checkpoint: %w", err)
+						}
+
+						rt.mu.Lock()
+						rt.lastLedgerSequence = newCheckpoint
+						rt.mu.Unlock()
+						rt.consecutiveEmptyPolls = 0
+					}
+				}
+			}
+		}
+		return nil
+	}
+
+	// Reset empty poll counter on successful transformation
+	rt.consecutiveEmptyPolls = 0
+
 	// Update checkpoint
 	if err := rt.checkpoint.SaveWithTx(tx, endLedger); err != nil {
 		return fmt.Errorf("failed to save checkpoint: %w", err)
@@ -324,14 +390,27 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 	duration := time.Since(startTime)
 	rt.updateStats(endLedger, duration, totalRows)
 
-	log.Printf("✅ Transformed %d rows in %v (ledgers %d-%d)", totalRows, duration, startLedger, endLedger)
+	// Log with source mode indicator (reuse modeIndicator from earlier in function)
+	if rt.sourceManager.GetMode() == SourceModeBackfill {
+		// Show backfill progress
+		target, progress := rt.sourceManager.GetBackfillProgress(endLedger)
+		log.Printf("❄️ Transformed %d rows in %v (ledgers %d-%d) [backfill: %.1f%% to %d]",
+			totalRows, duration, startLedger, endLedger, progress, target)
+	} else {
+		log.Printf("🔥 Transformed %d rows in %v (ledgers %d-%d)", totalRows, duration, startLedger, endLedger)
+	}
+
+	// Check if we should switch modes (e.g., backfill complete → switch to hot)
+	if _, err := rt.sourceManager.CheckAndSwitchMode(ctx, endLedger, true); err != nil {
+		log.Printf("⚠️  Failed to check mode after transformation: %v", err)
+	}
 
 	return nil
 }
 
 // transformEnrichedOperations transforms enriched operations for the ledger range
 func (rt *RealtimeTransformer) transformEnrichedOperations(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
-	rows, err := rt.bronzeReader.QueryEnrichedOperations(ctx, startLedger, endLedger)
+	rows, err := rt.sourceManager.QueryEnrichedOperations(ctx, startLedger, endLedger)
 	if err != nil {
 		return 0, err
 	}
@@ -401,7 +480,7 @@ func (rt *RealtimeTransformer) transformEnrichedOperations(ctx context.Context, 
 
 // transformTokenTransfers transforms token transfers for the ledger range
 func (rt *RealtimeTransformer) transformTokenTransfers(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
-	rows, err := rt.bronzeReader.QueryTokenTransfers(ctx, startLedger, endLedger)
+	rows, err := rt.sourceManager.QueryTokenTransfers(ctx, startLedger, endLedger)
 	if err != nil {
 		return 0, err
 	}
@@ -438,7 +517,7 @@ func (rt *RealtimeTransformer) transformTokenTransfers(ctx context.Context, tx *
 
 // transformAccountsCurrent upserts accounts current state for the ledger range
 func (rt *RealtimeTransformer) transformAccountsCurrent(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
-	rows, err := rt.bronzeReader.QueryAccountsSnapshot(ctx, startLedger, endLedger)
+	rows, err := rt.sourceManager.QueryAccountsSnapshot(ctx, startLedger, endLedger)
 	if err != nil {
 		return 0, err
 	}
@@ -478,7 +557,7 @@ func (rt *RealtimeTransformer) transformAccountsCurrent(ctx context.Context, tx 
 
 // transformTrustlinesCurrent upserts trustlines current state for the ledger range
 func (rt *RealtimeTransformer) transformTrustlinesCurrent(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
-	rows, err := rt.bronzeReader.QueryTrustlinesSnapshot(ctx, startLedger, endLedger)
+	rows, err := rt.sourceManager.QueryTrustlinesSnapshot(ctx, startLedger, endLedger)
 	if err != nil {
 		return 0, err
 	}
@@ -535,7 +614,7 @@ func (rt *RealtimeTransformer) transformTrustlinesCurrent(ctx context.Context, t
 
 // transformOffersCurrent upserts offers current state for the ledger range
 func (rt *RealtimeTransformer) transformOffersCurrent(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
-	rows, err := rt.bronzeReader.QueryOffersSnapshot(ctx, startLedger, endLedger)
+	rows, err := rt.sourceManager.QueryOffersSnapshot(ctx, startLedger, endLedger)
 	if err != nil {
 		return 0, err
 	}
@@ -599,7 +678,7 @@ func (rt *RealtimeTransformer) transformOffersCurrent(ctx context.Context, tx *s
 // transformAccountsSnapshot appends account snapshot history (SCD Type 2 - Cycle 3)
 func (rt *RealtimeTransformer) transformAccountsSnapshot(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
 	// Step 1: INSERT all new snapshots with valid_to = NULL
-	rows, err := rt.bronzeReader.QueryAccountsSnapshotAll(ctx, startLedger, endLedger)
+	rows, err := rt.sourceManager.QueryAccountsSnapshotAll(ctx, startLedger, endLedger)
 	if err != nil {
 		return 0, err
 	}
@@ -644,7 +723,7 @@ func (rt *RealtimeTransformer) transformAccountsSnapshot(ctx context.Context, tx
 
 // transformTrustlinesSnapshot appends trustline snapshot history (SCD Type 2 - Cycle 3)
 func (rt *RealtimeTransformer) transformTrustlinesSnapshot(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
-	rows, err := rt.bronzeReader.QueryTrustlinesSnapshotAll(ctx, startLedger, endLedger)
+	rows, err := rt.sourceManager.QueryTrustlinesSnapshotAll(ctx, startLedger, endLedger)
 	if err != nil {
 		return 0, err
 	}
@@ -687,7 +766,7 @@ func (rt *RealtimeTransformer) transformTrustlinesSnapshot(ctx context.Context, 
 
 // transformOffersSnapshot appends offer snapshot history (SCD Type 2 - Cycle 3)
 func (rt *RealtimeTransformer) transformOffersSnapshot(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
-	rows, err := rt.bronzeReader.QueryOffersSnapshotAll(ctx, startLedger, endLedger)
+	rows, err := rt.sourceManager.QueryOffersSnapshotAll(ctx, startLedger, endLedger)
 	if err != nil {
 		return 0, err
 	}
@@ -730,7 +809,7 @@ func (rt *RealtimeTransformer) transformOffersSnapshot(ctx context.Context, tx *
 
 // transformAccountSignersSnapshot appends account signer snapshot history (SCD Type 2 - Cycle 3)
 func (rt *RealtimeTransformer) transformAccountSignersSnapshot(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
-	rows, err := rt.bronzeReader.QueryAccountSignersSnapshotAll(ctx, startLedger, endLedger)
+	rows, err := rt.sourceManager.QueryAccountSignersSnapshotAll(ctx, startLedger, endLedger)
 	if err != nil {
 		return 0, err
 	}
@@ -773,14 +852,25 @@ func (rt *RealtimeTransformer) GetStats() TransformerStats {
 	rt.mu.RLock()
 	defer rt.mu.RUnlock()
 
-	return TransformerStats{
+	stats := TransformerStats{
 		TransformationsTotal:       rt.transformationsTotal,
 		TransformationErrors:       rt.transformationErrors,
 		LastLedgerSequence:         rt.lastLedgerSequence,
 		LastTransformationTime:     rt.lastTransformationTime,
 		LastTransformationDuration: rt.lastTransformationDuration,
 		LastTransformationRowCount: rt.lastTransformationRowCount,
+		SourceMode:                 string(rt.sourceManager.GetMode()),
+		HotMinLedger:               rt.sourceManager.GetHotMinLedger(),
 	}
+
+	// Add backfill info if in backfill mode
+	if rt.sourceManager.GetMode() == SourceModeBackfill {
+		target, progress := rt.sourceManager.GetBackfillProgress(rt.lastLedgerSequence)
+		stats.BackfillTarget = target
+		stats.BackfillProgress = progress
+	}
+
+	return stats
 }
 
 // TransformerStats holds transformation statistics
@@ -791,6 +881,15 @@ type TransformerStats struct {
 	LastTransformationTime     time.Time
 	LastTransformationDuration time.Duration
 	LastTransformationRowCount int64
+	SourceMode                 string
+	HotMinLedger               int64
+	BackfillTarget             int64
+	BackfillProgress           float64
+}
+
+// GetSourceManager returns the source manager (for health endpoint access)
+func (rt *RealtimeTransformer) GetSourceManager() *SourceManager {
+	return rt.sourceManager
 }
 
 // updateStats updates internal statistics
@@ -823,7 +922,7 @@ func (rt *RealtimeTransformer) getLastLedger() int64 {
 
 // transformContractInvocations transforms contract invocations for the ledger range
 func (rt *RealtimeTransformer) transformContractInvocations(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
-	rows, err := rt.bronzeReader.QueryContractInvocations(ctx, startLedger, endLedger)
+	rows, err := rt.sourceManager.QueryContractInvocations(ctx, startLedger, endLedger)
 	if err != nil {
 		return 0, err
 	}
@@ -869,7 +968,7 @@ func (rt *RealtimeTransformer) transformContractInvocations(ctx context.Context,
 // transformContractCalls transforms cross-contract call graphs for the ledger range
 // Extracts call relationships from Bronze call graph data and writes to Silver tables
 func (rt *RealtimeTransformer) transformContractCalls(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
-	rows, err := rt.bronzeReader.QueryContractCallGraphs(ctx, startLedger, endLedger)
+	rows, err := rt.sourceManager.QueryContractCallGraphs(ctx, startLedger, endLedger)
 	if err != nil {
 		return 0, err
 	}
@@ -879,20 +978,21 @@ func (rt *RealtimeTransformer) transformContractCalls(ctx context.Context, tx *s
 
 	for rows.Next() {
 		var (
-			ledgerSequence   int64
-			transactionIndex int
-			operationIndex   int
-			transactionHash  string
-			sourceAccount    string
-			contractID       sql.NullString
-			functionName     sql.NullString
-			argumentsJSON    sql.NullString
-			contractCallsJSON sql.NullString
-			contractsInvolved []string
-			maxCallDepth     sql.NullInt32
-			successful       bool
-			closedAt         time.Time
-			ledgerRange      int64
+			ledgerSequence      int64
+			transactionIndex    int
+			operationIndex      int
+			transactionHash     string
+			sourceAccount       string
+			contractID          sql.NullString
+			functionName        sql.NullString
+			argumentsJSON       sql.NullString
+			contractCallsJSON   sql.NullString
+			contractsInvolvedRaw sql.NullString // Scan as string to handle both PG array and DuckLake text
+			contractsInvolved   []string
+			maxCallDepth        sql.NullInt32
+			successful          bool
+			closedAt            time.Time
+			ledgerRange         int64
 		)
 
 		err := rows.Scan(
@@ -905,7 +1005,7 @@ func (rt *RealtimeTransformer) transformContractCalls(ctx context.Context, tx *s
 			&functionName,
 			&argumentsJSON,
 			&contractCallsJSON,
-			pq.Array(&contractsInvolved),
+			&contractsInvolvedRaw,
 			&maxCallDepth,
 			&successful,
 			&closedAt,
@@ -914,6 +1014,11 @@ func (rt *RealtimeTransformer) transformContractCalls(ctx context.Context, tx *s
 
 		if err != nil {
 			return count, fmt.Errorf("failed to scan contract call graph row: %w", err)
+		}
+
+		// Parse contracts_involved from string (handles both PostgreSQL array format and DuckLake text)
+		if contractsInvolvedRaw.Valid && contractsInvolvedRaw.String != "" {
+			contractsInvolved = parseContractsInvolvedArray(contractsInvolvedRaw.String)
 		}
 
 		// Parse call graph JSON and write individual calls
@@ -1000,7 +1105,7 @@ func (rt *RealtimeTransformer) transformContractCalls(ctx context.Context, tx *s
 
 // transformLiquidityPoolsCurrent upserts liquidity pools current state for the ledger range
 func (rt *RealtimeTransformer) transformLiquidityPoolsCurrent(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
-	rows, err := rt.bronzeReader.QueryLiquidityPoolsSnapshot(ctx, startLedger, endLedger)
+	rows, err := rt.sourceManager.QueryLiquidityPoolsSnapshot(ctx, startLedger, endLedger)
 	if err != nil {
 		return 0, err
 	}
@@ -1041,7 +1146,7 @@ func (rt *RealtimeTransformer) transformLiquidityPoolsCurrent(ctx context.Contex
 
 // transformClaimableBalancesCurrent upserts claimable balances current state for the ledger range
 func (rt *RealtimeTransformer) transformClaimableBalancesCurrent(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
-	rows, err := rt.bronzeReader.QueryClaimableBalancesSnapshot(ctx, startLedger, endLedger)
+	rows, err := rt.sourceManager.QueryClaimableBalancesSnapshot(ctx, startLedger, endLedger)
 	if err != nil {
 		return 0, err
 	}
@@ -1081,7 +1186,7 @@ func (rt *RealtimeTransformer) transformClaimableBalancesCurrent(ctx context.Con
 
 // transformNativeBalancesCurrent upserts native balances current state for the ledger range
 func (rt *RealtimeTransformer) transformNativeBalancesCurrent(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
-	rows, err := rt.bronzeReader.QueryNativeBalancesSnapshot(ctx, startLedger, endLedger)
+	rows, err := rt.sourceManager.QueryNativeBalancesSnapshot(ctx, startLedger, endLedger)
 	if err != nil {
 		return 0, err
 	}
@@ -1114,6 +1219,39 @@ func (rt *RealtimeTransformer) transformNativeBalancesCurrent(ctx context.Contex
 	}
 
 	return count, nil
+}
+
+// parseContractsInvolvedArray parses the contracts_involved field from either PostgreSQL array format
+// (e.g., "{CA...,CB...}") or plain text format (e.g., "CA...,CB..." or JSON array)
+func parseContractsInvolvedArray(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+
+	// Handle PostgreSQL array format: {val1,val2,val3}
+	if strings.HasPrefix(raw, "{") && strings.HasSuffix(raw, "}") {
+		inner := raw[1 : len(raw)-1]
+		if inner == "" {
+			return nil
+		}
+		return strings.Split(inner, ",")
+	}
+
+	// Handle JSON array format: ["val1","val2","val3"]
+	if strings.HasPrefix(raw, "[") {
+		var arr []string
+		if err := json.Unmarshal([]byte(raw), &arr); err == nil {
+			return arr
+		}
+	}
+
+	// Handle comma-separated format: val1,val2,val3
+	if strings.Contains(raw, ",") {
+		return strings.Split(raw, ",")
+	}
+
+	// Single value
+	return []string{raw}
 }
 
 // parseContractCallGraph parses call graph JSON and creates ContractCallRow and ContractHierarchyRow
@@ -1187,7 +1325,7 @@ func parseContractCallGraph(
 
 // transformTrades inserts trade events for the ledger range (append-only event stream)
 func (rt *RealtimeTransformer) transformTrades(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
-	rows, err := rt.bronzeReader.QueryTrades(ctx, startLedger, endLedger)
+	rows, err := rt.sourceManager.QueryTrades(ctx, startLedger, endLedger)
 	if err != nil {
 		return 0, err
 	}
@@ -1238,7 +1376,7 @@ func (rt *RealtimeTransformer) transformTrades(ctx context.Context, tx *sql.Tx, 
 
 // transformEffects inserts effect events for the ledger range (append-only event stream)
 func (rt *RealtimeTransformer) transformEffects(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
-	rows, err := rt.bronzeReader.QueryEffects(ctx, startLedger, endLedger)
+	rows, err := rt.sourceManager.QueryEffects(ctx, startLedger, endLedger)
 	if err != nil {
 		return 0, err
 	}
@@ -1282,7 +1420,7 @@ func (rt *RealtimeTransformer) transformEffects(ctx context.Context, tx *sql.Tx,
 
 // transformContractDataCurrent upserts contract data current state for the ledger range
 func (rt *RealtimeTransformer) transformContractDataCurrent(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
-	rows, err := rt.bronzeReader.QueryContractDataSnapshot(ctx, startLedger, endLedger)
+	rows, err := rt.sourceManager.QueryContractDataSnapshot(ctx, startLedger, endLedger)
 	if err != nil {
 		return 0, err
 	}
@@ -1320,7 +1458,7 @@ func (rt *RealtimeTransformer) transformContractDataCurrent(ctx context.Context,
 
 // transformContractCodeCurrent upserts contract code current state for the ledger range
 func (rt *RealtimeTransformer) transformContractCodeCurrent(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
-	rows, err := rt.bronzeReader.QueryContractCodeSnapshot(ctx, startLedger, endLedger)
+	rows, err := rt.sourceManager.QueryContractCodeSnapshot(ctx, startLedger, endLedger)
 	if err != nil {
 		return 0, err
 	}
@@ -1358,7 +1496,7 @@ func (rt *RealtimeTransformer) transformContractCodeCurrent(ctx context.Context,
 
 // transformTTLCurrent upserts TTL current state for the ledger range
 func (rt *RealtimeTransformer) transformTTLCurrent(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
-	rows, err := rt.bronzeReader.QueryTTLSnapshot(ctx, startLedger, endLedger)
+	rows, err := rt.sourceManager.QueryTTLSnapshot(ctx, startLedger, endLedger)
 	if err != nil {
 		return 0, err
 	}
@@ -1394,7 +1532,7 @@ func (rt *RealtimeTransformer) transformTTLCurrent(ctx context.Context, tx *sql.
 
 // transformEvictedKeys inserts evicted key events for the ledger range (append-only event stream)
 func (rt *RealtimeTransformer) transformEvictedKeys(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
-	rows, err := rt.bronzeReader.QueryEvictedKeys(ctx, startLedger, endLedger)
+	rows, err := rt.sourceManager.QueryEvictedKeys(ctx, startLedger, endLedger)
 	if err != nil {
 		return 0, err
 	}
@@ -1430,7 +1568,7 @@ func (rt *RealtimeTransformer) transformEvictedKeys(ctx context.Context, tx *sql
 
 // transformRestoredKeys inserts restored key events for the ledger range (append-only event stream)
 func (rt *RealtimeTransformer) transformRestoredKeys(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
-	rows, err := rt.bronzeReader.QueryRestoredKeys(ctx, startLedger, endLedger)
+	rows, err := rt.sourceManager.QueryRestoredKeys(ctx, startLedger, endLedger)
 	if err != nil {
 		return 0, err
 	}
@@ -1470,7 +1608,7 @@ func (rt *RealtimeTransformer) transformRestoredKeys(ctx context.Context, tx *sq
 
 // transformConfigSettingsCurrent upserts config settings current state for the ledger range
 func (rt *RealtimeTransformer) transformConfigSettingsCurrent(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
-	rows, err := rt.bronzeReader.QueryConfigSettingsSnapshot(ctx, startLedger, endLedger)
+	rows, err := rt.sourceManager.QueryConfigSettingsSnapshot(ctx, startLedger, endLedger)
 	if err != nil {
 		return 0, err
 	}

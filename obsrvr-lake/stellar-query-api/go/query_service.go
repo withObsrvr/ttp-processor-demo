@@ -70,6 +70,20 @@ func (qs *QueryService) determineSource(start, end int64) (queryHot, queryCold b
 	return true, true, start, end, start, end
 }
 
+// HandleLedgers returns raw ledger data from the Bronze layer
+// @Summary Get raw ledgers
+// @Description Returns raw ledger data from hot and cold storage for a given sequence range
+// @Tags Bronze
+// @Accept json
+// @Produce json
+// @Param start query int true "Start ledger sequence"
+// @Param end query int true "End ledger sequence"
+// @Param limit query int false "Maximum results to return"
+// @Param sort query string false "Sort order: sequence_asc (default), sequence_desc, closed_at_asc, closed_at_desc, tx_count_desc"
+// @Success 200 {object} map[string]interface{} "Ledger data with source info"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/bronze/ledgers [get]
 func (qs *QueryService) HandleLedgers(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -213,6 +227,19 @@ func (qs *QueryService) HandleLedgers(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// HandleTransactions returns raw transaction data from the Bronze layer
+// @Summary Get raw transactions
+// @Description Returns raw transaction data from hot and cold storage for a given ledger sequence range
+// @Tags Bronze
+// @Accept json
+// @Produce json
+// @Param start query int true "Start ledger sequence"
+// @Param end query int true "End ledger sequence"
+// @Param limit query int false "Maximum results to return"
+// @Success 200 {object} map[string]interface{} "Transaction data"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/bronze/transactions [get]
 func (qs *QueryService) HandleTransactions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -294,6 +321,19 @@ func (qs *QueryService) HandleTransactions(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+// HandleOperations returns raw operation data from the Bronze layer
+// @Summary Get raw operations
+// @Description Returns raw operation data from hot and cold storage for a given ledger sequence range
+// @Tags Bronze
+// @Accept json
+// @Produce json
+// @Param start query int true "Start ledger sequence"
+// @Param end query int true "End ledger sequence"
+// @Param limit query int false "Maximum results to return"
+// @Success 200 {object} map[string]interface{} "Operation data"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/bronze/operations [get]
 func (qs *QueryService) HandleOperations(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -375,6 +415,19 @@ func (qs *QueryService) HandleOperations(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+// HandleEffects returns raw effect data from the Bronze layer
+// @Summary Get raw effects
+// @Description Returns raw effect data from hot and cold storage for a given ledger sequence range
+// @Tags Bronze
+// @Accept json
+// @Produce json
+// @Param start query int true "Start ledger sequence"
+// @Param end query int true "End ledger sequence"
+// @Param limit query int false "Maximum results to return"
+// @Success 200 {object} map[string]interface{} "Effect data"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/bronze/effects [get]
 func (qs *QueryService) HandleEffects(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -456,6 +509,19 @@ func (qs *QueryService) HandleEffects(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// HandleTrades returns raw trade data from the Bronze layer
+// @Summary Get raw trades
+// @Description Returns raw DEX trade data from hot and cold storage for a given ledger sequence range
+// @Tags Bronze
+// @Accept json
+// @Produce json
+// @Param start query int true "Start ledger sequence"
+// @Param end query int true "End ledger sequence"
+// @Param limit query int false "Maximum results to return"
+// @Success 200 {object} map[string]interface{} "Trade data"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/bronze/trades [get]
 func (qs *QueryService) HandleTrades(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -537,6 +603,18 @@ func (qs *QueryService) HandleTrades(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// HandleAccounts returns raw account data from the Bronze layer
+// @Summary Get raw account data
+// @Description Returns raw account snapshots from hot and cold storage for a given account ID
+// @Tags Bronze
+// @Accept json
+// @Produce json
+// @Param account_id query string true "Stellar account ID (G...)"
+// @Param limit query int false "Maximum results to return"
+// @Success 200 {object} map[string]interface{} "Account data"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/bronze/accounts [get]
 func (qs *QueryService) HandleAccounts(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -602,6 +680,18 @@ func (qs *QueryService) HandleAccounts(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// HandleTrustlines returns raw trustline data from the Bronze layer
+// @Summary Get raw trustlines
+// @Description Returns raw trustline data from hot and cold storage for a given account ID
+// @Tags Bronze
+// @Accept json
+// @Produce json
+// @Param account_id query string true "Stellar account ID (G...)"
+// @Param limit query int false "Maximum results to return"
+// @Success 200 {object} map[string]interface{} "Trustline data"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/bronze/trustlines [get]
 func (qs *QueryService) HandleTrustlines(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -665,6 +755,18 @@ func (qs *QueryService) HandleTrustlines(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+// HandleOffers returns raw offer data from the Bronze layer
+// @Summary Get raw offers
+// @Description Returns raw DEX offer data from hot and cold storage for a given seller ID
+// @Tags Bronze
+// @Accept json
+// @Produce json
+// @Param seller_id query string true "Seller account ID (G...)"
+// @Param limit query int false "Maximum results to return"
+// @Success 200 {object} map[string]interface{} "Offer data"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/bronze/offers [get]
 func (qs *QueryService) HandleOffers(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -728,6 +830,19 @@ func (qs *QueryService) HandleOffers(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// HandleContractEvents returns raw Soroban contract event data from the Bronze layer
+// @Summary Get raw contract events
+// @Description Returns raw Soroban contract event data from hot and cold storage for a given ledger sequence range
+// @Tags Bronze
+// @Accept json
+// @Produce json
+// @Param start query int true "Start ledger sequence"
+// @Param end query int true "End ledger sequence"
+// @Param limit query int false "Maximum results to return"
+// @Success 200 {object} map[string]interface{} "Contract event data"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/bronze/contract_events [get]
 func (qs *QueryService) HandleContractEvents(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)

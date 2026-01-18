@@ -32,7 +32,22 @@ func NewComplianceHandlers(reader *UnifiedSilverReader) *ComplianceHandlers {
 // ============================================
 
 // HandleTransactionArchive returns transaction lineage for an asset within a date range
-// GET /api/v1/gold/compliance/transactions
+// @Summary Get asset transaction archive
+// @Description Returns transaction lineage for an asset within a date range (supports JSON, CSV, Parquet export)
+// @Tags Compliance
+// @Accept json
+// @Produce json
+// @Param asset_code query string true "Asset code (e.g., USDC, XLM)"
+// @Param asset_issuer query string false "Asset issuer account ID (required for non-native assets)"
+// @Param start_date query string true "Start date (YYYY-MM-DD format)"
+// @Param end_date query string true "End date (YYYY-MM-DD format)"
+// @Param include_failed query bool false "Include failed transactions (default: false)"
+// @Param limit query int false "Maximum results to return (default: 1000, max: 10000)"
+// @Param format query string false "Output format: json (default), csv, parquet"
+// @Success 200 {object} map[string]interface{} "Transaction archive data"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/gold/compliance/transactions [get]
 func (h *ComplianceHandlers) HandleTransactionArchive(w http.ResponseWriter, r *http.Request) {
 	assetCode := r.URL.Query().Get("asset_code")
 	if assetCode == "" {
@@ -97,7 +112,21 @@ func (h *ComplianceHandlers) HandleTransactionArchive(w http.ResponseWriter, r *
 }
 
 // HandleBalanceArchive returns all holders of an asset at a specific timestamp
-// GET /api/v1/gold/compliance/balances
+// @Summary Get asset balance archive at timestamp
+// @Description Returns all holders of an asset at a specific timestamp (supports JSON, CSV, Parquet export)
+// @Tags Compliance
+// @Accept json
+// @Produce json
+// @Param asset_code query string true "Asset code (e.g., USDC, XLM)"
+// @Param asset_issuer query string false "Asset issuer account ID (required for non-native assets)"
+// @Param timestamp query string true "Point in time: RFC3339 (2025-12-31T23:59:59Z) or date (2025-12-31)"
+// @Param min_balance query string false "Minimum balance filter (in stroops)"
+// @Param limit query int false "Maximum results to return (default: 1000, max: 10000)"
+// @Param format query string false "Output format: json (default), csv, parquet"
+// @Success 200 {object} map[string]interface{} "Balance archive data"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/gold/compliance/balances [get]
 func (h *ComplianceHandlers) HandleBalanceArchive(w http.ResponseWriter, r *http.Request) {
 	assetCode := r.URL.Query().Get("asset_code")
 	if assetCode == "" {
@@ -161,7 +190,21 @@ func (h *ComplianceHandlers) HandleBalanceArchive(w http.ResponseWriter, r *http
 }
 
 // HandleSupplyTimeline returns daily supply totals for an asset over a date range
-// GET /api/v1/gold/compliance/supply
+// @Summary Get asset supply timeline
+// @Description Returns daily/weekly/monthly supply totals for an asset over a date range
+// @Tags Compliance
+// @Accept json
+// @Produce json
+// @Param asset_code query string true "Asset code (e.g., USDC, XLM)"
+// @Param asset_issuer query string false "Asset issuer account ID (required for non-native assets)"
+// @Param start_date query string true "Start date (YYYY-MM-DD format)"
+// @Param end_date query string true "End date (YYYY-MM-DD format)"
+// @Param interval query string false "Time interval: day (default), week, month"
+// @Param format query string false "Output format: json (default), csv, parquet"
+// @Success 200 {object} map[string]interface{} "Supply timeline data"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/gold/compliance/supply [get]
 func (h *ComplianceHandlers) HandleSupplyTimeline(w http.ResponseWriter, r *http.Request) {
 	assetCode := r.URL.Query().Get("asset_code")
 	if assetCode == "" {
@@ -228,7 +271,17 @@ func (h *ComplianceHandlers) HandleSupplyTimeline(w http.ResponseWriter, r *http
 // ============================================
 
 // HandleFullArchive creates a new async archive job
-// POST /api/v1/gold/compliance/archive
+// @Summary Create full compliance archive job
+// @Description Creates an async archive job for comprehensive compliance data export with methodology documentation
+// @Tags Compliance
+// @Accept json
+// @Produce json
+// @Param request body FullArchiveRequest true "Archive job request"
+// @Success 202 {object} FullArchiveResponse "Archive job created"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 405 {object} map[string]interface{} "Method not allowed"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/gold/compliance/archive [post]
 func (h *ComplianceHandlers) HandleFullArchive(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		respondError(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -292,7 +345,17 @@ func (h *ComplianceHandlers) HandleFullArchive(w http.ResponseWriter, r *http.Re
 }
 
 // HandleArchiveStatus returns the status of an archive job
-// GET /api/v1/gold/compliance/archive/{id}
+// @Summary Get archive job status
+// @Description Returns the current status and artifacts of an archive job
+// @Tags Compliance
+// @Accept json
+// @Produce json
+// @Param id path string true "Archive job ID"
+// @Success 200 {object} FullArchiveStatusResponse "Archive job status"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 404 {object} map[string]interface{} "Archive not found"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/gold/compliance/archive/{id} [get]
 func (h *ComplianceHandlers) HandleArchiveStatus(w http.ResponseWriter, r *http.Request) {
 	// Extract archive ID from path
 	path := r.URL.Path
@@ -333,7 +396,17 @@ func (h *ComplianceHandlers) HandleArchiveStatus(w http.ResponseWriter, r *http.
 }
 
 // HandleLineage returns the audit trail of completed archives
-// GET /api/v1/gold/compliance/lineage
+// @Summary Get archive lineage
+// @Description Returns audit trail of completed archives for an asset
+// @Tags Compliance
+// @Accept json
+// @Produce json
+// @Param asset_code query string false "Filter by asset code"
+// @Param asset_issuer query string false "Filter by asset issuer"
+// @Param limit query int false "Maximum results to return (default: 50, max: 100)"
+// @Success 200 {object} LineageResponse "Archive lineage data"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/gold/compliance/lineage [get]
 func (h *ComplianceHandlers) HandleLineage(w http.ResponseWriter, r *http.Request) {
 	assetCode := r.URL.Query().Get("asset_code")
 	assetIssuer := r.URL.Query().Get("asset_issuer")
@@ -353,7 +426,18 @@ func (h *ComplianceHandlers) HandleLineage(w http.ResponseWriter, r *http.Reques
 }
 
 // HandleArchiveDownload serves archive artifacts (methodology.md, manifest.json)
-// GET /api/v1/gold/compliance/archive/{id}/download/{artifact}
+// @Summary Download archive artifact
+// @Description Downloads specific artifacts from a completed archive (methodology.md, manifest.json)
+// @Tags Compliance
+// @Accept json
+// @Produce application/octet-stream
+// @Param id path string true "Archive job ID"
+// @Param artifact path string true "Artifact name (methodology.md, manifest.json)"
+// @Success 200 {file} file "Artifact file download"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 404 {object} map[string]interface{} "Archive or artifact not found"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/gold/compliance/archive/{id}/download/{artifact} [get]
 func (h *ComplianceHandlers) HandleArchiveDownload(w http.ResponseWriter, r *http.Request) {
 	// Extract archive ID and artifact name from path
 	path := r.URL.Path

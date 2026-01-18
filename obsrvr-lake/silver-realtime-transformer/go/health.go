@@ -51,20 +51,38 @@ func (hs *HealthServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 		status = "stale" // No transformation in last 30 seconds
 	}
 
+	// Build stats map
+	statsMap := map[string]interface{}{
+		"transformations_total":           stats.TransformationsTotal,
+		"transformation_errors":           stats.TransformationErrors,
+		"last_ledger_sequence":            stats.LastLedgerSequence,
+		"last_transformation_time":        stats.LastTransformationTime,
+		"last_transformation_duration_ms": stats.LastTransformationDuration.Milliseconds(),
+		"last_transformation_row_count":   stats.LastTransformationRowCount,
+		"latency_seconds":                 latency.Seconds(),
+	}
+
+	// Build source info
+	sourceInfo := map[string]interface{}{
+		"mode": stats.SourceMode,
+	}
+
+	// Add backfill-specific info when in backfill mode
+	if stats.SourceMode == "backfill" {
+		sourceInfo["hot_min_ledger"] = stats.HotMinLedger
+		sourceInfo["backfill_target"] = stats.BackfillTarget
+		sourceInfo["backfill_progress_percent"] = stats.BackfillProgress
+	} else if stats.SourceMode == "hot" {
+		sourceInfo["hot_min_ledger"] = stats.HotMinLedger
+	}
+
 	response := map[string]interface{}{
-		"status": status,
-		"service": "silver-realtime-transformer",
-		"timestamp": time.Now(),
+		"status":         status,
+		"service":        "silver-realtime-transformer",
+		"timestamp":      time.Now(),
 		"uptime_seconds": int(time.Since(hs.startTime).Seconds()),
-		"stats": map[string]interface{}{
-			"transformations_total":         stats.TransformationsTotal,
-			"transformation_errors":         stats.TransformationErrors,
-			"last_ledger_sequence":          stats.LastLedgerSequence,
-			"last_transformation_time":      stats.LastTransformationTime,
-			"last_transformation_duration_ms": stats.LastTransformationDuration.Milliseconds(),
-			"last_transformation_row_count":   stats.LastTransformationRowCount,
-			"latency_seconds":               latency.Seconds(),
-		},
+		"source":         sourceInfo,
+		"stats":          statsMap,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -107,6 +125,28 @@ func (hs *HealthServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("# HELP silver_uptime_seconds Service uptime in seconds\n"))
 	w.Write([]byte("# TYPE silver_uptime_seconds counter\n"))
 	w.Write([]byte(formatMetric("silver_uptime_seconds", int(uptime.Seconds()))))
+
+	// Source mode metrics (1 = hot, 0 = backfill)
+	sourceHot := 0
+	if stats.SourceMode == "hot" {
+		sourceHot = 1
+	}
+	w.Write([]byte("# HELP silver_source_mode_hot Source mode (1=hot, 0=backfill)\n"))
+	w.Write([]byte("# TYPE silver_source_mode_hot gauge\n"))
+	w.Write([]byte(formatMetric("silver_source_mode_hot", sourceHot)))
+
+	w.Write([]byte("# HELP silver_hot_min_ledger Minimum ledger in hot storage\n"))
+	w.Write([]byte("# TYPE silver_hot_min_ledger gauge\n"))
+	w.Write([]byte(formatMetric("silver_hot_min_ledger", stats.HotMinLedger)))
+
+	// Backfill metrics (only relevant during backfill)
+	w.Write([]byte("# HELP silver_backfill_target Target ledger for backfill completion\n"))
+	w.Write([]byte("# TYPE silver_backfill_target gauge\n"))
+	w.Write([]byte(formatMetric("silver_backfill_target", stats.BackfillTarget)))
+
+	w.Write([]byte("# HELP silver_backfill_progress_percent Backfill progress percentage\n"))
+	w.Write([]byte("# TYPE silver_backfill_progress_percent gauge\n"))
+	w.Write([]byte(formatMetric("silver_backfill_progress_percent", stats.BackfillProgress)))
 }
 
 // formatMetric formats a metric in Prometheus format

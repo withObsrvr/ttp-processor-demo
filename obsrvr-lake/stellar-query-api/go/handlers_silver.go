@@ -43,7 +43,17 @@ func logHybridMatch(endpoint string, count int) {
 // ============================================
 
 // HandleAccountCurrent returns current state of an account
-// GET /api/v1/silver/accounts/current?account_id=GXXXXX
+// @Summary Get current account state
+// @Description Returns the current state of a Stellar account including balance, sequence number, and subentries
+// @Tags Accounts
+// @Accept json
+// @Produce json
+// @Param account_id query string true "Stellar account ID (G...)"
+// @Success 200 {object} map[string]interface{} "Account data"
+// @Failure 400 {object} map[string]interface{} "Missing or invalid account_id"
+// @Failure 404 {object} map[string]interface{} "Account not found"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/accounts/current [get]
 func (h *SilverHandlers) HandleAccountCurrent(w http.ResponseWriter, r *http.Request) {
 	accountID := r.URL.Query().Get("account_id")
 	if accountID == "" {
@@ -101,8 +111,18 @@ func (h *SilverHandlers) HandleAccountCurrent(w http.ResponseWriter, r *http.Req
 }
 
 // HandleAccountHistory returns historical snapshots of an account
-// GET /api/v1/silver/accounts/history?account_id=GXXXXX&limit=50
-// GET /api/v1/silver/accounts/history?cursor=xxx (cursor-based pagination)
+// @Summary Get account history
+// @Description Returns historical snapshots of an account's state over time with cursor-based pagination
+// @Tags Accounts
+// @Accept json
+// @Produce json
+// @Param account_id query string true "Stellar account ID (G...)"
+// @Param limit query int false "Maximum results to return (default: 50, max: 500)"
+// @Param cursor query string false "Pagination cursor from previous response"
+// @Success 200 {object} map[string]interface{} "Account history with pagination info"
+// @Failure 400 {object} map[string]interface{} "Missing or invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/accounts/history [get]
 func (h *SilverHandlers) HandleAccountHistory(w http.ResponseWriter, r *http.Request) {
 	accountID := r.URL.Query().Get("account_id")
 	if accountID == "" {
@@ -168,7 +188,15 @@ func (h *SilverHandlers) HandleAccountHistory(w http.ResponseWriter, r *http.Req
 }
 
 // HandleTopAccounts returns top accounts by balance (for leaderboards)
-// GET /api/v1/silver/accounts/top?limit=100
+// @Summary Get top accounts by balance
+// @Description Returns accounts with the highest XLM balances, useful for leaderboards
+// @Tags Accounts
+// @Accept json
+// @Produce json
+// @Param limit query int false "Maximum results to return (default: 100, max: 1000)"
+// @Success 200 {object} map[string]interface{} "List of top accounts"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/accounts/top [get]
 func (h *SilverHandlers) HandleTopAccounts(w http.ResponseWriter, r *http.Request) {
 	limit := parseLimit(r, 100, 1000)
 
@@ -212,10 +240,20 @@ func (h *SilverHandlers) HandleTopAccounts(w http.ResponseWriter, r *http.Reques
 }
 
 // HandleListAccounts returns a paginated list of all accounts
-// GET /api/v1/silver/accounts?limit=100
-// GET /api/v1/silver/accounts?cursor=xxx (cursor-based pagination)
-// GET /api/v1/silver/accounts?sort_by=balance&order=desc
-// GET /api/v1/silver/accounts?min_balance=1000000000 (filter by minimum balance in stroops)
+// @Summary List all accounts
+// @Description Returns a paginated list of all Stellar accounts with sorting and filtering options
+// @Tags Accounts
+// @Accept json
+// @Produce json
+// @Param limit query int false "Maximum results to return (default: 100, max: 1000)"
+// @Param cursor query string false "Pagination cursor from previous response"
+// @Param sort_by query string false "Sort field: balance (default)"
+// @Param order query string false "Sort order: asc, desc (default)"
+// @Param min_balance query int false "Minimum balance filter in stroops"
+// @Success 200 {object} map[string]interface{} "List of accounts with pagination info"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters or cursor mismatch"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/accounts [get]
 func (h *SilverHandlers) HandleListAccounts(w http.ResponseWriter, r *http.Request) {
 	// Parse cursor for pagination
 	cursorStr := r.URL.Query().Get("cursor")
@@ -309,7 +347,17 @@ func (h *SilverHandlers) HandleListAccounts(w http.ResponseWriter, r *http.Reque
 }
 
 // HandleAccountSigners returns the signers for an account (Horizon-compatible format)
-// GET /api/v1/silver/accounts/{id}/signers
+// @Summary Get account signers
+// @Description Returns the signers and thresholds for a Stellar account in Horizon-compatible format
+// @Tags Accounts
+// @Accept json
+// @Produce json
+// @Param account_id query string true "Stellar account ID (G...)"
+// @Success 200 {object} AccountSignersResponse "Account signers and thresholds"
+// @Failure 400 {object} map[string]interface{} "Missing account_id"
+// @Failure 404 {object} map[string]interface{} "Account not found"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/accounts/signers [get]
 func (h *SilverHandlers) HandleAccountSigners(w http.ResponseWriter, r *http.Request) {
 	// Extract account_id from path or query param
 	accountID := r.URL.Query().Get("account_id")
@@ -351,8 +399,23 @@ func (h *SilverHandlers) HandleAccountSigners(w http.ResponseWriter, r *http.Req
 }
 
 // HandleAssetList returns a paginated list of all assets on the network
-// GET /api/v1/silver/assets?limit=100&sort_by=holder_count&order=desc
-// Query params: limit, cursor, sort_by, order, min_holders, min_volume_24h, asset_type, search
+// @Summary List all assets
+// @Description Returns a paginated list of all assets on the Stellar network with holder counts, supply, and 24h activity
+// @Tags Assets
+// @Accept json
+// @Produce json
+// @Param limit query int false "Maximum results to return (default: 100, max: 1000)"
+// @Param cursor query string false "Pagination cursor from previous response"
+// @Param sort_by query string false "Sort field: holder_count (default), volume_24h, transfers_24h, circulating_supply"
+// @Param order query string false "Sort order: asc, desc (default)"
+// @Param min_holders query int false "Minimum holder count filter"
+// @Param min_volume_24h query int false "Minimum 24h volume in stroops"
+// @Param asset_type query string false "Asset type: credit_alphanum4, credit_alphanum12, native"
+// @Param search query string false "Search by asset code prefix"
+// @Success 200 {object} AssetListResponse "List of assets with pagination info"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters or cursor mismatch"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/assets [get]
 func (h *SilverHandlers) HandleAssetList(w http.ResponseWriter, r *http.Request) {
 	// Parse cursor for pagination
 	cursorStr := r.URL.Query().Get("cursor")
@@ -428,8 +491,16 @@ func (h *SilverHandlers) HandleAssetList(w http.ResponseWriter, r *http.Request)
 }
 
 // HandleTokenStats returns aggregated statistics for a specific token
-// GET /api/v1/silver/assets/{asset}/stats
-// Asset format: XLM (for native) or CODE:ISSUER (for credit assets)
+// @Summary Get token statistics
+// @Description Returns aggregated statistics for a specific token including holder count, supply, and 24h activity
+// @Tags Assets
+// @Accept json
+// @Produce json
+// @Param asset path string true "Asset identifier: XLM or CODE:ISSUER"
+// @Success 200 {object} TokenStatsResponse "Token statistics"
+// @Failure 400 {object} map[string]interface{} "Invalid asset format"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/assets/{asset}/stats [get]
 func (h *SilverHandlers) HandleTokenStats(w http.ResponseWriter, r *http.Request) {
 	// Extract asset from path parameter
 	vars := mux.Vars(r)
@@ -474,9 +545,19 @@ func (h *SilverHandlers) HandleTokenStats(w http.ResponseWriter, r *http.Request
 }
 
 // HandleTokenHolders returns holders of a specific token
-// GET /api/v1/silver/assets/{asset}/holders
-// Asset format: XLM (for native) or CODE:ISSUER (for credit assets)
-// Query params: limit, cursor, min_balance
+// @Summary Get token holders
+// @Description Returns a paginated list of accounts holding a specific token, sorted by balance
+// @Tags Assets
+// @Accept json
+// @Produce json
+// @Param asset path string true "Asset identifier: XLM or CODE:ISSUER"
+// @Param limit query int false "Maximum results to return (default: 100, max: 1000)"
+// @Param cursor query string false "Pagination cursor from previous response"
+// @Param min_balance query int false "Minimum balance filter in stroops"
+// @Success 200 {object} TokenHoldersResponse "Token holders with pagination info"
+// @Failure 400 {object} map[string]interface{} "Invalid asset format or cursor"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/assets/{asset}/holders [get]
 func (h *SilverHandlers) HandleTokenHolders(w http.ResponseWriter, r *http.Request) {
 	// Extract asset from path parameter
 	vars := mux.Vars(r)
@@ -544,7 +625,17 @@ func (h *SilverHandlers) HandleTokenHolders(w http.ResponseWriter, r *http.Reque
 }
 
 // HandleAccountBalances returns all balances (XLM + trustlines) for an account
-// GET /api/v1/silver/accounts/{id}/balances
+// @Summary Get account balances
+// @Description Returns all balances including XLM and trustlines for a Stellar account
+// @Tags Accounts
+// @Accept json
+// @Produce json
+// @Param id path string true "Stellar account ID (G...)"
+// @Success 200 {object} AccountBalancesResponse "Account balances"
+// @Failure 400 {object} map[string]interface{} "Missing account_id"
+// @Failure 404 {object} map[string]interface{} "Account not found"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/accounts/{id}/balances [get]
 func (h *SilverHandlers) HandleAccountBalances(w http.ResponseWriter, r *http.Request) {
 	// Extract account_id from path parameter
 	vars := mux.Vars(r)
@@ -586,10 +677,23 @@ func (h *SilverHandlers) HandleAccountBalances(w http.ResponseWriter, r *http.Re
 // ============================================
 
 // HandleEnrichedOperations returns enriched operations with full context
-// GET /api/v1/silver/operations/enriched?account_id=GXXXXX&limit=100
-// GET /api/v1/silver/operations/enriched?tx_hash=TXXXXX
-// GET /api/v1/silver/operations/enriched?payments_only=true
-// GET /api/v1/silver/operations/enriched?cursor=xxx (cursor-based pagination)
+// @Summary Get enriched operations
+// @Description Returns operations with full context including transaction details, account info, and asset metadata
+// @Tags Operations
+// @Accept json
+// @Produce json
+// @Param account_id query string false "Filter by account ID"
+// @Param tx_hash query string false "Filter by transaction hash"
+// @Param payments_only query bool false "Filter for payment operations only"
+// @Param soroban_only query bool false "Filter for Soroban operations only"
+// @Param start_ledger query int false "Start ledger sequence (mutually exclusive with cursor)"
+// @Param end_ledger query int false "End ledger sequence"
+// @Param limit query int false "Maximum results to return (default: 100, max: 1000)"
+// @Param cursor query string false "Pagination cursor from previous response"
+// @Success 200 {object} map[string]interface{} "Enriched operations with pagination info"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/operations/enriched [get]
 func (h *SilverHandlers) HandleEnrichedOperations(w http.ResponseWriter, r *http.Request) {
 	// Parse cursor for pagination
 	cursorStr := r.URL.Query().Get("cursor")
@@ -677,8 +781,18 @@ func (h *SilverHandlers) HandleEnrichedOperations(w http.ResponseWriter, r *http
 }
 
 // HandlePayments is a convenience endpoint for payments only
-// GET /api/v1/silver/payments?account_id=GXXXXX&limit=50
-// GET /api/v1/silver/payments?cursor=xxx (cursor-based pagination)
+// @Summary Get payment operations
+// @Description Returns payment operations (payment, path_payment, etc.) filtered by account
+// @Tags Operations
+// @Accept json
+// @Produce json
+// @Param account_id query string false "Filter by account ID"
+// @Param limit query int false "Maximum results to return (default: 50, max: 500)"
+// @Param cursor query string false "Pagination cursor from previous response"
+// @Success 200 {object} map[string]interface{} "Payment operations with pagination info"
+// @Failure 400 {object} map[string]interface{} "Invalid cursor"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/payments [get]
 func (h *SilverHandlers) HandlePayments(w http.ResponseWriter, r *http.Request) {
 	// Parse cursor for pagination
 	cursorStr := r.URL.Query().Get("cursor")
@@ -727,8 +841,18 @@ func (h *SilverHandlers) HandlePayments(w http.ResponseWriter, r *http.Request) 
 }
 
 // HandleSorobanOperations is a convenience endpoint for Soroban operations only
-// GET /api/v1/silver/operations/soroban?account_id=GXXXXX&limit=50
-// GET /api/v1/silver/operations/soroban?cursor=xxx (cursor-based pagination)
+// @Summary Get Soroban operations
+// @Description Returns Soroban smart contract operations (invoke_host_function, etc.)
+// @Tags Operations
+// @Accept json
+// @Produce json
+// @Param account_id query string false "Filter by account ID"
+// @Param limit query int false "Maximum results to return (default: 50, max: 500)"
+// @Param cursor query string false "Pagination cursor from previous response"
+// @Success 200 {object} map[string]interface{} "Soroban operations with pagination info"
+// @Failure 400 {object} map[string]interface{} "Invalid cursor"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/operations/soroban [get]
 func (h *SilverHandlers) HandleSorobanOperations(w http.ResponseWriter, r *http.Request) {
 	// Parse cursor for pagination
 	cursorStr := r.URL.Query().Get("cursor")
@@ -780,10 +904,23 @@ func (h *SilverHandlers) HandleSorobanOperations(w http.ResponseWriter, r *http.
 // ============================================
 
 // HandleTokenTransfers returns token transfers (classic + Soroban unified)
-// GET /api/v1/silver/transfers?asset_code=USDC&limit=100
-// GET /api/v1/silver/transfers?from_account=GXXXXX
-// GET /api/v1/silver/transfers?source_type=classic
-// GET /api/v1/silver/transfers?cursor=xxx (cursor-based pagination)
+// @Summary Get token transfers
+// @Description Returns unified token transfers from both classic payments and Soroban contract transfers
+// @Tags Transfers
+// @Accept json
+// @Produce json
+// @Param asset_code query string false "Filter by asset code"
+// @Param from_account query string false "Filter by sender account"
+// @Param to_account query string false "Filter by recipient account"
+// @Param source_type query string false "Filter by source type: classic, soroban"
+// @Param start_time query string false "Start time in RFC3339 format (default: 24h ago)"
+// @Param end_time query string false "End time in RFC3339 format (default: now)"
+// @Param limit query int false "Maximum results to return (default: 100, max: 1000)"
+// @Param cursor query string false "Pagination cursor from previous response"
+// @Success 200 {object} map[string]interface{} "Token transfers with pagination info"
+// @Failure 400 {object} map[string]interface{} "Invalid cursor"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/transfers [get]
 func (h *SilverHandlers) HandleTokenTransfers(w http.ResponseWriter, r *http.Request) {
 	// Parse cursor for pagination
 	cursorStr := r.URL.Query().Get("cursor")
@@ -868,8 +1005,18 @@ func (h *SilverHandlers) HandleTokenTransfers(w http.ResponseWriter, r *http.Req
 }
 
 // HandleTokenTransferStats returns aggregated transfer statistics
-// GET /api/v1/silver/transfers/stats?group_by=asset
-// GET /api/v1/silver/transfers/stats?group_by=hour&start_time=2024-01-01T00:00:00Z
+// @Summary Get transfer statistics
+// @Description Returns aggregated transfer statistics grouped by asset, source type, hour, or day
+// @Tags Transfers
+// @Accept json
+// @Produce json
+// @Param group_by query string false "Group by: asset (default), source_type, hour, day"
+// @Param start_time query string false "Start time in RFC3339 format (default: 24h ago)"
+// @Param end_time query string false "End time in RFC3339 format (default: now)"
+// @Success 200 {object} map[string]interface{} "Transfer statistics"
+// @Failure 400 {object} map[string]interface{} "Invalid group_by value"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/transfers/stats [get]
 func (h *SilverHandlers) HandleTokenTransferStats(w http.ResponseWriter, r *http.Request) {
 	groupBy := r.URL.Query().Get("group_by")
 	if groupBy == "" {
@@ -945,7 +1092,17 @@ func (h *SilverHandlers) HandleTokenTransferStats(w http.ResponseWriter, r *http
 // ============================================
 
 // HandleAccountOverview returns comprehensive account overview for block explorer
-// GET /api/v1/silver/explorer/account?account_id=GXXXXX
+// @Summary Get account overview
+// @Description Returns comprehensive account overview including current state, recent operations, and transfers
+// @Tags Explorer
+// @Accept json
+// @Produce json
+// @Param account_id query string true "Stellar account ID (G...)"
+// @Success 200 {object} map[string]interface{} "Account overview with recent activity"
+// @Failure 400 {object} map[string]interface{} "Missing account_id"
+// @Failure 404 {object} map[string]interface{} "Account not found"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/explorer/account [get]
 func (h *SilverHandlers) HandleAccountOverview(w http.ResponseWriter, r *http.Request) {
 	accountID := r.URL.Query().Get("account_id")
 	if accountID == "" {
@@ -1079,7 +1236,17 @@ func (h *SilverHandlers) HandleAccountOverview(w http.ResponseWriter, r *http.Re
 }
 
 // HandleTransactionDetails returns full transaction details with operations
-// GET /api/v1/silver/explorer/transaction?tx_hash=TXXXXX
+// @Summary Get transaction details
+// @Description Returns full transaction details including all operations and transfers
+// @Tags Explorer
+// @Accept json
+// @Produce json
+// @Param tx_hash query string true "Transaction hash"
+// @Success 200 {object} map[string]interface{} "Transaction details with operations"
+// @Failure 400 {object} map[string]interface{} "Missing tx_hash"
+// @Failure 404 {object} map[string]interface{} "Transaction not found"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/explorer/transaction [get]
 func (h *SilverHandlers) HandleTransactionDetails(w http.ResponseWriter, r *http.Request) {
 	txHash := r.URL.Query().Get("tx_hash")
 	if txHash == "" {
@@ -1184,7 +1351,17 @@ func (h *SilverHandlers) HandleTransactionDetails(w http.ResponseWriter, r *http
 }
 
 // HandleAssetOverview returns asset statistics and recent transfers
-// GET /api/v1/silver/explorer/asset?asset_code=USDC&asset_issuer=GXXXXX
+// @Summary Get asset overview
+// @Description Returns asset statistics including holder count, supply, and recent transfers
+// @Tags Explorer
+// @Accept json
+// @Produce json
+// @Param asset_code query string true "Asset code"
+// @Param asset_issuer query string false "Asset issuer (omit for XLM)"
+// @Success 200 {object} map[string]interface{} "Asset overview with statistics and transfers"
+// @Failure 400 {object} map[string]interface{} "Missing asset_code"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/explorer/asset [get]
 func (h *SilverHandlers) HandleAssetOverview(w http.ResponseWriter, r *http.Request) {
 	assetCode := r.URL.Query().Get("asset_code")
 	if assetCode == "" {
@@ -1290,8 +1467,18 @@ func (h *SilverHandlers) HandleAssetOverview(w http.ResponseWriter, r *http.Requ
 // ============================================
 
 // HandleOffers returns paginated list of offers
-// GET /api/v1/silver/offers?seller_id=GXXXXX&limit=100
-// GET /api/v1/silver/offers?cursor=xxx (cursor-based pagination)
+// @Summary List offers
+// @Description Returns a paginated list of DEX offers with optional seller filter
+// @Tags DEX
+// @Accept json
+// @Produce json
+// @Param seller_id query string false "Filter by seller account ID"
+// @Param limit query int false "Maximum results to return (default: 100, max: 1000)"
+// @Param cursor query string false "Pagination cursor from previous response"
+// @Success 200 {object} map[string]interface{} "List of offers with pagination info"
+// @Failure 400 {object} map[string]interface{} "Invalid cursor"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/offers [get]
 func (h *SilverHandlers) HandleOffers(w http.ResponseWriter, r *http.Request) {
 	// Parse cursor for pagination
 	cursorStr := r.URL.Query().Get("cursor")
@@ -1452,8 +1639,17 @@ func (h *SilverHandlers) HandleOffersByPair(w http.ResponseWriter, r *http.Reque
 }
 
 // HandleLiquidityPools returns paginated list of liquidity pools
-// GET /api/v1/silver/liquidity-pools?limit=100
-// GET /api/v1/silver/liquidity-pools?cursor=xxx (cursor-based pagination)
+// @Summary List liquidity pools
+// @Description Returns a paginated list of AMM liquidity pools
+// @Tags DEX
+// @Accept json
+// @Produce json
+// @Param limit query int false "Maximum results to return (default: 100, max: 1000)"
+// @Param cursor query string false "Pagination cursor from previous response"
+// @Success 200 {object} map[string]interface{} "List of liquidity pools with pagination info"
+// @Failure 400 {object} map[string]interface{} "Invalid cursor"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/liquidity-pools [get]
 func (h *SilverHandlers) HandleLiquidityPools(w http.ResponseWriter, r *http.Request) {
 	// Parse cursor for pagination
 	cursorStr := r.URL.Query().Get("cursor")
@@ -1591,8 +1787,18 @@ func (h *SilverHandlers) HandleLiquidityPoolsByAsset(w http.ResponseWriter, r *h
 }
 
 // HandleClaimableBalances returns paginated list of claimable balances
-// GET /api/v1/silver/claimable-balances?sponsor=GXXXXX&limit=100
-// GET /api/v1/silver/claimable-balances?cursor=xxx (cursor-based pagination)
+// @Summary List claimable balances
+// @Description Returns a paginated list of claimable balances with optional sponsor filter
+// @Tags State
+// @Accept json
+// @Produce json
+// @Param sponsor query string false "Filter by sponsor account ID"
+// @Param limit query int false "Maximum results to return (default: 100, max: 1000)"
+// @Param cursor query string false "Pagination cursor from previous response"
+// @Success 200 {object} map[string]interface{} "List of claimable balances with pagination info"
+// @Failure 400 {object} map[string]interface{} "Invalid cursor"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/claimable-balances [get]
 func (h *SilverHandlers) HandleClaimableBalances(w http.ResponseWriter, r *http.Request) {
 	// Parse cursor for pagination
 	cursorStr := r.URL.Query().Get("cursor")
