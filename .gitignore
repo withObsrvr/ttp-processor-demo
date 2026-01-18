@@ -228,7 +228,7 @@ contract-events-postgres-consumer-sdk/go/bin/contract-events-postgres-consumer
 contract-events-processor-sdk/go/bin/contract-events-processor
 MIGRATION_COMPLETE.md
 TTP_PROCESSOR_MIGRATION.md
-
+compliance-archive-example/
 ttp-processor-sdk/go/bin/ttp-processor
 SIMPLE-SOLUTION.md
 bin/stellar-live-source-sdk

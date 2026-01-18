@@ -65,11 +65,19 @@ func hexToStrKey(hexID string) (string, error) {
 }
 
 // HandleContractLedgers returns list of ledgers containing events from a specific contract
-// GET /api/v1/index/contracts/{contract_id}/ledgers
-// Query params:
-//   - start_ledger: optional minimum ledger sequence
-//   - end_ledger: optional maximum ledger sequence
-//   - limit: optional result limit (default: 1000)
+// @Summary Get ledgers with contract events
+// @Description Returns list of ledger sequences containing events from a specific contract
+// @Tags ContractIndex
+// @Accept json
+// @Produce json
+// @Param contract_id path string true "Contract ID (C... address or 64-char hex hash)"
+// @Param start_ledger query int false "Minimum ledger sequence filter"
+// @Param end_ledger query int false "Maximum ledger sequence filter"
+// @Param limit query int false "Maximum results to return (default: 1000, max: 10000)"
+// @Success 200 {object} map[string]interface{} "List of ledger sequences"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/index/contracts/{contract_id}/ledgers [get]
 func (h *ContractIndexHandlers) HandleContractLedgers(w http.ResponseWriter, r *http.Request) {
 	// Extract contract ID from URL path
 	path := r.URL.Path
@@ -168,10 +176,18 @@ func (h *ContractIndexHandlers) HandleContractLedgers(w http.ResponseWriter, r *
 }
 
 // HandleContractEventSummary returns detailed event information for a contract
-// GET /api/v1/index/contracts/{contract_id}/summary
-// Query params:
-//   - start_ledger: optional minimum ledger sequence
-//   - end_ledger: optional maximum ledger sequence
+// @Summary Get contract event summary
+// @Description Returns detailed event summary for a contract including event types and counts
+// @Tags ContractIndex
+// @Accept json
+// @Produce json
+// @Param contract_id path string true "Contract ID (C... address or 64-char hex hash)"
+// @Param start_ledger query int false "Minimum ledger sequence filter"
+// @Param end_ledger query int false "Maximum ledger sequence filter"
+// @Success 200 {object} map[string]interface{} "Contract event summary"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/index/contracts/{contract_id}/summary [get]
 func (h *ContractIndexHandlers) HandleContractEventSummary(w http.ResponseWriter, r *http.Request) {
 	// Extract contract ID from URL path
 	path := r.URL.Path
@@ -244,8 +260,17 @@ func (h *ContractIndexHandlers) HandleContractEventSummary(w http.ResponseWriter
 }
 
 // HandleBatchContractLookup performs batch lookup for multiple contracts
-// POST /api/v1/index/contracts/lookup
-// Body: {"contract_ids": ["CABC...", "CDEF...", ...]}
+// @Summary Batch lookup contracts
+// @Description Lookup ledger activity for up to 100 contracts in a single request
+// @Tags ContractIndex
+// @Accept json
+// @Produce json
+// @Param request body object true "Request body with contract_ids array" example({"contract_ids": ["CABC...", "CDEF..."]})
+// @Success 200 {object} map[string]interface{} "Batch lookup results"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 405 {object} map[string]interface{} "Method not allowed (POST required)"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/index/contracts/lookup [post]
 func (h *ContractIndexHandlers) HandleBatchContractLookup(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		respondError(w, "POST required", http.StatusMethodNotAllowed)
@@ -328,7 +353,14 @@ func (h *ContractIndexHandlers) HandleBatchContractLookup(w http.ResponseWriter,
 }
 
 // HandleContractIndexHealth returns Contract Event Index health and coverage statistics
-// GET /api/v1/index/contracts/health
+// @Summary Get Contract Index health
+// @Description Returns Contract Event Index health status and coverage statistics
+// @Tags ContractIndex
+// @Accept json
+// @Produce json
+// @Success 200 {object} map[string]interface{} "Index health status and statistics"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/index/contracts/health [get]
 func (h *ContractIndexHandlers) HandleContractIndexHealth(w http.ResponseWriter, r *http.Request) {
 	stats, err := h.reader.GetIndexStats(r.Context())
 	if err != nil {

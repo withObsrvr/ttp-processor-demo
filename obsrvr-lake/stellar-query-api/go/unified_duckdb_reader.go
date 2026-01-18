@@ -3399,3 +3399,387 @@ func (r *UnifiedDuckDBReader) GetCurrentLedger(ctx context.Context) (int64, erro
 	}
 	return ledger.Int64, nil
 }
+
+// GetAssetList returns a paginated list of all assets on the network
+// Queries both hot and cold trustlines_current tables, deduplicates, then aggregates by asset
+func (r *UnifiedDuckDBReader) GetAssetList(ctx context.Context, filters AssetListFilters) (*AssetListResponse, error) {
+	requestedLimit := filters.Limit
+	if requestedLimit <= 0 {
+		requestedLimit = 100
+	}
+	if requestedLimit > 1000 {
+		requestedLimit = 1000
+	}
+
+	// Determine sort field and order
+	sortBy := filters.SortBy
+	if sortBy == "" {
+		sortBy = "holder_count"
+	}
+	sortOrder := filters.SortOrder
+	if sortOrder == "" {
+		sortOrder = "desc"
+	}
+
+	// Validate sort field
+	validSortFields := map[string]string{
+		"holder_count":       "holder_count",
+		"volume_24h":         "volume_24h",
+		"transfers_24h":      "transfers_24h",
+		"circulating_supply": "circulating_supply",
+	}
+	dbSortField, ok := validSortFields[sortBy]
+	if !ok {
+		dbSortField = "holder_count"
+		sortBy = "holder_count"
+	}
+
+	// Validate sort order
+	if sortOrder != "asc" && sortOrder != "desc" {
+		sortOrder = "desc"
+	}
+
+	// Build the unified query with hot + cold trustlines
+	// Step 1: UNION ALL hot and cold trustlines
+	// Step 2: Deduplicate by (account_id, asset_code, asset_issuer)
+	// Step 3: Aggregate by asset to get holder counts and supply
+	// Step 4: Join with transfer stats (hot only - recent data)
+	query := fmt.Sprintf(`
+		WITH combined_trustlines AS (
+			SELECT account_id, asset_code, asset_issuer, asset_type,
+			       CAST(balance AS BIGINT) as balance, last_modified_ledger,
+			       created_at, updated_at, 1 as source
+			FROM %s.trustlines_current
+			WHERE asset_code IS NOT NULL AND asset_code != ''
+			UNION ALL
+			SELECT account_id, asset_code, asset_issuer, asset_type,
+			       CAST(balance AS BIGINT) as balance, last_modified_ledger,
+			       created_at, updated_at, 2 as source
+			FROM %s.trustlines_current
+			WHERE asset_code IS NOT NULL AND asset_code != ''
+		),
+		deduplicated_trustlines AS (
+			SELECT DISTINCT ON (account_id, asset_code, asset_issuer)
+			       account_id, asset_code, asset_issuer, asset_type, balance,
+			       created_at, updated_at
+			FROM combined_trustlines
+			ORDER BY account_id, asset_code, asset_issuer, last_modified_ledger DESC, source ASC
+		),
+		asset_stats AS (
+			SELECT
+				asset_code,
+				asset_issuer,
+				asset_type,
+				COUNT(*) FILTER (WHERE balance > 0) as holder_count,
+				SUM(balance) as circulating_supply,
+				MIN(created_at) as first_seen,
+				MAX(updated_at) as last_activity
+			FROM deduplicated_trustlines
+			GROUP BY asset_code, asset_issuer, asset_type
+		),
+		transfer_stats AS (
+			SELECT
+				asset_code,
+				asset_issuer,
+				COUNT(*) as transfers_24h,
+				COALESCE(SUM(amount), 0) as volume_24h
+			FROM %s.token_transfers_raw
+			WHERE timestamp >= NOW() - INTERVAL '24 hours'
+			  AND transaction_successful = true
+			GROUP BY asset_code, asset_issuer
+		)
+		SELECT
+			a.asset_code,
+			COALESCE(a.asset_issuer, '') as asset_issuer,
+			COALESCE(a.asset_type, 'credit_alphanum4') as asset_type,
+			a.holder_count,
+			a.circulating_supply,
+			COALESCE(t.transfers_24h, 0) as transfers_24h,
+			COALESCE(t.volume_24h, 0) as volume_24h,
+			a.first_seen,
+			a.last_activity
+		FROM asset_stats a
+		LEFT JOIN transfer_stats t
+			ON a.asset_code = t.asset_code
+			AND COALESCE(a.asset_issuer, '') = COALESCE(t.asset_issuer, '')
+		WHERE a.holder_count > 0
+	`, r.hotSchema, r.coldSchema, r.hotSchema)
+
+	args := []interface{}{}
+	argIndex := 1
+
+	// Apply filters
+	if filters.MinHolders != nil && *filters.MinHolders > 0 {
+		query += fmt.Sprintf(" AND a.holder_count >= $%d", argIndex)
+		args = append(args, *filters.MinHolders)
+		argIndex++
+	}
+
+	if filters.MinVolume24h != nil && *filters.MinVolume24h > 0 {
+		query += fmt.Sprintf(" AND COALESCE(t.volume_24h, 0) >= $%d", argIndex)
+		args = append(args, *filters.MinVolume24h)
+		argIndex++
+	}
+
+	if filters.AssetType != "" {
+		query += fmt.Sprintf(" AND a.asset_type = $%d", argIndex)
+		args = append(args, filters.AssetType)
+		argIndex++
+	}
+
+	if filters.Search != "" {
+		query += fmt.Sprintf(" AND UPPER(a.asset_code) LIKE UPPER($%d)", argIndex)
+		args = append(args, filters.Search+"%")
+		argIndex++
+	}
+
+	// Apply cursor for pagination
+	if filters.Cursor != nil {
+		// Validate cursor matches current sort settings
+		if filters.Cursor.SortBy != sortBy || filters.Cursor.SortOrder != sortOrder {
+			return nil, fmt.Errorf("cursor was created with different sort settings")
+		}
+
+		if sortOrder == "desc" {
+			switch sortBy {
+			case "holder_count":
+				query += fmt.Sprintf(" AND (a.holder_count < $%d OR (a.holder_count = $%d AND (a.asset_code > $%d OR (a.asset_code = $%d AND COALESCE(a.asset_issuer, '') > $%d))))",
+					argIndex, argIndex, argIndex+1, argIndex+1, argIndex+2)
+				args = append(args, filters.Cursor.HolderCount, filters.Cursor.AssetCode, filters.Cursor.AssetIssuer)
+				argIndex += 3
+			case "volume_24h":
+				query += fmt.Sprintf(" AND (COALESCE(t.volume_24h, 0) < $%d OR (COALESCE(t.volume_24h, 0) = $%d AND (a.asset_code > $%d OR (a.asset_code = $%d AND COALESCE(a.asset_issuer, '') > $%d))))",
+					argIndex, argIndex, argIndex+1, argIndex+1, argIndex+2)
+				args = append(args, filters.Cursor.Volume24h, filters.Cursor.AssetCode, filters.Cursor.AssetIssuer)
+				argIndex += 3
+			default:
+				query += fmt.Sprintf(" AND (a.holder_count < $%d OR (a.holder_count = $%d AND (a.asset_code > $%d OR (a.asset_code = $%d AND COALESCE(a.asset_issuer, '') > $%d))))",
+					argIndex, argIndex, argIndex+1, argIndex+1, argIndex+2)
+				args = append(args, filters.Cursor.HolderCount, filters.Cursor.AssetCode, filters.Cursor.AssetIssuer)
+				argIndex += 3
+			}
+		} else {
+			// Ascending order
+			switch sortBy {
+			case "holder_count":
+				query += fmt.Sprintf(" AND (a.holder_count > $%d OR (a.holder_count = $%d AND (a.asset_code > $%d OR (a.asset_code = $%d AND COALESCE(a.asset_issuer, '') > $%d))))",
+					argIndex, argIndex, argIndex+1, argIndex+1, argIndex+2)
+				args = append(args, filters.Cursor.HolderCount, filters.Cursor.AssetCode, filters.Cursor.AssetIssuer)
+				argIndex += 3
+			case "volume_24h":
+				query += fmt.Sprintf(" AND (COALESCE(t.volume_24h, 0) > $%d OR (COALESCE(t.volume_24h, 0) = $%d AND (a.asset_code > $%d OR (a.asset_code = $%d AND COALESCE(a.asset_issuer, '') > $%d))))",
+					argIndex, argIndex, argIndex+1, argIndex+1, argIndex+2)
+				args = append(args, filters.Cursor.Volume24h, filters.Cursor.AssetCode, filters.Cursor.AssetIssuer)
+				argIndex += 3
+			default:
+				query += fmt.Sprintf(" AND (a.holder_count > $%d OR (a.holder_count = $%d AND (a.asset_code > $%d OR (a.asset_code = $%d AND COALESCE(a.asset_issuer, '') > $%d))))",
+					argIndex, argIndex, argIndex+1, argIndex+1, argIndex+2)
+				args = append(args, filters.Cursor.HolderCount, filters.Cursor.AssetCode, filters.Cursor.AssetIssuer)
+				argIndex += 3
+			}
+		}
+	}
+
+	// Add ORDER BY
+	orderDir := "DESC"
+	if sortOrder == "asc" {
+		orderDir = "ASC"
+	}
+	query += fmt.Sprintf(" ORDER BY %s %s, a.asset_code ASC, a.asset_issuer ASC", dbSortField, orderDir)
+
+	// Request one extra to detect has_more
+	query += fmt.Sprintf(" LIMIT $%d", argIndex)
+	args = append(args, requestedLimit+1)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query asset list: %w", err)
+	}
+	defer rows.Close()
+
+	var assets []AssetSummary
+	for rows.Next() {
+		var a AssetSummary
+		var circulatingSupply int64
+		var volume24h int64
+		var firstSeen, lastActivity sql.NullTime
+
+		err := rows.Scan(
+			&a.AssetCode,
+			&a.AssetIssuer,
+			&a.AssetType,
+			&a.HolderCount,
+			&circulatingSupply,
+			&a.Transfers24h,
+			&volume24h,
+			&firstSeen,
+			&lastActivity,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan asset row: %w", err)
+		}
+
+		// Convert stroops to formatted string (7 decimal places)
+		a.CirculatingSupply = formatStroopsLocal(circulatingSupply)
+		a.Volume24h = formatStroopsLocal(volume24h)
+
+		if firstSeen.Valid {
+			a.FirstSeen = firstSeen.Time.Format(time.RFC3339)
+		}
+		if lastActivity.Valid {
+			a.LastActivity = lastActivity.Time.Format(time.RFC3339)
+		}
+
+		assets = append(assets, a)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating asset rows: %w", err)
+	}
+
+	// Determine has_more and trim to requested limit
+	hasMore := len(assets) > requestedLimit
+	if hasMore {
+		assets = assets[:requestedLimit]
+	}
+
+	// Generate next cursor from last result
+	var nextCursor string
+	if len(assets) > 0 && hasMore {
+		last := assets[len(assets)-1]
+		// Parse volume back to stroops for cursor
+		volume24hStroops := parseFormattedToStroopsLocal(last.Volume24h)
+
+		cursor := AssetListCursor{
+			HolderCount: last.HolderCount,
+			Volume24h:   volume24hStroops,
+			AssetCode:   last.AssetCode,
+			AssetIssuer: last.AssetIssuer,
+			SortBy:      sortBy,
+			SortOrder:   sortOrder,
+		}
+		nextCursor = cursor.Encode()
+	}
+
+	// Get total count of assets matching filters (excluding pagination)
+	totalCount, err := r.GetAssetCount(ctx, filters)
+	if err != nil {
+		log.Printf("Warning: failed to get asset count: %v", err)
+		// Fall back to page count if count query fails
+		totalCount = len(assets)
+	}
+
+	return &AssetListResponse{
+		Assets:      assets,
+		TotalAssets: totalCount,
+		Cursor:      nextCursor,
+		HasMore:     hasMore,
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+	}, nil
+}
+
+// GetAssetCount returns the total count of assets matching the given filters (ignoring pagination)
+func (r *UnifiedDuckDBReader) GetAssetCount(ctx context.Context, filters AssetListFilters) (int, error) {
+	// Build count query with same filters as main query, but no pagination/sorting
+	query := fmt.Sprintf(`
+		WITH combined_trustlines AS (
+			SELECT account_id, asset_code, asset_issuer, asset_type,
+			       CAST(balance AS BIGINT) as balance, last_modified_ledger, 1 as source
+			FROM %s.trustlines_current
+			WHERE asset_code IS NOT NULL AND asset_code != ''
+			UNION ALL
+			SELECT account_id, asset_code, asset_issuer, asset_type,
+			       CAST(balance AS BIGINT) as balance, last_modified_ledger, 2 as source
+			FROM %s.trustlines_current
+			WHERE asset_code IS NOT NULL AND asset_code != ''
+		),
+		deduplicated_trustlines AS (
+			SELECT DISTINCT ON (account_id, asset_code, asset_issuer)
+			       account_id, asset_code, asset_issuer, asset_type, balance
+			FROM combined_trustlines
+			ORDER BY account_id, asset_code, asset_issuer, last_modified_ledger DESC, source ASC
+		),
+		asset_stats AS (
+			SELECT
+				asset_code,
+				asset_issuer,
+				asset_type,
+				COUNT(*) FILTER (WHERE balance > 0) as holder_count
+			FROM deduplicated_trustlines
+			GROUP BY asset_code, asset_issuer, asset_type
+		),
+		transfer_stats AS (
+			SELECT
+				asset_code,
+				asset_issuer,
+				COALESCE(SUM(amount), 0) as volume_24h
+			FROM %s.token_transfers_raw
+			WHERE timestamp >= NOW() - INTERVAL '24 hours'
+			  AND transaction_successful = true
+			GROUP BY asset_code, asset_issuer
+		)
+		SELECT COUNT(*)
+		FROM asset_stats a
+		LEFT JOIN transfer_stats t
+			ON a.asset_code = t.asset_code
+			AND COALESCE(a.asset_issuer, '') = COALESCE(t.asset_issuer, '')
+		WHERE a.holder_count > 0
+	`, r.hotSchema, r.coldSchema, r.hotSchema)
+
+	args := []interface{}{}
+	argIndex := 1
+
+	// Apply same filters as main query (excluding pagination/cursor)
+	if filters.MinHolders != nil && *filters.MinHolders > 0 {
+		query += fmt.Sprintf(" AND a.holder_count >= $%d", argIndex)
+		args = append(args, *filters.MinHolders)
+		argIndex++
+	}
+
+	if filters.MinVolume24h != nil && *filters.MinVolume24h > 0 {
+		query += fmt.Sprintf(" AND COALESCE(t.volume_24h, 0) >= $%d", argIndex)
+		args = append(args, *filters.MinVolume24h)
+		argIndex++
+	}
+
+	if filters.AssetType != "" {
+		query += fmt.Sprintf(" AND a.asset_type = $%d", argIndex)
+		args = append(args, filters.AssetType)
+		argIndex++
+	}
+
+	if filters.Search != "" {
+		query += fmt.Sprintf(" AND UPPER(a.asset_code) LIKE UPPER($%d)", argIndex)
+		args = append(args, filters.Search+"%")
+		argIndex++
+	}
+
+	var count int
+	err := r.db.QueryRowContext(ctx, query, args...).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count assets: %w", err)
+	}
+
+	return count, nil
+}
+
+// formatStroopsLocal converts stroops to formatted string (7 decimal places)
+// Local version to avoid redeclaration with other files
+func formatStroopsLocal(stroops int64) string {
+	whole := stroops / 10000000
+	frac := stroops % 10000000
+	if frac < 0 {
+		frac = -frac
+	}
+	return fmt.Sprintf("%d.%07d", whole, frac)
+}
+
+// parseFormattedToStroopsLocal converts formatted string back to stroops
+func parseFormattedToStroopsLocal(formatted string) int64 {
+	var whole, frac int64
+	_, err := fmt.Sscanf(formatted, "%d.%d", &whole, &frac)
+	if err != nil {
+		return 0
+	}
+	return whole*10000000 + frac
+}

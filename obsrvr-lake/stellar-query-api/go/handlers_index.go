@@ -17,8 +17,17 @@ func NewIndexHandlers(reader *IndexReader) *IndexHandlers {
 }
 
 // HandleTransactionLookup performs fast transaction hash lookup
-// GET /transactions/{hash}
-// GET /api/v1/index/transactions/{hash}
+// @Summary Lookup transaction by hash
+// @Description Fast O(1) lookup of transaction location by hash using the Index Plane
+// @Tags Index
+// @Accept json
+// @Produce json
+// @Param hash path string true "Transaction hash"
+// @Success 200 {object} TxLocation "Transaction location data"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 404 {object} map[string]interface{} "Transaction not found"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/index/transactions/{hash} [get]
 func (h *IndexHandlers) HandleTransactionLookup(w http.ResponseWriter, r *http.Request) {
 	// Extract hash from URL path
 	path := r.URL.Path
@@ -58,8 +67,17 @@ func (h *IndexHandlers) HandleTransactionLookup(w http.ResponseWriter, r *http.R
 }
 
 // HandleBatchTransactionLookup performs batch lookup for multiple transaction hashes
-// POST /api/v1/index/transactions/lookup
-// Body: {"hashes": ["abc123", "def456", ...]}
+// @Summary Batch lookup transactions by hash
+// @Description Lookup up to 1000 transaction hashes in a single request
+// @Tags Index
+// @Accept json
+// @Produce json
+// @Param request body object true "Request body with hashes array" example({"hashes": ["abc123", "def456"]})
+// @Success 200 {object} map[string]interface{} "Batch lookup results with found/total counts"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 405 {object} map[string]interface{} "Method not allowed (POST required)"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/index/transactions/lookup [post]
 func (h *IndexHandlers) HandleBatchTransactionLookup(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		respondError(w, "POST required", http.StatusMethodNotAllowed)
@@ -130,7 +148,14 @@ func (h *IndexHandlers) HandleBatchTransactionLookup(w http.ResponseWriter, r *h
 }
 
 // HandleIndexHealth returns Index Plane health and coverage statistics
-// GET /api/v1/index/health
+// @Summary Get Index Plane health
+// @Description Returns Index Plane health status and coverage statistics
+// @Tags Index
+// @Accept json
+// @Produce json
+// @Success 200 {object} map[string]interface{} "Index health status and statistics"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/index/health [get]
 func (h *IndexHandlers) HandleIndexHealth(w http.ResponseWriter, r *http.Request) {
 	stats, err := h.reader.GetIndexStats(r.Context())
 	if err != nil {

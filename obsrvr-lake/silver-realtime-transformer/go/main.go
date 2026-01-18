@@ -59,12 +59,34 @@ func main() {
 	log.Println("✅ Connected to Silver Hot")
 
 	// Initialize components
-	bronzeReader := NewBronzeReader(bronzeDB)
+	bronzeHotReader := NewBronzeReader(bronzeDB)
 	silverWriter := NewSilverWriter(silverDB)
 	checkpoint := NewCheckpointManager(silverDB, config.Checkpoint.Table)
 
+	// Initialize Bronze Cold reader if configured
+	var bronzeColdReader *BronzeColdReader
+	if config.Fallback.Enabled && config.BronzeCold != nil && config.S3 != nil {
+		log.Println("🔗 Connecting to Bronze Cold (DuckLake)...")
+		var err error
+		bronzeColdReader, err = NewBronzeColdReader(config.BronzeCold, config.S3)
+		if err != nil {
+			log.Printf("⚠️  Failed to initialize Bronze Cold reader: %v", err)
+			log.Println("   Fallback to cold storage will be disabled")
+		} else {
+			log.Println("✅ Connected to Bronze Cold (DuckLake)")
+		}
+	} else if config.Fallback.Enabled {
+		log.Println("⚠️  Fallback enabled but bronze_cold or s3 config missing - fallback disabled")
+	}
+
+	// Create source manager with hot/cold readers
+	sourceManager := NewSourceManager(bronzeHotReader, bronzeColdReader, config.Fallback.Enabled)
+	if bronzeColdReader != nil {
+		defer sourceManager.Close()
+	}
+
 	// Create transformer
-	transformer := NewRealtimeTransformer(config, bronzeReader, silverWriter, checkpoint, silverDB)
+	transformer := NewRealtimeTransformer(config, sourceManager, silverWriter, checkpoint, silverDB)
 
 	// Start health server in goroutine
 	healthServer := NewHealthServer(transformer)

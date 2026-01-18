@@ -29,3 +29,31 @@ checkpoint:
 performance:
   batch_size: 100  # Max ledgers to process per cycle
   max_workers: 4   # Parallel transformation workers
+
+# Gap detection settings
+gap_detection:
+  max_empty_polls: 3  # Number of consecutive empty polls before checking for gaps
+  auto_skip: false    # Disabled - we use backfill instead of skipping
+
+# Fallback: Bronze cold storage (DuckLake) for backfill
+# Set enabled: true and configure bronze_cold + s3 to enable backfill from cold storage
+fallback:
+  enabled: false           # Set to true to enable cold storage fallback
+  backfill_batch_size: 50  # Smaller batches for cold storage queries
+
+# Bronze cold storage configuration (DuckLake)
+# Uncomment and configure when fallback is enabled
+# bronze_cold:
+#   catalog_path: "ducklake:postgres:postgresql://user:pass@host:port/ducklake_catalog"
+#   data_path: "s3://obsrvr-lake-testnet/testnet_bronze/"
+#   catalog_name: "bronze_lake"
+#   schema_name: "bronze"
+#   metadata_schema: "bronze_meta"
+
+# S3/Backblaze B2 credentials for cold storage access
+# Uncomment and configure when fallback is enabled
+# s3:
+#   key_id: "${B2_KEY_ID}"
+#   secret: "${B2_SECRET}"
+#   region: "us-west-004"
+#   endpoint: "https://s3.us-west-004.backblazeb2.com"

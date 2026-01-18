@@ -13,7 +13,40 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	httpSwagger "github.com/swaggo/http-swagger"
+
+	_ "github.com/withobsrvr/stellar-query-api/docs" // swagger docs
 )
+
+// @title Stellar Query API
+// @version 1.0
+// @description API for querying Stellar blockchain data across Bronze, Silver, and Gold data layers.
+// @description
+// @description ## Data Layers
+// @description - **Bronze**: Raw blockchain data (ledgers, transactions, operations, effects)
+// @description - **Silver**: Enriched and processed data (accounts, assets, transfers, trades)
+// @description - **Gold**: Analytical views (snapshots, compliance reports)
+// @description - **Index Plane**: Fast lookup services (transaction hash, contract events)
+// @description
+// @description ## Amount Formatting
+// @description All amounts are returned in decimal format with 7 decimal places (Stellar stroops conversion).
+// @description Example: Raw stroops `10000000` is formatted as `"1.0000000"`
+
+// @contact.name OBSRVR Team
+// @contact.url https://obsrvr.com
+// @contact.email support@obsrvr.com
+
+// @license.name Apache 2.0
+// @license.url https://www.apache.org/licenses/LICENSE-2.0.html
+
+// @host gateway.withobsrvr.com
+// @BasePath /
+// @schemes https
+
+// @securityDefinitions.apikey ApiKeyAuth
+// @in header
+// @name Authorization
+// @description API Key authentication. Format: "Api-Key YOUR_API_KEY"
 
 func mainWithSilver() {
 	configPath := flag.String("config", "config.yaml", "Path to config file")
@@ -148,6 +181,15 @@ func mainWithSilver() {
 		unifiedDuckDBReader,
 	))
 
+	// Swagger UI endpoint
+	router.PathPrefix("/swagger/").Handler(httpSwagger.Handler(
+		httpSwagger.URL("/swagger/doc.json"),
+		httpSwagger.DeepLinking(true),
+		httpSwagger.DocExpansion("list"),
+		httpSwagger.DomID("swagger-ui"),
+	))
+	log.Println("📖 Swagger UI available at /swagger/index.html")
+
 	// Bronze layer endpoints - /api/v1/bronze/*
 	log.Println("Registering Bronze API endpoints:")
 	router.HandleFunc("/api/v1/bronze/ledgers", queryService.HandleLedgers)
@@ -186,8 +228,11 @@ func mainWithSilver() {
 		log.Println("  ✓ /api/v1/silver/accounts/{id}/balances")
 
 		// Token/Asset endpoints
+		// IMPORTANT: /assets must be registered BEFORE /assets/{asset}/* to avoid path matching issues
+		router.HandleFunc("/api/v1/silver/assets", silverHandlers.HandleAssetList).Methods("GET")
 		router.HandleFunc("/api/v1/silver/assets/{asset}/holders", silverHandlers.HandleTokenHolders).Methods("GET")
 		router.HandleFunc("/api/v1/silver/assets/{asset}/stats", silverHandlers.HandleTokenStats).Methods("GET")
+		log.Println("  ✓ /api/v1/silver/assets (list all assets)")
 		log.Println("  ✓ /api/v1/silver/assets/{asset}/holders")
 		log.Println("  ✓ /api/v1/silver/assets/{asset}/stats")
 
@@ -319,6 +364,42 @@ func mainWithSilver() {
 		log.Println("  ✓ /api/v1/silver/contracts/{id}/call-summary")
 		log.Println("  ✓ /api/v1/silver/contracts/{id}/analytics (comprehensive analytics)")
 
+		// Gold layer endpoints (Snapshot API) - uses Silver data
+		goldHandlers := NewGoldHandlers(unifiedSilverReader)
+		log.Println("Registering Gold API endpoints:")
+
+		router.HandleFunc("/api/v1/gold/snapshots/account", goldHandlers.HandleAccountSnapshot).Methods("GET")
+		router.HandleFunc("/api/v1/gold/snapshots/balance", goldHandlers.HandleAssetHolders).Methods("GET")
+		router.HandleFunc("/api/v1/gold/snapshots/portfolio", goldHandlers.HandlePortfolioSnapshot).Methods("GET")
+		router.HandleFunc("/api/v1/gold/snapshots/accounts/batch", goldHandlers.HandleBatchAccounts).Methods("POST")
+
+		log.Println("  ✓ /api/v1/gold/snapshots/account (account state at timestamp)")
+		log.Println("  ✓ /api/v1/gold/snapshots/balance (asset holders at timestamp)")
+		log.Println("  ✓ /api/v1/gold/snapshots/portfolio (all balances at timestamp)")
+		log.Println("  ✓ /api/v1/gold/snapshots/accounts/batch (batch account lookup)")
+
+		// Gold Compliance Archive API endpoints
+		complianceHandlers := NewComplianceHandlers(unifiedSilverReader)
+		log.Println("Registering Gold Compliance API endpoints:")
+
+		router.HandleFunc("/api/v1/gold/compliance/transactions", complianceHandlers.HandleTransactionArchive).Methods("GET")
+		router.HandleFunc("/api/v1/gold/compliance/balances", complianceHandlers.HandleBalanceArchive).Methods("GET")
+		router.HandleFunc("/api/v1/gold/compliance/supply", complianceHandlers.HandleSupplyTimeline).Methods("GET")
+
+		// Week 2 - Full archive and lineage endpoints
+		router.HandleFunc("/api/v1/gold/compliance/archive", complianceHandlers.HandleFullArchive).Methods("POST")
+		router.HandleFunc("/api/v1/gold/compliance/archive/{id}", complianceHandlers.HandleArchiveStatus).Methods("GET")
+		router.HandleFunc("/api/v1/gold/compliance/archive/{id}/download/{artifact}", complianceHandlers.HandleArchiveDownload).Methods("GET")
+		router.HandleFunc("/api/v1/gold/compliance/lineage", complianceHandlers.HandleLineage).Methods("GET")
+
+		log.Println("  ✓ /api/v1/gold/compliance/transactions (asset transaction archive)")
+		log.Println("  ✓ /api/v1/gold/compliance/balances (point-in-time holder snapshot)")
+		log.Println("  ✓ /api/v1/gold/compliance/supply (supply timeline)")
+		log.Println("  ✓ /api/v1/gold/compliance/archive (POST: async full package)")
+		log.Println("  ✓ /api/v1/gold/compliance/archive/{id} (GET: archive status)")
+		log.Println("  ✓ /api/v1/gold/compliance/archive/{id}/download/{artifact} (GET: download artifact)")
+		log.Println("  ✓ /api/v1/gold/compliance/lineage (GET: archive audit trail)")
+
 	}
 
 	// Index Plane endpoints (if enabled)
@@ -364,6 +445,8 @@ func mainWithSilver() {
 		log.Printf("🚀 API server listening on :%d", config.Service.Port)
 		if silverHandlers != nil {
 			log.Printf("📊 Silver layer endpoints available at /api/v1/silver/*")
+			log.Printf("🥇 Gold layer endpoints available at /api/v1/gold/*")
+			log.Printf("📋 Compliance endpoints available at /api/v1/gold/compliance/*")
 		}
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server error: %v", err)
@@ -398,6 +481,8 @@ func handleHealthWithSilverAndIndexAndContractIndex(silverEnabled, indexEnabled,
 				"hot":            true,
 				"bronze":         true,
 				"silver":         silverEnabled,
+				"gold":           silverEnabled, // Gold requires Silver
+				"compliance":     silverEnabled, // Compliance requires Silver
 				"index":          indexEnabled,
 				"contract_index": contractIndexEnabled,
 			},

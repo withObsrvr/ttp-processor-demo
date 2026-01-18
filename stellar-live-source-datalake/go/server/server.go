@@ -28,7 +28,8 @@ const (
 	maxRetries     = 5
 
 	// Per-ledger read timeout (prevents hanging on GCS reads)
-	ledgerReadTimeout = 30 * time.Second
+	// Increased from 30s to 60s to accommodate GCS latency spikes
+	ledgerReadTimeout = 60 * time.Second
 
 	// Stability guarantees
 	MinProcessorUptime = 99.99 // 99.99% uptime guarantee
@@ -552,6 +553,20 @@ func (s *RawLedgerServer) streamLedgersFromBackend(ctx context.Context, backend 
 				)
 			}
 			s.handleLedgerError(err, seq)
+
+			// Check for fatal backend state corruption errors
+			// These errors indicate the BufferedStorageBackend's internal state is corrupted
+			// and cannot recover without being recreated
+			errStr := err.Error()
+			if strings.Contains(errStr, "requested sequence is not the lastLedger") ||
+				strings.Contains(errStr, "context deadline exceeded") {
+				s.logger.Warn("Backend state corrupted - returning error to trigger reconnect",
+					zap.Uint32("failed_sequence", seq),
+					zap.String("error", errStr),
+				)
+				// Return error to force client reconnection with fresh backend
+				return status.Error(codes.Unavailable, fmt.Sprintf("backend state corrupted at ledger %d, please reconnect", seq))
+			}
 			continue
 		}
 
