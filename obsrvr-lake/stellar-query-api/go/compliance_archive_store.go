@@ -243,19 +243,52 @@ func (p *ArchiveProcessor) ProcessJob(ctx context.Context, jobID string) {
 	// Generate transactions artifact
 	if includeTransactions {
 		log.Printf("Archive %s: generating transactions artifact", jobID)
-		txResp, err := p.reader.GetAssetTransactions(ctx, req.AssetCode, req.AssetIssuer, startDate, endDate, false, 10000)
-		if err != nil {
-			p.store.SetJobError(jobID, fmt.Errorf("failed to get transactions: %w", err))
-			return
+
+		// Paginate through ALL transactions for complete compliance archive
+		var allTransactions []ComplianceTransaction
+		const txBatchSize = 10000
+		offset := 0
+
+		for {
+			txResp, err := p.reader.GetAssetTransactionsWithOffset(ctx, req.AssetCode, req.AssetIssuer, startDate, endDate, false, txBatchSize, offset)
+			if err != nil {
+				p.store.SetJobError(jobID, fmt.Errorf("failed to get transactions: %w", err))
+				return
+			}
+
+			allTransactions = append(allTransactions, txResp.Transactions...)
+
+			// If we got fewer than batch size, we've fetched all records
+			if len(txResp.Transactions) < txBatchSize {
+				break
+			}
+
+			offset += txBatchSize
+			log.Printf("Archive %s: fetched %d transactions so far...", jobID, len(allTransactions))
+
+			// Safety limit to prevent runaway queries (1 million transactions max)
+			if len(allTransactions) >= 1000000 {
+				log.Printf("Archive %s: WARNING - reached 1M transaction limit, archive may be incomplete", jobID)
+				break
+			}
 		}
+
+		// Generate checksum for complete transaction set
+		txChecksum, _ := GenerateTransactionsChecksum(
+			AssetInfo{Code: req.AssetCode},
+			PeriodInfo{Start: startDate.Format(time.RFC3339), End: endDate.Format(time.RFC3339)},
+			allTransactions,
+		)
+
 		artifact := ArchiveArtifact{
 			Name:        "transactions.json",
 			Type:        "transactions",
-			RowCount:    len(txResp.Transactions),
-			Checksum:    txResp.Checksum,
-			GeneratedAt: txResp.GeneratedAt,
+			RowCount:    len(allTransactions),
+			Checksum:    txChecksum,
+			GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		}
 		p.store.AddArtifact(jobID, artifact)
+		log.Printf("Archive %s: transactions artifact complete with %d records", jobID, len(allTransactions))
 	}
 
 	// Generate balance snapshot artifacts
@@ -274,21 +307,52 @@ func (p *ArchiveProcessor) ProcessJob(ctx context.Context, jobID string) {
 			}
 			snapTime = snapTime.Add(23*time.Hour + 59*time.Minute + 59*time.Second)
 
-			balResp, err := p.reader.GetComplianceBalances(ctx, req.AssetCode, req.AssetIssuer, snapTime, "", 10000)
-			if err != nil {
-				log.Printf("Archive %s: failed to get balances for %s: %v", jobID, snapDate, err)
-				continue
+			// Paginate through ALL holders for complete compliance archive
+			var allHolders []ComplianceHolder
+			const balBatchSize = 10000
+			balOffset := 0
+
+			for {
+				holders, err := p.reader.GetComplianceBalancesWithOffset(ctx, req.AssetCode, req.AssetIssuer, snapTime, "", balBatchSize, balOffset)
+				if err != nil {
+					log.Printf("Archive %s: failed to get balances for %s: %v", jobID, snapDate, err)
+					break
+				}
+
+				allHolders = append(allHolders, holders...)
+
+				// If we got fewer than batch size, we've fetched all records
+				if len(holders) < balBatchSize {
+					break
+				}
+
+				balOffset += balBatchSize
+				log.Printf("Archive %s: fetched %d holders so far for %s...", jobID, len(allHolders), snapDate)
+
+				// Safety limit to prevent runaway queries (10 million holders max)
+				if len(allHolders) >= 10000000 {
+					log.Printf("Archive %s: WARNING - reached 10M holder limit for %s, archive may be incomplete", jobID, snapDate)
+					break
+				}
 			}
+
+			// Generate checksum for complete holder set
+			balChecksum, _ := GenerateBalancesChecksum(
+				AssetInfo{Code: req.AssetCode},
+				snapTime.Format(time.RFC3339),
+				allHolders,
+			)
 
 			artifact := ArchiveArtifact{
 				Name:        fmt.Sprintf("balances_%s.json", snapDate),
 				Type:        "balance_snapshot",
-				SnapshotAt:  balResp.SnapshotAt,
-				RowCount:    len(balResp.Holders),
-				Checksum:    balResp.Checksum,
-				GeneratedAt: balResp.GeneratedAt,
+				SnapshotAt:  snapTime.Format(time.RFC3339),
+				RowCount:    len(allHolders),
+				Checksum:    balChecksum,
+				GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 			}
 			p.store.AddArtifact(jobID, artifact)
+			log.Printf("Archive %s: balance snapshot for %s complete with %d holders", jobID, snapDate, len(allHolders))
 		}
 	}
 

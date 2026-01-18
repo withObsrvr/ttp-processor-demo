@@ -205,6 +205,105 @@ func (r *UnifiedSilverReader) GetAssetTransactions(ctx context.Context, assetCod
 	}, nil
 }
 
+// GetAssetTransactionsWithOffset returns transactions for an asset with pagination support
+// Used by compliance archive processor to paginate through all transactions
+func (r *UnifiedSilverReader) GetAssetTransactionsWithOffset(ctx context.Context, assetCode, assetIssuer string, startDate, endDate time.Time, includeFailed bool, limit, offset int) (*ComplianceTransactionsResponse, error) {
+	// Build query for enriched_history_operations
+	query := `
+		SELECT
+			ledger_sequence,
+			ledger_closed_at,
+			transaction_hash,
+			COALESCE(operation_index, 0) as operation_index,
+			type,
+			source_account,
+			destination,
+			amount,
+			tx_successful
+		FROM enriched_history_operations
+		WHERE is_payment_op = true
+		  AND ledger_closed_at >= $1
+		  AND ledger_closed_at <= $2
+	`
+
+	args := []interface{}{startDate, endDate}
+	argIdx := 3
+
+	// Handle native XLM vs issued assets
+	if assetCode == "XLM" || assetCode == "native" {
+		query += fmt.Sprintf(" AND (asset_code IS NULL OR asset_code = '' OR asset_code = 'XLM')")
+	} else {
+		query += fmt.Sprintf(" AND asset_code = $%d", argIdx)
+		args = append(args, assetCode)
+		argIdx++
+
+		if assetIssuer != "" {
+			query += fmt.Sprintf(" AND asset_issuer = $%d", argIdx)
+			args = append(args, assetIssuer)
+			argIdx++
+		}
+	}
+
+	if !includeFailed {
+		query += " AND tx_successful = true"
+	}
+
+	// Add ORDER BY, LIMIT, and OFFSET for pagination
+	query += fmt.Sprintf(" ORDER BY ledger_sequence, operation_index LIMIT $%d OFFSET $%d", argIdx, argIdx+1)
+	args = append(args, limit, offset)
+
+	rows, err := r.hot.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query transactions: %w", err)
+	}
+	defer rows.Close()
+
+	var transactions []ComplianceTransaction
+
+	for rows.Next() {
+		var ledgerSeq int64
+		var closedAt string
+		var txHash string
+		var opIndex int
+		var opType int32
+		var sourceAccount string
+		var destination *string
+		var amount *string
+		var successful bool
+
+		if err := rows.Scan(&ledgerSeq, &closedAt, &txHash, &opIndex, &opType,
+			&sourceAccount, &destination, &amount, &successful); err != nil {
+			return nil, fmt.Errorf("failed to scan transaction row: %w", err)
+		}
+
+		toAccount := ""
+		if destination != nil {
+			toAccount = *destination
+		}
+		amountStr := "0"
+		if amount != nil {
+			amountStr = *amount
+		}
+
+		transactions = append(transactions, ComplianceTransaction{
+			LedgerSequence:  ledgerSeq,
+			ClosedAt:        closedAt,
+			TransactionHash: txHash,
+			OperationIndex:  opIndex,
+			OperationType:   operationTypeName(opType),
+			FromAccount:     sourceAccount,
+			ToAccount:       toAccount,
+			Amount:          amountStr,
+			Successful:      successful,
+		})
+	}
+
+	// Return minimal response - caller aggregates across pages
+	return &ComplianceTransactionsResponse{
+		Transactions: transactions,
+	}, nil
+}
+
 // GetComplianceBalances returns all holders of an asset at a specific timestamp
 // with supply statistics for compliance reporting
 func (r *UnifiedSilverReader) GetComplianceBalances(ctx context.Context, assetCode, assetIssuer string, timestamp time.Time, minBalance string, limit int) (*ComplianceBalancesResponse, error) {
@@ -419,6 +518,102 @@ func (r *UnifiedSilverReader) GetComplianceBalances(ctx context.Context, assetCo
 		MethodologyVersion: MethodologyBalancesV1,
 		GeneratedAt:        time.Now().UTC().Format(time.RFC3339),
 	}, nil
+}
+
+// GetComplianceBalancesWithOffset returns holders of an asset with pagination support
+// Used by compliance archive processor to paginate through all holders
+func (r *UnifiedSilverReader) GetComplianceBalancesWithOffset(ctx context.Context, assetCode, assetIssuer string, timestamp time.Time, minBalance string, limit, offset int) ([]ComplianceHolder, error) {
+	var holders []ComplianceHolder
+
+	if assetCode == "XLM" || assetCode == "native" {
+		// Query XLM holders from accounts_snapshot with pagination
+		query := `
+			SELECT
+				account_id,
+				balance,
+				ledger_sequence
+			FROM accounts_snapshot
+			WHERE closed_at <= $1
+			  AND (valid_to IS NULL OR valid_to > $1)
+			  AND CAST(balance AS NUMERIC) > 0
+		`
+		args := []any{timestamp}
+		argIdx := 2
+
+		if minBalance != "" {
+			query += fmt.Sprintf(" AND CAST(balance AS NUMERIC) >= $%d", argIdx)
+			args = append(args, minBalance)
+			argIdx++
+		}
+
+		query += fmt.Sprintf(" ORDER BY CAST(balance AS NUMERIC) DESC LIMIT $%d OFFSET $%d", argIdx, argIdx+1)
+		args = append(args, limit, offset)
+
+		rows, err := r.hot.db.QueryContext(ctx, query, args...)
+		if err != nil {
+			return nil, fmt.Errorf("failed to query XLM balances with offset: %w", err)
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var accountID, balance string
+			var ledgerSeq int64
+			if err := rows.Scan(&accountID, &balance, &ledgerSeq); err != nil {
+				continue
+			}
+
+			holders = append(holders, ComplianceHolder{
+				AccountID: accountID,
+				Balance:   balance,
+			})
+		}
+	} else {
+		// Query issued asset holders from trustlines_snapshot with pagination
+		query := `
+			SELECT
+				account_id,
+				balance,
+				ledger_sequence
+			FROM trustlines_snapshot
+			WHERE asset_code = $1
+			  AND asset_issuer = $2
+			  AND created_at <= $3
+			  AND (valid_to IS NULL OR valid_to > $3)
+			  AND CAST(balance AS NUMERIC) > 0
+		`
+		args := []any{assetCode, assetIssuer, timestamp}
+		argIdx := 4
+
+		if minBalance != "" {
+			query += fmt.Sprintf(" AND CAST(balance AS NUMERIC) >= $%d", argIdx)
+			args = append(args, minBalance)
+			argIdx++
+		}
+
+		query += fmt.Sprintf(" ORDER BY CAST(balance AS NUMERIC) DESC LIMIT $%d OFFSET $%d", argIdx, argIdx+1)
+		args = append(args, limit, offset)
+
+		rows, err := r.hot.db.QueryContext(ctx, query, args...)
+		if err != nil {
+			return nil, fmt.Errorf("failed to query trustline balances with offset: %w", err)
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var accountID, balance string
+			var ledgerSeq int64
+			if err := rows.Scan(&accountID, &balance, &ledgerSeq); err != nil {
+				continue
+			}
+
+			holders = append(holders, ComplianceHolder{
+				AccountID: accountID,
+				Balance:   balance,
+			})
+		}
+	}
+
+	return holders, nil
 }
 
 // GetSupplyTimeline returns daily supply totals for an asset over a date range
