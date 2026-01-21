@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
+	"math/big"
 	"os"
 	"os/signal"
 	"strconv"
@@ -16,6 +19,7 @@ import (
 	stellarv1 "github.com/withObsrvr/flow-proto/go/gen/stellar/v1"
 
 	"github.com/stellar/go-stellar-sdk/ingest"
+	"github.com/stellar/go-stellar-sdk/strkey"
 	"github.com/stellar/go-stellar-sdk/xdr"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
@@ -31,12 +35,12 @@ func main() {
 
 	// Load configuration from environment
 	config := processor.DefaultConfig()
-	config.ID = getEnv("COMPONENT_ID", "contract-events-processor")
+	config.ID = getEnv("FLOWCTL_COMPONENT_ID", getEnv("COMPONENT_ID", "contract-events-processor"))
 	config.Name = "Contract Events Processor"
 	config.Description = "Extracts Soroban contract events from Stellar ledgers"
 	config.Version = "2.0.0-sdk"
-	config.Endpoint = getEnv("PORT", ":50053")
-	config.HealthPort = parseInt(getEnv("HEALTH_PORT", "8089"))
+	config.Endpoint = getEnv("PORT", ":50054")
+	config.HealthPort = parseInt(getEnv("HEALTH_PORT", "8082"))
 
 	// Configure flowctl integration
 	if strings.ToLower(getEnv("ENABLE_FLOWCTL", "false")) == "true" {
@@ -219,22 +223,39 @@ func convertToContractEvent(event xdr.ContractEvent, ledgerSeq uint32, txHash st
 	// Extract contract ID - convert to C... address format
 	var contractID string
 	if event.ContractId != nil {
-		// Try to encode as StrKey
-		contractIDBytes := make([]byte, len(*event.ContractId))
-		copy(contractIDBytes, (*event.ContractId)[:])
-		contractID = fmt.Sprintf("C%x", contractIDBytes) // Simplified - in production use strkey.Encode
+		// Use strkey to encode as C... address
+		addr, err := strkey.Encode(strkey.VersionByteContract, (*event.ContractId)[:])
+		if err == nil {
+			contractID = addr
+		} else {
+			// Fallback to hex format
+			contractID = fmt.Sprintf("C%x", (*event.ContractId)[:])
+		}
 	}
 
-	// Marshal topics and data as XDR base64
-	var topicsXDR []*stellarv1.ScValue
-	for _, topic := range event.Body.V0.Topics {
+	// Extract event type from first topic if it's a Symbol
+	var eventType string
+	topics := event.Body.V0.Topics
+	if len(topics) > 0 && topics[0].Type == xdr.ScValTypeScvSymbol && topics[0].Sym != nil {
+		eventType = string(*topics[0].Sym)
+	}
+
+	// Marshal topics with both XDR base64 and decoded JSON
+	var topicsProto []*stellarv1.ScValue
+	for _, topic := range topics {
 		xdrBytes, _ := topic.MarshalBinary()
-		topicsXDR = append(topicsXDR, &stellarv1.ScValue{
-			XdrBase64: string(xdrBytes),
+		topicsProto = append(topicsProto, &stellarv1.ScValue{
+			XdrBase64: base64.StdEncoding.EncodeToString(xdrBytes),
+			Json:      scValToJSON(topic),
 		})
 	}
 
+	// Marshal data with both XDR base64 and decoded JSON
 	dataXDR, _ := event.Body.V0.Data.MarshalBinary()
+	dataProto := &stellarv1.ScValue{
+		XdrBase64: base64.StdEncoding.EncodeToString(dataXDR),
+		Json:      scValToJSON(event.Body.V0.Data),
+	}
 
 	contractEvent := &stellarv1.ContractEvent{
 		Meta: &stellarv1.EventMeta{
@@ -243,11 +264,12 @@ func convertToContractEvent(event xdr.ContractEvent, ledgerSeq uint32, txHash st
 			TxSuccessful:   txSuccess,
 			TxIndex:        txIndex,
 		},
-		ContractId:      contractID,
-		Topics:          topicsXDR,
-		Data:            &stellarv1.ScValue{XdrBase64: string(dataXDR)},
-		InSuccessfulTx:  txSuccess,
-		EventIndex:      eventIdx,
+		ContractId:     contractID,
+		EventType:      eventType,
+		Topics:         topicsProto,
+		Data:           dataProto,
+		InSuccessfulTx: txSuccess,
+		EventIndex:     eventIdx,
 	}
 
 	if opIndex != nil {
@@ -256,6 +278,277 @@ func convertToContractEvent(event xdr.ContractEvent, ledgerSeq uint32, txHash st
 	}
 
 	return contractEvent
+}
+
+// decodeScVal converts an XDR ScVal to a JSON-serializable value
+func decodeScVal(scval xdr.ScVal) (interface{}, error) {
+	switch scval.Type {
+	case xdr.ScValTypeScvBool:
+		if scval.B == nil {
+			return false, nil
+		}
+		return bool(*scval.B), nil
+
+	case xdr.ScValTypeScvVoid:
+		return nil, nil
+
+	case xdr.ScValTypeScvError:
+		if scval.Error == nil {
+			return map[string]interface{}{"error": "unknown"}, nil
+		}
+		result := map[string]interface{}{
+			"error": scval.Error.Type.String(),
+		}
+		if scval.Error.Code != nil {
+			result["code"] = uint32(*scval.Error.Code)
+		}
+		return result, nil
+
+	case xdr.ScValTypeScvU32:
+		if scval.U32 == nil {
+			return uint32(0), nil
+		}
+		return uint32(*scval.U32), nil
+
+	case xdr.ScValTypeScvI32:
+		if scval.I32 == nil {
+			return int32(0), nil
+		}
+		return int32(*scval.I32), nil
+
+	case xdr.ScValTypeScvU64:
+		if scval.U64 == nil {
+			return uint64(0), nil
+		}
+		return uint64(*scval.U64), nil
+
+	case xdr.ScValTypeScvI64:
+		if scval.I64 == nil {
+			return int64(0), nil
+		}
+		return int64(*scval.I64), nil
+
+	case xdr.ScValTypeScvTimepoint:
+		if scval.Timepoint == nil {
+			return uint64(0), nil
+		}
+		return uint64(*scval.Timepoint), nil
+
+	case xdr.ScValTypeScvDuration:
+		if scval.Duration == nil {
+			return uint64(0), nil
+		}
+		return uint64(*scval.Duration), nil
+
+	case xdr.ScValTypeScvU128:
+		if scval.U128 == nil {
+			return "0", nil
+		}
+		// Combine hi and lo parts into a big.Int
+		hi := big.NewInt(0).SetUint64(uint64(scval.U128.Hi))
+		lo := big.NewInt(0).SetUint64(uint64(scval.U128.Lo))
+		result := big.NewInt(0).Lsh(hi, 64)
+		result = result.Or(result, lo)
+		return result.String(), nil
+
+	case xdr.ScValTypeScvI128:
+		if scval.I128 == nil {
+			return "0", nil
+		}
+		// For i128, hi is signed
+		hi := big.NewInt(int64(scval.I128.Hi))
+		lo := big.NewInt(0).SetUint64(uint64(scval.I128.Lo))
+		result := big.NewInt(0).Lsh(hi, 64)
+		result = result.Or(result, lo)
+		return result.String(), nil
+
+	case xdr.ScValTypeScvU256:
+		if scval.U256 == nil {
+			return "0", nil
+		}
+		// Combine 4 parts
+		parts := []uint64{
+			uint64(scval.U256.HiHi),
+			uint64(scval.U256.HiLo),
+			uint64(scval.U256.LoHi),
+			uint64(scval.U256.LoLo),
+		}
+		result := big.NewInt(0)
+		for i, part := range parts {
+			p := big.NewInt(0).SetUint64(part)
+			p = p.Lsh(p, uint(64*(3-i)))
+			result = result.Or(result, p)
+		}
+		return result.String(), nil
+
+	case xdr.ScValTypeScvI256:
+		if scval.I256 == nil {
+			return "0", nil
+		}
+		// Similar to U256 but hihi is signed
+		hihi := big.NewInt(int64(scval.I256.HiHi))
+		hilo := big.NewInt(0).SetUint64(uint64(scval.I256.HiLo))
+		lohi := big.NewInt(0).SetUint64(uint64(scval.I256.LoHi))
+		lolo := big.NewInt(0).SetUint64(uint64(scval.I256.LoLo))
+		result := big.NewInt(0).Lsh(hihi, 192)
+		result = result.Or(result, big.NewInt(0).Lsh(hilo, 128))
+		result = result.Or(result, big.NewInt(0).Lsh(lohi, 64))
+		result = result.Or(result, lolo)
+		return result.String(), nil
+
+	case xdr.ScValTypeScvBytes:
+		if scval.Bytes == nil {
+			return "", nil
+		}
+		// Return as hex string for readability
+		return fmt.Sprintf("0x%x", []byte(*scval.Bytes)), nil
+
+	case xdr.ScValTypeScvString:
+		if scval.Str == nil {
+			return "", nil
+		}
+		return string(*scval.Str), nil
+
+	case xdr.ScValTypeScvSymbol:
+		if scval.Sym == nil {
+			return "", nil
+		}
+		return string(*scval.Sym), nil
+
+	case xdr.ScValTypeScvVec:
+		if scval.Vec == nil {
+			return []interface{}{}, nil
+		}
+		// scval.Vec is **ScVec where ScVec is []ScVal
+		// Safely dereference both pointer levels
+		innerPtr := *scval.Vec
+		if innerPtr == nil {
+			return []interface{}{}, nil
+		}
+		vecSlice := ([]xdr.ScVal)(*innerPtr)
+		result := make([]interface{}, 0, len(vecSlice))
+		for _, item := range vecSlice {
+			decoded, err := decodeScVal(item)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, decoded)
+		}
+		return result, nil
+
+	case xdr.ScValTypeScvMap:
+		if scval.Map == nil {
+			return map[string]interface{}{}, nil
+		}
+		// scval.Map is **ScMap where ScMap is []ScMapEntry
+		// Safely dereference both pointer levels
+		innerPtr := *scval.Map
+		if innerPtr == nil {
+			return map[string]interface{}{}, nil
+		}
+		mapSlice := ([]xdr.ScMapEntry)(*innerPtr)
+		result := make(map[string]interface{})
+		for _, entry := range mapSlice {
+			// Try to use key as string, otherwise use JSON representation
+			keyDecoded, err := decodeScVal(entry.Key)
+			if err != nil {
+				return nil, err
+			}
+			keyStr, ok := keyDecoded.(string)
+			if !ok {
+				// Convert non-string key to JSON string
+				keyBytes, _ := json.Marshal(keyDecoded)
+				keyStr = string(keyBytes)
+			}
+			valDecoded, err := decodeScVal(entry.Val)
+			if err != nil {
+				return nil, err
+			}
+			result[keyStr] = valDecoded
+		}
+		return result, nil
+
+	case xdr.ScValTypeScvAddress:
+		if scval.Address == nil {
+			return "", nil
+		}
+		switch scval.Address.Type {
+		case xdr.ScAddressTypeScAddressTypeAccount:
+			if scval.Address.AccountId == nil {
+				return "", nil
+			}
+			// Encode as G... address
+			addr, err := strkey.Encode(strkey.VersionByteAccountID, scval.Address.AccountId.Ed25519[:])
+			if err != nil {
+				return fmt.Sprintf("account:%x", scval.Address.AccountId.Ed25519[:]), nil
+			}
+			return addr, nil
+		case xdr.ScAddressTypeScAddressTypeContract:
+			if scval.Address.ContractId == nil {
+				return "", nil
+			}
+			// Encode as C... address
+			addr, err := strkey.Encode(strkey.VersionByteContract, (*scval.Address.ContractId)[:])
+			if err != nil {
+				return fmt.Sprintf("contract:%x", (*scval.Address.ContractId)[:]), nil
+			}
+			return addr, nil
+		}
+		return "", nil
+
+	case xdr.ScValTypeScvLedgerKeyContractInstance:
+		return map[string]interface{}{"type": "ledger_key_contract_instance"}, nil
+
+	case xdr.ScValTypeScvLedgerKeyNonce:
+		if scval.NonceKey == nil {
+			return map[string]interface{}{"type": "ledger_key_nonce"}, nil
+		}
+		return map[string]interface{}{
+			"type":  "ledger_key_nonce",
+			"nonce": int64(scval.NonceKey.Nonce),
+		}, nil
+
+	case xdr.ScValTypeScvContractInstance:
+		if scval.Instance == nil {
+			return map[string]interface{}{"type": "contract_instance"}, nil
+		}
+		result := map[string]interface{}{
+			"type":       "contract_instance",
+			"executable": scval.Instance.Executable.Type.String(),
+		}
+		if scval.Instance.Storage != nil {
+			storage := make(map[string]interface{})
+			storageMap := ([]xdr.ScMapEntry)(*scval.Instance.Storage)
+			for _, entry := range storageMap {
+				keyDecoded, _ := decodeScVal(entry.Key)
+				valDecoded, _ := decodeScVal(entry.Val)
+				keyStr, ok := keyDecoded.(string)
+				if !ok {
+					keyBytes, _ := json.Marshal(keyDecoded)
+					keyStr = string(keyBytes)
+				}
+				storage[keyStr] = valDecoded
+			}
+			result["storage"] = storage
+		}
+		return result, nil
+
+	default:
+		return map[string]interface{}{"type": "unknown", "raw_type": scval.Type.String()}, nil
+	}
+}
+
+// scValToJSON converts an XDR ScVal to a JSON string
+func scValToJSON(scval xdr.ScVal) string {
+	decoded, err := decodeScVal(scval)
+	if err != nil {
+		return fmt.Sprintf(`{"error": %q}`, err.Error())
+	}
+	jsonBytes, err := json.Marshal(decoded)
+	if err != nil {
+		return fmt.Sprintf(`{"error": %q}`, err.Error())
+	}
+	return string(jsonBytes)
 }
 
 // Helper functions

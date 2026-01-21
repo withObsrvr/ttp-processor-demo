@@ -33,7 +33,8 @@ func main() {
 
 	// Load configuration from environment
 	config := source.DefaultConfig()
-	config.ID = getEnv("COMPONENT_ID", "stellar-live-source")
+	// flowctl sets FLOWCTL_COMPONENT_ID, fall back to COMPONENT_ID for backwards compatibility
+	config.ID = getEnv("FLOWCTL_COMPONENT_ID", getEnv("COMPONENT_ID", "stellar-live-source"))
 	config.Name = "Stellar Live Source"
 	config.Description = "Streams Stellar ledger data from various backends"
 	config.Version = "2.0.0-sdk"
