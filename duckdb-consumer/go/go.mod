@@ -6,6 +6,7 @@ toolchain go1.24.9
 
 require (
 	github.com/duckdb/duckdb-go/v2 v2.5.0
+	github.com/stellar/go-stellar-sdk v0.0.0-20251210134752-6c46f8811c13
 	github.com/withObsrvr/flow-proto v0.0.0-00010101000000-000000000000
 	github.com/withObsrvr/flowctl-sdk v0.0.0-00010101000000-000000000000
 	go.uber.org/zap v1.27.1
@@ -14,9 +15,9 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-replace github.com/withObsrvr/flow-proto => /home/tillman/Documents/flow-proto
-
-replace github.com/withObsrvr/flowctl-sdk => /home/tillman/Documents/flowctl-sdk
+// For local development, uncomment these replace directives:
+// replace github.com/withObsrvr/flow-proto => /path/to/flow-proto
+// replace github.com/withObsrvr/flowctl-sdk => /path/to/flowctl-sdk
 
 require (
 	github.com/apache/arrow-go/v18 v18.4.1 // indirect

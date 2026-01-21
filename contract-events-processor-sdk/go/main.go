@@ -419,9 +419,13 @@ func decodeScVal(scval xdr.ScVal) (interface{}, error) {
 		if scval.Vec == nil {
 			return []interface{}{}, nil
 		}
-		// scval.Vec is *ScVec where ScVec is []ScVal
-		// Dereference and cast to slice
-		vecSlice := ([]xdr.ScVal)(**scval.Vec)
+		// scval.Vec is **ScVec where ScVec is []ScVal
+		// Safely dereference both pointer levels
+		innerPtr := *scval.Vec
+		if innerPtr == nil {
+			return []interface{}{}, nil
+		}
+		vecSlice := ([]xdr.ScVal)(*innerPtr)
 		result := make([]interface{}, 0, len(vecSlice))
 		for _, item := range vecSlice {
 			decoded, err := decodeScVal(item)
@@ -436,8 +440,13 @@ func decodeScVal(scval xdr.ScVal) (interface{}, error) {
 		if scval.Map == nil {
 			return map[string]interface{}{}, nil
 		}
-		// scval.Map is *ScMap where ScMap is []ScMapEntry
-		mapSlice := ([]xdr.ScMapEntry)(**scval.Map)
+		// scval.Map is **ScMap where ScMap is []ScMapEntry
+		// Safely dereference both pointer levels
+		innerPtr := *scval.Map
+		if innerPtr == nil {
+			return map[string]interface{}{}, nil
+		}
+		mapSlice := ([]xdr.ScMapEntry)(*innerPtr)
 		result := make(map[string]interface{})
 		for _, entry := range mapSlice {
 			// Try to use key as string, otherwise use JSON representation

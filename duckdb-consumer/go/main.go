@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/stellar/go-stellar-sdk/toid"
 	"github.com/withObsrvr/flowctl-sdk/pkg/consumer"
 	flowctlv1 "github.com/withObsrvr/flow-proto/go/gen/flowctl/v1"
 	stellarv1 "github.com/withObsrvr/flow-proto/go/gen/stellar/v1"
@@ -141,9 +142,13 @@ func (s *DuckDBSink) InsertEvent(event *flowctlv1.Event) error {
 	}
 
 	// Serialize metadata to JSON
-	metadataJSON, _ := json.Marshal(event.Metadata)
+	metadataJSON, err := json.Marshal(event.Metadata)
+	if err != nil {
+		log.Printf("Warning: failed to marshal event metadata for event %s: %v", event.Id, err)
+		metadataJSON = []byte("{}")
+	}
 
-	_, err := s.db.Exec(`
+	_, err = s.db.Exec(`
 		INSERT OR REPLACE INTO events (id, event_type, ledger_sequence, source_component, content_type, payload_size, metadata)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 	`,
@@ -158,23 +163,36 @@ func (s *DuckDBSink) InsertEvent(event *flowctlv1.Event) error {
 	return err
 }
 
-// InsertContractEvent inserts a contract event record
-func (s *DuckDBSink) InsertContractEvent(ce *stellarv1.ContractEvent) error {
+// sqlExecutor is an interface satisfied by both *sql.DB and *sql.Tx
+type sqlExecutor interface {
+	Exec(query string, args ...interface{}) (sql.Result, error)
+}
+
+// insertContractEvent inserts a contract event using any SQL executor (DB or Tx)
+func insertContractEvent(exec sqlExecutor, ce *stellarv1.ContractEvent) error {
 	var ledgerSeq uint32
 	var txHash string
+	var txIndex uint32
 	if ce.Meta != nil {
 		ledgerSeq = ce.Meta.LedgerSequence
 		txHash = ce.Meta.TxHash
+		txIndex = ce.Meta.TxIndex
 	}
 
-	eventID := fmt.Sprintf("ce-%d-%s-%d", ledgerSeq, ce.ContractId, ce.EventIndex)
+	// Generate unique event ID using Stellar's TOID (Total Order ID) format
+	// TOID encodes ledger sequence + transaction index + operation index
+	// We use operation_index if available, otherwise 0, then append event_index
+	var opIndex int32 = 0
+	if ce.OperationIndex != nil {
+		opIndex = *ce.OperationIndex
+	}
+	toidVal := toid.New(int32(ledgerSeq), int32(txIndex), opIndex).ToInt64()
+	eventID := fmt.Sprintf("ce-%d-%d", toidVal, ce.EventIndex)
 
 	// Extract topics as JSON array
-	// Each topic has XdrBase64 and optionally Json fields
 	var topicsArray []interface{}
 	for _, topic := range ce.Topics {
 		if topic.Json != "" {
-			// Use decoded JSON if available
 			var decoded interface{}
 			if err := json.Unmarshal([]byte(topic.Json), &decoded); err == nil {
 				topicsArray = append(topicsArray, decoded)
@@ -182,7 +200,6 @@ func (s *DuckDBSink) InsertContractEvent(ce *stellarv1.ContractEvent) error {
 				topicsArray = append(topicsArray, topic.Json)
 			}
 		} else {
-			// Fall back to base64 XDR
 			topicsArray = append(topicsArray, topic.XdrBase64)
 		}
 	}
@@ -192,7 +209,6 @@ func (s *DuckDBSink) InsertContractEvent(ce *stellarv1.ContractEvent) error {
 	var dataJSON []byte
 	if ce.Data != nil {
 		if ce.Data.Json != "" {
-			// Use decoded JSON if available
 			var decoded interface{}
 			if err := json.Unmarshal([]byte(ce.Data.Json), &decoded); err == nil {
 				dataJSON, _ = json.Marshal(decoded)
@@ -200,12 +216,11 @@ func (s *DuckDBSink) InsertContractEvent(ce *stellarv1.ContractEvent) error {
 				dataJSON = []byte(ce.Data.Json)
 			}
 		} else {
-			// Fall back to base64 XDR wrapped in JSON
 			dataJSON, _ = json.Marshal(ce.Data.XdrBase64)
 		}
 	}
 
-	_, err := s.db.Exec(`
+	_, err := exec.Exec(`
 		INSERT OR REPLACE INTO contract_events (id, ledger_sequence, tx_hash, contract_id, event_type, event_index, in_successful_tx, topics_count, topics, data)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
@@ -223,64 +238,14 @@ func (s *DuckDBSink) InsertContractEvent(ce *stellarv1.ContractEvent) error {
 	return err
 }
 
+// InsertContractEvent inserts a contract event record using the database connection
+func (s *DuckDBSink) InsertContractEvent(ce *stellarv1.ContractEvent) error {
+	return insertContractEvent(s.db, ce)
+}
+
 // insertContractEventTx inserts a contract event using an existing transaction
 func insertContractEventTx(tx *sql.Tx, ce *stellarv1.ContractEvent) error {
-	var ledgerSeq uint32
-	var txHash string
-	if ce.Meta != nil {
-		ledgerSeq = ce.Meta.LedgerSequence
-		txHash = ce.Meta.TxHash
-	}
-
-	eventID := fmt.Sprintf("ce-%d-%s-%d", ledgerSeq, ce.ContractId, ce.EventIndex)
-
-	// Extract topics as JSON array
-	var topicsArray []interface{}
-	for _, topic := range ce.Topics {
-		if topic.Json != "" {
-			var decoded interface{}
-			if err := json.Unmarshal([]byte(topic.Json), &decoded); err == nil {
-				topicsArray = append(topicsArray, decoded)
-			} else {
-				topicsArray = append(topicsArray, topic.Json)
-			}
-		} else {
-			topicsArray = append(topicsArray, topic.XdrBase64)
-		}
-	}
-	topicsJSON, _ := json.Marshal(topicsArray)
-
-	// Extract data as JSON
-	var dataJSON []byte
-	if ce.Data != nil {
-		if ce.Data.Json != "" {
-			var decoded interface{}
-			if err := json.Unmarshal([]byte(ce.Data.Json), &decoded); err == nil {
-				dataJSON, _ = json.Marshal(decoded)
-			} else {
-				dataJSON = []byte(ce.Data.Json)
-			}
-		} else {
-			dataJSON, _ = json.Marshal(ce.Data.XdrBase64)
-		}
-	}
-
-	_, err := tx.Exec(`
-		INSERT OR REPLACE INTO contract_events (id, ledger_sequence, tx_hash, contract_id, event_type, event_index, in_successful_tx, topics_count, topics, data)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`,
-		eventID,
-		ledgerSeq,
-		txHash,
-		ce.ContractId,
-		ce.EventType,
-		ce.EventIndex,
-		ce.InSuccessfulTx,
-		len(ce.Topics),
-		string(topicsJSON),
-		string(dataJSON),
-	)
-	return err
+	return insertContractEvent(tx, ce)
 }
 
 // Close closes the database connection
@@ -337,16 +302,27 @@ func handleEvent(ctx context.Context, event *flowctlv1.Event) error {
 			}
 
 			var insertedCount int64
+			var batchErr error
 			for _, ce := range batch.Events {
 				if err := insertContractEventTx(tx, ce); err != nil {
-					log.Printf("Warning: Failed to insert contract event: %v", err)
-					continue
+					log.Printf("Warning: Failed to insert contract event, rolling back batch: %v", err)
+					batchErr = err
+					break
 				}
 				insertedCount++
 			}
 
+			if batchErr != nil {
+				if rbErr := tx.Rollback(); rbErr != nil {
+					return fmt.Errorf("failed to rollback transaction after insert error: %v (original error: %w)", rbErr, batchErr)
+				}
+				return fmt.Errorf("contract event insertion failed: %w", batchErr)
+			}
+
 			if err := tx.Commit(); err != nil {
-				tx.Rollback()
+				if rbErr := tx.Rollback(); rbErr != nil {
+					log.Printf("Warning: rollback failed after commit error (commitErr=%v, rollbackErr=%v)", err, rbErr)
+				}
 				return fmt.Errorf("failed to commit transaction: %w", err)
 			}
 

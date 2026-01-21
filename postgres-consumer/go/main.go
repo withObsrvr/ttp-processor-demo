@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/stellar/go-stellar-sdk/toid"
 	"github.com/withObsrvr/flowctl-sdk/pkg/consumer"
 	flowctlv1 "github.com/withObsrvr/flow-proto/go/gen/flowctl/v1"
 	stellarv1 "github.com/withObsrvr/flow-proto/go/gen/stellar/v1"
@@ -160,9 +161,13 @@ func (s *PostgreSQLSink) InsertEvent(event *flowctlv1.Event) error {
 	}
 
 	// Serialize metadata to JSON
-	metadataJSON, _ := json.Marshal(event.Metadata)
+	metadataJSON, err := json.Marshal(event.Metadata)
+	if err != nil {
+		log.Printf("Warning: failed to marshal event metadata for event %s: %v", event.Id, err)
+		metadataJSON = []byte("{}")
+	}
 
-	_, err := s.db.Exec(`
+	_, err = s.db.Exec(`
 		INSERT INTO events (id, event_type, ledger_sequence, source_component, content_type, payload_size, metadata)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (id) DO UPDATE SET
@@ -188,12 +193,22 @@ func (s *PostgreSQLSink) InsertEvent(event *flowctlv1.Event) error {
 func insertContractEventTx(tx *sql.Tx, ce *stellarv1.ContractEvent) error {
 	var ledgerSeq uint32
 	var txHash string
+	var txIndex uint32
 	if ce.Meta != nil {
 		ledgerSeq = ce.Meta.LedgerSequence
 		txHash = ce.Meta.TxHash
+		txIndex = ce.Meta.TxIndex
 	}
 
-	eventID := fmt.Sprintf("ce-%d-%s-%d", ledgerSeq, ce.ContractId, ce.EventIndex)
+	// Generate unique event ID using Stellar's TOID (Total Order ID) format
+	// TOID encodes ledger sequence + transaction index + operation index
+	// We use operation_index if available, otherwise 0, then append event_index
+	var opIndex int32 = 0
+	if ce.OperationIndex != nil {
+		opIndex = *ce.OperationIndex
+	}
+	toidVal := toid.New(int32(ledgerSeq), int32(txIndex), opIndex).ToInt64()
+	eventID := fmt.Sprintf("ce-%d-%d", toidVal, ce.EventIndex)
 
 	// Extract topics as JSON array
 	var topicsArray []interface{}
@@ -308,16 +323,27 @@ func handleEvent(ctx context.Context, event *flowctlv1.Event) error {
 			}
 
 			var insertedCount int64
+			var batchErr error
 			for _, ce := range batch.Events {
 				if err := insertContractEventTx(tx, ce); err != nil {
-					log.Printf("Warning: Failed to insert contract event: %v", err)
-					continue
+					log.Printf("Warning: Failed to insert contract event, rolling back batch: %v", err)
+					batchErr = err
+					break
 				}
 				insertedCount++
 			}
 
+			if batchErr != nil {
+				if rbErr := tx.Rollback(); rbErr != nil {
+					return fmt.Errorf("failed to rollback transaction after insert error: %v (original error: %w)", rbErr, batchErr)
+				}
+				return fmt.Errorf("contract event insertion failed: %w", batchErr)
+			}
+
 			if err := tx.Commit(); err != nil {
-				tx.Rollback()
+				if rbErr := tx.Rollback(); rbErr != nil {
+					log.Printf("Warning: rollback failed after commit error (commitErr=%v, rollbackErr=%v)", err, rbErr)
+				}
 				return fmt.Errorf("failed to commit transaction: %w", err)
 			}
 
@@ -345,7 +371,8 @@ func main() {
 	pgDB := getEnv("POSTGRES_DB", "stellar_events")
 	pgUser := getEnv("POSTGRES_USER", "postgres")
 	pgPassword := getEnv("POSTGRES_PASSWORD", "")
-	pgSSLMode := getEnv("POSTGRES_SSLMODE", "disable")
+	// Default to 'require' for production security; use 'disable' for local development
+	pgSSLMode := getEnv("POSTGRES_SSLMODE", "require")
 	componentID := getEnv("FLOWCTL_COMPONENT_ID", "postgres-consumer")
 
 	// Build connection string
