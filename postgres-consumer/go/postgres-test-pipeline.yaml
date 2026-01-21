@@ -1,0 +1,33 @@
+apiVersion: flowctl/v1
+kind: Pipeline
+metadata:
+    description: Process stellar contract events on testnet
+    name: stellar-pipeline
+spec:
+    driver: process
+    processors:
+        - config:
+            network_passphrase: Test SDF Network ; September 2015
+          id: contract-events
+          inputs:
+            - stellar-source
+          type: contract-events-processor@v1.0.0
+    sinks:
+        - config:
+            postgres_host: localhost
+            postgres_port: "5432"
+            postgres_db: stellar_events
+            postgres_user: postgres
+            postgres_password: postgres
+          id: postgres-sink
+          inputs:
+            - contract-events
+          type: postgres-consumer@v1.0.0
+    sources:
+        - config:
+            backend_type: RPC
+            network_passphrase: Test SDF Network ; September 2015
+            rpc_endpoint: https://soroban-testnet.stellar.org
+            start_ledger: 569748
+          id: stellar-source
+          type: stellar-live-source@v1.0.0

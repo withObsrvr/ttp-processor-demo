@@ -1,0 +1,22 @@
+{
+  "name": "postgres-consumer",
+  "version": "v1.0.0",
+  "type": "sink",
+  "description": "PostgreSQL sink for writing events to database with JSONB support",
+  "produces": [],
+  "consumes": [
+    "stellar.ledger.v1",
+    "stellar.raw.ledger.v1",
+    "stellar.contract.events.v1"
+  ],
+  "env_mapping": {
+    "postgres_host": "POSTGRES_HOST",
+    "postgres_port": "POSTGRES_PORT",
+    "postgres_db": "POSTGRES_DB",
+    "postgres_user": "POSTGRES_USER",
+    "postgres_password": "POSTGRES_PASSWORD",
+    "postgres_sslmode": "POSTGRES_SSLMODE",
+    "port": "PORT",
+    "health_port": "HEALTH_PORT"
+  }
+}

@@ -6,11 +6,17 @@ toolchain go1.24.9
 
 require (
 	github.com/duckdb/duckdb-go/v2 v2.5.0
+	github.com/withObsrvr/flow-proto v0.0.0-00010101000000-000000000000
+	github.com/withObsrvr/flowctl-sdk v0.0.0-00010101000000-000000000000
 	go.uber.org/zap v1.27.1
 	google.golang.org/grpc v1.76.0
 	google.golang.org/protobuf v1.36.8
 	gopkg.in/yaml.v3 v3.0.1
 )
+
+replace github.com/withObsrvr/flow-proto => /home/tillman/Documents/flow-proto
+
+replace github.com/withObsrvr/flowctl-sdk => /home/tillman/Documents/flowctl-sdk
 
 require (
 	github.com/apache/arrow-go/v18 v18.4.1 // indirect
