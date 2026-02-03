@@ -690,6 +690,7 @@ func (h *SilverHandlers) HandleAccountBalances(w http.ResponseWriter, r *http.Re
 // @Param end_ledger query int false "End ledger sequence"
 // @Param limit query int false "Maximum results to return (default: 100, max: 1000)"
 // @Param cursor query string false "Pagination cursor from previous response"
+// @Param order query string false "Sort order: asc or desc (default: desc)"
 // @Success 200 {object} map[string]interface{} "Enriched operations with pagination info"
 // @Failure 400 {object} map[string]interface{} "Invalid parameters"
 // @Failure 500 {object} map[string]interface{} "Internal server error"
@@ -710,6 +711,22 @@ func (h *SilverHandlers) HandleEnrichedOperations(w http.ResponseWriter, r *http
 		return
 	}
 
+	// Parse and validate order parameter (default: desc for backward compatibility)
+	order := strings.ToLower(r.URL.Query().Get("order"))
+	if order == "" {
+		order = "desc"
+	}
+	if order != "asc" && order != "desc" {
+		respondError(w, "order must be 'asc' or 'desc'", http.StatusBadRequest)
+		return
+	}
+
+	// Validate cursor order matches request order (cannot change order while paginating)
+	if cursor != nil && cursor.Order != "" && cursor.Order != order {
+		respondError(w, "cursor was created with order='"+cursor.Order+"' but request uses order='"+order+"'. Cannot change order while paginating.", http.StatusBadRequest)
+		return
+	}
+
 	filters := OperationFilters{
 		AccountID:    r.URL.Query().Get("account_id"),
 		TxHash:       r.URL.Query().Get("tx_hash"),
@@ -717,6 +734,7 @@ func (h *SilverHandlers) HandleEnrichedOperations(w http.ResponseWriter, r *http
 		SorobanOnly:  r.URL.Query().Get("soroban_only") == "true",
 		Limit:        parseLimit(r, 100, 1000),
 		Cursor:       cursor,
+		Order:        order,
 	}
 
 	// Parse ledger range (only if no cursor)
@@ -767,11 +785,31 @@ func (h *SilverHandlers) HandleEnrichedOperations(w http.ResponseWriter, r *http
 		return
 	}
 
+	// Build _meta for RPC v2 compatibility
+	meta := ResponseMeta{}
+	if len(operations) > 0 {
+		// scanned_ledger is the max ledger sequence in the result set
+		var maxLedger int64
+		for _, op := range operations {
+			if op.LedgerSequence > maxLedger {
+				maxLedger = op.LedgerSequence
+			}
+		}
+		meta.ScannedLedger = &maxLedger
+	}
+	// Get available ledgers (only if unified reader is available)
+	if h.unifiedReader != nil {
+		if availableLedgers, err := h.unifiedReader.GetAvailableLedgers(r.Context()); err == nil {
+			meta.AvailableLedgers = availableLedgers
+		}
+	}
+
 	response := map[string]interface{}{
 		"operations": operations,
 		"count":      len(operations),
 		"filters":    filters,
 		"has_more":   hasMore,
+		"_meta":      meta,
 	}
 	if nextCursor != "" {
 		response["cursor"] = nextCursor
@@ -789,6 +827,7 @@ func (h *SilverHandlers) HandleEnrichedOperations(w http.ResponseWriter, r *http
 // @Param account_id query string false "Filter by account ID"
 // @Param limit query int false "Maximum results to return (default: 50, max: 500)"
 // @Param cursor query string false "Pagination cursor from previous response"
+// @Param order query string false "Sort order: asc or desc (default: desc)"
 // @Success 200 {object} map[string]interface{} "Payment operations with pagination info"
 // @Failure 400 {object} map[string]interface{} "Invalid cursor"
 // @Failure 500 {object} map[string]interface{} "Internal server error"
@@ -802,11 +841,28 @@ func (h *SilverHandlers) HandlePayments(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Parse and validate order parameter (default: desc for backward compatibility)
+	order := strings.ToLower(r.URL.Query().Get("order"))
+	if order == "" {
+		order = "desc"
+	}
+	if order != "asc" && order != "desc" {
+		respondError(w, "order must be 'asc' or 'desc'", http.StatusBadRequest)
+		return
+	}
+
+	// Validate cursor order matches request order
+	if cursor != nil && cursor.Order != "" && cursor.Order != order {
+		respondError(w, "cursor was created with order='"+cursor.Order+"' but request uses order='"+order+"'. Cannot change order while paginating.", http.StatusBadRequest)
+		return
+	}
+
 	filters := OperationFilters{
 		AccountID:    r.URL.Query().Get("account_id"),
 		PaymentsOnly: true,
 		Limit:        parseLimit(r, 50, 500),
 		Cursor:       cursor,
+		Order:        order,
 	}
 
 	var operations []EnrichedOperation
@@ -828,10 +884,28 @@ func (h *SilverHandlers) HandlePayments(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Build _meta for RPC v2 compatibility
+	meta := ResponseMeta{}
+	if len(operations) > 0 {
+		var maxLedger int64
+		for _, op := range operations {
+			if op.LedgerSequence > maxLedger {
+				maxLedger = op.LedgerSequence
+			}
+		}
+		meta.ScannedLedger = &maxLedger
+	}
+	if h.unifiedReader != nil {
+		if availableLedgers, err := h.unifiedReader.GetAvailableLedgers(r.Context()); err == nil {
+			meta.AvailableLedgers = availableLedgers
+		}
+	}
+
 	response := map[string]interface{}{
 		"payments": operations,
 		"count":    len(operations),
 		"has_more": hasMore,
+		"_meta":    meta,
 	}
 	if nextCursor != "" {
 		response["cursor"] = nextCursor
@@ -849,6 +923,7 @@ func (h *SilverHandlers) HandlePayments(w http.ResponseWriter, r *http.Request) 
 // @Param account_id query string false "Filter by account ID"
 // @Param limit query int false "Maximum results to return (default: 50, max: 500)"
 // @Param cursor query string false "Pagination cursor from previous response"
+// @Param order query string false "Sort order: asc or desc (default: desc)"
 // @Success 200 {object} map[string]interface{} "Soroban operations with pagination info"
 // @Failure 400 {object} map[string]interface{} "Invalid cursor"
 // @Failure 500 {object} map[string]interface{} "Internal server error"
@@ -862,11 +937,28 @@ func (h *SilverHandlers) HandleSorobanOperations(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// Parse and validate order parameter (default: desc for backward compatibility)
+	order := strings.ToLower(r.URL.Query().Get("order"))
+	if order == "" {
+		order = "desc"
+	}
+	if order != "asc" && order != "desc" {
+		respondError(w, "order must be 'asc' or 'desc'", http.StatusBadRequest)
+		return
+	}
+
+	// Validate cursor order matches request order
+	if cursor != nil && cursor.Order != "" && cursor.Order != order {
+		respondError(w, "cursor was created with order='"+cursor.Order+"' but request uses order='"+order+"'. Cannot change order while paginating.", http.StatusBadRequest)
+		return
+	}
+
 	filters := OperationFilters{
 		AccountID:   r.URL.Query().Get("account_id"),
 		SorobanOnly: true,
 		Limit:       parseLimit(r, 50, 500),
 		Cursor:      cursor,
+		Order:       order,
 	}
 
 	var operations []EnrichedOperation
@@ -887,10 +979,28 @@ func (h *SilverHandlers) HandleSorobanOperations(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// Build _meta for RPC v2 compatibility
+	meta := ResponseMeta{}
+	if len(operations) > 0 {
+		var maxLedger int64
+		for _, op := range operations {
+			if op.LedgerSequence > maxLedger {
+				maxLedger = op.LedgerSequence
+			}
+		}
+		meta.ScannedLedger = &maxLedger
+	}
+	if h.unifiedReader != nil {
+		if availableLedgers, err := h.unifiedReader.GetAvailableLedgers(r.Context()); err == nil {
+			meta.AvailableLedgers = availableLedgers
+		}
+	}
+
 	response := map[string]interface{}{
 		"soroban_operations": operations,
 		"count":              len(operations),
 		"has_more":           hasMore,
+		"_meta":              meta,
 	}
 	if nextCursor != "" {
 		response["cursor"] = nextCursor
@@ -917,6 +1027,7 @@ func (h *SilverHandlers) HandleSorobanOperations(w http.ResponseWriter, r *http.
 // @Param end_time query string false "End time in RFC3339 format (default: now)"
 // @Param limit query int false "Maximum results to return (default: 100, max: 1000)"
 // @Param cursor query string false "Pagination cursor from previous response"
+// @Param order query string false "Sort order: asc or desc (default: desc)"
 // @Success 200 {object} map[string]interface{} "Token transfers with pagination info"
 // @Failure 400 {object} map[string]interface{} "Invalid cursor"
 // @Failure 500 {object} map[string]interface{} "Internal server error"
@@ -930,6 +1041,22 @@ func (h *SilverHandlers) HandleTokenTransfers(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// Parse and validate order parameter (default: desc for backward compatibility)
+	order := strings.ToLower(r.URL.Query().Get("order"))
+	if order == "" {
+		order = "desc"
+	}
+	if order != "asc" && order != "desc" {
+		respondError(w, "order must be 'asc' or 'desc'", http.StatusBadRequest)
+		return
+	}
+
+	// Validate cursor order matches request order
+	if cursor != nil && cursor.Order != "" && cursor.Order != order {
+		respondError(w, "cursor was created with order='"+cursor.Order+"' but request uses order='"+order+"'. Cannot change order while paginating.", http.StatusBadRequest)
+		return
+	}
+
 	filters := TransferFilters{
 		SourceType:  r.URL.Query().Get("source_type"), // "classic" or "soroban"
 		AssetCode:   r.URL.Query().Get("asset_code"),
@@ -937,6 +1064,7 @@ func (h *SilverHandlers) HandleTokenTransfers(w http.ResponseWriter, r *http.Req
 		ToAccount:   r.URL.Query().Get("to_account"),
 		Limit:       parseLimit(r, 100, 1000),
 		Cursor:      cursor,
+		Order:       order,
 	}
 
 	// Parse time range
@@ -991,11 +1119,29 @@ func (h *SilverHandlers) HandleTokenTransfers(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// Build _meta for RPC v2 compatibility
+	meta := ResponseMeta{}
+	if len(transfers) > 0 {
+		var maxLedger int64
+		for _, t := range transfers {
+			if t.LedgerSequence > maxLedger {
+				maxLedger = t.LedgerSequence
+			}
+		}
+		meta.ScannedLedger = &maxLedger
+	}
+	if h.unifiedReader != nil {
+		if availableLedgers, err := h.unifiedReader.GetAvailableLedgers(r.Context()); err == nil {
+			meta.AvailableLedgers = availableLedgers
+		}
+	}
+
 	response := map[string]interface{}{
 		"transfers": transfers,
 		"count":     len(transfers),
 		"filters":   filters,
 		"has_more":  hasMore,
+		"_meta":     meta,
 	}
 	if nextCursor != "" {
 		response["cursor"] = nextCursor
@@ -1945,12 +2091,29 @@ func (h *SilverHandlers) HandleClaimableBalancesByAsset(w http.ResponseWriter, r
 // GET /api/v1/silver/trades?seller_account=GXXXXX
 // GET /api/v1/silver/trades?buyer_account=GXXXXX
 // GET /api/v1/silver/trades?start_time=2026-01-01T00:00:00Z&end_time=2026-01-06T00:00:00Z
+// GET /api/v1/silver/trades?order=desc (default: asc for backward compatibility)
 func (h *SilverHandlers) HandleTrades(w http.ResponseWriter, r *http.Request) {
 	// Parse cursor for pagination
 	cursorStr := r.URL.Query().Get("cursor")
 	cursor, err := DecodeTradeCursor(cursorStr)
 	if err != nil {
 		respondError(w, "invalid cursor: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Parse and validate order parameter (default: asc for backward compatibility - trades historically sorted ASC)
+	order := strings.ToLower(r.URL.Query().Get("order"))
+	if order == "" {
+		order = "asc"
+	}
+	if order != "asc" && order != "desc" {
+		respondError(w, "order must be 'asc' or 'desc'", http.StatusBadRequest)
+		return
+	}
+
+	// Validate cursor order matches request order
+	if cursor != nil && cursor.Order != "" && cursor.Order != order {
+		respondError(w, "cursor was created with order='"+cursor.Order+"' but request uses order='"+order+"'. Cannot change order while paginating.", http.StatusBadRequest)
 		return
 	}
 
@@ -1961,6 +2124,7 @@ func (h *SilverHandlers) HandleTrades(w http.ResponseWriter, r *http.Request) {
 		BuyerAccount:  r.URL.Query().Get("buyer_account"),
 		Limit:         parseLimit(r, 100, 1000),
 		Cursor:        cursor,
+		Order:         order,
 	}
 
 	// Parse time range
@@ -1991,10 +2155,28 @@ func (h *SilverHandlers) HandleTrades(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Build _meta for RPC v2 compatibility
+	meta := ResponseMeta{}
+	if len(trades) > 0 {
+		var maxLedger int64
+		for _, t := range trades {
+			if t.LedgerSequence > maxLedger {
+				maxLedger = t.LedgerSequence
+			}
+		}
+		meta.ScannedLedger = &maxLedger
+	}
+	if h.unifiedReader != nil {
+		if availableLedgers, err := h.unifiedReader.GetAvailableLedgers(r.Context()); err == nil {
+			meta.AvailableLedgers = availableLedgers
+		}
+	}
+
 	response := map[string]interface{}{
 		"trades":   trades,
 		"count":    len(trades),
 		"has_more": hasMore,
+		"_meta":    meta,
 	}
 	if nextCursor != "" {
 		response["cursor"] = nextCursor
@@ -2145,6 +2327,7 @@ func (h *SilverHandlers) HandleTradeStats(w http.ResponseWriter, r *http.Request
 // GET /api/v1/silver/effects?account_id=GXXXXX&limit=100
 // GET /api/v1/silver/effects?effect_type=account_credited
 // GET /api/v1/silver/effects?effect_type=2
+// GET /api/v1/silver/effects?order=desc (default: asc for backward compatibility)
 func (h *SilverHandlers) HandleEffects(w http.ResponseWriter, r *http.Request) {
 	// Parse cursor for pagination
 	cursorStr := r.URL.Query().Get("cursor")
@@ -2154,11 +2337,28 @@ func (h *SilverHandlers) HandleEffects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Parse and validate order parameter (default: asc for backward compatibility - effects historically sorted ASC)
+	order := strings.ToLower(r.URL.Query().Get("order"))
+	if order == "" {
+		order = "asc"
+	}
+	if order != "asc" && order != "desc" {
+		respondError(w, "order must be 'asc' or 'desc'", http.StatusBadRequest)
+		return
+	}
+
+	// Validate cursor order matches request order
+	if cursor != nil && cursor.Order != "" && cursor.Order != order {
+		respondError(w, "cursor was created with order='"+cursor.Order+"' but request uses order='"+order+"'. Cannot change order while paginating.", http.StatusBadRequest)
+		return
+	}
+
 	filters := EffectFilters{
 		AccountID:  r.URL.Query().Get("account_id"),
 		EffectType: r.URL.Query().Get("effect_type"),
 		Limit:      parseLimit(r, 100, 1000),
 		Cursor:     cursor,
+		Order:      order,
 	}
 
 	// Parse ledger_sequence
@@ -2196,10 +2396,28 @@ func (h *SilverHandlers) HandleEffects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Build _meta for RPC v2 compatibility
+	meta := ResponseMeta{}
+	if len(effects) > 0 {
+		var maxLedger int64
+		for _, e := range effects {
+			if e.LedgerSequence > maxLedger {
+				maxLedger = e.LedgerSequence
+			}
+		}
+		meta.ScannedLedger = &maxLedger
+	}
+	if h.unifiedReader != nil {
+		if availableLedgers, err := h.unifiedReader.GetAvailableLedgers(r.Context()); err == nil {
+			meta.AvailableLedgers = availableLedgers
+		}
+	}
+
 	response := map[string]interface{}{
 		"effects":  effects,
 		"count":    len(effects),
 		"has_more": hasMore,
+		"_meta":    meta,
 	}
 	if nextCursor != "" {
 		response["cursor"] = nextCursor
@@ -2750,6 +2968,40 @@ func parseLimit(r *http.Request, defaultLimit, maxLimit int) int {
 	}
 
 	return limit
+}
+
+// ============================================
+// DATA BOUNDARIES ENDPOINT (RPC v2 Compatibility)
+// ============================================
+
+// HandleDataBoundaries returns the available ledger range in the data store
+// This provides data freshness information for RPC v2 compatibility
+// @Summary Get data boundaries
+// @Description Returns the range of ledgers available in the data store (oldest and latest)
+// @Tags Data
+// @Accept json
+// @Produce json
+// @Success 200 {object} map[string]interface{} "Data boundaries with ledger range"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/data-boundaries [get]
+func (h *SilverHandlers) HandleDataBoundaries(w http.ResponseWriter, r *http.Request) {
+	if h.unifiedReader == nil {
+		respondError(w, "data boundaries endpoint requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	availableLedgers, err := h.unifiedReader.GetAvailableLedgers(r.Context())
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"available_ledgers": availableLedgers,
+		"generated_at":      time.Now().Format(time.RFC3339),
+	}
+
+	respondJSON(w, response)
 }
 
 func respondJSON(w http.ResponseWriter, data interface{}) {

@@ -330,6 +330,10 @@ func mainWithSilver() {
 		router.HandleFunc("/api/v1/silver/stats/network", networkStatsHandler.HandleNetworkStats).Methods("GET")
 		log.Println("  ✓ /api/v1/silver/stats/network (headline statistics)")
 
+		// Data boundaries endpoint (RPC v2 compatibility)
+		router.HandleFunc("/api/v1/silver/data-boundaries", silverHandlers.HandleDataBoundaries).Methods("GET")
+		log.Println("  ✓ /api/v1/silver/data-boundaries (available ledger range)")
+
 		// Account activity endpoint (Phase 3)
 		accountActivityHandler := NewAccountActivityHandler(unifiedSilverReader)
 		router.HandleFunc("/api/v1/silver/accounts/{id}/activity", accountActivityHandler.HandleAccountActivity).Methods("GET")

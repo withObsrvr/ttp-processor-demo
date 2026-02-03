@@ -698,6 +698,7 @@ type OperationFilters struct {
 	SorobanOnly  bool
 	Limit        int
 	Cursor       *OperationCursor // Decoded cursor for WHERE clause (pagination)
+	Order        string           // "asc" or "desc" (default: "desc" for backward compatibility)
 }
 
 type TransferFilters struct {
@@ -709,6 +710,7 @@ type TransferFilters struct {
 	EndTime     time.Time
 	Limit       int
 	Cursor      *TransferCursor // Decoded cursor for WHERE clause (pagination)
+	Order       string          // "asc" or "desc" (default: "desc" for backward compatibility)
 }
 
 type TransferStats struct {
@@ -936,6 +938,7 @@ type TradeFilters struct {
 	EndTime            time.Time
 	Limit              int
 	Cursor             *TradeCursor
+	Order              string // "asc" or "desc" (default: "asc" for backward compatibility)
 }
 
 // TradeStats represents aggregated trade statistics
@@ -980,6 +983,7 @@ type EffectFilters struct {
 	EndTime         time.Time
 	Limit           int
 	Cursor          *EffectCursor
+	Order           string // "asc" or "desc" (default: "asc" for backward compatibility)
 }
 
 // EffectTypeCount represents an effect type with its count
@@ -1110,4 +1114,20 @@ type ContractDataFilters struct {
 	Durability string // "persistent" or "temporary"
 	Limit      int
 	Cursor     *ContractDataCursor
+}
+
+// ============================================
+// RESPONSE METADATA TYPES (RPC v2 Compatibility)
+// ============================================
+
+// LedgerRange represents the available ledger range in the data store
+type LedgerRange struct {
+	Oldest int64 `json:"oldest"`
+	Latest int64 `json:"latest"`
+}
+
+// ResponseMeta contains metadata about the query response for RPC v2 compatibility
+type ResponseMeta struct {
+	ScannedLedger    *int64       `json:"scanned_ledger,omitempty"`
+	AvailableLedgers *LedgerRange `json:"available_ledgers,omitempty"`
 }
