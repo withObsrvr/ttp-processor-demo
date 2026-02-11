@@ -578,6 +578,15 @@ func (sm *SourceManager) QueryConfigSettingsSnapshot(ctx context.Context, startL
 	return nil, fmt.Errorf("unknown source mode: %s", mode)
 }
 
+// ForceHotMode forces the source manager back to hot mode, clearing any backfill state.
+// Used when backfill mode is stuck (e.g., cold storage also has a gap).
+func (sm *SourceManager) ForceHotMode() {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.mode = SourceModeHot
+	sm.backfillTarget = 0
+}
+
 // Close closes the cold reader connection if it exists
 func (sm *SourceManager) Close() error {
 	if sm.coldReader != nil {
