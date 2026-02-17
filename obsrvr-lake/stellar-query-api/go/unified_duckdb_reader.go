@@ -716,7 +716,7 @@ func (r *UnifiedDuckDBReader) GetEnrichedOperationsWithCursor(ctx context.Contex
 	// Cursor pagination - direction depends on order
 	cursorClause := ""
 	if filters.Cursor != nil {
-		cursorClause = fmt.Sprintf(" AND (ledger_sequence %s $%d OR (ledger_sequence = $%d AND operation_index %s $%d))",
+		cursorClause = fmt.Sprintf(" AND (ledger_sequence %s $%d OR (ledger_sequence = $%d AND operation_id %s $%d))",
 			cursorOp, argNum, argNum, cursorOp, argNum+1)
 		args = append(args, filters.Cursor.LedgerSequence, filters.Cursor.OperationIndex)
 		argNum += 2
@@ -868,7 +868,7 @@ func (r *UnifiedDuckDBReader) GetTokenTransfersWithCursor(ctx context.Context, f
 	// Cursor pagination - direction depends on order
 	cursorClause := ""
 	if filters.Cursor != nil {
-		cursorClause = fmt.Sprintf(" AND (ledger_sequence %s $%d OR (ledger_sequence = $%d AND created_at %s $%d))",
+		cursorClause = fmt.Sprintf(" AND (ledger_sequence %s $%d OR (ledger_sequence = $%d AND timestamp %s $%d))",
 			cursorOp, argNum, argNum, cursorOp, argNum+1)
 		args = append(args, filters.Cursor.LedgerSequence, filters.Cursor.Timestamp)
 		argNum += 2

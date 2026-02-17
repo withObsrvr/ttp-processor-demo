@@ -51,7 +51,12 @@ type TokenHoldersCursor struct {
 // Encode encodes an operation cursor to an opaque base64 string
 // Format: "ledger:op_index:order" (3 parts) or legacy "ledger:op_index" (2 parts)
 func (c OperationCursor) Encode() string {
-	raw := fmt.Sprintf("%d:%d:%s", c.LedgerSequence, c.OperationIndex, c.Order)
+	var raw string
+	if c.Order == "" {
+		raw = fmt.Sprintf("%d:%d", c.LedgerSequence, c.OperationIndex)
+	} else {
+		raw = fmt.Sprintf("%d:%d:%s", c.LedgerSequence, c.OperationIndex, c.Order)
+	}
 	return base64.URLEncoding.EncodeToString([]byte(raw))
 }
 
@@ -84,7 +89,7 @@ func DecodeOperationCursor(cursor string) (*OperationCursor, error) {
 	}
 
 	// Default order for legacy cursors (operations default to DESC)
-	order := ""
+	order := "desc"
 	if len(parts) == 3 {
 		order = parts[2]
 	}
@@ -99,7 +104,13 @@ func DecodeOperationCursor(cursor string) (*OperationCursor, error) {
 // Encode encodes a transfer cursor to an opaque base64 string
 // Format: "ledger:timestamp:order" (3 parts) or legacy "ledger:timestamp" (2 parts)
 func (c TransferCursor) Encode() string {
-	raw := fmt.Sprintf("%d:%s:%s", c.LedgerSequence, c.Timestamp.Format(time.RFC3339Nano), c.Order)
+	ts := c.Timestamp.Format(time.RFC3339Nano)
+	var raw string
+	if c.Order == "" {
+		raw = fmt.Sprintf("%d:%s", c.LedgerSequence, ts)
+	} else {
+		raw = fmt.Sprintf("%d:%s:%s", c.LedgerSequence, ts, c.Order)
+	}
 	return base64.URLEncoding.EncodeToString([]byte(raw))
 }
 
@@ -143,9 +154,9 @@ func DecodeTransferCursor(cursor string) (*TransferCursor, error) {
 		order = "desc"
 		timestampStr = rest[:len(rest)-5]
 	} else {
-		// Legacy format without order
+		// Legacy format without order (transfers default to DESC)
 		timestampStr = rest
-		order = ""
+		order = "desc"
 	}
 
 	ts, err := time.Parse(time.RFC3339Nano, timestampStr)
@@ -394,9 +405,14 @@ type TradeCursor struct {
 }
 
 // Encode encodes a trade cursor to an opaque base64 string
-// Format: ledger:tx_hash:op_index:trade_index:order
+// Format: ledger:tx_hash:op_index:trade_index:order (5 parts) or legacy (4 parts)
 func (c TradeCursor) Encode() string {
-	raw := fmt.Sprintf("%d:%s:%d:%d:%s", c.LedgerSequence, c.TransactionHash, c.OperationIndex, c.TradeIndex, c.Order)
+	var raw string
+	if c.Order == "" {
+		raw = fmt.Sprintf("%d:%s:%d:%d", c.LedgerSequence, c.TransactionHash, c.OperationIndex, c.TradeIndex)
+	} else {
+		raw = fmt.Sprintf("%d:%s:%d:%d:%s", c.LedgerSequence, c.TransactionHash, c.OperationIndex, c.TradeIndex, c.Order)
+	}
 	return base64.URLEncoding.EncodeToString([]byte(raw))
 }
 
@@ -434,7 +450,7 @@ func DecodeTradeCursor(cursor string) (*TradeCursor, error) {
 	}
 
 	// Default order for legacy cursors (trades default to ASC)
-	order := ""
+	order := "asc"
 	if len(parts) == 5 {
 		order = parts[4]
 	}
@@ -459,9 +475,14 @@ type EffectCursor struct {
 }
 
 // Encode encodes an effect cursor to an opaque base64 string
-// Format: ledger:tx_hash:op_index:effect_index:order
+// Format: ledger:tx_hash:op_index:effect_index:order (5 parts) or legacy (4 parts)
 func (c EffectCursor) Encode() string {
-	raw := fmt.Sprintf("%d:%s:%d:%d:%s", c.LedgerSequence, c.TransactionHash, c.OperationIndex, c.EffectIndex, c.Order)
+	var raw string
+	if c.Order == "" {
+		raw = fmt.Sprintf("%d:%s:%d:%d", c.LedgerSequence, c.TransactionHash, c.OperationIndex, c.EffectIndex)
+	} else {
+		raw = fmt.Sprintf("%d:%s:%d:%d:%s", c.LedgerSequence, c.TransactionHash, c.OperationIndex, c.EffectIndex, c.Order)
+	}
 	return base64.URLEncoding.EncodeToString([]byte(raw))
 }
 
@@ -499,7 +520,7 @@ func DecodeEffectCursor(cursor string) (*EffectCursor, error) {
 	}
 
 	// Default order for legacy cursors (effects default to ASC)
-	order := ""
+	order := "asc"
 	if len(parts) == 5 {
 		order = parts[4]
 	}

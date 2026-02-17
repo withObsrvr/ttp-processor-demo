@@ -88,22 +88,20 @@ func (hs *HealthServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	// DuckDB uses a single-writer lock, so reads can block during writes.
 	var indexStats map[string]interface{}
 	if indexWriter != nil {
-		statsCh := make(chan map[string]interface{}, 1)
-		go func() {
-			s, err := indexWriter.GetIndexStats()
-			if err != nil {
+		statsCtx, statsCancel := context.WithTimeout(r.Context(), 1*time.Second)
+		defer statsCancel()
+		s, err := indexWriter.GetIndexStats(statsCtx)
+		if err != nil {
+			if statsCtx.Err() != nil {
+				indexStats = map[string]interface{}{
+					"note": "stats query timed out (DuckDB busy)",
+				}
+			} else {
 				log.Printf("Error getting index stats: %v", err)
-				statsCh <- map[string]interface{}{"error": err.Error()}
-				return
+				indexStats = map[string]interface{}{"error": err.Error()}
 			}
-			statsCh <- s
-		}()
-		select {
-		case indexStats = <-statsCh:
-		case <-time.After(1 * time.Second):
-			indexStats = map[string]interface{}{
-				"note": "stats query timed out (DuckDB busy)",
-			}
+		} else {
+			indexStats = s
 		}
 	}
 

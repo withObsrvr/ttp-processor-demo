@@ -350,6 +350,10 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 				// Still in hot mode but no data - might be a gap without cold fallback
 				// Fall back to legacy auto-skip behavior if configured
 				if rt.config.GapDetection.AutoSkip && !rt.config.Fallback.Enabled {
+					// Refresh ledger ranges to get current hot min before skip decision
+					if err := rt.sourceManager.RefreshLedgerRanges(ctx); err != nil {
+						log.Printf("⚠️  Failed to refresh ledger ranges: %v", err)
+					}
 					hotMinLedger := rt.sourceManager.GetHotMinLedger()
 					if hotMinLedger > startLedger {
 						gapSize := hotMinLedger - startLedger
@@ -381,6 +385,10 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 				}
 
 				if rt.consecutiveEmptyPolls >= backfillMaxPolls {
+					// Refresh ledger ranges to get current hot min before skip decision
+					if err := rt.sourceManager.RefreshLedgerRanges(ctx); err != nil {
+						log.Printf("⚠️  Failed to refresh ledger ranges: %v", err)
+					}
 					hotMinLedger := rt.sourceManager.GetHotMinLedger()
 					if hotMinLedger > startLedger {
 						newCheckpoint := hotMinLedger - 1
