@@ -84,16 +84,24 @@ func (hs *HealthServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	indexWriter := hs.indexWriter
 	hs.mu.RUnlock()
 
-	// Get index stats
+	// Get index stats with a timeout to avoid blocking when DuckDB is busy writing.
+	// DuckDB uses a single-writer lock, so reads can block during writes.
 	var indexStats map[string]interface{}
 	if indexWriter != nil {
-		var err error
-		indexStats, err = indexWriter.GetIndexStats()
+		statsCtx, statsCancel := context.WithTimeout(r.Context(), 1*time.Second)
+		defer statsCancel()
+		s, err := indexWriter.GetIndexStats(statsCtx)
 		if err != nil {
-			log.Printf("Error getting index stats: %v", err)
-			indexStats = map[string]interface{}{
-				"error": err.Error(),
+			if statsCtx.Err() != nil {
+				indexStats = map[string]interface{}{
+					"note": "stats query timed out (DuckDB busy)",
+				}
+			} else {
+				log.Printf("Error getting index stats: %v", err)
+				indexStats = map[string]interface{}{"error": err.Error()}
 			}
+		} else {
+			indexStats = s
 		}
 	}
 

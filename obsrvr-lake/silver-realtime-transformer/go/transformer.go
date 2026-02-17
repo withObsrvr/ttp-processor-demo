@@ -350,6 +350,10 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 				// Still in hot mode but no data - might be a gap without cold fallback
 				// Fall back to legacy auto-skip behavior if configured
 				if rt.config.GapDetection.AutoSkip && !rt.config.Fallback.Enabled {
+					// Refresh ledger ranges to get current hot min before skip decision
+					if err := rt.sourceManager.RefreshLedgerRanges(ctx); err != nil {
+						log.Printf("⚠️  Failed to refresh ledger ranges: %v", err)
+					}
 					hotMinLedger := rt.sourceManager.GetHotMinLedger()
 					if hotMinLedger > startLedger {
 						gapSize := hotMinLedger - startLedger
@@ -366,6 +370,46 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 						rt.lastLedgerSequence = newCheckpoint
 						rt.mu.Unlock()
 						rt.consecutiveEmptyPolls = 0
+					}
+				}
+			} else if rt.sourceManager.GetMode() == SourceModeBackfill {
+				// In backfill mode but cold storage also doesn't have the data.
+				// After enough failed attempts, skip to hot MIN and resume realtime.
+				backfillMaxPolls := rt.config.GapDetection.BackfillMaxEmptyPolls
+				if backfillMaxPolls == 0 {
+					// Default: 3x the normal threshold, minimum 30
+					backfillMaxPolls = maxEmptyPolls * 3
+					if backfillMaxPolls < 30 {
+						backfillMaxPolls = 30
+					}
+				}
+
+				if rt.consecutiveEmptyPolls >= backfillMaxPolls {
+					// Refresh ledger ranges to get current hot min before skip decision
+					if err := rt.sourceManager.RefreshLedgerRanges(ctx); err != nil {
+						log.Printf("⚠️  Failed to refresh ledger ranges: %v", err)
+					}
+					hotMinLedger := rt.sourceManager.GetHotMinLedger()
+					if hotMinLedger > startLedger {
+						newCheckpoint := hotMinLedger - 1
+						gapSize := newCheckpoint - lastLedger
+						log.Printf("🔄 BACKFILL-SKIP: Cold storage also missing ledgers %d-%d. Advancing checkpoint from %d to %d (skipping %d ledgers)",
+							startLedger, hotMinLedger-1, lastLedger, newCheckpoint, gapSize)
+
+						if err := rt.checkpoint.Save(newCheckpoint); err != nil {
+							log.Printf("❌ Failed to update checkpoint: %v", err)
+							return fmt.Errorf("failed to skip checkpoint: %w", err)
+						}
+
+						rt.mu.Lock()
+						rt.lastLedgerSequence = newCheckpoint
+						rt.mu.Unlock()
+						rt.consecutiveEmptyPolls = 0
+
+						// Force back to hot mode since backfill can't help
+						rt.sourceManager.ForceHotMode()
+						log.Printf("✅ MODE SWITCH: BACKFILL → HOT (forced - cold storage gap)")
+						log.Printf("   Resuming from Hot storage at ledger %d", newCheckpoint+1)
 					}
 				}
 			}

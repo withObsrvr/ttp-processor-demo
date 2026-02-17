@@ -78,6 +78,11 @@ type GapDetectionConfig struct {
 	MaxEmptyPolls int `yaml:"max_empty_polls"`
 	// AutoSkip enables automatic checkpoint advancement when a gap is detected
 	AutoSkip bool `yaml:"auto_skip"`
+	// BackfillMaxEmptyPolls is the number of consecutive empty polls in backfill mode
+	// before skipping to hot storage. When cold storage also has a gap, the transformer
+	// will advance the checkpoint to hot MIN after this many empty polls.
+	// Default: MaxEmptyPolls * 3 (or 30 if MaxEmptyPolls is 0)
+	BackfillMaxEmptyPolls int `yaml:"backfill_max_empty_polls"`
 }
 
 // LoadConfig loads configuration from a YAML file

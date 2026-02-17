@@ -228,8 +228,9 @@ func (iw *IndexWriter) Checkpoint() error {
 	return nil
 }
 
-// GetIndexStats returns statistics about the index
-func (iw *IndexWriter) GetIndexStats() (map[string]interface{}, error) {
+// GetIndexStats returns statistics about the index.
+// Accepts a context for cancellation/timeout support.
+func (iw *IndexWriter) GetIndexStats(ctx context.Context) (map[string]interface{}, error) {
 	fullTableName := "testnet_catalog.index.contract_events_index"
 
 	query := fmt.Sprintf(`
@@ -248,7 +249,7 @@ func (iw *IndexWriter) GetIndexStats() (map[string]interface{}, error) {
 	var maxLedger int64
 	var lastUpdated sql.NullTime
 
-	err := iw.db.QueryRow(query).Scan(&totalPairs, &uniqueContracts, &minLedger, &maxLedger, &lastUpdated)
+	err := iw.db.QueryRowContext(ctx, query).Scan(&totalPairs, &uniqueContracts, &minLedger, &maxLedger, &lastUpdated)
 	if err != nil {
 		// If no data exists yet, return empty stats
 		if err == sql.ErrNoRows {

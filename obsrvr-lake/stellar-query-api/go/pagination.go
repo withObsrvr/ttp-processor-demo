@@ -9,17 +9,19 @@ import (
 )
 
 // OperationCursor represents a cursor for paginating operations
-// Encodes ledger_sequence and operation_index for stable pagination
+// Encodes ledger_sequence, operation_index, and order for stable pagination
 type OperationCursor struct {
 	LedgerSequence int64
 	OperationIndex int64
+	Order          string // "asc" or "desc" - preserves order across pagination
 }
 
 // TransferCursor represents a cursor for paginating transfers
-// Encodes ledger_sequence and timestamp for stable pagination
+// Encodes ledger_sequence, timestamp, and order for stable pagination
 type TransferCursor struct {
 	LedgerSequence int64
 	Timestamp      time.Time
+	Order          string // "asc" or "desc" - preserves order across pagination
 }
 
 // AccountCursor represents a cursor for paginating account history
@@ -47,13 +49,20 @@ type TokenHoldersCursor struct {
 }
 
 // Encode encodes an operation cursor to an opaque base64 string
+// Format: "ledger:op_index:order" (3 parts) or legacy "ledger:op_index" (2 parts)
 func (c OperationCursor) Encode() string {
-	raw := fmt.Sprintf("%d:%d", c.LedgerSequence, c.OperationIndex)
+	var raw string
+	if c.Order == "" {
+		raw = fmt.Sprintf("%d:%d", c.LedgerSequence, c.OperationIndex)
+	} else {
+		raw = fmt.Sprintf("%d:%d:%s", c.LedgerSequence, c.OperationIndex, c.Order)
+	}
 	return base64.URLEncoding.EncodeToString([]byte(raw))
 }
 
 // DecodeOperationCursor decodes a base64 cursor string into an OperationCursor
 // Returns nil if the cursor string is empty
+// Supports both legacy format (2 parts: ledger:op_index) and new format (3 parts: ledger:op_index:order)
 func DecodeOperationCursor(cursor string) (*OperationCursor, error) {
 	if cursor == "" {
 		return nil, nil
@@ -65,8 +74,8 @@ func DecodeOperationCursor(cursor string) (*OperationCursor, error) {
 	}
 
 	parts := strings.Split(string(decoded), ":")
-	if len(parts) != 2 {
-		return nil, fmt.Errorf("invalid cursor format: expected ledger:op_index")
+	if len(parts) < 2 || len(parts) > 3 {
+		return nil, fmt.Errorf("invalid cursor format: expected ledger:op_index or ledger:op_index:order")
 	}
 
 	ledger, err := strconv.ParseInt(parts[0], 10, 64)
@@ -79,20 +88,35 @@ func DecodeOperationCursor(cursor string) (*OperationCursor, error) {
 		return nil, fmt.Errorf("invalid operation index in cursor: %w", err)
 	}
 
+	// Default order for legacy cursors (operations default to DESC)
+	order := "desc"
+	if len(parts) == 3 {
+		order = parts[2]
+	}
+
 	return &OperationCursor{
 		LedgerSequence: ledger,
 		OperationIndex: opIndex,
+		Order:          order,
 	}, nil
 }
 
 // Encode encodes a transfer cursor to an opaque base64 string
+// Format: "ledger:timestamp:order" (3 parts) or legacy "ledger:timestamp" (2 parts)
 func (c TransferCursor) Encode() string {
-	raw := fmt.Sprintf("%d:%s", c.LedgerSequence, c.Timestamp.Format(time.RFC3339Nano))
+	ts := c.Timestamp.Format(time.RFC3339Nano)
+	var raw string
+	if c.Order == "" {
+		raw = fmt.Sprintf("%d:%s", c.LedgerSequence, ts)
+	} else {
+		raw = fmt.Sprintf("%d:%s:%s", c.LedgerSequence, ts, c.Order)
+	}
 	return base64.URLEncoding.EncodeToString([]byte(raw))
 }
 
 // DecodeTransferCursor decodes a base64 cursor string into a TransferCursor
 // Returns nil if the cursor string is empty
+// Supports both legacy format (2 parts: ledger:timestamp) and new format (3 parts: ledger:timestamp:order)
 func DecodeTransferCursor(cursor string) (*TransferCursor, error) {
 	if cursor == "" {
 		return nil, nil
@@ -103,17 +127,39 @@ func DecodeTransferCursor(cursor string) (*TransferCursor, error) {
 		return nil, fmt.Errorf("invalid cursor encoding: %w", err)
 	}
 
-	parts := strings.SplitN(string(decoded), ":", 2)
-	if len(parts) != 2 {
-		return nil, fmt.Errorf("invalid cursor format: expected ledger:timestamp")
+	// Split into at most 3 parts: ledger:timestamp:order
+	// But timestamp contains colons, so we need careful parsing
+	decodedStr := string(decoded)
+
+	// Find the first colon (after ledger)
+	firstColon := strings.Index(decodedStr, ":")
+	if firstColon == -1 {
+		return nil, fmt.Errorf("invalid cursor format: expected ledger:timestamp or ledger:timestamp:order")
 	}
 
-	ledger, err := strconv.ParseInt(parts[0], 10, 64)
+	ledgerStr := decodedStr[:firstColon]
+	rest := decodedStr[firstColon+1:]
+
+	ledger, err := strconv.ParseInt(ledgerStr, 10, 64)
 	if err != nil {
 		return nil, fmt.Errorf("invalid ledger in cursor: %w", err)
 	}
 
-	ts, err := time.Parse(time.RFC3339Nano, parts[1])
+	// Check if there's an order suffix (format: timestamp:order where order is asc/desc)
+	var timestampStr, order string
+	if strings.HasSuffix(rest, ":asc") {
+		order = "asc"
+		timestampStr = rest[:len(rest)-4]
+	} else if strings.HasSuffix(rest, ":desc") {
+		order = "desc"
+		timestampStr = rest[:len(rest)-5]
+	} else {
+		// Legacy format without order (transfers default to DESC)
+		timestampStr = rest
+		order = "desc"
+	}
+
+	ts, err := time.Parse(time.RFC3339Nano, timestampStr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid timestamp in cursor: %w", err)
 	}
@@ -121,6 +167,7 @@ func DecodeTransferCursor(cursor string) (*TransferCursor, error) {
 	return &TransferCursor{
 		LedgerSequence: ledger,
 		Timestamp:      ts,
+		Order:          order,
 	}, nil
 }
 
@@ -348,23 +395,30 @@ func DecodeClaimableBalanceCursor(cursor string) (*ClaimableBalanceCursor, error
 // ============================================
 
 // TradeCursor represents a cursor for paginating trades
-// Encodes composite key: ledger_sequence, transaction_hash, operation_index, trade_index
+// Encodes composite key: ledger_sequence, transaction_hash, operation_index, trade_index, order
 type TradeCursor struct {
 	LedgerSequence  int64
 	TransactionHash string
 	OperationIndex  int
 	TradeIndex      int
+	Order           string // "asc" or "desc" - preserves order across pagination
 }
 
 // Encode encodes a trade cursor to an opaque base64 string
-// Format: ledger:tx_hash:op_index:trade_index
+// Format: ledger:tx_hash:op_index:trade_index:order (5 parts) or legacy (4 parts)
 func (c TradeCursor) Encode() string {
-	raw := fmt.Sprintf("%d:%s:%d:%d", c.LedgerSequence, c.TransactionHash, c.OperationIndex, c.TradeIndex)
+	var raw string
+	if c.Order == "" {
+		raw = fmt.Sprintf("%d:%s:%d:%d", c.LedgerSequence, c.TransactionHash, c.OperationIndex, c.TradeIndex)
+	} else {
+		raw = fmt.Sprintf("%d:%s:%d:%d:%s", c.LedgerSequence, c.TransactionHash, c.OperationIndex, c.TradeIndex, c.Order)
+	}
 	return base64.URLEncoding.EncodeToString([]byte(raw))
 }
 
 // DecodeTradeCursor decodes a base64 cursor string into a TradeCursor
 // Returns nil if the cursor string is empty
+// Supports both legacy format (4 parts) and new format (5 parts with order)
 func DecodeTradeCursor(cursor string) (*TradeCursor, error) {
 	if cursor == "" {
 		return nil, nil
@@ -375,9 +429,9 @@ func DecodeTradeCursor(cursor string) (*TradeCursor, error) {
 		return nil, fmt.Errorf("invalid cursor encoding: %w", err)
 	}
 
-	parts := strings.SplitN(string(decoded), ":", 4)
-	if len(parts) != 4 {
-		return nil, fmt.Errorf("invalid cursor format: expected ledger:tx_hash:op_index:trade_index")
+	parts := strings.SplitN(string(decoded), ":", 5)
+	if len(parts) < 4 || len(parts) > 5 {
+		return nil, fmt.Errorf("invalid cursor format: expected ledger:tx_hash:op_index:trade_index or ledger:tx_hash:op_index:trade_index:order")
 	}
 
 	ledger, err := strconv.ParseInt(parts[0], 10, 64)
@@ -395,32 +449,46 @@ func DecodeTradeCursor(cursor string) (*TradeCursor, error) {
 		return nil, fmt.Errorf("invalid trade_index in cursor: %w", err)
 	}
 
+	// Default order for legacy cursors (trades default to ASC)
+	order := "asc"
+	if len(parts) == 5 {
+		order = parts[4]
+	}
+
 	return &TradeCursor{
 		LedgerSequence:  ledger,
 		TransactionHash: parts[1],
 		OperationIndex:  opIndex,
 		TradeIndex:      tradeIndex,
+		Order:           order,
 	}, nil
 }
 
 // EffectCursor represents a cursor for paginating effects
-// Encodes composite key: ledger_sequence, transaction_hash, operation_index, effect_index
+// Encodes composite key: ledger_sequence, transaction_hash, operation_index, effect_index, order
 type EffectCursor struct {
 	LedgerSequence  int64
 	TransactionHash string
 	OperationIndex  int
 	EffectIndex     int
+	Order           string // "asc" or "desc" - preserves order across pagination
 }
 
 // Encode encodes an effect cursor to an opaque base64 string
-// Format: ledger:tx_hash:op_index:effect_index
+// Format: ledger:tx_hash:op_index:effect_index:order (5 parts) or legacy (4 parts)
 func (c EffectCursor) Encode() string {
-	raw := fmt.Sprintf("%d:%s:%d:%d", c.LedgerSequence, c.TransactionHash, c.OperationIndex, c.EffectIndex)
+	var raw string
+	if c.Order == "" {
+		raw = fmt.Sprintf("%d:%s:%d:%d", c.LedgerSequence, c.TransactionHash, c.OperationIndex, c.EffectIndex)
+	} else {
+		raw = fmt.Sprintf("%d:%s:%d:%d:%s", c.LedgerSequence, c.TransactionHash, c.OperationIndex, c.EffectIndex, c.Order)
+	}
 	return base64.URLEncoding.EncodeToString([]byte(raw))
 }
 
 // DecodeEffectCursor decodes a base64 cursor string into an EffectCursor
 // Returns nil if the cursor string is empty
+// Supports both legacy format (4 parts) and new format (5 parts with order)
 func DecodeEffectCursor(cursor string) (*EffectCursor, error) {
 	if cursor == "" {
 		return nil, nil
@@ -431,9 +499,9 @@ func DecodeEffectCursor(cursor string) (*EffectCursor, error) {
 		return nil, fmt.Errorf("invalid cursor encoding: %w", err)
 	}
 
-	parts := strings.SplitN(string(decoded), ":", 4)
-	if len(parts) != 4 {
-		return nil, fmt.Errorf("invalid cursor format: expected ledger:tx_hash:op_index:effect_index")
+	parts := strings.SplitN(string(decoded), ":", 5)
+	if len(parts) < 4 || len(parts) > 5 {
+		return nil, fmt.Errorf("invalid cursor format: expected ledger:tx_hash:op_index:effect_index or ledger:tx_hash:op_index:effect_index:order")
 	}
 
 	ledger, err := strconv.ParseInt(parts[0], 10, 64)
@@ -451,11 +519,18 @@ func DecodeEffectCursor(cursor string) (*EffectCursor, error) {
 		return nil, fmt.Errorf("invalid effect_index in cursor: %w", err)
 	}
 
+	// Default order for legacy cursors (effects default to ASC)
+	order := "asc"
+	if len(parts) == 5 {
+		order = parts[4]
+	}
+
 	return &EffectCursor{
 		LedgerSequence:  ledger,
 		TransactionHash: parts[1],
 		OperationIndex:  opIndex,
 		EffectIndex:     effectIndex,
+		Order:           order,
 	}, nil
 }
 

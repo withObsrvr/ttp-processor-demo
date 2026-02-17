@@ -158,6 +158,36 @@ func (r *UnifiedDuckDBReader) HealthCheck(ctx context.Context) (*UnifiedHealthSt
 	return status, nil
 }
 
+// GetAvailableLedgers returns the range of ledgers available across hot and cold storage
+// This is used for RPC v2-style data boundary indicators
+func (r *UnifiedDuckDBReader) GetAvailableLedgers(ctx context.Context) (*LedgerRange, error) {
+	// Query min/max ledger sequence from both hot and cold enriched_history_operations tables
+	// Note: Using enriched_history_operations which exists in Silver layer
+	query := fmt.Sprintf(`
+		SELECT MIN(min_seq) as oldest, MAX(max_seq) as latest
+		FROM (
+			SELECT MIN(ledger_sequence) as min_seq, MAX(ledger_sequence) as max_seq FROM %s.enriched_history_operations
+			UNION ALL
+			SELECT MIN(ledger_sequence) as min_seq, MAX(ledger_sequence) as max_seq FROM %s.enriched_history_operations
+		) combined
+	`, r.hotSchema, r.coldSchema)
+
+	var oldest, latest sql.NullInt64
+	if err := r.db.QueryRowContext(ctx, query).Scan(&oldest, &latest); err != nil {
+		return nil, fmt.Errorf("GetAvailableLedgers: %w", err)
+	}
+
+	// If no data found, return nil
+	if !oldest.Valid || !latest.Valid {
+		return nil, nil
+	}
+
+	return &LedgerRange{
+		Oldest: oldest.Int64,
+		Latest: latest.Int64,
+	}, nil
+}
+
 // UnifiedHealthStatus represents the health of both attached databases
 type UnifiedHealthStatus struct {
 	HotDB  string `json:"hot_db"`
@@ -675,11 +705,19 @@ func (r *UnifiedDuckDBReader) GetEnrichedOperationsWithCursor(ctx context.Contex
 		whereClause += " AND is_soroban_op = true"
 	}
 
-	// Cursor pagination
+	// Determine order direction (default: desc for backward compatibility)
+	orderDir := "DESC"
+	cursorOp := "<"
+	if filters.Order == "asc" {
+		orderDir = "ASC"
+		cursorOp = ">"
+	}
+
+	// Cursor pagination - direction depends on order
 	cursorClause := ""
 	if filters.Cursor != nil {
-		cursorClause = fmt.Sprintf(" AND (ledger_sequence < $%d OR (ledger_sequence = $%d AND operation_index < $%d))",
-			argNum, argNum, argNum+1)
+		cursorClause = fmt.Sprintf(" AND (ledger_sequence %s $%d OR (ledger_sequence = $%d AND operation_id %s $%d))",
+			cursorOp, argNum, argNum, cursorOp, argNum+1)
 		args = append(args, filters.Cursor.LedgerSequence, filters.Cursor.OperationIndex)
 		argNum += 2
 	}
@@ -707,9 +745,9 @@ func (r *UnifiedDuckDBReader) GetEnrichedOperationsWithCursor(ctx context.Contex
 		       tx_fee_charged, is_payment_op, is_soroban_op
 		FROM combined
 		WHERE 1=1 %s
-		ORDER BY ledger_sequence DESC, operation_id DESC
+		ORDER BY ledger_sequence %s, operation_id %s
 		LIMIT $%d
-	`, r.hotSchema, whereClause, r.coldSchema, whereClause, cursorClause, argNum)
+	`, r.hotSchema, whereClause, r.coldSchema, whereClause, cursorClause, orderDir, orderDir, argNum)
 
 	args = append(args, requestLimit)
 
@@ -745,6 +783,7 @@ func (r *UnifiedDuckDBReader) GetEnrichedOperationsWithCursor(ctx context.Contex
 		cursor := OperationCursor{
 			LedgerSequence: last.LedgerSequence,
 			OperationIndex: last.OperationID,
+			Order:          filters.Order,
 		}
 		nextCursor = cursor.Encode()
 	}
@@ -818,11 +857,19 @@ func (r *UnifiedDuckDBReader) GetTokenTransfersWithCursor(ctx context.Context, f
 		argNum++
 	}
 
-	// Cursor pagination
+	// Determine order direction (default: desc for backward compatibility)
+	orderDir := "DESC"
+	cursorOp := "<"
+	if filters.Order == "asc" {
+		orderDir = "ASC"
+		cursorOp = ">"
+	}
+
+	// Cursor pagination - direction depends on order
 	cursorClause := ""
 	if filters.Cursor != nil {
-		cursorClause = fmt.Sprintf(" AND (ledger_sequence < $%d OR (ledger_sequence = $%d AND created_at < $%d))",
-			argNum, argNum, argNum+1)
+		cursorClause = fmt.Sprintf(" AND (ledger_sequence %s $%d OR (ledger_sequence = $%d AND timestamp %s $%d))",
+			cursorOp, argNum, argNum, cursorOp, argNum+1)
 		args = append(args, filters.Cursor.LedgerSequence, filters.Cursor.Timestamp)
 		argNum += 2
 	}
@@ -897,9 +944,9 @@ func (r *UnifiedDuckDBReader) GetTokenTransfersWithCursor(ctx context.Context, f
 		       amount, token_contract_id, transaction_successful
 		FROM combined
 		WHERE 1=1 %s
-		ORDER BY ledger_sequence DESC, timestamp DESC
+		ORDER BY ledger_sequence %s, timestamp %s
 		LIMIT $%d
-	`, r.hotSchema, whereClause, r.coldSchema, whereClause, cursorClause, argNum)
+	`, r.hotSchema, whereClause, r.coldSchema, whereClause, cursorClause, orderDir, orderDir, argNum)
 
 	args = append(args, requestLimit)
 
@@ -941,6 +988,7 @@ func (r *UnifiedDuckDBReader) GetTokenTransfersWithCursor(ctx context.Context, f
 		cursor := TransferCursor{
 			LedgerSequence: last.LedgerSequence,
 			Timestamp:      ts,
+			Order:          filters.Order,
 		}
 		nextCursor = cursor.Encode()
 	}
@@ -2263,11 +2311,19 @@ func (r *UnifiedDuckDBReader) GetTrades(ctx context.Context, filters TradeFilter
 		}
 	}
 
-	// Cursor pagination
+	// Determine order direction (default: asc for backward compatibility)
+	orderDir := "ASC"
+	cursorOp := ">"
+	if filters.Order == "desc" {
+		orderDir = "DESC"
+		cursorOp = "<"
+	}
+
+	// Cursor pagination - direction depends on order
 	if filters.Cursor != nil {
 		conditions = append(conditions, fmt.Sprintf(`
-			(ledger_sequence, transaction_hash, operation_index, trade_index) > ($%d, $%d, $%d, $%d)
-		`, argNum, argNum+1, argNum+2, argNum+3))
+			(ledger_sequence, transaction_hash, operation_index, trade_index) %s ($%d, $%d, $%d, $%d)
+		`, cursorOp, argNum, argNum+1, argNum+2, argNum+3))
 		args = append(args, filters.Cursor.LedgerSequence, filters.Cursor.TransactionHash,
 			filters.Cursor.OperationIndex, filters.Cursor.TradeIndex)
 		argNum += 4
@@ -2302,9 +2358,9 @@ func (r *UnifiedDuckDBReader) GetTrades(ctx context.Context, filters TradeFilter
 				   price
 			FROM %s.trades WHERE %s
 		) combined
-		ORDER BY ledger_sequence ASC, transaction_hash ASC, operation_index ASC, trade_index ASC
+		ORDER BY ledger_sequence %s, transaction_hash %s, operation_index %s, trade_index %s
 		LIMIT $%d
-	`, r.hotSchema, whereClause, r.coldSchema, whereClause, argNum)
+	`, r.hotSchema, whereClause, r.coldSchema, whereClause, orderDir, orderDir, orderDir, orderDir, argNum)
 	args = append(args, limit+1)
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
@@ -2318,9 +2374,9 @@ func (r *UnifiedDuckDBReader) GetTrades(ctx context.Context, filters TradeFilter
 					   buyer_account, buying_asset_code, buying_asset_issuer, buying_amount,
 					   price
 				FROM %s.trades WHERE %s
-				ORDER BY ledger_sequence ASC, transaction_hash ASC, operation_index ASC, trade_index ASC
+				ORDER BY ledger_sequence %s, transaction_hash %s, operation_index %s, trade_index %s
 				LIMIT $%d
-			`, r.hotSchema, whereClause, argNum)
+			`, r.hotSchema, whereClause, orderDir, orderDir, orderDir, orderDir, argNum)
 			rows, err = r.db.QueryContext(ctx, hotOnlyQuery, args...)
 			if err != nil {
 				return nil, "", false, fmt.Errorf("unified GetTrades (hot-only fallback): %w", err)
@@ -2371,6 +2427,7 @@ func (r *UnifiedDuckDBReader) GetTrades(ctx context.Context, filters TradeFilter
 			TransactionHash: last.TransactionHash,
 			OperationIndex:  last.OperationIndex,
 			TradeIndex:      last.TradeIndex,
+			Order:           filters.Order,
 		}.Encode()
 	}
 
@@ -2520,11 +2577,19 @@ func (r *UnifiedDuckDBReader) GetEffects(ctx context.Context, filters EffectFilt
 		argNum++
 	}
 
-	// Cursor pagination
+	// Determine order direction (default: asc for backward compatibility)
+	orderDir := "ASC"
+	cursorOp := ">"
+	if filters.Order == "desc" {
+		orderDir = "DESC"
+		cursorOp = "<"
+	}
+
+	// Cursor pagination - direction depends on order
 	if filters.Cursor != nil {
 		conditions = append(conditions, fmt.Sprintf(`
-			(ledger_sequence, transaction_hash, operation_index, effect_index) > ($%d, $%d, $%d, $%d)
-		`, argNum, argNum+1, argNum+2, argNum+3))
+			(ledger_sequence, transaction_hash, operation_index, effect_index) %s ($%d, $%d, $%d, $%d)
+		`, cursorOp, argNum, argNum+1, argNum+2, argNum+3))
 		args = append(args, filters.Cursor.LedgerSequence, filters.Cursor.TransactionHash,
 			filters.Cursor.OperationIndex, filters.Cursor.EffectIndex)
 		argNum += 4
@@ -2565,9 +2630,9 @@ func (r *UnifiedDuckDBReader) GetEffects(ctx context.Context, filters EffectFilt
 				   created_at
 			FROM %s.effects WHERE %s
 		) combined
-		ORDER BY ledger_sequence ASC, transaction_hash ASC, operation_index ASC, effect_index ASC
+		ORDER BY ledger_sequence %s, transaction_hash %s, operation_index %s, effect_index %s
 		LIMIT $%d
-	`, r.hotSchema, whereClause, r.coldSchema, whereClause, argNum)
+	`, r.hotSchema, whereClause, r.coldSchema, whereClause, orderDir, orderDir, orderDir, orderDir, argNum)
 	args = append(args, limit+1)
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
@@ -2582,9 +2647,9 @@ func (r *UnifiedDuckDBReader) GetEffects(ctx context.Context, filters EffectFilt
 					   signer_account, signer_weight, offer_id, seller_account,
 					   created_at
 				FROM %s.effects WHERE %s
-				ORDER BY ledger_sequence ASC, transaction_hash ASC, operation_index ASC, effect_index ASC
+				ORDER BY ledger_sequence %s, transaction_hash %s, operation_index %s, effect_index %s
 				LIMIT $%d
-			`, r.hotSchema, whereClause, argNum)
+			`, r.hotSchema, whereClause, orderDir, orderDir, orderDir, orderDir, argNum)
 			rows, err = r.db.QueryContext(ctx, hotOnlyQuery, args...)
 			if err != nil {
 				return nil, "", false, fmt.Errorf("unified GetEffects (hot-only fallback): %w", err)
@@ -2665,6 +2730,7 @@ func (r *UnifiedDuckDBReader) GetEffects(ctx context.Context, filters EffectFilt
 			TransactionHash: last.TransactionHash,
 			OperationIndex:  last.OperationIndex,
 			EffectIndex:     last.EffectIndex,
+			Order:           filters.Order,
 		}.Encode()
 	}
 
