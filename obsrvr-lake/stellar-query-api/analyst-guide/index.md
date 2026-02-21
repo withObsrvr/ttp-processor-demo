@@ -39,6 +39,27 @@ curl -H "Authorization: Api-Key YOUR_API_KEY" \
   "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/contracts/CAUGJT4GREIY3WHOUUU5RIUDGSPVREF5CDCYJOWMHOVT2GWQT5JEETGJ/analytics"
 ```
 
+Get all CAP-67 events (transfers, mints, burns) for a contract:
+
+```bash
+curl -H "Authorization: Api-Key YOUR_API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/events/by-contract?contract_id=CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG6QB3RVFT5RMCDH74N2&limit=10"
+```
+
+Get top holders for a SEP-41 token:
+
+```bash
+curl -H "Authorization: Api-Key YOUR_API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/tokens/CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG6QB3RVFT5RMCDH74N2/balances?limit=10"
+```
+
+Get a human-readable summary of a transaction:
+
+```bash
+curl -H "Authorization: Api-Key YOUR_API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/tx/YOUR_TX_HASH/decoded"
+```
+
 Get a compliance archive with all XLM holders at a specific point in time:
 
 ```bash
@@ -89,6 +110,12 @@ The API automatically queries both hot and cold storage, merging results seamles
 - [Horizon Migration](./horizon-migration.md) - Side-by-side Horizon vs Query API mappings
 - [nebu for Analysts](./nebu-for-analysts.md) - Build custom data pipelines (power users)
 - [Hubble Comparison](./vs-hubble.md) - How Obsrvr Lake compares to Stellar Hubble
+
+**Soroban & Smart Contracts:**
+- [CAP-67 Unified Events](./common-queries.md#cap-67-unified-event-stream) - Unified event stream (transfers, mints, burns)
+- [SEP-41 Token API](./common-queries.md#sep-41-token-api) - Token metadata, balances, transfers, and portfolios
+- [Transaction Decoding](./common-queries.md#transaction-decoding) - Human-readable transaction summaries
+- [Soroban Function Filter](./common-queries.md#get-soroban-operations-by-function) - Filter operations by contract and function
 
 **Compliance & Auditing:**
 - [Gold Layer Endpoints](./common-queries.md#gold-layer-endpoints) - Point-in-time snapshots and compliance archives
