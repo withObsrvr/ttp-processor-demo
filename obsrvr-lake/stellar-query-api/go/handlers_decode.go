@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/gorilla/mux"
 )
@@ -180,16 +182,20 @@ func (h *DecodeHandlers) HandleFullTransaction(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// 2. Get contracts involved
+	// 2. Get contracts involved (with 5s timeout to avoid blocking)
 	var contractsInvolved []string
 	if h.silverReader != nil {
-		contractsInvolved, _ = h.silverReader.GetContractsInvolved(ctx, txHash)
+		subCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		contractsInvolved, _ = h.silverReader.GetContractsInvolved(subCtx, txHash)
+		cancel()
 	}
 
-	// 3. Get call graph
+	// 3. Get call graph (with 5s timeout to avoid blocking)
 	var callGraph []ContractCall
 	if h.silverReader != nil {
-		callGraph, _ = h.silverReader.GetTransactionCallGraph(ctx, txHash)
+		subCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		callGraph, _ = h.silverReader.GetTransactionCallGraph(subCtx, txHash)
+		cancel()
 	}
 
 	// 4. Compose response
