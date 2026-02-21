@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -11,12 +12,18 @@ import (
 // ContractCallHandlers contains HTTP handlers for contract call graph queries
 // These endpoints are designed for Freighter wallet's "Contracts Involved" feature
 type ContractCallHandlers struct {
-	reader *UnifiedSilverReader
+	reader        *UnifiedSilverReader
+	unifiedReader *UnifiedDuckDBReader // optional, for cold fallback
 }
 
 // NewContractCallHandlers creates new contract call API handlers
 func NewContractCallHandlers(reader *UnifiedSilverReader) *ContractCallHandlers {
 	return &ContractCallHandlers{reader: reader}
+}
+
+// NewContractCallHandlersWithUnified creates handlers with both hot and unified readers for cold fallback
+func NewContractCallHandlersWithUnified(reader *UnifiedSilverReader, unifiedReader *UnifiedDuckDBReader) *ContractCallHandlers {
+	return &ContractCallHandlers{reader: reader, unifiedReader: unifiedReader}
 }
 
 // ============================================
@@ -176,6 +183,40 @@ func (h *ContractCallHandlers) HandleRecentCalls(w http.ResponseWriter, r *http.
 
 	limit := parseLimit(r, 100, 1000)
 
+	// If unified reader is available, use it for hot+cold combined results
+	if h.unifiedReader != nil {
+		cursorStr := r.URL.Query().Get("cursor")
+		cursor, err := DecodeOperationCursor(cursorStr)
+		if err != nil {
+			respondError(w, "invalid cursor: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		order := strings.ToLower(r.URL.Query().Get("order"))
+		if order == "" {
+			order = "desc"
+		}
+
+		calls, nextCursor, hasMore, err := h.unifiedReader.GetRecentContractCallsWithCursor(r.Context(), contractID, limit, cursor, order)
+		if err != nil {
+			respondError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		response := map[string]interface{}{
+			"contract_id": contractID,
+			"calls":       calls,
+			"total":       len(calls),
+			"has_more":    hasMore,
+		}
+		if nextCursor != "" {
+			response["cursor"] = nextCursor
+		}
+		respondJSON(w, response)
+		return
+	}
+
+	// Fallback to legacy hot-only reader
 	calls, asCaller, asCallee, err := h.reader.GetContractRecentCalls(r.Context(), contractID, limit)
 	if err != nil {
 		respondError(w, err.Error(), http.StatusInternalServerError)

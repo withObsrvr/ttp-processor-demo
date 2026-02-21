@@ -437,6 +437,9 @@ type EnrichedOperation struct {
 	TxFeeCharged       int64   `json:"tx_fee_charged"`
 	IsPaymentOp        bool    `json:"is_payment_op"`
 	IsSorobanOp        bool    `json:"is_soroban_op"`
+	SorobanContractID  *string `json:"soroban_contract_id,omitempty"`
+	SorobanFunction    *string `json:"soroban_function,omitempty"`
+	SorobanArgsJSON    *string `json:"soroban_arguments_json,omitempty"`
 }
 
 // GetEnrichedOperations returns enriched operations with filters
@@ -690,15 +693,17 @@ func (r *SilverColdReader) GetTokenTransferStats(ctx context.Context, groupBy st
 // ============================================
 
 type OperationFilters struct {
-	AccountID    string
-	TxHash       string
-	StartLedger  int64
-	EndLedger    int64
-	PaymentsOnly bool
-	SorobanOnly  bool
-	Limit        int
-	Cursor       *OperationCursor // Decoded cursor for WHERE clause (pagination)
-	Order        string           // "asc" or "desc" (default: "desc" for backward compatibility)
+	AccountID       string
+	TxHash          string
+	StartLedger     int64
+	EndLedger       int64
+	PaymentsOnly    bool
+	SorobanOnly     bool
+	SorobanFunction string // filter by Soroban function name
+	ContractID      string // filter by contract_id
+	Limit           int
+	Cursor          *OperationCursor // Decoded cursor for WHERE clause (pagination)
+	Order           string           // "asc" or "desc" (default: "desc" for backward compatibility)
 }
 
 type TransferFilters struct {
@@ -721,6 +726,139 @@ type TransferStats struct {
 	UniqueSenders   int64    `json:"unique_senders"`
 	UniqueReceivers int64    `json:"unique_receivers"`
 	TotalVolume     *float64 `json:"total_volume,omitempty"`
+}
+
+// ============================================
+// DECODED TRANSACTION TYPES (Human-Readable)
+// ============================================
+
+// DecodedTransaction represents a fully decoded transaction with human-readable summary
+type DecodedTransaction struct {
+	TxHash     string             `json:"tx_hash"`
+	Summary    TxSummary          `json:"summary"`
+	Fee        int64              `json:"fee"`
+	LedgerSeq  int64              `json:"ledger_sequence"`
+	ClosedAt   string             `json:"closed_at"`
+	Successful bool               `json:"successful"`
+	OpCount    int                `json:"operation_count"`
+	Operations []DecodedOperation `json:"operations"`
+	Events     []UnifiedEvent     `json:"events"`
+}
+
+// DecodedOperation represents a single decoded operation within a transaction
+type DecodedOperation struct {
+	Index          int     `json:"index"`
+	Type           int32   `json:"type"`
+	TypeName       string  `json:"type_name"`
+	SourceAccount  string  `json:"source_account"`
+	ContractID     *string `json:"contract_id,omitempty"`
+	FunctionName   *string `json:"function_name,omitempty"`
+	ArgumentsJSON  *string `json:"arguments_json,omitempty"`
+	Destination    *string `json:"destination,omitempty"`
+	AssetCode      *string `json:"asset_code,omitempty"`
+	Amount         *string `json:"amount,omitempty"`
+	IsSorobanOp    bool    `json:"is_soroban_op"`
+}
+
+// ============================================
+// CAP-67 UNIFIED EVENT TYPES
+// ============================================
+
+// UnifiedEvent represents a CAP-67 unified event derived from token_transfers_raw.
+// Event type is derived from from/to nullity: NULL from = mint, NULL to = burn, else transfer.
+type UnifiedEvent struct {
+	EventID        string  `json:"event_id"`
+	ContractID     *string `json:"contract_id,omitempty"`
+	LedgerSequence int64   `json:"ledger_sequence"`
+	TxHash         string  `json:"tx_hash"`
+	ClosedAt       string  `json:"closed_at"`
+	EventType      string  `json:"event_type"` // transfer, mint, burn
+	From           *string `json:"from,omitempty"`
+	To             *string `json:"to,omitempty"`
+	Amount         *string `json:"amount,omitempty"`
+	AssetCode      *string `json:"asset_code,omitempty"`
+	AssetIssuer    *string `json:"asset_issuer,omitempty"`
+	SourceType     string  `json:"source_type"` // classic, soroban
+	OperationType  *int32  `json:"operation_type,omitempty"`
+	EventIndex     int     `json:"event_index"`
+}
+
+// UnifiedEventFilters contains filters for querying unified CAP-67 events
+type UnifiedEventFilters struct {
+	ContractID  string
+	Address     string // matches from OR to
+	TxHash      string
+	EventType   string // transfer, mint, burn
+	SourceType  string // classic, soroban
+	StartLedger int64
+	EndLedger   int64
+	Limit       int
+	Order       string              // "asc" or "desc"
+	Cursor      *UnifiedEventCursor // cursor for pagination
+}
+
+// ============================================
+// SEP-41 TOKEN TYPES
+// ============================================
+
+// SEP41TokenMetadata represents metadata for a SEP-41 compliant token
+type SEP41TokenMetadata struct {
+	ContractID    string  `json:"contract_id"`
+	AssetCode     *string `json:"asset_code,omitempty"`
+	AssetIssuer   *string `json:"asset_issuer,omitempty"`
+	SourceType    string  `json:"source_type"` // classic or soroban
+	HolderCount   int64   `json:"holder_count"`
+	TransferCount int64   `json:"transfer_count"`
+	FirstSeen     string  `json:"first_seen"`
+	LastActivity  string  `json:"last_activity"`
+}
+
+// SEP41Balance represents a token holder's balance derived from transfer history
+type SEP41Balance struct {
+	Address     string `json:"address"`
+	Balance     string `json:"balance"` // net balance in stroops formatted
+	BalanceRaw  int64  `json:"balance_raw"`
+	Received    int64  `json:"total_received"`
+	Sent        int64  `json:"total_sent"`
+	TxCount     int64  `json:"tx_count"`
+	LastLedger  int64  `json:"last_activity_ledger"`
+	LastSeen    string `json:"last_activity"`
+}
+
+// SEP41Transfer is an alias for unified events filtered to a single token contract
+type SEP41Transfer = UnifiedEvent
+
+// TokenHolding represents a single token in an address's portfolio
+type TokenHolding struct {
+	ContractID *string `json:"contract_id,omitempty"`
+	AssetCode  *string `json:"asset_code,omitempty"`
+	AssetIssuer *string `json:"asset_issuer,omitempty"`
+	SourceType string  `json:"source_type"`
+	Balance    string  `json:"balance"`
+	BalanceRaw int64   `json:"balance_raw"`
+	TxCount    int64   `json:"tx_count"`
+	LastSeen   string  `json:"last_activity"`
+}
+
+// SEP41BalanceFilters contains filters for querying SEP-41 balances
+type SEP41BalanceFilters struct {
+	ContractID string
+	MinBalance int64
+	Limit      int
+	Order      string // "desc" (by balance) default
+	Cursor     *SEP41BalanceCursor
+}
+
+// SEP41TokenStats contains aggregate statistics for a SEP-41 token
+type SEP41TokenStats struct {
+	ContractID     string  `json:"contract_id"`
+	HolderCount    int64   `json:"holder_count"`
+	TotalSupply    string  `json:"total_supply"`
+	TotalSupplyRaw int64   `json:"total_supply_raw"`
+	Transfers24h   int64   `json:"transfers_24h"`
+	Volume24h      string  `json:"volume_24h"`
+	Volume24hRaw   int64   `json:"volume_24h_raw"`
+	AssetCode      *string `json:"asset_code,omitempty"`
 }
 
 // ============================================

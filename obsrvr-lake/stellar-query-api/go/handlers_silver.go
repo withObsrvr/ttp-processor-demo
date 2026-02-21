@@ -1009,6 +1009,94 @@ func (h *SilverHandlers) HandleSorobanOperations(w http.ResponseWriter, r *http.
 	respondJSON(w, response)
 }
 
+// HandleSorobanOpsByFunction returns Soroban operations filtered by contract and function name
+// @Summary Get Soroban operations by function
+// @Description Returns Soroban invoke_host_function operations filtered by contract_id and/or function_name
+// @Tags Operations
+// @Accept json
+// @Produce json
+// @Param contract_id query string false "Contract ID to filter by"
+// @Param function_name query string false "Function name to filter by"
+// @Param limit query int false "Number of results" default(50)
+// @Param cursor query string false "Pagination cursor"
+// @Param order query string false "Sort order" default(desc) Enums(asc, desc)
+// @Success 200 {object} map[string]interface{} "Filtered Soroban operations"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/operations/soroban/by-function [get]
+func (h *SilverHandlers) HandleSorobanOpsByFunction(w http.ResponseWriter, r *http.Request) {
+	contractID := r.URL.Query().Get("contract_id")
+	functionName := r.URL.Query().Get("function_name")
+
+	if contractID == "" && functionName == "" {
+		respondError(w, "at least one of contract_id or function_name is required", http.StatusBadRequest)
+		return
+	}
+
+	cursorStr := r.URL.Query().Get("cursor")
+	cursor, err := DecodeOperationCursor(cursorStr)
+	if err != nil {
+		respondError(w, "invalid cursor: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	order := strings.ToLower(r.URL.Query().Get("order"))
+	if order == "" {
+		order = "desc"
+	}
+	if order != "asc" && order != "desc" {
+		respondError(w, "order must be 'asc' or 'desc'", http.StatusBadRequest)
+		return
+	}
+
+	if cursor != nil && cursor.Order != "" && cursor.Order != order {
+		respondError(w, "cursor was created with order='"+cursor.Order+"' but request uses order='"+order+"'. Cannot change order while paginating.", http.StatusBadRequest)
+		return
+	}
+
+	filters := OperationFilters{
+		SorobanOnly:     true,
+		ContractID:      contractID,
+		SorobanFunction: functionName,
+		Limit:           parseLimit(r, 50, 500),
+		Cursor:          cursor,
+		Order:           order,
+	}
+
+	var operations []EnrichedOperation
+	var nextCursor string
+	var hasMore bool
+
+	switch h.readerMode {
+	case ReaderModeUnified:
+		operations, nextCursor, hasMore, err = h.unifiedReader.GetEnrichedOperationsWithCursor(r.Context(), filters)
+	default:
+		operations, nextCursor, hasMore, err = h.legacyReader.GetEnrichedOperationsWithCursor(r.Context(), filters)
+	}
+
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"soroban_operations": operations,
+		"count":              len(operations),
+		"has_more":           hasMore,
+	}
+	if contractID != "" {
+		response["contract_id"] = contractID
+	}
+	if functionName != "" {
+		response["function_name"] = functionName
+	}
+	if nextCursor != "" {
+		response["cursor"] = nextCursor
+	}
+
+	respondJSON(w, response)
+}
+
 // ============================================
 // TOKEN TRANSFERS ENDPOINTS
 // ============================================

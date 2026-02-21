@@ -535,6 +535,106 @@ func DecodeEffectCursor(cursor string) (*EffectCursor, error) {
 }
 
 // ============================================
+// CAP-67 UNIFIED EVENT CURSORS
+// ============================================
+
+// UnifiedEventCursor represents a cursor for paginating unified CAP-67 events
+// Encodes ledger_sequence, tx_hash, and event_index for stable pagination
+type UnifiedEventCursor struct {
+	LedgerSequence int64
+	TxHash         string
+	EventIndex     int
+	Order          string // "asc" or "desc"
+}
+
+// Encode encodes a unified event cursor to an opaque base64 string
+// Format: "ledger:tx_hash:event_index:order"
+func (c UnifiedEventCursor) Encode() string {
+	raw := fmt.Sprintf("%d:%s:%d:%s", c.LedgerSequence, c.TxHash, c.EventIndex, c.Order)
+	return base64.URLEncoding.EncodeToString([]byte(raw))
+}
+
+// DecodeUnifiedEventCursor decodes a base64 cursor string into a UnifiedEventCursor
+// Returns nil if the cursor string is empty
+func DecodeUnifiedEventCursor(cursor string) (*UnifiedEventCursor, error) {
+	if cursor == "" {
+		return nil, nil
+	}
+
+	decoded, err := base64.URLEncoding.DecodeString(cursor)
+	if err != nil {
+		return nil, fmt.Errorf("invalid cursor encoding: %w", err)
+	}
+
+	parts := strings.SplitN(string(decoded), ":", 4)
+	if len(parts) != 4 {
+		return nil, fmt.Errorf("invalid cursor format: expected ledger:tx_hash:event_index:order")
+	}
+
+	ledger, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid ledger in cursor: %w", err)
+	}
+
+	eventIndex, err := strconv.Atoi(parts[2])
+	if err != nil {
+		return nil, fmt.Errorf("invalid event_index in cursor: %w", err)
+	}
+
+	return &UnifiedEventCursor{
+		LedgerSequence: ledger,
+		TxHash:         parts[1],
+		EventIndex:     eventIndex,
+		Order:          parts[3],
+	}, nil
+}
+
+// ============================================
+// SEP-41 TOKEN CURSORS
+// ============================================
+
+// SEP41BalanceCursor represents a cursor for paginating SEP-41 token holder balances
+// Encodes balance (for ordering) and address (for tie-breaking)
+type SEP41BalanceCursor struct {
+	Balance int64
+	Address string
+}
+
+// Encode encodes a SEP-41 balance cursor to an opaque base64 string
+func (c SEP41BalanceCursor) Encode() string {
+	raw := fmt.Sprintf("%d:%s", c.Balance, c.Address)
+	return base64.URLEncoding.EncodeToString([]byte(raw))
+}
+
+// DecodeSEP41BalanceCursor decodes a base64 cursor string into a SEP41BalanceCursor
+// Returns nil if the cursor string is empty
+func DecodeSEP41BalanceCursor(cursor string) (*SEP41BalanceCursor, error) {
+	if cursor == "" {
+		return nil, nil
+	}
+
+	decoded, err := base64.URLEncoding.DecodeString(cursor)
+	if err != nil {
+		return nil, fmt.Errorf("invalid cursor encoding: %w", err)
+	}
+
+	parts := strings.SplitN(string(decoded), ":", 2)
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("invalid cursor format: expected balance:address")
+	}
+
+	balance, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid balance in cursor: %w", err)
+	}
+
+	return &SEP41BalanceCursor{
+		Balance: balance,
+		Address: parts[1],
+	}, nil
+}
+
+// ============================================
 // PHASE 8: SOROBAN TABLE CURSORS
 // ============================================
 

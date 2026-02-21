@@ -705,6 +705,18 @@ func (r *UnifiedDuckDBReader) GetEnrichedOperationsWithCursor(ctx context.Contex
 		whereClause += " AND is_soroban_op = true"
 	}
 
+	if filters.SorobanFunction != "" {
+		whereClause += fmt.Sprintf(" AND function_name = $%d", argNum)
+		args = append(args, filters.SorobanFunction)
+		argNum++
+	}
+
+	if filters.ContractID != "" {
+		whereClause += fmt.Sprintf(" AND contract_id = $%d", argNum)
+		args = append(args, filters.ContractID)
+		argNum++
+	}
+
 	// Determine order direction (default: desc for backward compatibility)
 	orderDir := "DESC"
 	cursorOp := "<"
@@ -727,14 +739,18 @@ func (r *UnifiedDuckDBReader) GetEnrichedOperationsWithCursor(ctx context.Contex
 			SELECT transaction_hash, operation_index AS operation_id, ledger_sequence,
 			       ledger_closed_at, source_account, type, destination,
 			       asset_code, asset_issuer, amount, tx_successful,
-			       tx_fee_charged, is_payment_op, is_soroban_op, 1 as source
+			       tx_fee_charged, is_payment_op, is_soroban_op,
+			       contract_id, function_name, parameters,
+			       1 as source
 			FROM %s.enriched_history_operations
 			%s
 			UNION ALL
 			SELECT transaction_hash, operation_index AS operation_id, ledger_sequence,
 			       ledger_closed_at, source_account, type, destination,
 			       asset_code, asset_issuer, amount, tx_successful,
-			       tx_fee_charged, is_payment_op, is_soroban_op, 2 as source
+			       tx_fee_charged, is_payment_op, is_soroban_op,
+			       contract_id, function_name, parameters,
+			       2 as source
 			FROM %s.enriched_history_operations
 			%s
 		)
@@ -742,7 +758,8 @@ func (r *UnifiedDuckDBReader) GetEnrichedOperationsWithCursor(ctx context.Contex
 		       transaction_hash, operation_id, ledger_sequence,
 		       ledger_closed_at, source_account, type, destination,
 		       asset_code, asset_issuer, amount, tx_successful,
-		       tx_fee_charged, is_payment_op, is_soroban_op
+		       tx_fee_charged, is_payment_op, is_soroban_op,
+		       contract_id, function_name, parameters
 		FROM combined
 		WHERE 1=1 %s
 		ORDER BY ledger_sequence %s, operation_id %s
@@ -763,7 +780,8 @@ func (r *UnifiedDuckDBReader) GetEnrichedOperationsWithCursor(ctx context.Contex
 		if err := rows.Scan(&op.TransactionHash, &op.OperationID, &op.LedgerSequence,
 			&op.LedgerClosedAt, &op.SourceAccount, &op.Type,
 			&op.Destination, &op.AssetCode, &op.AssetIssuer, &op.Amount,
-			&op.TxSuccessful, &op.TxFeeCharged, &op.IsPaymentOp, &op.IsSorobanOp); err != nil {
+			&op.TxSuccessful, &op.TxFeeCharged, &op.IsPaymentOp, &op.IsSorobanOp,
+			&op.SorobanContractID, &op.SorobanFunction, &op.SorobanArgsJSON); err != nil {
 			return nil, "", false, err
 		}
 		op.TypeName = operationTypeName(op.Type)
@@ -3848,4 +3866,862 @@ func parseFormattedToStroopsLocal(formatted string) int64 {
 		return 0
 	}
 	return whole*10000000 + frac
+}
+
+// ============================================
+// CONTRACT CALL QUERIES (with cold fallback)
+// ============================================
+
+// ContractCallRecord represents a contract invocation from enriched_history_operations (hot+cold)
+type ContractCallRecord struct {
+	TransactionHash string  `json:"transaction_hash"`
+	LedgerSequence  int64   `json:"ledger_sequence"`
+	ClosedAt        string  `json:"closed_at"`
+	ContractID      *string `json:"contract_id,omitempty"`
+	FunctionName    *string `json:"function_name,omitempty"`
+	SourceAccount   string  `json:"source_account"`
+	Successful      bool    `json:"successful"`
+	OperationIndex  int64   `json:"operation_index"`
+}
+
+// GetRecentContractCallsWithCursor returns recent contract invocations using UNION ALL hot+cold
+// on enriched_history_operations (which exists in both hot and cold schemas).
+func (r *UnifiedDuckDBReader) GetRecentContractCallsWithCursor(ctx context.Context, contractID string, limit int, cursor *OperationCursor, order string) ([]ContractCallRecord, string, bool, error) {
+	requestLimit := limit + 1
+	whereClause := "WHERE is_soroban_op = true AND contract_id = $1"
+	args := []interface{}{contractID}
+	argNum := 2
+
+	orderDir := "DESC"
+	cursorOp := "<"
+	if order == "asc" {
+		orderDir = "ASC"
+		cursorOp = ">"
+	}
+
+	cursorClause := ""
+	if cursor != nil {
+		cursorClause = fmt.Sprintf(" AND (ledger_sequence %s $%d OR (ledger_sequence = $%d AND operation_index %s $%d))",
+			cursorOp, argNum, argNum, cursorOp, argNum+1)
+		args = append(args, cursor.LedgerSequence, cursor.OperationIndex)
+		argNum += 2
+	}
+
+	query := fmt.Sprintf(`
+		WITH combined AS (
+			SELECT transaction_hash, ledger_sequence, ledger_closed_at, contract_id,
+				   function_name, source_account, tx_successful, operation_index, 1 as source
+			FROM %s.enriched_history_operations
+			%s
+			UNION ALL
+			SELECT transaction_hash, ledger_sequence, ledger_closed_at, contract_id,
+				   function_name, source_account, tx_successful, operation_index, 2 as source
+			FROM %s.enriched_history_operations
+			%s
+		)
+		SELECT DISTINCT ON (ledger_sequence, operation_index)
+			transaction_hash, ledger_sequence, ledger_closed_at, contract_id,
+			function_name, source_account, tx_successful, operation_index
+		FROM combined
+		WHERE 1=1 %s
+		ORDER BY ledger_sequence %s, operation_index %s
+		LIMIT $%d
+	`, r.hotSchema, whereClause, r.coldSchema, whereClause, cursorClause, orderDir, orderDir, argNum)
+
+	args = append(args, requestLimit)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		errStr := err.Error()
+		if strings.Contains(errStr, "does not exist") || strings.Contains(errStr, "not found in FROM clause") {
+			hotOnlyQuery := fmt.Sprintf(`
+				SELECT transaction_hash, ledger_sequence, ledger_closed_at, contract_id,
+					   function_name, source_account, tx_successful, operation_index
+				FROM %s.enriched_history_operations
+				%s %s
+				ORDER BY ledger_sequence %s, operation_index %s
+				LIMIT $%d
+			`, r.hotSchema, whereClause, cursorClause, orderDir, orderDir, argNum)
+			rows, err = r.db.QueryContext(ctx, hotOnlyQuery, args...)
+			if err != nil {
+				return nil, "", false, fmt.Errorf("hot-only fallback GetRecentContractCalls: %w", err)
+			}
+		} else {
+			return nil, "", false, fmt.Errorf("GetRecentContractCalls: %w", err)
+		}
+	}
+	defer rows.Close()
+
+	var calls []ContractCallRecord
+	for rows.Next() {
+		var c ContractCallRecord
+		if err := rows.Scan(&c.TransactionHash, &c.LedgerSequence, &c.ClosedAt,
+			&c.ContractID, &c.FunctionName, &c.SourceAccount, &c.Successful,
+			&c.OperationIndex); err != nil {
+			return nil, "", false, err
+		}
+		calls = append(calls, c)
+	}
+
+	hasMore := len(calls) > limit
+	if hasMore {
+		calls = calls[:limit]
+	}
+
+	var nextCursor string
+	if len(calls) > 0 && hasMore {
+		last := calls[len(calls)-1]
+		c := OperationCursor{
+			LedgerSequence: last.LedgerSequence,
+			OperationIndex: last.OperationIndex,
+			Order:          order,
+		}
+		nextCursor = c.Encode()
+	}
+
+	return calls, nextCursor, hasMore, nil
+}
+
+// ============================================
+// CAP-67 UNIFIED EVENT QUERIES
+// ============================================
+
+// GetUnifiedEvents returns CAP-67 unified events from token_transfers_raw with cursor pagination.
+// Event type is derived: NULL from_account = mint, NULL to_account = burn, else transfer.
+func (r *UnifiedDuckDBReader) GetUnifiedEvents(ctx context.Context, filters UnifiedEventFilters) ([]UnifiedEvent, string, bool, error) {
+	requestLimit := filters.Limit + 1
+
+	whereClause := "WHERE transaction_successful = true"
+	args := []interface{}{}
+	argNum := 1
+
+	if filters.ContractID != "" {
+		whereClause += fmt.Sprintf(" AND token_contract_id = $%d", argNum)
+		args = append(args, filters.ContractID)
+		argNum++
+	}
+
+	if filters.Address != "" {
+		whereClause += fmt.Sprintf(" AND (from_account = $%d OR to_account = $%d)", argNum, argNum)
+		args = append(args, filters.Address)
+		argNum++
+	}
+
+	if filters.TxHash != "" {
+		whereClause += fmt.Sprintf(" AND transaction_hash = $%d", argNum)
+		args = append(args, filters.TxHash)
+		argNum++
+	}
+
+	if filters.EventType != "" {
+		switch filters.EventType {
+		case "mint":
+			whereClause += " AND from_account IS NULL AND to_account IS NOT NULL"
+		case "burn":
+			whereClause += " AND to_account IS NULL AND from_account IS NOT NULL"
+		case "transfer":
+			whereClause += " AND from_account IS NOT NULL AND to_account IS NOT NULL"
+		}
+	}
+
+	if filters.SourceType != "" {
+		whereClause += fmt.Sprintf(" AND source_type = $%d", argNum)
+		args = append(args, filters.SourceType)
+		argNum++
+	}
+
+	if filters.StartLedger > 0 {
+		whereClause += fmt.Sprintf(" AND ledger_sequence >= $%d", argNum)
+		args = append(args, filters.StartLedger)
+		argNum++
+	}
+
+	if filters.EndLedger > 0 {
+		whereClause += fmt.Sprintf(" AND ledger_sequence <= $%d", argNum)
+		args = append(args, filters.EndLedger)
+		argNum++
+	}
+
+	orderDir := "DESC"
+	cursorOp := "<"
+	if filters.Order == "asc" {
+		orderDir = "ASC"
+		cursorOp = ">"
+	}
+
+	cursorClause := ""
+	if filters.Cursor != nil {
+		cursorClause = fmt.Sprintf(" AND (ledger_sequence %s $%d OR (ledger_sequence = $%d AND transaction_hash %s $%d))",
+			cursorOp, argNum, argNum, cursorOp, argNum+1)
+		args = append(args, filters.Cursor.LedgerSequence, filters.Cursor.TxHash)
+		argNum += 2
+	}
+
+	query := fmt.Sprintf(`
+		WITH combined AS (
+			SELECT
+				timestamp,
+				transaction_hash,
+				ledger_sequence,
+				source_type,
+				from_account,
+				to_account,
+				asset_code,
+				asset_issuer,
+				amount,
+				token_contract_id,
+				operation_type,
+				ROW_NUMBER() OVER (PARTITION BY transaction_hash, ledger_sequence, from_account, to_account, amount ORDER BY timestamp) as rn,
+				1 as source
+			FROM %s.token_transfers_raw
+			%s
+			UNION ALL
+			SELECT
+				timestamp,
+				transaction_hash,
+				ledger_sequence,
+				source_type,
+				from_account,
+				to_account,
+				asset_code,
+				asset_issuer,
+				amount,
+				token_contract_id,
+				operation_type,
+				ROW_NUMBER() OVER (PARTITION BY transaction_hash, ledger_sequence, from_account, to_account, amount ORDER BY timestamp) as rn,
+				2 as source
+			FROM %s.token_transfers_raw
+			%s
+		)
+		SELECT DISTINCT ON (ledger_sequence, transaction_hash, from_account, to_account, amount)
+			timestamp,
+			transaction_hash,
+			ledger_sequence,
+			source_type,
+			from_account,
+			to_account,
+			asset_code,
+			asset_issuer,
+			amount,
+			token_contract_id,
+			operation_type
+		FROM combined
+		WHERE rn = 1 %s
+		ORDER BY ledger_sequence %s, transaction_hash %s
+		LIMIT $%d
+	`, r.hotSchema, whereClause, r.coldSchema, whereClause, cursorClause, orderDir, orderDir, argNum)
+
+	args = append(args, requestLimit)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		errStr := err.Error()
+		if strings.Contains(errStr, "does not exist") || strings.Contains(errStr, "not found in FROM clause") {
+			hotOnlyQuery := fmt.Sprintf(`
+				SELECT
+					timestamp,
+					transaction_hash,
+					ledger_sequence,
+					source_type,
+					from_account,
+					to_account,
+					asset_code,
+					asset_issuer,
+					amount,
+					token_contract_id,
+					operation_type
+				FROM %s.token_transfers_raw
+				%s %s
+				ORDER BY ledger_sequence %s, transaction_hash %s
+				LIMIT $%d
+			`, r.hotSchema, whereClause, cursorClause, orderDir, orderDir, argNum)
+			rows, err = r.db.QueryContext(ctx, hotOnlyQuery, args...)
+			if err != nil {
+				return nil, "", false, fmt.Errorf("hot-only fallback GetUnifiedEvents: %w", err)
+			}
+		} else {
+			return nil, "", false, fmt.Errorf("unified GetUnifiedEvents: %w", err)
+		}
+	}
+	defer rows.Close()
+
+	var events []UnifiedEvent
+	eventIdx := 0
+	for rows.Next() {
+		var e UnifiedEvent
+		var timestamp string
+		var amount *int64
+		if err := rows.Scan(&timestamp, &e.TxHash, &e.LedgerSequence,
+			&e.SourceType, &e.From, &e.To, &e.AssetCode, &e.AssetIssuer,
+			&amount, &e.ContractID, &e.OperationType); err != nil {
+			return nil, "", false, err
+		}
+		e.ClosedAt = timestamp
+		e.EventIndex = eventIdx
+		eventIdx++
+
+		// Derive event type from from/to nullity
+		switch {
+		case e.From == nil && e.To != nil:
+			e.EventType = "mint"
+		case e.To == nil && e.From != nil:
+			e.EventType = "burn"
+		default:
+			e.EventType = "transfer"
+		}
+
+		// Format amount from stroops
+		if amount != nil {
+			formatted := formatStroopsLocal(*amount)
+			e.Amount = &formatted
+		}
+
+		// Generate event ID
+		e.EventID = fmt.Sprintf("%d-%s-%d", e.LedgerSequence, e.TxHash[:8], e.EventIndex)
+
+		events = append(events, e)
+	}
+
+	hasMore := len(events) > filters.Limit
+	if hasMore {
+		events = events[:filters.Limit]
+	}
+
+	var nextCursor string
+	if len(events) > 0 && hasMore {
+		last := events[len(events)-1]
+		cursor := UnifiedEventCursor{
+			LedgerSequence: last.LedgerSequence,
+			TxHash:         last.TxHash,
+			EventIndex:     last.EventIndex,
+			Order:          filters.Order,
+		}
+		nextCursor = cursor.Encode()
+	}
+
+	return events, nextCursor, hasMore, nil
+}
+
+// GetTransactionEvents returns all events for a single transaction hash
+func (r *UnifiedDuckDBReader) GetTransactionEvents(ctx context.Context, txHash string) ([]UnifiedEvent, error) {
+	filters := UnifiedEventFilters{
+		TxHash: txHash,
+		Limit:  1000,
+		Order:  "asc",
+	}
+	events, _, _, err := r.GetUnifiedEvents(ctx, filters)
+	return events, err
+}
+
+// GetAddressEvents returns events where the address is either the sender or receiver
+func (r *UnifiedDuckDBReader) GetAddressEvents(ctx context.Context, addr string, filters UnifiedEventFilters) ([]UnifiedEvent, string, bool, error) {
+	filters.Address = addr
+	return r.GetUnifiedEvents(ctx, filters)
+}
+
+// ============================================
+// SEP-41 TOKEN QUERIES
+// ============================================
+
+// GetSEP41TokenMetadata returns metadata for a token identified by contract_id.
+// Derives metadata by aggregating from token_transfers_raw.
+func (r *UnifiedDuckDBReader) GetSEP41TokenMetadata(ctx context.Context, contractID string) (*SEP41TokenMetadata, error) {
+	query := fmt.Sprintf(`
+		WITH combined AS (
+			SELECT source_type, asset_code, asset_issuer, timestamp, from_account, to_account
+			FROM %s.token_transfers_raw
+			WHERE token_contract_id = $1 AND transaction_successful = true
+			UNION ALL
+			SELECT source_type, asset_code, asset_issuer, timestamp, from_account, to_account
+			FROM %s.token_transfers_raw
+			WHERE token_contract_id = $1 AND transaction_successful = true
+		)
+		SELECT
+			COALESCE(MAX(asset_code), '') as asset_code,
+			MAX(asset_issuer) as asset_issuer,
+			COALESCE(MAX(source_type), 'soroban') as source_type,
+			COUNT(DISTINCT COALESCE(from_account, '') || COALESCE(to_account, '')) as holder_count,
+			COUNT(*) as transfer_count,
+			MIN(timestamp) as first_seen,
+			MAX(timestamp) as last_activity
+		FROM combined
+	`, r.hotSchema, r.coldSchema)
+
+	var meta SEP41TokenMetadata
+	meta.ContractID = contractID
+	var assetCode string
+	err := r.db.QueryRowContext(ctx, query, contractID).Scan(
+		&assetCode, &meta.AssetIssuer, &meta.SourceType,
+		&meta.HolderCount, &meta.TransferCount, &meta.FirstSeen, &meta.LastActivity,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("GetSEP41TokenMetadata: %w", err)
+	}
+	if assetCode != "" {
+		meta.AssetCode = &assetCode
+	}
+
+	return &meta, nil
+}
+
+// GetSEP41Balances returns computed balances for all holders of a given token contract.
+// Balances are derived from transfer history: received minus sent.
+func (r *UnifiedDuckDBReader) GetSEP41Balances(ctx context.Context, filters SEP41BalanceFilters) ([]SEP41Balance, string, bool, error) {
+	requestLimit := filters.Limit + 1
+
+	cursorClause := ""
+	args := []interface{}{filters.ContractID}
+	argNum := 2
+
+	if filters.Cursor != nil {
+		cursorClause = fmt.Sprintf(" HAVING net_balance < $%d OR (net_balance = $%d AND address > $%d)", argNum, argNum, argNum+1)
+		args = append(args, filters.Cursor.Balance, filters.Cursor.Balance, filters.Cursor.Address)
+		argNum += 2
+	}
+
+	if filters.MinBalance > 0 && cursorClause == "" {
+		cursorClause = fmt.Sprintf(" HAVING net_balance >= $%d", argNum)
+		args = append(args, filters.MinBalance)
+		argNum++
+	} else if filters.MinBalance > 0 {
+		cursorClause += fmt.Sprintf(" AND net_balance >= $%d", argNum)
+		args = append(args, filters.MinBalance)
+		argNum++
+	}
+
+	query := fmt.Sprintf(`
+		WITH transfers AS (
+			SELECT from_account, to_account, amount, ledger_sequence, timestamp
+			FROM %s.token_transfers_raw
+			WHERE token_contract_id = $1 AND transaction_successful = true
+			UNION ALL
+			SELECT from_account, to_account, amount, ledger_sequence, timestamp
+			FROM %s.token_transfers_raw
+			WHERE token_contract_id = $1 AND transaction_successful = true
+		),
+		balances AS (
+			SELECT
+				address,
+				SUM(received) as total_received,
+				SUM(sent) as total_sent,
+				SUM(received) - SUM(sent) as net_balance,
+				COUNT(*) as tx_count,
+				MAX(ledger_sequence) as last_ledger,
+				MAX(timestamp) as last_seen
+			FROM (
+				SELECT to_account as address, amount as received, 0 as sent, ledger_sequence, timestamp
+				FROM transfers WHERE to_account IS NOT NULL
+				UNION ALL
+				SELECT from_account as address, 0 as received, amount as sent, ledger_sequence, timestamp
+				FROM transfers WHERE from_account IS NOT NULL
+			) addr_amounts
+			GROUP BY address
+			%s
+		)
+		SELECT address, net_balance, total_received, total_sent, tx_count, last_ledger, last_seen
+		FROM balances
+		WHERE net_balance > 0
+		ORDER BY net_balance DESC, address ASC
+		LIMIT $%d
+	`, r.hotSchema, r.coldSchema, cursorClause, argNum)
+
+	args = append(args, requestLimit)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		errStr := err.Error()
+		if strings.Contains(errStr, "does not exist") || strings.Contains(errStr, "not found in FROM clause") {
+			hotOnlyQuery := fmt.Sprintf(`
+				WITH transfers AS (
+					SELECT from_account, to_account, amount, ledger_sequence, timestamp
+					FROM %s.token_transfers_raw
+					WHERE token_contract_id = $1 AND transaction_successful = true
+				),
+				balances AS (
+					SELECT
+						address,
+						SUM(received) as total_received,
+						SUM(sent) as total_sent,
+						SUM(received) - SUM(sent) as net_balance,
+						COUNT(*) as tx_count,
+						MAX(ledger_sequence) as last_ledger,
+						MAX(timestamp) as last_seen
+					FROM (
+						SELECT to_account as address, amount as received, 0 as sent, ledger_sequence, timestamp
+						FROM transfers WHERE to_account IS NOT NULL
+						UNION ALL
+						SELECT from_account as address, 0 as received, amount as sent, ledger_sequence, timestamp
+						FROM transfers WHERE from_account IS NOT NULL
+					) addr_amounts
+					GROUP BY address
+					%s
+				)
+				SELECT address, net_balance, total_received, total_sent, tx_count, last_ledger, last_seen
+				FROM balances
+				WHERE net_balance > 0
+				ORDER BY net_balance DESC, address ASC
+				LIMIT $%d
+			`, r.hotSchema, cursorClause, argNum)
+			rows, err = r.db.QueryContext(ctx, hotOnlyQuery, args...)
+			if err != nil {
+				return nil, "", false, fmt.Errorf("hot-only fallback GetSEP41Balances: %w", err)
+			}
+		} else {
+			return nil, "", false, fmt.Errorf("GetSEP41Balances: %w", err)
+		}
+	}
+	defer rows.Close()
+
+	var balances []SEP41Balance
+	for rows.Next() {
+		var b SEP41Balance
+		if err := rows.Scan(&b.Address, &b.BalanceRaw, &b.Received, &b.Sent,
+			&b.TxCount, &b.LastLedger, &b.LastSeen); err != nil {
+			return nil, "", false, err
+		}
+		b.Balance = formatStroopsLocal(b.BalanceRaw)
+		balances = append(balances, b)
+	}
+
+	hasMore := len(balances) > filters.Limit
+	if hasMore {
+		balances = balances[:filters.Limit]
+	}
+
+	var nextCursor string
+	if len(balances) > 0 && hasMore {
+		last := balances[len(balances)-1]
+		cursor := SEP41BalanceCursor{
+			Balance: last.BalanceRaw,
+			Address: last.Address,
+		}
+		nextCursor = cursor.Encode()
+	}
+
+	return balances, nextCursor, hasMore, nil
+}
+
+// GetSEP41SingleBalance returns the computed balance for a single address on a token contract
+func (r *UnifiedDuckDBReader) GetSEP41SingleBalance(ctx context.Context, contractID, address string) (*SEP41Balance, error) {
+	query := fmt.Sprintf(`
+		WITH transfers AS (
+			SELECT from_account, to_account, amount, ledger_sequence, timestamp
+			FROM %s.token_transfers_raw
+			WHERE token_contract_id = $1 AND transaction_successful = true
+				AND (from_account = $2 OR to_account = $2)
+			UNION ALL
+			SELECT from_account, to_account, amount, ledger_sequence, timestamp
+			FROM %s.token_transfers_raw
+			WHERE token_contract_id = $1 AND transaction_successful = true
+				AND (from_account = $2 OR to_account = $2)
+		)
+		SELECT
+			SUM(CASE WHEN to_account = $2 THEN amount ELSE 0 END) as total_received,
+			SUM(CASE WHEN from_account = $2 THEN amount ELSE 0 END) as total_sent,
+			COUNT(*) as tx_count,
+			MAX(ledger_sequence) as last_ledger,
+			MAX(timestamp) as last_seen
+		FROM transfers
+	`, r.hotSchema, r.coldSchema)
+
+	var b SEP41Balance
+	b.Address = address
+	err := r.db.QueryRowContext(ctx, query, contractID, address).Scan(
+		&b.Received, &b.Sent, &b.TxCount, &b.LastLedger, &b.LastSeen,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("GetSEP41SingleBalance: %w", err)
+	}
+	b.BalanceRaw = b.Received - b.Sent
+	b.Balance = formatStroopsLocal(b.BalanceRaw)
+
+	return &b, nil
+}
+
+// GetSEP41Transfers returns transfer events for a specific token contract
+func (r *UnifiedDuckDBReader) GetSEP41Transfers(ctx context.Context, contractID string, filters UnifiedEventFilters) ([]UnifiedEvent, string, bool, error) {
+	filters.ContractID = contractID
+	return r.GetUnifiedEvents(ctx, filters)
+}
+
+// GetSEP41TokenStats returns aggregate statistics for a token contract
+func (r *UnifiedDuckDBReader) GetSEP41TokenStats(ctx context.Context, contractID string) (*SEP41TokenStats, error) {
+	query := fmt.Sprintf(`
+		WITH transfers AS (
+			SELECT from_account, to_account, amount, timestamp, asset_code
+			FROM %s.token_transfers_raw
+			WHERE token_contract_id = $1 AND transaction_successful = true
+			UNION ALL
+			SELECT from_account, to_account, amount, timestamp, asset_code
+			FROM %s.token_transfers_raw
+			WHERE token_contract_id = $1 AND transaction_successful = true
+		),
+		holders AS (
+			SELECT address, SUM(received) - SUM(sent) as net_balance
+			FROM (
+				SELECT to_account as address, amount as received, 0 as sent FROM transfers WHERE to_account IS NOT NULL
+				UNION ALL
+				SELECT from_account as address, 0 as received, amount as sent FROM transfers WHERE from_account IS NOT NULL
+			) addr_amounts
+			GROUP BY address
+			HAVING SUM(received) - SUM(sent) > 0
+		)
+		SELECT
+			(SELECT COUNT(*) FROM holders) as holder_count,
+			COALESCE((SELECT SUM(net_balance) FROM holders), 0) as total_supply,
+			(SELECT COUNT(*) FROM transfers WHERE timestamp > NOW() - INTERVAL '24 hours') as transfers_24h,
+			COALESCE((SELECT SUM(amount) FROM transfers WHERE timestamp > NOW() - INTERVAL '24 hours'), 0) as volume_24h,
+			(SELECT MAX(asset_code) FROM transfers) as asset_code
+		FROM (SELECT 1) dummy
+	`, r.hotSchema, r.coldSchema)
+
+	var stats SEP41TokenStats
+	stats.ContractID = contractID
+	err := r.db.QueryRowContext(ctx, query, contractID).Scan(
+		&stats.HolderCount, &stats.TotalSupplyRaw, &stats.Transfers24h,
+		&stats.Volume24hRaw, &stats.AssetCode,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("GetSEP41TokenStats: %w", err)
+	}
+	stats.TotalSupply = formatStroopsLocal(stats.TotalSupplyRaw)
+	stats.Volume24h = formatStroopsLocal(stats.Volume24hRaw)
+
+	return &stats, nil
+}
+
+// GetAddressTokenPortfolio returns all token holdings for a given address
+func (r *UnifiedDuckDBReader) GetAddressTokenPortfolio(ctx context.Context, address string) ([]TokenHolding, error) {
+	query := fmt.Sprintf(`
+		WITH transfers AS (
+			SELECT from_account, to_account, amount, token_contract_id, asset_code, asset_issuer, source_type, timestamp
+			FROM %s.token_transfers_raw
+			WHERE (from_account = $1 OR to_account = $1) AND transaction_successful = true
+			UNION ALL
+			SELECT from_account, to_account, amount, token_contract_id, asset_code, asset_issuer, source_type, timestamp
+			FROM %s.token_transfers_raw
+			WHERE (from_account = $1 OR to_account = $1) AND transaction_successful = true
+		)
+		SELECT
+			token_contract_id,
+			MAX(asset_code) as asset_code,
+			MAX(asset_issuer) as asset_issuer,
+			MAX(source_type) as source_type,
+			SUM(CASE WHEN to_account = $1 THEN amount ELSE 0 END) -
+			SUM(CASE WHEN from_account = $1 THEN amount ELSE 0 END) as net_balance,
+			COUNT(*) as tx_count,
+			MAX(timestamp) as last_seen
+		FROM transfers
+		GROUP BY token_contract_id
+		HAVING SUM(CASE WHEN to_account = $1 THEN amount ELSE 0 END) -
+			   SUM(CASE WHEN from_account = $1 THEN amount ELSE 0 END) > 0
+		ORDER BY net_balance DESC
+		LIMIT 100
+	`, r.hotSchema, r.coldSchema)
+
+	rows, err := r.db.QueryContext(ctx, query, address)
+	if err != nil {
+		errStr := err.Error()
+		if strings.Contains(errStr, "does not exist") || strings.Contains(errStr, "not found in FROM clause") {
+			hotOnlyQuery := fmt.Sprintf(`
+				WITH transfers AS (
+					SELECT from_account, to_account, amount, token_contract_id, asset_code, asset_issuer, source_type, timestamp
+					FROM %s.token_transfers_raw
+					WHERE (from_account = $1 OR to_account = $1) AND transaction_successful = true
+				)
+				SELECT
+					token_contract_id,
+					MAX(asset_code) as asset_code,
+					MAX(asset_issuer) as asset_issuer,
+					MAX(source_type) as source_type,
+					SUM(CASE WHEN to_account = $1 THEN amount ELSE 0 END) -
+					SUM(CASE WHEN from_account = $1 THEN amount ELSE 0 END) as net_balance,
+					COUNT(*) as tx_count,
+					MAX(timestamp) as last_seen
+				FROM transfers
+				GROUP BY token_contract_id
+				HAVING SUM(CASE WHEN to_account = $1 THEN amount ELSE 0 END) -
+					   SUM(CASE WHEN from_account = $1 THEN amount ELSE 0 END) > 0
+				ORDER BY net_balance DESC
+				LIMIT 100
+			`, r.hotSchema)
+			rows, err = r.db.QueryContext(ctx, hotOnlyQuery, address)
+			if err != nil {
+				return nil, fmt.Errorf("hot-only fallback GetAddressTokenPortfolio: %w", err)
+			}
+		} else {
+			return nil, fmt.Errorf("GetAddressTokenPortfolio: %w", err)
+		}
+	}
+	defer rows.Close()
+
+	var holdings []TokenHolding
+	for rows.Next() {
+		var h TokenHolding
+		if err := rows.Scan(&h.ContractID, &h.AssetCode, &h.AssetIssuer,
+			&h.SourceType, &h.BalanceRaw, &h.TxCount, &h.LastSeen); err != nil {
+			return nil, err
+		}
+		h.Balance = formatStroopsLocal(h.BalanceRaw)
+		holdings = append(holdings, h)
+	}
+
+	return holdings, nil
+}
+
+// ============================================
+// TRANSACTION DECODE QUERIES
+// ============================================
+
+// GetTransactionForDecode retrieves a transaction's operations and events for human-readable decoding
+func (r *UnifiedDuckDBReader) GetTransactionForDecode(ctx context.Context, txHash string) (*DecodedTransaction, error) {
+	// Fetch operations from enriched_history_operations
+	opsQuery := fmt.Sprintf(`
+		SELECT
+			operation_index,
+			type,
+			source_account,
+			contract_id,
+			function_name,
+			destination,
+			asset_code,
+			amount,
+			is_soroban_op,
+			tx_successful,
+			tx_fee_charged,
+			ledger_sequence,
+			ledger_closed_at
+		FROM (
+			SELECT operation_index, type, source_account, contract_id, function_name,
+				   destination, asset_code, amount, is_soroban_op, tx_successful,
+				   tx_fee_charged, ledger_sequence, ledger_closed_at
+			FROM %s.enriched_history_operations WHERE transaction_hash = $1
+			UNION ALL
+			SELECT operation_index, type, source_account, contract_id, function_name,
+				   destination, asset_code, amount, is_soroban_op, tx_successful,
+				   tx_fee_charged, ledger_sequence, ledger_closed_at
+			FROM %s.enriched_history_operations WHERE transaction_hash = $1
+		) combined
+		ORDER BY operation_index ASC
+	`, r.hotSchema, r.coldSchema)
+
+	rows, err := r.db.QueryContext(ctx, opsQuery, txHash)
+	if err != nil {
+		errStr := err.Error()
+		if strings.Contains(errStr, "does not exist") || strings.Contains(errStr, "not found in FROM clause") {
+			hotOnlyQuery := fmt.Sprintf(`
+				SELECT operation_index, type, source_account, contract_id, function_name,
+					   destination, asset_code, amount, is_soroban_op, tx_successful,
+					   tx_fee_charged, ledger_sequence, ledger_closed_at
+				FROM %s.enriched_history_operations WHERE transaction_hash = $1
+				ORDER BY operation_index ASC
+			`, r.hotSchema)
+			rows, err = r.db.QueryContext(ctx, hotOnlyQuery, txHash)
+			if err != nil {
+				return nil, fmt.Errorf("hot-only fallback GetTransactionForDecode: %w", err)
+			}
+		} else {
+			return nil, fmt.Errorf("GetTransactionForDecode: %w", err)
+		}
+	}
+	defer rows.Close()
+
+	tx := &DecodedTransaction{TxHash: txHash}
+	seen := make(map[int]bool)
+
+	for rows.Next() {
+		var op DecodedOperation
+		var txSuccessful bool
+		var txFee int64
+		var ledgerSeq int64
+		var closedAt *string
+		var isSorobanOp *bool
+
+		if err := rows.Scan(&op.Index, &op.Type, &op.SourceAccount,
+			&op.ContractID, &op.FunctionName, &op.Destination, &op.AssetCode, &op.Amount,
+			&isSorobanOp, &txSuccessful, &txFee, &ledgerSeq, &closedAt); err != nil {
+			return nil, err
+		}
+
+		if isSorobanOp != nil {
+			op.IsSorobanOp = *isSorobanOp
+		}
+		op.TypeName = operationTypeNameDecode(op.Type)
+
+		// Deduplicate by operation_index (from UNION ALL)
+		if !seen[op.Index] {
+			seen[op.Index] = true
+			tx.Operations = append(tx.Operations, op)
+		}
+
+		// Set tx-level fields from first row
+		if tx.LedgerSeq == 0 {
+			tx.Successful = txSuccessful
+			tx.Fee = txFee
+			tx.LedgerSeq = ledgerSeq
+			if closedAt != nil {
+				tx.ClosedAt = *closedAt
+			}
+		}
+	}
+
+	tx.OpCount = len(tx.Operations)
+
+	// Fetch events from token_transfers_raw
+	events, err := r.GetTransactionEvents(ctx, txHash)
+	if err != nil {
+		// Events are optional, log but don't fail
+		log.Printf("Warning: failed to fetch events for tx %s: %v", txHash, err)
+	} else {
+		tx.Events = events
+	}
+
+	// Generate human-readable summary
+	tx.Summary = GenerateTxSummary(tx.Operations, tx.Events)
+
+	return tx, nil
+}
+
+// GetContractFunctions returns distinct function names observed for a contract
+func (r *UnifiedDuckDBReader) GetContractFunctions(ctx context.Context, contractID string) ([]string, error) {
+	query := fmt.Sprintf(`
+		SELECT DISTINCT function_name FROM (
+			SELECT function_name FROM %s.enriched_history_operations
+			WHERE contract_id = $1 AND function_name IS NOT NULL
+			UNION
+			SELECT function_name FROM %s.enriched_history_operations
+			WHERE contract_id = $1 AND function_name IS NOT NULL
+		) combined
+		ORDER BY function_name
+	`, r.hotSchema, r.coldSchema)
+
+	rows, err := r.db.QueryContext(ctx, query, contractID)
+	if err != nil {
+		errStr := err.Error()
+		if strings.Contains(errStr, "does not exist") || strings.Contains(errStr, "not found in FROM clause") {
+			hotOnlyQuery := fmt.Sprintf(`
+				SELECT DISTINCT function_name
+				FROM %s.enriched_history_operations
+				WHERE contract_id = $1 AND function_name IS NOT NULL
+				ORDER BY function_name
+			`, r.hotSchema)
+			rows, err = r.db.QueryContext(ctx, hotOnlyQuery, contractID)
+			if err != nil {
+				return nil, fmt.Errorf("hot-only fallback GetContractFunctions: %w", err)
+			}
+		} else {
+			return nil, fmt.Errorf("GetContractFunctions: %w", err)
+		}
+	}
+	defer rows.Close()
+
+	var functions []string
+	for rows.Next() {
+		var fn string
+		if err := rows.Scan(&fn); err != nil {
+			return nil, err
+		}
+		functions = append(functions, fn)
+	}
+	return functions, nil
 }
