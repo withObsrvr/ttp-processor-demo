@@ -79,6 +79,18 @@ Silver tables are pre-processed for common analytics queries. Use Silver when yo
 │   restored_keys               - Restored contract entries       │
 │   config_settings             - Soroban network config          │
 │                                                                  │
+│ CAP-67 Events:                                                   │
+│   unified_events              - CAP-67 unified event stream     │
+│                                                                  │
+│ SEP-41 Tokens:                                                   │
+│   tokens                      - Token metadata & stats          │
+│   token_balances              - Computed holder balances         │
+│   token_portfolio             - Address token holdings          │
+│                                                                  │
+│ Transaction Decoding:                                            │
+│   decoded_transactions        - Human-readable tx summaries     │
+│   contract_interfaces         - Detected contract ABIs          │
+│                                                                  │
 │ Analytics Views:                                                 │
 │   stats_network               - Network-wide statistics         │
 │   contracts_top               - Most active contracts           │
@@ -222,6 +234,9 @@ All operations with transaction and ledger context.
 | `tx_fee_charged` | int | Fee in stroops |
 | `is_payment_op` | bool | True for payment operations |
 | `is_soroban_op` | bool | True for Soroban operations |
+| `contract_id` | string | Contract address for Soroban ops (C...) |
+| `function_name` | string | Called function name for Soroban ops |
+| `arguments_json` | string | Function arguments as JSON for Soroban ops |
 
 **Parameters:**
 | Name | Type | Description |
@@ -255,11 +270,14 @@ curl -H "Authorization: Api-Key $API_KEY" \
 
 #### operations_soroban
 
-Convenience endpoint for Soroban smart contract operations.
+Convenience endpoint for Soroban smart contract operations. Includes `contract_id`, `function_name`, and `arguments_json` fields.
 
 **Endpoint:** `GET /api/v1/silver/operations/soroban`
 
 Same schema as `enriched_history_operations`, filtered to `is_soroban_op=true`.
+
+**Additional Endpoint:**
+- `GET /operations/soroban/by-function` - Filter by `contract_id` and/or `function_name`
 
 ---
 
@@ -709,10 +727,11 @@ curl -H "Authorization: Api-Key $API_KEY" \
 ```
 
 **Additional Contract Endpoints:**
-- `GET /contracts/{id}/recent-calls` - Recent invocations
+- `GET /contracts/{id}/recent-calls` - Recent invocations (hot + cold storage)
 - `GET /contracts/{id}/callers` - Who calls this contract
 - `GET /contracts/{id}/callees` - Contracts this one calls
 - `GET /contracts/{id}/call-summary` - Call statistics
+- `GET /contracts/{id}/interface` - Detected contract interface (SEP-41 or unknown)
 
 #### Transaction Contract Analysis
 
@@ -722,10 +741,174 @@ Analyze smart contract interactions within a transaction.
 - `GET /tx/{hash}/call-graph` - Contract call graph
 - `GET /tx/{hash}/hierarchy` - Transaction operation hierarchy
 - `GET /tx/{hash}/contracts-summary` - Summary of contract calls
+- `GET /tx/{hash}/events` - CAP-67 unified events for the transaction
+- `GET /tx/{hash}/decoded` - Human-readable decoded transaction with summary
 
 ```bash
 curl -H "Authorization: Api-Key $API_KEY" \
   "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/tx/abc123.../call-graph"
+```
+
+---
+
+### CAP-67 Unified Events
+
+The CAP-67 unified event stream provides a single view of all token events (transfers, mints, burns) across both classic Stellar and Soroban smart contracts. Event types are derived from the `token_transfers_raw` table.
+
+**Endpoints:**
+- `GET /events` - Full event stream with filters
+- `GET /events/by-contract` - Events for a specific contract
+- `GET /address/{addr}/events` - Events for an address (as sender or receiver)
+- `GET /tx/{hash}/events` - Events for a transaction
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `event_id` | string | Composite key: `{ledger}-{tx_hash}-{index}` |
+| `contract_id` | string | Token contract address (C...) |
+| `ledger_sequence` | int | Block number |
+| `tx_hash` | string | Transaction hash |
+| `closed_at` | timestamp | Block close time |
+| `event_type` | string | `transfer`, `mint`, or `burn` |
+| `from` | string | Sender (null for mints) |
+| `to` | string | Receiver (null for burns) |
+| `amount` | string | Amount transferred |
+| `asset_code` | string | Asset code (USDC, XLM, etc.) |
+| `asset_issuer` | string | Asset issuer (null for native) |
+| `source_type` | string | `classic` or `soroban` |
+| `event_index` | int | Index within the transaction |
+
+**Event Type Derivation:**
+| Condition | Event Type |
+|-----------|-----------|
+| `from` is null | `mint` |
+| `to` is null | `burn` |
+| Both present | `transfer` |
+
+```bash
+# Get recent mint events
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/events?event_type=mint&limit=10"
+
+# Get all events for a contract
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/events/by-contract?contract_id=CDLZFC3..."
+```
+
+---
+
+### SEP-41 Token Data
+
+SEP-41 token data provides metadata, balances, and transfer history for fungible tokens. Balances are computed from the full transfer history (received minus sent), providing a built-in audit trail.
+
+**Endpoints:**
+- `GET /tokens/{contract_id}` - Token metadata
+- `GET /tokens/{contract_id}/balances` - All holder balances
+- `GET /tokens/{contract_id}/balance/{address}` - Single holder balance
+- `GET /tokens/{contract_id}/transfers` - Transfer history
+- `GET /tokens/{contract_id}/stats` - Aggregate statistics
+- `GET /address/{addr}/token-balances` - Address token portfolio
+
+#### Token Metadata
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `contract_id` | string | Token contract address (C...) |
+| `asset_code` | string | Asset code if available |
+| `asset_issuer` | string | Asset issuer if available |
+| `source_type` | string | `classic` or `soroban` |
+| `decimals` | int | Token decimal places (default: 7) |
+| `holder_count` | int | Number of addresses with non-zero balance |
+| `transfer_count` | int | Total number of transfers |
+| `first_seen` | timestamp | First observed transfer |
+| `last_activity` | timestamp | Most recent transfer |
+
+#### Token Balances
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `address` | string | Holder address (G... or C...) |
+| `balance` | string | Net balance (received - sent), decimal format |
+| `balance_raw` | int | Net balance in raw units |
+| `total_received` | int | Total amount received |
+| `total_sent` | int | Total amount sent |
+| `tx_count` | int | Number of transfers involving this address |
+| `last_activity_ledger` | int | Most recent transfer ledger |
+| `last_activity` | timestamp | Most recent transfer timestamp |
+
+#### Token Stats
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `contract_id` | string | Token contract address |
+| `holder_count` | int | Active holders |
+| `total_supply` | string | Total supply (decimal) |
+| `total_supply_raw` | int | Total supply (raw) |
+| `transfers_24h` | int | Transfers in last 24 hours |
+| `volume_24h` | string | Volume in last 24 hours (decimal) |
+| `volume_24h_raw` | int | Volume in last 24 hours (raw) |
+| `asset_code` | string | Asset code if available |
+
+```bash
+# Get top USDC holders
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/tokens/CDLZFC3.../balances?limit=20"
+
+# Get all token holdings for an address
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/address/GAIH3.../token-balances"
+```
+
+---
+
+### Decoded Transactions
+
+Transaction decoding provides human-readable summaries, Soroban operation details, and contract interface detection.
+
+**Endpoints:**
+- `GET /tx/{hash}/decoded` - Full decoded transaction
+- `GET /contracts/{id}/interface` - Contract interface detection
+- `POST /decode/scval` - Decode Soroban ScVal values
+
+#### Decoded Transaction
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `tx_hash` | string | Transaction hash |
+| `summary.description` | string | Human-readable summary |
+| `summary.type` | string | Detected type: transfer, mint, burn, swap, contract_call, classic |
+| `summary.involved_contracts` | array | Contract IDs involved |
+| `summary.swap` | object | Structured swap details (present when type=swap) |
+| `summary.transfer` | object | Structured transfer details (present when type=transfer) |
+| `summary.mint` | object | Structured mint details (present when type=mint) |
+| `summary.burn` | object | Structured burn details (present when type=burn) |
+| `fee` | int | Transaction fee in stroops |
+| `ledger_sequence` | int | Block number |
+| `closed_at` | timestamp | Block close time |
+| `successful` | bool | Whether the transaction succeeded |
+| `operation_count` | int | Number of operations |
+| `operations[]` | array | Decoded operations with type, contract, function details |
+| `events[]` | array | Associated CAP-67 events |
+
+#### Decoded Operation (within transaction)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `index` | int | Operation index |
+| `type` | int | Operation type code |
+| `type_name` | string | Human-readable type name |
+| `source_account` | string | Operation source account |
+| `contract_id` | string | Contract address (Soroban ops only) |
+| `function_name` | string | Called function name (Soroban ops only) |
+| `arguments_json` | string | Function arguments as JSON (Soroban ops only) |
+| `destination` | string | Destination (payment ops only) |
+| `asset_code` | string | Asset code (payment ops only) |
+| `amount` | string | Amount (payment ops only) |
+| `is_soroban_op` | bool | Whether this is a Soroban operation |
+
+```bash
+# Get human-readable transaction summary
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/tx/abc123.../decoded"
 ```
 
 ---

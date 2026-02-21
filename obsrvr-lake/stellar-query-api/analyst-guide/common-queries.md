@@ -345,18 +345,78 @@ curl -H "Authorization: Api-Key $API_KEY" \
 
 #### Get Soroban Operations Only
 
-Convenience endpoint that returns only Soroban smart contract operations.
+Convenience endpoint that returns only Soroban smart contract operations. Response includes Soroban-specific fields: `contract_id`, `function_name`, and `arguments_json` (when available).
 
 ```bash
 GET /api/v1/silver/operations/soroban?account_id={account_id}&limit={limit}&cursor={cursor}&order={order}
 ```
 
-> **Note:** Supports `order=asc` or `order=desc` (default: desc). Response includes `_meta` with data boundaries.
+> **Note:** Supports `order=asc` or `order=desc` (default: desc). Response includes `_meta` with data boundaries. Soroban operations now include `contract_id`, `function_name`, and `arguments_json` fields for contract invocations.
 
 **Example:**
 ```bash
 curl -H "Authorization: Api-Key $API_KEY" \
   "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/operations/soroban?account_id=GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR"
+```
+
+---
+
+#### Get Soroban Operations by Function
+
+Filter Soroban operations by contract ID and/or function name. At least one of `contract_id` or `function_name` is required.
+
+```bash
+GET /api/v1/silver/operations/soroban/by-function?contract_id={contract_id}&function_name={function_name}&limit={limit}&cursor={cursor}&order={order}
+```
+
+> **Alias:** This endpoint is also available as `GET /api/v1/silver/calls` with the same parameters.
+
+**Parameters:**
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `contract_id` | No* | Filter by contract ID (C...) |
+| `function_name` | No* | Filter by function name (e.g., `swap`, `transfer`) |
+| `limit` | No | Max results (default: 50, max: 500) |
+| `cursor` | No | Pagination cursor |
+| `order` | No | Sort order: `asc` or `desc` (default: desc) |
+
+> *At least one of `contract_id` or `function_name` is required.
+
+**Example:**
+```bash
+# Get all swap calls on a specific contract
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/operations/soroban/by-function?contract_id=CAUGJT4...&function_name=swap&limit=20"
+
+# Get all transfer function calls across all contracts
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/operations/soroban/by-function?function_name=transfer&limit=50"
+```
+
+**Response:**
+```json
+{
+  "contract_id": "CAUGJT4...",
+  "function_name": "swap",
+  "soroban_operations": [
+    {
+      "transaction_hash": "abc123...",
+      "ledger_sequence": 830000,
+      "ledger_closed_at": "2026-02-20T12:30:00Z",
+      "source_account": "GABC...",
+      "type": 24,
+      "type_name": "INVOKE_HOST_FUNCTION",
+      "contract_id": "CAUGJT4...",
+      "function_name": "swap",
+      "arguments_json": "[...]",
+      "is_soroban_op": true,
+      "tx_successful": true
+    }
+  ],
+  "count": 20,
+  "has_more": true,
+  "cursor": "..."
+}
 ```
 
 ---
@@ -759,17 +819,26 @@ GET /api/v1/silver/contracts/{contract_id}/call-summary
 
 #### Get Contract Recent Calls
 
-Returns recent calls involving a specific contract.
+Returns recent calls involving a specific contract. Queries both hot (recent) and cold (historical) storage, so results include the full call history back to 2024.
 
 ```bash
-GET /api/v1/silver/contracts/{contract_id}/recent-calls?limit={limit}
+GET /api/v1/silver/contracts/{contract_id}/recent-calls?limit={limit}&cursor={cursor}
 ```
+
+**Parameters:**
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `contract_id` | Yes | Contract address (C...) in URL path |
+| `limit` | No | Max results (default: 50) |
+| `cursor` | No | Pagination cursor for keyset pagination |
 
 **Example:**
 ```bash
 curl -H "Authorization: Api-Key $API_KEY" \
   "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/contracts/CAUGJT4.../recent-calls?limit=50"
 ```
+
+> **Note:** This endpoint now uses UNION ALL across hot and cold storage, providing complete history with cursor-based pagination.
 
 ---
 
@@ -885,6 +954,640 @@ GET /api/v1/silver/tx/{tx_hash}/contracts-summary
   "display_format": "wallet_v1"
 }
 ```
+
+---
+
+### CAP-67 Unified Event Stream
+
+Exposes the full CAP-67 unified event stream. Events are derived from `token_transfers_raw` — event type is inferred from sender/recipient nullity: `NULL from = mint`, `NULL to = burn`, otherwise `transfer`.
+
+#### Get Unified Events
+
+Returns the unified event stream with optional filters.
+
+```bash
+GET /api/v1/silver/events
+```
+
+**Parameters:**
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `contract_id` | No | Filter by token contract ID (C...) |
+| `event_type` | No | Filter by type: `transfer`, `mint`, `burn` |
+| `source_type` | No | Filter by source: `classic` or `soroban` |
+| `start_ledger` | No | Start of ledger range |
+| `end_ledger` | No | End of ledger range |
+| `limit` | No | Max results (default: 20, max: 200) |
+| `cursor` | No | Pagination cursor |
+| `order` | No | Sort order: `asc` or `desc` (default: desc) |
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/events?event_type=mint&limit=10"
+```
+
+**Response:**
+```json
+{
+  "events": [
+    {
+      "event_id": "830000-abc123-0",
+      "contract_id": "CDLZFC3...",
+      "ledger_sequence": 830000,
+      "tx_hash": "abc123...",
+      "closed_at": "2026-02-20T12:30:00Z",
+      "event_type": "mint",
+      "from": null,
+      "to": "GXYZ...",
+      "amount": "1000.0000000",
+      "asset_code": "USDC",
+      "asset_issuer": "GBBD47...",
+      "source_type": "soroban",
+      "event_index": 0
+    }
+  ],
+  "count": 1,
+  "has_more": true,
+  "next_cursor": "eyJsIjo4MzAwMDAsInQiOiJhYmMxMjMiLC..."
+}
+```
+
+---
+
+#### Get Events by Contract
+
+Returns events for a specific token contract.
+
+```bash
+GET /api/v1/silver/events/by-contract?contract_id={contract_id}
+```
+
+**Parameters:**
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `contract_id` | Yes | Token contract ID (C...) |
+| `event_type` | No | Filter by type: `transfer`, `mint`, `burn` |
+| `limit` | No | Max results (default: 20, max: 200) |
+| `cursor` | No | Pagination cursor |
+| `order` | No | Sort order: `asc` or `desc` (default: desc) |
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/events/by-contract?contract_id=CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG6QB3RVFT5RMCDH74N2&limit=20"
+```
+
+**Response:**
+```json
+{
+  "contract_id": "CDLZFC3...",
+  "events": [...],
+  "count": 20,
+  "has_more": true,
+  "next_cursor": "..."
+}
+```
+
+---
+
+#### Get Address Events
+
+Returns all events where an address appears as sender or receiver.
+
+```bash
+GET /api/v1/silver/address/{addr}/events
+```
+
+**Parameters:**
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `addr` | Yes | Stellar account or contract address (in URL path) |
+| `event_type` | No | Filter by type: `transfer`, `mint`, `burn` |
+| `source_type` | No | Filter by source: `classic` or `soroban` |
+| `limit` | No | Max results (default: 20, max: 200) |
+| `cursor` | No | Pagination cursor |
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/address/GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR/events?limit=20"
+```
+
+**Response:**
+```json
+{
+  "address": "GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR",
+  "events": [...],
+  "count": 20,
+  "has_more": true,
+  "next_cursor": "..."
+}
+```
+
+---
+
+#### Get Transaction Events
+
+Returns all events for a specific transaction.
+
+```bash
+GET /api/v1/silver/tx/{hash}/events
+```
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/tx/abc123.../events"
+```
+
+**Response:**
+```json
+{
+  "transaction_hash": "abc123...",
+  "events": [
+    {
+      "event_id": "830000-abc123-0",
+      "event_type": "transfer",
+      "from": "GABC...",
+      "to": "GDEF...",
+      "amount": "100.0000000",
+      "asset_code": "USDC",
+      "source_type": "soroban"
+    }
+  ],
+  "count": 1
+}
+```
+
+---
+
+### SEP-41 Token API
+
+Query SEP-41 fungible tokens — metadata, balances, transfers, and holder statistics. Balances are computed from transfer history (total received minus total sent).
+
+#### Get Token Metadata
+
+Returns metadata for a SEP-41 token by contract ID.
+
+```bash
+GET /api/v1/silver/tokens/{contract_id}
+```
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/tokens/CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG6QB3RVFT5RMCDH74N2"
+```
+
+**Response:**
+```json
+{
+  "contract_id": "CDLZFC3...",
+  "asset_code": "USDC",
+  "asset_issuer": "GBBD47...",
+  "source_type": "soroban",
+  "holder_count": 256,
+  "transfer_count": 14500,
+  "first_seen": "2025-11-01T00:00:00Z",
+  "last_activity": "2026-02-20T12:30:00Z"
+}
+```
+
+---
+
+#### Get Token Balances
+
+Returns computed balances for all holders of a token, ranked by balance.
+
+```bash
+GET /api/v1/silver/tokens/{contract_id}/balances?limit={limit}&cursor={cursor}
+```
+
+**Parameters:**
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `contract_id` | Yes | Token contract ID (C...) in URL path |
+| `limit` | No | Max results (default: 20, max: 200) |
+| `cursor` | No | Pagination cursor |
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/tokens/CDLZFC3.../balances?limit=20"
+```
+
+**Response:**
+```json
+{
+  "contract_id": "CDLZFC3...",
+  "balances": [
+    {
+      "address": "GABC...",
+      "balance": "500000.0000000",
+      "balance_raw": 5000000000000,
+      "total_received": 7500000000000,
+      "total_sent": 2500000000000,
+      "tx_count": 42,
+      "last_activity_ledger": 829800,
+      "last_activity": "2026-02-20T12:00:00Z"
+    }
+  ],
+  "count": 20,
+  "has_more": true,
+  "next_cursor": "..."
+}
+```
+
+> **Note:** Balances are derived from transfer history (received - sent), not contract state. This provides a full audit trail but may differ from on-chain state for contracts with non-standard accounting.
+
+---
+
+#### Get Single Balance
+
+Returns the balance of a specific address for a token.
+
+```bash
+GET /api/v1/silver/tokens/{contract_id}/balance/{address}
+```
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/tokens/CDLZFC3.../balance/GABC..."
+```
+
+**Response:**
+```json
+{
+  "contract_id": "CDLZFC3...",
+  "balance": {
+    "address": "GABC...",
+    "balance": "500000.0000000",
+    "balance_raw": 5000000000000,
+    "total_received": 7500000000000,
+    "total_sent": 2500000000000,
+    "tx_count": 42,
+    "last_activity_ledger": 829800,
+    "last_activity": "2026-02-20T12:00:00Z"
+  }
+}
+```
+
+---
+
+#### Get Token Transfers
+
+Returns transfer history for a specific token.
+
+```bash
+GET /api/v1/silver/tokens/{contract_id}/transfers?limit={limit}&cursor={cursor}
+```
+
+**Parameters:**
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `contract_id` | Yes | Token contract ID (C...) in URL path |
+| `event_type` | No | Filter by type: `transfer`, `mint`, `burn` |
+| `limit` | No | Max results (default: 20, max: 200) |
+| `cursor` | No | Pagination cursor |
+| `order` | No | Sort order: `asc` or `desc` (default: desc) |
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/tokens/CDLZFC3.../transfers?limit=50"
+```
+
+**Response:**
+```json
+{
+  "contract_id": "CDLZFC3...",
+  "transfers": [
+    {
+      "event_id": "830000-abc123-0",
+      "event_type": "transfer",
+      "from": "GABC...",
+      "to": "GDEF...",
+      "amount": "100.0000000",
+      "asset_code": "USDC",
+      "source_type": "soroban",
+      "tx_hash": "abc123...",
+      "ledger_sequence": 830000,
+      "closed_at": "2026-02-20T12:30:00Z"
+    }
+  ],
+  "count": 50,
+  "has_more": true,
+  "next_cursor": "..."
+}
+```
+
+---
+
+#### Get Token Stats
+
+Returns aggregate statistics for a token.
+
+```bash
+GET /api/v1/silver/tokens/{contract_id}/stats
+```
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/tokens/CDLZFC3.../stats"
+```
+
+**Response:**
+```json
+{
+  "contract_id": "CDLZFC3...",
+  "holder_count": 256,
+  "total_supply": "10000000.0000000",
+  "total_supply_raw": 100000000000000,
+  "transfers_24h": 150,
+  "volume_24h": "250000.0000000",
+  "volume_24h_raw": 2500000000000,
+  "asset_code": "USDC"
+}
+```
+
+---
+
+#### Get Address Token Portfolio
+
+Returns all token holdings for an address across all SEP-41 tokens.
+
+```bash
+GET /api/v1/silver/address/{addr}/token-balances
+```
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/address/GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR/token-balances"
+```
+
+**Response:**
+```json
+{
+  "address": "GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR",
+  "holdings": [
+    {
+      "contract_id": "CDLZFC3...",
+      "asset_code": "USDC",
+      "asset_issuer": "GBBD47...",
+      "source_type": "soroban",
+      "balance": "500000.0000000",
+      "balance_raw": 5000000000000,
+      "tx_count": 42,
+      "last_activity": "2026-02-20T12:00:00Z"
+    }
+  ],
+  "count": 3
+}
+```
+
+> **Tip:** Combine with `/silver/accounts/{id}/balances` to get a complete view of an address's holdings (XLM + trustlines + SEP-41 tokens).
+
+---
+
+### SEP-50 NFT API (Coming Soon)
+
+The following endpoints are reserved for SEP-50 non-fungible token support and will be available when the standard is finalized:
+
+- `GET /silver/nfts/{contract_id}` — Collection metadata
+- `GET /silver/nfts/{contract_id}/tokens` — Token list
+- `GET /silver/nfts/{contract_id}/tokens/{token_id}` — Single token
+- `GET /silver/nfts/{contract_id}/transfers` — Transfer history
+
+---
+
+### Transaction Decoding
+
+Human-readable transaction summaries, contract interface detection, and ScVal decoding.
+
+#### Get Decoded Transaction
+
+Returns a human-readable decoded version of a transaction with summary, operations, and events.
+
+```bash
+GET /api/v1/silver/tx/{hash}/decoded
+```
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/tx/abc123.../decoded"
+```
+
+**Response:**
+```json
+{
+  "tx_hash": "abc123...",
+  "summary": {
+    "description": "Swapped 100.0000000 USDC for 48.5000000 XLM",
+    "type": "swap",
+    "involved_contracts": ["CDEF..."],
+    "swap": {
+      "sold_asset": "USDC",
+      "sold_amount": "100.0000000",
+      "bought_asset": "XLM",
+      "bought_amount": "48.5000000",
+      "router": "CDEF...",
+      "trader": "GABC..."
+    }
+  },
+  "fee": 100,
+  "ledger_sequence": 830000,
+  "closed_at": "2026-02-20T12:30:00Z",
+  "successful": true,
+  "operation_count": 1,
+  "operations": [
+    {
+      "index": 0,
+      "type": 24,
+      "type_name": "INVOKE_HOST_FUNCTION",
+      "source_account": "GABC...",
+      "contract_id": "CDEF...",
+      "function_name": "swap",
+      "arguments_json": "[...]",
+      "is_soroban_op": true
+    }
+  ],
+  "events": [
+    {
+      "event_id": "830000-abc123-0",
+      "event_type": "transfer",
+      "from": "GABC...",
+      "to": "CDEF...",
+      "amount": "100.0000000",
+      "asset_code": "USDC"
+    }
+  ]
+}
+```
+
+**Summary Types:**
+| Type | Pattern | Example |
+|------|---------|---------|
+| `transfer` | SEP-41 transfer detected | "Transferred 100 USDC to GXYZ..." |
+| `mint` | Mint detected (no sender) | "Minted 100 USDC to GXYZ..." |
+| `burn` | Burn detected (no receiver) | "Burned 50 USDC from GABC..." |
+| `swap` | Two counter-directional transfers | "Swapped 100 USDC for 48.5 XLM..." |
+| `contract_call` | Generic contract invocation | "Called swap on contract CDEF..." |
+| `classic` | Non-Soroban operation | "Payment of 100 XLM to GXYZ..." |
+
+**Structured Detail Fields:**
+
+When `type` is `swap`, the `swap` field is populated:
+| Field | Type | Description |
+|-------|------|-------------|
+| `sold_asset` | string | Asset sold |
+| `sold_amount` | string | Amount sold |
+| `bought_asset` | string | Asset received |
+| `bought_amount` | string | Amount received |
+| `router` | string | Router contract (first involved contract) |
+| `trader` | string | Address that initiated the swap |
+
+When `type` is `transfer`, `mint`, or `burn`, the corresponding field is populated:
+| Field | Type | Description |
+|-------|------|-------------|
+| `asset` | string | Asset code |
+| `amount` | string | Amount |
+| `from` | string | Sender address (omitted for mints) |
+| `to` | string | Receiver address (omitted for burns) |
+
+---
+
+#### Get Full Transaction Analysis
+
+Returns a composite view combining the decoded transaction, contracts involved, and contract call graph in a single request. Ideal for transaction detail pages.
+
+```bash
+GET /api/v1/silver/tx/{hash}/full
+```
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/tx/abc123.../full"
+```
+
+**Response:**
+```json
+{
+  "transaction": {
+    "tx_hash": "abc123...",
+    "ledger_sequence": 830000,
+    "closed_at": "2026-02-20T12:30:00Z",
+    "successful": true,
+    "fee": 100,
+    "operation_count": 1
+  },
+  "summary": {
+    "description": "Swapped 100 USDC for 48.5 XLM",
+    "type": "swap",
+    "involved_contracts": ["CDEF..."],
+    "swap": { "sold_asset": "USDC", "sold_amount": "100.0000000", "bought_asset": "XLM", "bought_amount": "48.5000000", "trader": "GABC...", "router": "CDEF..." }
+  },
+  "operations": [ ... ],
+  "events": [ ... ],
+  "contracts_involved": ["CDEF...", "CXYZ..."],
+  "call_graph": [
+    {
+      "from_contract": "GABC...",
+      "to_contract": "CDEF...",
+      "function_name": "swap",
+      "call_depth": 0,
+      "execution_order": 1,
+      "successful": true
+    }
+  ]
+}
+```
+
+> **Tip:** This endpoint replaces the need to call `/tx/{hash}/decoded`, `/tx/{hash}/contracts-involved`, and `/tx/{hash}/call-graph` separately.
+
+---
+
+#### Get Contract Interface
+
+Returns the detected interface (SEP-41 or unknown) for a contract based on observed function calls.
+
+```bash
+GET /api/v1/silver/contracts/{id}/interface
+```
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/contracts/CDLZFC3.../interface"
+```
+
+**Response (SEP-41 detected):**
+```json
+{
+  "contract_id": "CDLZFC3...",
+  "detected_type": "sep41_token",
+  "interface": [
+    {"name": "transfer", "params": ["from", "to", "amount"]},
+    {"name": "balance", "params": ["id"]},
+    {"name": "decimals", "params": []},
+    {"name": "name", "params": []},
+    {"name": "symbol", "params": []}
+  ],
+  "observed_functions": ["transfer", "balance", "approve", "decimals"]
+}
+```
+
+**Response (unknown contract):**
+```json
+{
+  "contract_id": "CXYZ...",
+  "detected_type": "unknown",
+  "observed_functions": ["swap", "add_liquidity", "remove_liquidity"]
+}
+```
+
+> **Note:** SEP-41 detection requires at least 3 of 5 standard SEP-41 function signatures to be observed in historical calls.
+
+---
+
+#### Decode ScVal
+
+Decodes a Soroban ScVal from XDR (base64) or JSON into a human-readable format.
+
+```bash
+POST /api/v1/silver/decode/scval
+```
+
+**Request Body:**
+```json
+{
+  "xdr": "AAAAEQAAAAEAAAAGAAAADwAAAARuYW1l...",
+  "type_hint": "i128"
+}
+```
+
+Or with JSON input:
+```json
+{
+  "json": {"type": "i128", "lo": "1000000", "hi": "0"}
+}
+```
+
+**Response:**
+```json
+{
+  "type": "i128",
+  "value": "1000000",
+  "display": "1000000"
+}
+```
+
+**Supported ScVal Types:** bool, u32, i32, u64, i64, u128, i128, address, symbol, string, bytes, vec, map
 
 ---
 
@@ -2178,10 +2881,22 @@ fi
 | Account effects | `GET /accounts/{id}/effects` | `/bronze/effects?account_id={id}` |
 | Transaction details | `GET /transactions/{hash}` | `/transactions/{hash}` |
 | Transaction operations | `GET /transactions/{hash}/operations` | `/silver/operations/enriched?tx_hash={hash}` |
+| Transaction events | N/A | `/silver/tx/{hash}/events` |
+| Decoded transaction | N/A | `/silver/tx/{hash}/decoded` |
+| Full transaction analysis | N/A | `/silver/tx/{hash}/full` |
+| Soroban calls (alias) | N/A | `/silver/calls` |
 | Ledger info | `GET /ledgers/{sequence}` | `/bronze/ledgers?sequence={sequence}` |
 | All accounts | `GET /accounts` | `/silver/accounts` |
 | Asset holders | `GET /accounts?asset=CODE:ISSUER` | `/silver/assets/CODE:ISSUER/holders` |
 | Asset stats | N/A | `/silver/assets/CODE:ISSUER/stats` |
+| Token metadata | N/A | `/silver/tokens/{contract_id}` |
+| Token holders | N/A | `/silver/tokens/{contract_id}/balances` |
+| Token balance | N/A | `/silver/tokens/{contract_id}/balance/{addr}` |
+| Token transfers | N/A | `/silver/tokens/{contract_id}/transfers` |
+| Address token portfolio | N/A | `/silver/address/{addr}/token-balances` |
+| Unified event stream | N/A | `/silver/events` |
+| Contract interface | N/A | `/silver/contracts/{id}/interface` |
+| Soroban ops by function | N/A | `/silver/operations/soroban/by-function` |
 | Order book | `GET /order_book` | `/bronze/offers` (with filters) |
 
 ---
