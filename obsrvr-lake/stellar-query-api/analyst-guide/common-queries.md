@@ -1530,7 +1530,7 @@ curl -H "Authorization: Api-Key $API_KEY" \
 ```json
 {
   "contract_id": "CDLZFC3...",
-  "detected_type": "sep41",
+  "detected_type": "sep41_token",
   "interface": [
     {"name": "transfer", "params": ["from", "to", "amount"]},
     {"name": "balance", "params": ["id"]},

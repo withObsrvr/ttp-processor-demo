@@ -3989,8 +3989,6 @@ func (r *UnifiedDuckDBReader) GetRecentContractCallsWithCursor(ctx context.Conte
 // GetUnifiedEvents returns CAP-67 unified events from token_transfers_raw with cursor pagination.
 // Event type is derived: NULL from_account = mint, NULL to_account = burn, else transfer.
 func (r *UnifiedDuckDBReader) GetUnifiedEvents(ctx context.Context, filters UnifiedEventFilters) ([]UnifiedEvent, string, bool, error) {
-	requestLimit := filters.Limit + 1
-
 	whereClause := "WHERE transaction_successful = true"
 	args := []interface{}{}
 	argNum := 1
@@ -4049,12 +4047,21 @@ func (r *UnifiedDuckDBReader) GetUnifiedEvents(ctx context.Context, filters Unif
 		cursorOp = ">"
 	}
 
+	// Use inclusive comparison on transaction_hash (<=/>= instead of </>)
+	// to avoid skipping events when a page break falls mid-transaction.
+	// Already-seen events are filtered out in code below.
 	cursorClause := ""
 	if filters.Cursor != nil {
-		cursorClause = fmt.Sprintf(" AND (ledger_sequence %s $%d OR (ledger_sequence = $%d AND transaction_hash %s $%d))",
+		cursorClause = fmt.Sprintf(" AND (ledger_sequence %s $%d OR (ledger_sequence = $%d AND transaction_hash %s= $%d))",
 			cursorOp, argNum, argNum, cursorOp, argNum+1)
 		args = append(args, filters.Cursor.LedgerSequence, filters.Cursor.TxHash)
 		argNum += 2
+	}
+
+	// Request extra rows to compensate for skipped cursor-overlap events
+	requestLimit := filters.Limit + 1
+	if filters.Cursor != nil {
+		requestLimit += filters.Cursor.EventIndex + 1
 	}
 
 	query := fmt.Sprintf(`
@@ -4146,7 +4153,9 @@ func (r *UnifiedDuckDBReader) GetUnifiedEvents(ctx context.Context, filters Unif
 	defer rows.Close()
 
 	var events []UnifiedEvent
-	eventIdx := 0
+	var lastLedger int64
+	var lastTxHash string
+	txEventCounter := 0
 	for rows.Next() {
 		var e UnifiedEvent
 		var timestamp string
@@ -4156,9 +4165,26 @@ func (r *UnifiedDuckDBReader) GetUnifiedEvents(ctx context.Context, filters Unif
 			&amount, &e.ContractID, &e.OperationType); err != nil {
 			return nil, "", false, err
 		}
+
+		// Track event position within each (ledger, tx) group
+		if e.LedgerSequence != lastLedger || e.TxHash != lastTxHash {
+			txEventCounter = 0
+			lastLedger = e.LedgerSequence
+			lastTxHash = e.TxHash
+		}
+
+		// Skip events already seen on the previous page
+		if filters.Cursor != nil &&
+			e.LedgerSequence == filters.Cursor.LedgerSequence &&
+			e.TxHash == filters.Cursor.TxHash &&
+			txEventCounter <= filters.Cursor.EventIndex {
+			txEventCounter++
+			continue
+		}
+
 		e.ClosedAt = timestamp
-		e.EventIndex = eventIdx
-		eventIdx++
+		e.EventIndex = txEventCounter
+		txEventCounter++
 
 		// Derive event type from from/to nullity
 		switch {
@@ -4227,24 +4253,36 @@ func (r *UnifiedDuckDBReader) GetAddressEvents(ctx context.Context, addr string,
 // Derives metadata by aggregating from token_transfers_raw.
 func (r *UnifiedDuckDBReader) GetSEP41TokenMetadata(ctx context.Context, contractID string) (*SEP41TokenMetadata, error) {
 	query := fmt.Sprintf(`
-		WITH combined AS (
-			SELECT source_type, asset_code, asset_issuer, timestamp, from_account, to_account
+		WITH raw AS (
+			SELECT source_type, asset_code, asset_issuer, timestamp, from_account, to_account,
+				transaction_hash, ledger_sequence, amount
 			FROM %s.token_transfers_raw
 			WHERE token_contract_id = $1 AND transaction_successful = true
 			UNION ALL
-			SELECT source_type, asset_code, asset_issuer, timestamp, from_account, to_account
+			SELECT source_type, asset_code, asset_issuer, timestamp, from_account, to_account,
+				transaction_hash, ledger_sequence, amount
 			FROM %s.token_transfers_raw
 			WHERE token_contract_id = $1 AND transaction_successful = true
+		),
+		combined AS (
+			SELECT DISTINCT ON (transaction_hash, ledger_sequence, from_account, to_account, amount)
+				source_type, asset_code, asset_issuer, timestamp, from_account, to_account
+			FROM raw
+		),
+		unique_addresses AS (
+			SELECT from_account as address FROM combined WHERE from_account IS NOT NULL
+			UNION
+			SELECT to_account as address FROM combined WHERE to_account IS NOT NULL
 		)
 		SELECT
-			COALESCE(MAX(asset_code), '') as asset_code,
-			MAX(asset_issuer) as asset_issuer,
-			COALESCE(MAX(source_type), 'soroban') as source_type,
-			COUNT(DISTINCT COALESCE(from_account, '') || COALESCE(to_account, '')) as holder_count,
+			COALESCE(MAX(c.asset_code), '') as asset_code,
+			MAX(c.asset_issuer) as asset_issuer,
+			COALESCE(MAX(c.source_type), 'soroban') as source_type,
+			(SELECT COUNT(*) FROM unique_addresses) as holder_count,
 			COUNT(*) as transfer_count,
-			MIN(timestamp) as first_seen,
-			MAX(timestamp) as last_activity
-		FROM combined
+			MIN(c.timestamp) as first_seen,
+			MAX(c.timestamp) as last_activity
+		FROM combined c
 	`, r.hotSchema, r.coldSchema)
 
 	var meta SEP41TokenMetadata
@@ -4293,14 +4331,19 @@ func (r *UnifiedDuckDBReader) GetSEP41Balances(ctx context.Context, filters SEP4
 	}
 
 	query := fmt.Sprintf(`
-		WITH transfers AS (
-			SELECT from_account, to_account, amount, ledger_sequence, timestamp
+		WITH raw_transfers AS (
+			SELECT from_account, to_account, amount, ledger_sequence, timestamp, transaction_hash
 			FROM %s.token_transfers_raw
 			WHERE token_contract_id = $1 AND transaction_successful = true
 			UNION ALL
-			SELECT from_account, to_account, amount, ledger_sequence, timestamp
+			SELECT from_account, to_account, amount, ledger_sequence, timestamp, transaction_hash
 			FROM %s.token_transfers_raw
 			WHERE token_contract_id = $1 AND transaction_successful = true
+		),
+		transfers AS (
+			SELECT DISTINCT ON (transaction_hash, ledger_sequence, from_account, to_account, amount)
+				from_account, to_account, amount, ledger_sequence, timestamp
+			FROM raw_transfers
 		),
 		balances AS (
 			SELECT
@@ -4407,16 +4450,21 @@ func (r *UnifiedDuckDBReader) GetSEP41Balances(ctx context.Context, filters SEP4
 // GetSEP41SingleBalance returns the computed balance for a single address on a token contract
 func (r *UnifiedDuckDBReader) GetSEP41SingleBalance(ctx context.Context, contractID, address string) (*SEP41Balance, error) {
 	query := fmt.Sprintf(`
-		WITH transfers AS (
-			SELECT from_account, to_account, amount, ledger_sequence, timestamp
+		WITH raw_transfers AS (
+			SELECT from_account, to_account, amount, ledger_sequence, timestamp, transaction_hash
 			FROM %s.token_transfers_raw
 			WHERE token_contract_id = $1 AND transaction_successful = true
 				AND (from_account = $2 OR to_account = $2)
 			UNION ALL
-			SELECT from_account, to_account, amount, ledger_sequence, timestamp
+			SELECT from_account, to_account, amount, ledger_sequence, timestamp, transaction_hash
 			FROM %s.token_transfers_raw
 			WHERE token_contract_id = $1 AND transaction_successful = true
 				AND (from_account = $2 OR to_account = $2)
+		),
+		transfers AS (
+			SELECT DISTINCT ON (transaction_hash, ledger_sequence, from_account, to_account, amount)
+				from_account, to_account, amount, ledger_sequence, timestamp
+			FROM raw_transfers
 		)
 		SELECT
 			SUM(CASE WHEN to_account = $2 THEN amount ELSE 0 END) as total_received,
@@ -4450,14 +4498,19 @@ func (r *UnifiedDuckDBReader) GetSEP41Transfers(ctx context.Context, contractID 
 // GetSEP41TokenStats returns aggregate statistics for a token contract
 func (r *UnifiedDuckDBReader) GetSEP41TokenStats(ctx context.Context, contractID string) (*SEP41TokenStats, error) {
 	query := fmt.Sprintf(`
-		WITH transfers AS (
-			SELECT from_account, to_account, amount, timestamp, asset_code
+		WITH raw_transfers AS (
+			SELECT from_account, to_account, amount, timestamp, asset_code, transaction_hash, ledger_sequence
 			FROM %s.token_transfers_raw
 			WHERE token_contract_id = $1 AND transaction_successful = true
 			UNION ALL
-			SELECT from_account, to_account, amount, timestamp, asset_code
+			SELECT from_account, to_account, amount, timestamp, asset_code, transaction_hash, ledger_sequence
 			FROM %s.token_transfers_raw
 			WHERE token_contract_id = $1 AND transaction_successful = true
+		),
+		transfers AS (
+			SELECT DISTINCT ON (transaction_hash, ledger_sequence, from_account, to_account, amount)
+				from_account, to_account, amount, timestamp, asset_code
+			FROM raw_transfers
 		),
 		holders AS (
 			SELECT address, SUM(received) - SUM(sent) as net_balance
@@ -4496,14 +4549,21 @@ func (r *UnifiedDuckDBReader) GetSEP41TokenStats(ctx context.Context, contractID
 // GetAddressTokenPortfolio returns all token holdings for a given address
 func (r *UnifiedDuckDBReader) GetAddressTokenPortfolio(ctx context.Context, address string) ([]TokenHolding, error) {
 	query := fmt.Sprintf(`
-		WITH transfers AS (
-			SELECT from_account, to_account, amount, token_contract_id, asset_code, asset_issuer, source_type, timestamp
+		WITH raw_transfers AS (
+			SELECT from_account, to_account, amount, token_contract_id, asset_code, asset_issuer, source_type, timestamp,
+				transaction_hash, ledger_sequence
 			FROM %s.token_transfers_raw
 			WHERE (from_account = $1 OR to_account = $1) AND transaction_successful = true
 			UNION ALL
-			SELECT from_account, to_account, amount, token_contract_id, asset_code, asset_issuer, source_type, timestamp
+			SELECT from_account, to_account, amount, token_contract_id, asset_code, asset_issuer, source_type, timestamp,
+				transaction_hash, ledger_sequence
 			FROM %s.token_transfers_raw
 			WHERE (from_account = $1 OR to_account = $1) AND transaction_successful = true
+		),
+		transfers AS (
+			SELECT DISTINCT ON (transaction_hash, ledger_sequence, from_account, to_account, amount, token_contract_id)
+				from_account, to_account, amount, token_contract_id, asset_code, asset_issuer, source_type, timestamp
+			FROM raw_transfers
 		)
 		SELECT
 			token_contract_id,
