@@ -369,6 +369,8 @@ Filter Soroban operations by contract ID and/or function name. At least one of `
 GET /api/v1/silver/operations/soroban/by-function?contract_id={contract_id}&function_name={function_name}&limit={limit}&cursor={cursor}&order={order}
 ```
 
+> **Alias:** This endpoint is also available as `GET /api/v1/silver/calls` with the same parameters.
+
 **Parameters:**
 | Parameter | Required | Description |
 |-----------|----------|-------------|
@@ -1351,6 +1353,17 @@ curl -H "Authorization: Api-Key $API_KEY" \
 
 ---
 
+### SEP-50 NFT API (Coming Soon)
+
+The following endpoints are reserved for SEP-50 non-fungible token support and will be available when the standard is finalized:
+
+- `GET /silver/nfts/{contract_id}` — Collection metadata
+- `GET /silver/nfts/{contract_id}/tokens` — Token list
+- `GET /silver/nfts/{contract_id}/tokens/{token_id}` — Single token
+- `GET /silver/nfts/{contract_id}/transfers` — Transfer history
+
+---
+
 ### Transaction Decoding
 
 Human-readable transaction summaries, contract interface detection, and ScVal decoding.
@@ -1374,9 +1387,17 @@ curl -H "Authorization: Api-Key $API_KEY" \
 {
   "tx_hash": "abc123...",
   "summary": {
-    "description": "Swapped 100.0000000 USDC for 48.5000000 XLM on contract CDEF...",
+    "description": "Swapped 100.0000000 USDC for 48.5000000 XLM",
     "type": "swap",
-    "involved_contracts": ["CDEF..."]
+    "involved_contracts": ["CDEF..."],
+    "swap": {
+      "sold_asset": "USDC",
+      "sold_amount": "100.0000000",
+      "bought_asset": "XLM",
+      "bought_amount": "48.5000000",
+      "router": "CDEF...",
+      "trader": "GABC..."
+    }
   },
   "fee": 100,
   "ledger_sequence": 830000,
@@ -1417,6 +1438,77 @@ curl -H "Authorization: Api-Key $API_KEY" \
 | `swap` | Two counter-directional transfers | "Swapped 100 USDC for 48.5 XLM..." |
 | `contract_call` | Generic contract invocation | "Called swap on contract CDEF..." |
 | `classic` | Non-Soroban operation | "Payment of 100 XLM to GXYZ..." |
+
+**Structured Detail Fields:**
+
+When `type` is `swap`, the `swap` field is populated:
+| Field | Type | Description |
+|-------|------|-------------|
+| `sold_asset` | string | Asset sold |
+| `sold_amount` | string | Amount sold |
+| `bought_asset` | string | Asset received |
+| `bought_amount` | string | Amount received |
+| `router` | string | Router contract (first involved contract) |
+| `trader` | string | Address that initiated the swap |
+
+When `type` is `transfer`, `mint`, or `burn`, the corresponding field is populated:
+| Field | Type | Description |
+|-------|------|-------------|
+| `asset` | string | Asset code |
+| `amount` | string | Amount |
+| `from` | string | Sender address (omitted for mints) |
+| `to` | string | Receiver address (omitted for burns) |
+
+---
+
+#### Get Full Transaction Analysis
+
+Returns a composite view combining the decoded transaction, contracts involved, and contract call graph in a single request. Ideal for transaction detail pages.
+
+```bash
+GET /api/v1/silver/tx/{hash}/full
+```
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/tx/abc123.../full"
+```
+
+**Response:**
+```json
+{
+  "transaction": {
+    "tx_hash": "abc123...",
+    "ledger_sequence": 830000,
+    "closed_at": "2026-02-20T12:30:00Z",
+    "successful": true,
+    "fee": 100,
+    "operation_count": 1
+  },
+  "summary": {
+    "description": "Swapped 100 USDC for 48.5 XLM",
+    "type": "swap",
+    "involved_contracts": ["CDEF..."],
+    "swap": { "sold_asset": "USDC", "sold_amount": "100.0000000", "bought_asset": "XLM", "bought_amount": "48.5000000", "trader": "GABC...", "router": "CDEF..." }
+  },
+  "operations": [ ... ],
+  "events": [ ... ],
+  "contracts_involved": ["CDEF...", "CXYZ..."],
+  "call_graph": [
+    {
+      "from_contract": "GABC...",
+      "to_contract": "CDEF...",
+      "function_name": "swap",
+      "call_depth": 0,
+      "execution_order": 1,
+      "successful": true
+    }
+  ]
+}
+```
+
+> **Tip:** This endpoint replaces the need to call `/tx/{hash}/decoded`, `/tx/{hash}/contracts-involved`, and `/tx/{hash}/call-graph` separately.
 
 ---
 
@@ -2791,6 +2883,8 @@ fi
 | Transaction operations | `GET /transactions/{hash}/operations` | `/silver/operations/enriched?tx_hash={hash}` |
 | Transaction events | N/A | `/silver/tx/{hash}/events` |
 | Decoded transaction | N/A | `/silver/tx/{hash}/decoded` |
+| Full transaction analysis | N/A | `/silver/tx/{hash}/full` |
+| Soroban calls (alias) | N/A | `/silver/calls` |
 | Ledger info | `GET /ledgers/{sequence}` | `/bronze/ledgers?sequence={sequence}` |
 | All accounts | `GET /accounts` | `/silver/accounts` |
 | Asset holders | `GET /accounts?asset=CODE:ISSUER` | `/silver/assets/CODE:ISSUER/holders` |

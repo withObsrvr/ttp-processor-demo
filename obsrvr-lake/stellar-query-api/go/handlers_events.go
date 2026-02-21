@@ -18,7 +18,23 @@ func NewEventHandlers(reader *UnifiedDuckDBReader) *EventHandlers {
 }
 
 // HandleUnifiedEvents returns the unified CAP-67 event stream with filters
-// GET /api/v1/silver/events
+// @Summary Get unified CAP-67 event stream
+// @Description Returns the unified CAP-67 event stream with optional filters for contract, event type, source type, and ledger range. Events are derived from token_transfers_raw with type inferred from from/to nullity.
+// @Tags Events
+// @Accept json
+// @Produce json
+// @Param contract_id query string false "Filter by token contract ID (C...)"
+// @Param event_type query string false "Filter by event type: transfer, mint, burn"
+// @Param source_type query string false "Filter by source: classic or soroban"
+// @Param start_ledger query int false "Start of ledger range"
+// @Param end_ledger query int false "End of ledger range"
+// @Param limit query int false "Max results (default: 20, max: 200)" default(20)
+// @Param cursor query string false "Pagination cursor from previous response"
+// @Param order query string false "Sort order" default(desc) Enums(asc, desc)
+// @Success 200 {object} map[string]interface{} "Unified events with pagination"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/events [get]
 func (h *EventHandlers) HandleUnifiedEvents(w http.ResponseWriter, r *http.Request) {
 	filters, err := parseEventFilters(r)
 	if err != nil {
@@ -41,7 +57,21 @@ func (h *EventHandlers) HandleUnifiedEvents(w http.ResponseWriter, r *http.Reque
 }
 
 // HandleContractEvents returns events for a specific contract
-// GET /api/v1/silver/events/by-contract
+// @Summary Get events by contract
+// @Description Returns CAP-67 events filtered to a specific token contract
+// @Tags Events
+// @Accept json
+// @Produce json
+// @Param contract_id query string true "Token contract ID (C...)"
+// @Param event_type query string false "Filter by event type: transfer, mint, burn"
+// @Param source_type query string false "Filter by source: classic or soroban"
+// @Param limit query int false "Max results (default: 20, max: 200)" default(20)
+// @Param cursor query string false "Pagination cursor"
+// @Param order query string false "Sort order" default(desc) Enums(asc, desc)
+// @Success 200 {object} map[string]interface{} "Contract events with pagination"
+// @Failure 400 {object} map[string]interface{} "Missing contract_id"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/events/by-contract [get]
 func (h *EventHandlers) HandleContractEvents(w http.ResponseWriter, r *http.Request) {
 	contractID := r.URL.Query().Get("contract_id")
 	if contractID == "" {
@@ -72,7 +102,21 @@ func (h *EventHandlers) HandleContractEvents(w http.ResponseWriter, r *http.Requ
 }
 
 // HandleAddressEvents returns events where the address is sender or receiver
-// GET /api/v1/silver/address/{addr}/events
+// @Summary Get events for an address
+// @Description Returns CAP-67 events where the address appears as sender (from) or receiver (to)
+// @Tags Events
+// @Accept json
+// @Produce json
+// @Param addr path string true "Stellar account or contract address"
+// @Param event_type query string false "Filter by event type: transfer, mint, burn"
+// @Param source_type query string false "Filter by source: classic or soroban"
+// @Param limit query int false "Max results (default: 20, max: 200)" default(20)
+// @Param cursor query string false "Pagination cursor"
+// @Param order query string false "Sort order" default(desc) Enums(asc, desc)
+// @Success 200 {object} map[string]interface{} "Address events with pagination"
+// @Failure 400 {object} map[string]interface{} "Missing address"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/address/{addr}/events [get]
 func (h *EventHandlers) HandleAddressEvents(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	addr := vars["addr"]
@@ -103,7 +147,16 @@ func (h *EventHandlers) HandleAddressEvents(w http.ResponseWriter, r *http.Reque
 }
 
 // HandleTransactionEvents returns all events for a specific transaction
-// GET /api/v1/silver/tx/{hash}/events
+// @Summary Get events for a transaction
+// @Description Returns all CAP-67 events (transfers, mints, burns) for a specific transaction
+// @Tags Events
+// @Accept json
+// @Produce json
+// @Param hash path string true "Transaction hash"
+// @Success 200 {object} map[string]interface{} "Transaction events"
+// @Failure 400 {object} map[string]interface{} "Missing transaction hash"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/tx/{hash}/events [get]
 func (h *EventHandlers) HandleTransactionEvents(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	txHash := vars["hash"]

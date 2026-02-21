@@ -10,16 +10,27 @@ import (
 
 // DecodeHandlers contains HTTP handlers for transaction decoding and human-readable summaries
 type DecodeHandlers struct {
-	reader *UnifiedDuckDBReader
+	reader       *UnifiedDuckDBReader
+	silverReader *UnifiedSilverReader
 }
 
 // NewDecodeHandlers creates new transaction decode API handlers
-func NewDecodeHandlers(reader *UnifiedDuckDBReader) *DecodeHandlers {
-	return &DecodeHandlers{reader: reader}
+func NewDecodeHandlers(reader *UnifiedDuckDBReader, silverReader *UnifiedSilverReader) *DecodeHandlers {
+	return &DecodeHandlers{reader: reader, silverReader: silverReader}
 }
 
 // HandleDecodedTransaction returns a human-readable decoded transaction
-// GET /api/v1/silver/tx/{hash}/decoded
+// @Summary Get decoded transaction with human-readable summary
+// @Description Returns a decoded transaction with human-readable summary, decoded operations (with contract/function details), and associated CAP-67 events. Summary type is auto-detected: transfer, mint, burn, swap, contract_call, or classic.
+// @Tags Transactions
+// @Accept json
+// @Produce json
+// @Param hash path string true "Transaction hash"
+// @Success 200 {object} DecodedTransaction "Decoded transaction with summary, operations, and events"
+// @Failure 400 {object} map[string]interface{} "Missing transaction hash"
+// @Failure 404 {object} map[string]interface{} "Transaction not found"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/tx/{hash}/decoded [get]
 func (h *DecodeHandlers) HandleDecodedTransaction(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	txHash := vars["hash"]
@@ -43,7 +54,16 @@ func (h *DecodeHandlers) HandleDecodedTransaction(w http.ResponseWriter, r *http
 }
 
 // HandleContractInterface returns the detected interface for a contract
-// GET /api/v1/silver/contracts/{id}/interface
+// @Summary Get contract interface detection
+// @Description Returns the detected interface type (SEP-41 or unknown) for a contract based on observed function calls. SEP-41 detection requires at least 3 of 5 standard function signatures.
+// @Tags Contracts
+// @Accept json
+// @Produce json
+// @Param id path string true "Contract ID (C...)"
+// @Success 200 {object} map[string]interface{} "Detected interface with observed functions"
+// @Failure 400 {object} map[string]interface{} "Missing contract_id"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/contracts/{id}/interface [get]
 func (h *DecodeHandlers) HandleContractInterface(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	contractID := vars["id"]
@@ -82,7 +102,15 @@ func (h *DecodeHandlers) HandleContractInterface(w http.ResponseWriter, r *http.
 }
 
 // HandleDecodeScVal decodes an ScVal from XDR or JSON
-// POST /api/v1/silver/decode/scval
+// @Summary Decode Soroban ScVal
+// @Description Decodes a Soroban ScVal from XDR (base64) or JSON into a human-readable format. Supports types: bool, u32, i32, u64, i64, u128, i128, address, symbol, string, bytes, vec, map.
+// @Tags Soroban
+// @Accept json
+// @Produce json
+// @Param body body object true "ScVal to decode" SchemaExample({"xdr": "base64-encoded-xdr", "type_hint": "i128"})
+// @Success 200 {object} DecodedScVal "Decoded ScVal with type, value, and display"
+// @Failure 400 {object} map[string]interface{} "Invalid request body or missing xdr/json field"
+// @Router /api/v1/silver/decode/scval [post]
 func (h *DecodeHandlers) HandleDecodeScVal(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1MB limit
 	if err != nil {
@@ -116,4 +144,68 @@ func (h *DecodeHandlers) HandleDecodeScVal(w http.ResponseWriter, r *http.Reques
 	}
 
 	respondJSON(w, decoded)
+}
+
+// HandleFullTransaction returns a composite view: decoded transaction + contracts involved + call graph
+// @Summary Get full transaction analysis
+// @Description Returns a composite view combining the decoded transaction (summary, operations, events), contracts involved, and the contract call graph in a single request.
+// @Tags Transactions
+// @Accept json
+// @Produce json
+// @Param hash path string true "Transaction hash"
+// @Success 200 {object} map[string]interface{} "Full transaction analysis"
+// @Failure 400 {object} map[string]interface{} "Missing transaction hash"
+// @Failure 404 {object} map[string]interface{} "Transaction not found"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/tx/{hash}/full [get]
+func (h *DecodeHandlers) HandleFullTransaction(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	txHash := vars["hash"]
+	if txHash == "" {
+		respondError(w, "transaction hash required", http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+
+	// 1. Get decoded transaction (summary + ops + events)
+	decoded, err := h.reader.GetTransactionForDecode(ctx, txHash)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if decoded.OpCount == 0 && len(decoded.Events) == 0 {
+		respondError(w, "transaction not found", http.StatusNotFound)
+		return
+	}
+
+	// 2. Get contracts involved
+	var contractsInvolved []string
+	if h.silverReader != nil {
+		contractsInvolved, _ = h.silverReader.GetContractsInvolved(ctx, txHash)
+	}
+
+	// 3. Get call graph
+	var callGraph []ContractCall
+	if h.silverReader != nil {
+		callGraph, _ = h.silverReader.GetTransactionCallGraph(ctx, txHash)
+	}
+
+	// 4. Compose response
+	respondJSON(w, map[string]interface{}{
+		"transaction": map[string]interface{}{
+			"tx_hash":         decoded.TxHash,
+			"ledger_sequence": decoded.LedgerSeq,
+			"closed_at":       decoded.ClosedAt,
+			"successful":      decoded.Successful,
+			"fee":             decoded.Fee,
+			"operation_count": decoded.OpCount,
+		},
+		"summary":            decoded.Summary,
+		"operations":         decoded.Operations,
+		"events":             decoded.Events,
+		"contracts_involved": contractsInvolved,
+		"call_graph":         callGraph,
+	})
 }

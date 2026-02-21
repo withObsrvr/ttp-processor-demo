@@ -17,7 +17,16 @@ func NewSEP41Handlers(reader *UnifiedDuckDBReader) *SEP41Handlers {
 }
 
 // HandleTokenMetadata returns metadata for a SEP-41 token
-// GET /api/v1/silver/tokens/{contract_id}
+// @Summary Get SEP-41 token metadata
+// @Description Returns metadata for a SEP-41 token including asset code, holder count, and transfer count
+// @Tags Tokens
+// @Accept json
+// @Produce json
+// @Param contract_id path string true "Token contract ID (C...)"
+// @Success 200 {object} SEP41TokenMetadata "Token metadata"
+// @Failure 400 {object} map[string]interface{} "Missing contract_id"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/tokens/{contract_id} [get]
 func (h *SEP41Handlers) HandleTokenMetadata(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	contractID := vars["contract_id"]
@@ -36,7 +45,18 @@ func (h *SEP41Handlers) HandleTokenMetadata(w http.ResponseWriter, r *http.Reque
 }
 
 // HandleTokenBalances returns computed balances for all holders of a token
-// GET /api/v1/silver/tokens/{contract_id}/balances
+// @Summary Get SEP-41 token holder balances
+// @Description Returns computed balances for all holders of a token, derived from transfer history (received minus sent), ranked by balance
+// @Tags Tokens
+// @Accept json
+// @Produce json
+// @Param contract_id path string true "Token contract ID (C...)"
+// @Param limit query int false "Max results (default: 20, max: 200)" default(20)
+// @Param cursor query string false "Pagination cursor"
+// @Success 200 {object} map[string]interface{} "Token balances with pagination"
+// @Failure 400 {object} map[string]interface{} "Missing contract_id or invalid cursor"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/tokens/{contract_id}/balances [get]
 func (h *SEP41Handlers) HandleTokenBalances(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	contractID := vars["contract_id"]
@@ -76,7 +96,17 @@ func (h *SEP41Handlers) HandleTokenBalances(w http.ResponseWriter, r *http.Reque
 }
 
 // HandleSingleBalance returns the balance of a specific address for a token
-// GET /api/v1/silver/tokens/{contract_id}/balance/{address}
+// @Summary Get single address balance for a token
+// @Description Returns the computed balance (received minus sent) of a specific address for a SEP-41 token
+// @Tags Tokens
+// @Accept json
+// @Produce json
+// @Param contract_id path string true "Token contract ID (C...)"
+// @Param address path string true "Holder address (G... or C...)"
+// @Success 200 {object} map[string]interface{} "Single address balance"
+// @Failure 400 {object} map[string]interface{} "Missing contract_id or address"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/tokens/{contract_id}/balance/{address} [get]
 func (h *SEP41Handlers) HandleSingleBalance(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	contractID := vars["contract_id"]
@@ -99,7 +129,20 @@ func (h *SEP41Handlers) HandleSingleBalance(w http.ResponseWriter, r *http.Reque
 }
 
 // HandleTokenTransfers returns transfer history for a specific token
-// GET /api/v1/silver/tokens/{contract_id}/transfers
+// @Summary Get SEP-41 token transfer history
+// @Description Returns transfer history (transfers, mints, burns) for a specific SEP-41 token
+// @Tags Tokens
+// @Accept json
+// @Produce json
+// @Param contract_id path string true "Token contract ID (C...)"
+// @Param event_type query string false "Filter by type: transfer, mint, burn"
+// @Param limit query int false "Max results (default: 20, max: 200)" default(20)
+// @Param cursor query string false "Pagination cursor"
+// @Param order query string false "Sort order" default(desc) Enums(asc, desc)
+// @Success 200 {object} map[string]interface{} "Token transfers with pagination"
+// @Failure 400 {object} map[string]interface{} "Missing contract_id"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/tokens/{contract_id}/transfers [get]
 func (h *SEP41Handlers) HandleTokenTransfers(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	contractID := vars["contract_id"]
@@ -130,7 +173,16 @@ func (h *SEP41Handlers) HandleTokenTransfers(w http.ResponseWriter, r *http.Requ
 }
 
 // HandleTokenStats returns aggregate statistics for a token
-// GET /api/v1/silver/tokens/{contract_id}/stats
+// @Summary Get SEP-41 token statistics
+// @Description Returns aggregate statistics for a token including holder count, total supply, 24h transfer count and volume
+// @Tags Tokens
+// @Accept json
+// @Produce json
+// @Param contract_id path string true "Token contract ID (C...)"
+// @Success 200 {object} SEP41TokenStats "Token statistics"
+// @Failure 400 {object} map[string]interface{} "Missing contract_id"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/tokens/{contract_id}/stats [get]
 func (h *SEP41Handlers) HandleTokenStats(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	contractID := vars["contract_id"]
@@ -149,7 +201,16 @@ func (h *SEP41Handlers) HandleTokenStats(w http.ResponseWriter, r *http.Request)
 }
 
 // HandleAddressTokenPortfolio returns all token holdings for an address
-// GET /api/v1/silver/address/{addr}/token-balances
+// @Summary Get address token portfolio
+// @Description Returns all SEP-41 token holdings for an address across all tokens, with computed balances from transfer history
+// @Tags Tokens
+// @Accept json
+// @Produce json
+// @Param addr path string true "Stellar account or contract address"
+// @Success 200 {object} map[string]interface{} "Token holdings for the address"
+// @Failure 400 {object} map[string]interface{} "Missing address"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/address/{addr}/token-balances [get]
 func (h *SEP41Handlers) HandleAddressTokenPortfolio(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	addr := vars["addr"]

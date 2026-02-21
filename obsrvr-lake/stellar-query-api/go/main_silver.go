@@ -239,10 +239,12 @@ func mainWithSilver() {
 		// Operations endpoints
 		router.HandleFunc("/api/v1/silver/operations/enriched", silverHandlers.HandleEnrichedOperations)
 		router.HandleFunc("/api/v1/silver/operations/soroban/by-function", silverHandlers.HandleSorobanOpsByFunction).Methods("GET")
+		router.HandleFunc("/api/v1/silver/calls", silverHandlers.HandleSorobanOpsByFunction).Methods("GET")
 		router.HandleFunc("/api/v1/silver/operations/soroban", silverHandlers.HandleSorobanOperations)
 		router.HandleFunc("/api/v1/silver/payments", silverHandlers.HandlePayments)
 		log.Println("  ✓ /api/v1/silver/operations/*")
 		log.Println("  ✓ /api/v1/silver/operations/soroban/by-function (filter by contract/function)")
+		log.Println("  ✓ /api/v1/silver/calls (alias for by-function)")
 		log.Println("  ✓ /api/v1/silver/payments")
 
 		// Transfer endpoints
@@ -407,13 +409,15 @@ func mainWithSilver() {
 			log.Println("  ✓ /api/v1/silver/address/{addr}/token-balances (address portfolio)")
 
 			// Transaction Decode + Human-Readable Summary endpoints
-			decodeHandlers := NewDecodeHandlers(unifiedDuckDBReader)
+			decodeHandlers := NewDecodeHandlers(unifiedDuckDBReader, unifiedSilverReader)
 			log.Println("Registering Transaction Decode endpoints:")
 
 			router.HandleFunc("/api/v1/silver/tx/{hash}/decoded", decodeHandlers.HandleDecodedTransaction).Methods("GET")
+			router.HandleFunc("/api/v1/silver/tx/{hash}/full", decodeHandlers.HandleFullTransaction).Methods("GET")
 			router.HandleFunc("/api/v1/silver/contracts/{id}/interface", decodeHandlers.HandleContractInterface).Methods("GET")
 			router.HandleFunc("/api/v1/silver/decode/scval", decodeHandlers.HandleDecodeScVal).Methods("POST")
 			log.Println("  ✓ /api/v1/silver/tx/{hash}/decoded (human-readable transaction)")
+			log.Println("  ✓ /api/v1/silver/tx/{hash}/full (composite transaction analysis)")
 			log.Println("  ✓ /api/v1/silver/contracts/{id}/interface (contract ABI)")
 			log.Println("  ✓ /api/v1/silver/decode/scval (ScVal decoder)")
 		}

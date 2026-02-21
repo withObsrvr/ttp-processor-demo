@@ -4261,6 +4261,9 @@ func (r *UnifiedDuckDBReader) GetSEP41TokenMetadata(ctx context.Context, contrac
 		meta.AssetCode = &assetCode
 	}
 
+	// TODO: derive from contract_data_current when decoded columns are available
+	meta.Decimals = 7
+
 	return &meta, nil
 }
 

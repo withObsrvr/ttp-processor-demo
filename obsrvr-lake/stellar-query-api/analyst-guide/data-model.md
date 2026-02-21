@@ -816,6 +816,7 @@ SEP-41 token data provides metadata, balances, and transfer history for fungible
 | `asset_code` | string | Asset code if available |
 | `asset_issuer` | string | Asset issuer if available |
 | `source_type` | string | `classic` or `soroban` |
+| `decimals` | int | Token decimal places (default: 7) |
 | `holder_count` | int | Number of addresses with non-zero balance |
 | `transfer_count` | int | Total number of transfers |
 | `first_seen` | timestamp | First observed transfer |
@@ -876,6 +877,10 @@ Transaction decoding provides human-readable summaries, Soroban operation detail
 | `summary.description` | string | Human-readable summary |
 | `summary.type` | string | Detected type: transfer, mint, burn, swap, contract_call, classic |
 | `summary.involved_contracts` | array | Contract IDs involved |
+| `summary.swap` | object | Structured swap details (present when type=swap) |
+| `summary.transfer` | object | Structured transfer details (present when type=transfer) |
+| `summary.mint` | object | Structured mint details (present when type=mint) |
+| `summary.burn` | object | Structured burn details (present when type=burn) |
 | `fee` | int | Transaction fee in stroops |
 | `ledger_sequence` | int | Block number |
 | `closed_at` | timestamp | Block close time |

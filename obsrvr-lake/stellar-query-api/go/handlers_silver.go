@@ -1024,6 +1024,7 @@ func (h *SilverHandlers) HandleSorobanOperations(w http.ResponseWriter, r *http.
 // @Failure 400 {object} map[string]interface{} "Invalid parameters"
 // @Failure 500 {object} map[string]interface{} "Internal server error"
 // @Router /api/v1/silver/operations/soroban/by-function [get]
+// @Router /api/v1/silver/calls [get]
 func (h *SilverHandlers) HandleSorobanOpsByFunction(w http.ResponseWriter, r *http.Request) {
 	contractID := r.URL.Query().Get("contract_id")
 	functionName := r.URL.Query().Get("function_name")

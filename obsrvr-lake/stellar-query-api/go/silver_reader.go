@@ -807,6 +807,7 @@ type SEP41TokenMetadata struct {
 	AssetCode     *string `json:"asset_code,omitempty"`
 	AssetIssuer   *string `json:"asset_issuer,omitempty"`
 	SourceType    string  `json:"source_type"` // classic or soroban
+	Decimals      int     `json:"decimals"`
 	HolderCount   int64   `json:"holder_count"`
 	TransferCount int64   `json:"transfer_count"`
 	FirstSeen     string  `json:"first_seen"`

@@ -5,11 +5,33 @@ import (
 	"strings"
 )
 
+// SwapDetail contains structured data about a detected swap
+type SwapDetail struct {
+	SoldAsset    string `json:"sold_asset"`
+	SoldAmount   string `json:"sold_amount"`
+	BoughtAsset  string `json:"bought_asset"`
+	BoughtAmount string `json:"bought_amount"`
+	Router       string `json:"router,omitempty"`
+	Trader       string `json:"trader"`
+}
+
+// TransferDetail contains structured data about a transfer, mint, or burn
+type TransferDetail struct {
+	Asset  string `json:"asset"`
+	Amount string `json:"amount"`
+	From   string `json:"from,omitempty"`
+	To     string `json:"to,omitempty"`
+}
+
 // TxSummary represents a human-readable summary of a transaction
 type TxSummary struct {
-	Description       string   `json:"description"`
-	Type              string   `json:"type"` // transfer, mint, burn, swap, contract_call, classic
-	InvolvedContracts []string `json:"involved_contracts,omitempty"`
+	Description       string          `json:"description"`
+	Type              string          `json:"type"` // transfer, mint, burn, swap, contract_call, classic
+	InvolvedContracts []string        `json:"involved_contracts,omitempty"`
+	Swap              *SwapDetail     `json:"swap,omitempty"`
+	Transfer          *TransferDetail `json:"transfer,omitempty"`
+	Mint              *TransferDetail `json:"mint,omitempty"`
+	Burn              *TransferDetail `json:"burn,omitempty"`
 }
 
 // GenerateTxSummary creates a human-readable summary from decoded operations and events.
@@ -107,36 +129,59 @@ func summarizeSingleEvent(e UnifiedEvent, contracts []string) TxSummary {
 		assetStr = " " + *e.AssetCode
 	}
 
+	asset := strings.TrimSpace(assetStr)
+	if asset == "" {
+		asset = "tokens"
+	}
+
 	switch e.EventType {
 	case "transfer":
 		toAddr := "unknown"
 		if e.To != nil {
 			toAddr = abbreviateAddr(*e.To)
 		}
+		detail := &TransferDetail{Asset: asset, Amount: amountStr}
+		if e.From != nil {
+			detail.From = *e.From
+		}
+		if e.To != nil {
+			detail.To = *e.To
+		}
 		return TxSummary{
 			Description:       fmt.Sprintf("Transferred %s%s to %s", amountStr, assetStr, toAddr),
 			Type:              "transfer",
 			InvolvedContracts: contracts,
+			Transfer:          detail,
 		}
 	case "mint":
 		toAddr := "unknown"
 		if e.To != nil {
 			toAddr = abbreviateAddr(*e.To)
 		}
+		detail := &TransferDetail{Asset: asset, Amount: amountStr}
+		if e.To != nil {
+			detail.To = *e.To
+		}
 		return TxSummary{
 			Description:       fmt.Sprintf("Minted %s%s to %s", amountStr, assetStr, toAddr),
 			Type:              "mint",
 			InvolvedContracts: contracts,
+			Mint:              detail,
 		}
 	case "burn":
 		fromAddr := "unknown"
 		if e.From != nil {
 			fromAddr = abbreviateAddr(*e.From)
 		}
+		detail := &TransferDetail{Asset: asset, Amount: amountStr}
+		if e.From != nil {
+			detail.From = *e.From
+		}
 		return TxSummary{
 			Description:       fmt.Sprintf("Burned %s%s from %s", amountStr, assetStr, fromAddr),
 			Type:              "burn",
 			InvolvedContracts: contracts,
+			Burn:              detail,
 		}
 	default:
 		return TxSummary{
@@ -180,10 +225,24 @@ func buildSwapSummary(outgoing, incoming UnifiedEvent, contracts []string) *TxSu
 		inAsset = *incoming.AssetCode
 	}
 
+	detail := &SwapDetail{
+		SoldAsset:    outAsset,
+		SoldAmount:   outAmt,
+		BoughtAsset:  inAsset,
+		BoughtAmount: inAmt,
+	}
+	if outgoing.From != nil {
+		detail.Trader = *outgoing.From
+	}
+	if len(contracts) > 0 {
+		detail.Router = contracts[0]
+	}
+
 	return &TxSummary{
 		Description:       fmt.Sprintf("Swapped %s %s for %s %s", outAmt, outAsset, inAmt, inAsset),
 		Type:              "swap",
 		InvolvedContracts: contracts,
+		Swap:              detail,
 	}
 }
 
