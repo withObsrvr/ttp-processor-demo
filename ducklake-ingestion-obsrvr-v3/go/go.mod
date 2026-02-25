@@ -7,7 +7,7 @@ require (
 	github.com/duckdb/duckdb-go/v2 v2.5.4
 	github.com/guregu/null v4.0.0+incompatible
 	github.com/prometheus/client_golang v1.20.5
-	github.com/stellar/go-stellar-sdk v0.0.0-20251125210943-4134368d57d8
+	github.com/stellar/go-stellar-sdk v0.0.0-20251210134752-6c46f8811c13
 	github.com/withObsrvr/flowctl v0.0.0-00010101000000-000000000000
 	github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/go v0.0.0-00010101000000-000000000000
 	google.golang.org/grpc v1.76.0

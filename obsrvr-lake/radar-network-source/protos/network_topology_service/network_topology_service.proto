@@ -1,0 +1,81 @@
+syntax = "proto3";
+
+package network_topology_service;
+
+option go_package = "github.com/withObsrvr/ttp-processor-demo/obsrvr-lake/radar-network-source/gen/network_topology_service";
+
+import "google/protobuf/timestamp.proto";
+
+service NetworkTopologyService {
+    rpc StreamNetworkSnapshots(StreamSnapshotsRequest) returns (stream NetworkSnapshot) {}
+}
+
+message StreamSnapshotsRequest {
+    uint32 start_scan_id = 1; // Resume from scan ID (0 = latest)
+}
+
+message NetworkSnapshot {
+    uint32 scan_id = 1;
+    google.protobuf.Timestamp scan_time = 2;
+    uint64 latest_ledger = 3;
+    google.protobuf.Timestamp latest_ledger_close_time = 4;
+    repeated uint64 ledgers_observed = 5;
+
+    NetworkMeasurement network_measurement = 6;
+    repeated NodeMeasurement node_measurements = 7;
+    repeated OrganizationMeasurement org_measurements = 8;
+}
+
+message NetworkMeasurement {
+    // Node counts
+    uint32 nr_of_active_watchers = 1;
+    uint32 nr_of_connectable_nodes = 2;
+    uint32 nr_of_active_validators = 3;
+    uint32 nr_of_active_full_validators = 4;
+    uint32 nr_of_active_organizations = 5;
+    // Quorum topology
+    uint32 transitive_quorum_set_size = 6;
+    bool has_transitive_quorum_set = 7;
+    uint32 top_tier_size = 8;
+    uint32 top_tier_orgs_size = 9;
+    bool has_symmetric_top_tier = 10;
+    bool has_quorum_intersection = 11;
+    // Blocking sets
+    uint32 min_blocking_set_size = 12;
+    uint32 min_blocking_set_filtered_size = 13;
+    uint32 min_blocking_set_orgs_size = 14;
+    uint32 min_blocking_set_orgs_filtered_size = 15;
+    uint32 min_blocking_set_country_size = 16;
+    uint32 min_blocking_set_country_filtered_size = 17;
+    uint32 min_blocking_set_isp_size = 18;
+    uint32 min_blocking_set_isp_filtered_size = 19;
+    // Splitting sets
+    uint32 min_splitting_set_size = 20;
+    uint32 min_splitting_set_orgs_size = 21;
+    uint32 min_splitting_set_country_size = 22;
+    uint32 min_splitting_set_isp_size = 23;
+}
+
+message NodeMeasurement {
+    string public_key = 1;
+    bool is_active = 2;
+    bool is_validating = 3;
+    bool is_full_validator = 4;
+    bool is_overloaded = 5;
+    bool is_active_in_scp = 6;
+    bool connectivity_error = 7;
+    bool stellar_core_version_behind = 8;
+    bool history_archive_has_error = 9;
+    optional int32 lag_ms = 10;
+    int32 index = 11;
+    double trust_centrality_score = 12;
+    double page_rank_score = 13;
+    int32 trust_rank = 14;
+}
+
+message OrganizationMeasurement {
+    string organization_id = 1;
+    bool is_sub_quorum_available = 2;
+    int32 index = 3;
+    string toml_state = 4;
+}
