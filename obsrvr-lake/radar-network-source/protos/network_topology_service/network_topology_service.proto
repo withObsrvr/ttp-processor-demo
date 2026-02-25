@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package network_topology_service;
 
-option go_package = "github.com/withObsrvr/ttp-processor-demo/obsrvr-lake/radar-network-source/gen/network_topology_service";
+option go_package = "github.com/withObsrvr/ttp-processor-demo/obsrvr-lake/radar-network-source/go/gen/network_topology_service";
 
 import "google/protobuf/timestamp.proto";
 

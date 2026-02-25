@@ -1,5 +1,5 @@
 service:
-  name: stellarbeat-network-ingester
+  name: radar-network-ingester
   health_port: 8096
 
 source:
@@ -16,4 +16,4 @@ postgres:
   max_retries: 3
 
 checkpoint:
-  file_path: "/var/lib/stellarbeat-network-ingester/checkpoint.json"
+  file_path: "/var/lib/radar-network-ingester/checkpoint.json"

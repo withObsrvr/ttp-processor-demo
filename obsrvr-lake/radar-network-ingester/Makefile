@@ -5,7 +5,7 @@ GOCMD=go
 GOBUILD=$(GOCMD) build
 GOCLEAN=$(GOCMD) clean
 GOTEST=$(GOCMD) test
-BINARY_NAME=stellarbeat-network-ingester
+BINARY_NAME=radar-network-ingester
 
 GO_SRC_DIR=./go
 

@@ -12,7 +12,7 @@ PROTOC=protoc
 GO_SRC_DIR=./go
 GEN_DIR=$(GO_SRC_DIR)/gen
 PROTO_DIR=./protos
-GO_PACKAGE_BASE=github.com/withObsrvr/ttp-processor-demo/obsrvr-lake/radar-network-source
+GO_PACKAGE_BASE=github.com/withObsrvr/ttp-processor-demo/obsrvr-lake/radar-network-source/go
 
 all: build
 

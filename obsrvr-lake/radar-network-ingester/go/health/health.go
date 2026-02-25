@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/withObsrvr/ttp-processor-demo/obsrvr-lake/stellarbeat-network-ingester/go/checkpoint"
+	"github.com/withObsrvr/ttp-processor-demo/obsrvr-lake/radar-network-ingester/go/checkpoint"
 )
 
 type Server struct {

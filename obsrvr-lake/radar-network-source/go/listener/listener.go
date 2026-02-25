@@ -2,6 +2,7 @@ package listener
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
@@ -53,19 +54,19 @@ func (l *Listener) Run(ctx context.Context) error {
 
 		// Reconnect with exponential backoff
 		delay := reconnectBaseDelay
-		for {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(delay):
-			}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
 
-			if err := l.catchUp(ctx); err != nil {
-				log.Printf("catch-up after reconnect failed: %v", err)
+		if err := l.catchUp(ctx); err != nil {
+			log.Printf("catch-up after reconnect failed: %v", err)
+			// Back off before retrying the listen loop
+			delay *= 2
+			if delay > reconnectMaxDelay {
+				delay = reconnectMaxDelay
 			}
-
-			// Try to re-enter listen loop
-			break
 		}
 	}
 }
@@ -94,13 +95,14 @@ func (l *Listener) listenLoop(ctx context.Context) error {
 				return ctx.Err()
 			}
 			// Timeout — fallback poll
-			if waitCtx.Err() != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
 				log.Printf("No notification in %v, polling for new scans...", pollInterval)
 				if pollErr := l.catchUp(ctx); pollErr != nil {
 					log.Printf("poll catch-up error: %v", pollErr)
 				}
 				continue
 			}
+			// Real connection error — return to trigger reconnect
 			return fmt.Errorf("wait for notification: %w", err)
 		}
 

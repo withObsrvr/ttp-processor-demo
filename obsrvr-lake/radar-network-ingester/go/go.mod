@@ -1,4 +1,4 @@
-module github.com/withObsrvr/ttp-processor-demo/obsrvr-lake/stellarbeat-network-ingester/go
+module github.com/withObsrvr/ttp-processor-demo/obsrvr-lake/radar-network-ingester/go
 
 go 1.24.0
 

@@ -38,6 +38,15 @@ func (w *Writer) WriteSnapshot(ctx context.Context, snapshot *pb.NetworkSnapshot
 		nm = &pb.NetworkMeasurement{}
 	}
 
+	// Safe timestamp extraction (nil-safe)
+	var scanTime, ledgerCloseTime interface{}
+	if snapshot.ScanTime != nil {
+		scanTime = snapshot.ScanTime.AsTime()
+	}
+	if snapshot.LatestLedgerCloseTime != nil {
+		ledgerCloseTime = snapshot.LatestLedgerCloseTime.AsTime()
+	}
+
 	_, err = tx.Exec(ctx, `
 		INSERT INTO network_topology_snapshots (
 			scan_id, scan_time, latest_ledger, latest_ledger_close_time,
@@ -63,9 +72,9 @@ func (w *Writer) WriteSnapshot(ctx context.Context, snapshot *pb.NetworkSnapshot
 		) ON CONFLICT (scan_id) DO NOTHING
 	`,
 		snapshot.ScanId,
-		snapshot.ScanTime.AsTime(),
+		scanTime,
 		snapshot.LatestLedger,
-		snapshot.LatestLedgerCloseTime.AsTime(),
+		ledgerCloseTime,
 		nm.NrOfActiveWatchers,
 		nm.NrOfConnectableNodes,
 		nm.NrOfActiveValidators,
@@ -92,6 +101,14 @@ func (w *Writer) WriteSnapshot(ctx context.Context, snapshot *pb.NetworkSnapshot
 	)
 	if err != nil {
 		return fmt.Errorf("insert snapshot: %w", err)
+	}
+
+	// Delete any existing measurements for this scan (idempotent replay)
+	if _, err := tx.Exec(ctx, `DELETE FROM node_topology_measurements WHERE scan_id = $1`, snapshot.ScanId); err != nil {
+		return fmt.Errorf("delete existing node measurements: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM org_topology_measurements WHERE scan_id = $1`, snapshot.ScanId); err != nil {
+		return fmt.Errorf("delete existing org measurements: %w", err)
 	}
 
 	// Batch insert node measurements

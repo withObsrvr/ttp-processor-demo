@@ -14,9 +14,9 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	"github.com/withObsrvr/ttp-processor-demo/obsrvr-lake/stellarbeat-network-ingester/go/checkpoint"
-	"github.com/withObsrvr/ttp-processor-demo/obsrvr-lake/stellarbeat-network-ingester/go/health"
-	"github.com/withObsrvr/ttp-processor-demo/obsrvr-lake/stellarbeat-network-ingester/go/writer"
+	"github.com/withObsrvr/ttp-processor-demo/obsrvr-lake/radar-network-ingester/go/checkpoint"
+	"github.com/withObsrvr/ttp-processor-demo/obsrvr-lake/radar-network-ingester/go/health"
+	"github.com/withObsrvr/ttp-processor-demo/obsrvr-lake/radar-network-ingester/go/writer"
 	pb "github.com/withObsrvr/ttp-processor-demo/obsrvr-lake/radar-network-source/go/gen/network_topology_service"
 )
 
