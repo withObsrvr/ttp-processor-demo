@@ -1,0 +1,19 @@
+service:
+  name: radar-network-ingester
+  health_port: 8096
+
+source:
+  endpoint: "localhost:50055"
+  start_scan_id: 0  # 0 = from latest
+
+postgres:
+  host: localhost
+  port: 5434
+  database: stellar_hot
+  user: stellar
+  password: stellar_dev_password
+  sslmode: disable
+  max_retries: 3
+
+checkpoint:
+  file_path: "/var/lib/radar-network-ingester/checkpoint.json"

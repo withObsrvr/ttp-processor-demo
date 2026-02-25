@@ -1,0 +1,10 @@
+service:
+  name: radar-network-source
+  grpc_port: 50055
+  health_port: 8095
+
+stellarbeat_db:
+  url: "postgresql://readonly:password@stellarbeat-db:5432/stellarbeat"
+
+checkpoint:
+  file_path: "/var/lib/radar-network-source/checkpoint.json"
