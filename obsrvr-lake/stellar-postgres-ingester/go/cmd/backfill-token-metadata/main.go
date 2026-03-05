@@ -49,7 +49,7 @@ func main() {
 	err = pool.QueryRow(ctx, `
 		SELECT COUNT(*) FROM contract_data_snapshot_v1
 		WHERE contract_key_type = 'ScValTypeScvLedgerKeyContractInstance'
-		  AND token_name IS NULL
+		  AND (token_name IS NULL OR token_symbol IS NULL OR token_decimals IS NULL)
 		  AND contract_data_xdr IS NOT NULL
 		  AND contract_data_xdr != ''
 	`).Scan(&total)
@@ -60,21 +60,24 @@ func main() {
 
 	updated := 0
 	skipped := 0
-	offset := 0
+	processed := 0
+	lastContractID := ""
+	lastLedgerSequence := int64(0)
 
 	for {
 		rows, err := pool.Query(ctx, `
 			SELECT contract_id, ledger_key_hash, ledger_sequence, contract_data_xdr
 			FROM contract_data_snapshot_v1
 			WHERE contract_key_type = 'ScValTypeScvLedgerKeyContractInstance'
-			  AND token_name IS NULL
+			  AND (token_name IS NULL OR token_symbol IS NULL OR token_decimals IS NULL)
 			  AND contract_data_xdr IS NOT NULL
 			  AND contract_data_xdr != ''
+			  AND (contract_id, ledger_sequence) > ($2, $3)
 			ORDER BY contract_id, ledger_sequence
-			LIMIT $1 OFFSET $2
-		`, *batchSize, offset)
+			LIMIT $1
+		`, *batchSize, lastContractID, lastLedgerSequence)
 		if err != nil {
-			log.Fatalf("Failed to query batch at offset %d: %v", offset, err)
+			log.Fatalf("Failed to query batch after (%s, %d): %v", lastContractID, lastLedgerSequence, err)
 		}
 
 		batchCount := 0
@@ -87,6 +90,8 @@ func main() {
 				continue
 			}
 			batchCount++
+			lastContractID = contractID
+			lastLedgerSequence = ledgerSequence
 
 			// Decode base64 XDR
 			xdrBytes, err := base64.StdEncoding.DecodeString(contractDataXDR)
@@ -150,9 +155,9 @@ func main() {
 			break
 		}
 
-		offset += batchCount
+		processed += batchCount
 		log.Printf("Progress: processed %d/%d rows (%d updated, %d skipped)",
-			offset, total, updated, skipped)
+			processed, total, updated, skipped)
 	}
 
 	elapsed := time.Since(start)

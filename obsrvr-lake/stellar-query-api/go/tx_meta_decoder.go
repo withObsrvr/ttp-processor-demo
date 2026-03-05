@@ -1,9 +1,11 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"math/big"
 	"strings"
 
 	"github.com/stellar/go/xdr"
@@ -193,19 +195,19 @@ func extractAccountBalanceChange(before, after *xdr.LedgerEntry, changeType stri
 func extractTrustlineBalanceChange(before, after *xdr.LedgerEntry, changeType string) *TxBalanceChange {
 	var beforeBalance int64
 	var afterBalance int64
-	var address, assetCode, assetType string
+	var address, assetCode, assetType, assetIssuer string
 
 	if before != nil {
 		tl := before.Data.MustTrustLine()
 		address = tl.AccountId.Address()
 		beforeBalance = int64(tl.Balance)
-		assetCode, assetType = trustlineAssetInfo(tl.Asset)
+		assetCode, assetType, assetIssuer = trustlineAssetInfo(tl.Asset)
 	}
 	if after != nil {
 		tl := after.Data.MustTrustLine()
 		address = tl.AccountId.Address()
 		afterBalance = int64(tl.Balance)
-		assetCode, assetType = trustlineAssetInfo(tl.Asset)
+		assetCode, assetType, assetIssuer = trustlineAssetInfo(tl.Asset)
 	}
 
 	if beforeBalance == afterBalance && changeType == "updated" {
@@ -214,12 +216,13 @@ func extractTrustlineBalanceChange(before, after *xdr.LedgerEntry, changeType st
 
 	delta := afterBalance - beforeBalance
 	return &TxBalanceChange{
-		Address:   address,
-		AssetCode: assetCode,
-		AssetType: assetType,
-		Before:    formatStroopsToDecimal(beforeBalance),
-		After:     formatStroopsToDecimal(afterBalance),
-		Delta:     formatStroopsDelta(delta),
+		Address:     address,
+		AssetCode:   assetCode,
+		AssetType:   assetType,
+		AssetIssuer: assetIssuer,
+		Before:      formatStroopsToDecimal(beforeBalance),
+		After:       formatStroopsToDecimal(afterBalance),
+		Delta:       formatStroopsDelta(delta),
 	}
 }
 
@@ -234,7 +237,10 @@ func extractContractDataChange(before, after *xdr.LedgerEntry, changeType string
 	if cd.Contract.ContractId != nil {
 		contractAddr = hex.EncodeToString((*cd.Contract.ContractId)[:])
 	}
-	key := fmt.Sprintf("contract:%s", contractAddr)
+	// Include a hash of the storage key XDR to distinguish multiple entries for the same contract
+	keyXDR, _ := cd.Key.MarshalBinary()
+	keyHash := sha256.Sum256(keyXDR)
+	key := fmt.Sprintf("contract:%s:%s", contractAddr, hex.EncodeToString(keyHash[:8]))
 
 	var beforeStr, afterStr *string
 	if before != nil {
@@ -271,22 +277,24 @@ func extractGenericStateChange(before, after *xdr.LedgerEntry, changeType string
 	}
 }
 
-func trustlineAssetInfo(asset xdr.TrustLineAsset) (string, string) {
+func trustlineAssetInfo(asset xdr.TrustLineAsset) (string, string, string) {
 	switch asset.Type {
 	case xdr.AssetTypeAssetTypeCreditAlphanum4:
 		if asset.AlphaNum4 != nil {
 			code := strings.TrimRight(string(asset.AlphaNum4.AssetCode[:]), "\x00")
-			return code, "credit_alphanum4"
+			issuer := asset.AlphaNum4.Issuer.Address()
+			return code, "credit_alphanum4", issuer
 		}
 	case xdr.AssetTypeAssetTypeCreditAlphanum12:
 		if asset.AlphaNum12 != nil {
 			code := strings.TrimRight(string(asset.AlphaNum12.AssetCode[:]), "\x00")
-			return code, "credit_alphanum12"
+			issuer := asset.AlphaNum12.Issuer.Address()
+			return code, "credit_alphanum12", issuer
 		}
 	case xdr.AssetTypeAssetTypePoolShare:
-		return "pool_share", "liquidity_pool"
+		return "pool_share", "liquidity_pool", ""
 	}
-	return "unknown", "unknown"
+	return "unknown", "unknown", ""
 }
 
 func summarizeScVal(val xdr.ScVal) string {
@@ -344,22 +352,64 @@ func formatStroopsDelta(stroops int64) string {
 
 func deduplicateBalanceChanges(changes []TxBalanceChange) []TxBalanceChange {
 	type key struct {
-		Address   string
-		AssetCode string
+		Address     string
+		AssetCode   string
+		AssetIssuer string
 	}
 	seen := make(map[key]int)
 	var result []TxBalanceChange
 
 	for _, c := range changes {
-		k := key{Address: c.Address, AssetCode: c.AssetCode}
+		k := key{Address: c.Address, AssetCode: c.AssetCode, AssetIssuer: c.AssetIssuer}
 		if idx, ok := seen[k]; ok {
-			// Keep the earliest "before" and latest "after"
+			// Keep the earliest "before" and latest "after", recompute delta
 			result[idx].After = c.After
-			result[idx].Delta = c.Delta
+			result[idx].Delta = recomputeDelta(result[idx].Before, result[idx].After)
 		} else {
 			seen[k] = len(result)
 			result = append(result, c)
 		}
 	}
 	return result
+}
+
+// recomputeDelta derives a delta string from before/after decimal balance strings.
+// Before and After are formatted as "X.YYYYYYY" (7 decimal places from formatStroopsToDecimal).
+// Delta is returned as "+X.YYYYYYY" or "-X.YYYYYYY".
+func recomputeDelta(before, after string) string {
+	beforeInt := decimalToStroopsBigInt(before)
+	afterInt := decimalToStroopsBigInt(after)
+	delta := new(big.Int).Sub(afterInt, beforeInt)
+	if delta.Sign() >= 0 {
+		return "+" + bigIntToDecimal(delta)
+	}
+	return "-" + bigIntToDecimal(new(big.Int).Abs(delta))
+}
+
+// decimalToStroopsBigInt converts a decimal string like "123.4567890" to stroops as big.Int.
+func decimalToStroopsBigInt(s string) *big.Int {
+	parts := strings.SplitN(s, ".", 2)
+	whole := parts[0]
+	frac := "0000000"
+	if len(parts) == 2 {
+		frac = parts[1]
+		// Pad or truncate to 7 digits
+		for len(frac) < 7 {
+			frac += "0"
+		}
+		frac = frac[:7]
+	}
+	combined := whole + frac
+	result := new(big.Int)
+	result.SetString(combined, 10)
+	return result
+}
+
+// bigIntToDecimal converts a non-negative stroops big.Int to a decimal string with 7 places.
+func bigIntToDecimal(stroops *big.Int) string {
+	divisor := big.NewInt(10000000)
+	whole := new(big.Int)
+	frac := new(big.Int)
+	whole.DivMod(stroops, divisor, frac)
+	return fmt.Sprintf("%s.%07s", whole.String(), frac.String())
 }

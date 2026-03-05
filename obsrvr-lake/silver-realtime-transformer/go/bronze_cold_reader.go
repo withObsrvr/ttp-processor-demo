@@ -1288,7 +1288,7 @@ func (r *BronzeColdReader) QueryTokenMetadataEntries(ctx context.Context, startL
 			WHERE ledger_sequence BETWEEN $1 AND $2
 			  AND contract_key_type = 'ScValTypeScvLedgerKeyContractInstance'
 			  AND deleted = false
-			  AND (token_name IS NOT NULL OR asset_code IS NOT NULL)
+			  AND (token_name IS NOT NULL OR token_symbol IS NOT NULL OR asset_code IS NOT NULL)
 		)
 		SELECT
 			contract_id,

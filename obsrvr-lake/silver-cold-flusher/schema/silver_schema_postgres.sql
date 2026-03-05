@@ -326,7 +326,7 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.token_registry (
     asset_issuer VARCHAR,
     token_type VARCHAR,
     first_seen_ledger BIGINT,
-    last_updated_ledger BIGINT,
+    last_modified_ledger BIGINT,
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
     PRIMARY KEY (contract_id)

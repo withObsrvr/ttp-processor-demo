@@ -162,7 +162,7 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.token_registry (
     asset_issuer          TEXT,
     token_type            TEXT,
     first_seen_ledger     BIGINT,
-    last_updated_ledger   BIGINT,
+    last_modified_ledger  BIGINT,
     created_at            TIMESTAMP WITH TIME ZONE,
     updated_at            TIMESTAMP WITH TIME ZONE
 );

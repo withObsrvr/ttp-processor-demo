@@ -1749,7 +1749,7 @@ func (rt *RealtimeTransformer) transformTokenRegistry(ctx context.Context, tx *s
 			AssetIssuer:       assetIssuer,
 			TokenType:         tokenType,
 			FirstSeenLedger:   ledgerSequence,
-			LastUpdatedLedger: ledgerSequence,
+			LastModifiedLedger: ledgerSequence,
 		}
 
 		if err := rt.silverWriter.WriteTokenRegistry(ctx, tx, row); err != nil {

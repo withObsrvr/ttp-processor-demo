@@ -942,7 +942,7 @@ func (br *BronzeReader) QueryTokenMetadataEntries(ctx context.Context, startLedg
 		WHERE ledger_sequence BETWEEN $1 AND $2
 		  AND contract_key_type = 'ScValTypeScvLedgerKeyContractInstance'
 		  AND deleted = false
-		  AND (token_name IS NOT NULL OR asset_code IS NOT NULL)
+		  AND (token_name IS NOT NULL OR token_symbol IS NOT NULL OR asset_code IS NOT NULL)
 		ORDER BY contract_id, ledger_sequence DESC
 	`
 

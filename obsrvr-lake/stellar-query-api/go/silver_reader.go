@@ -930,12 +930,13 @@ type SearchResults struct {
 
 // TxBalanceChange represents a balance change within a transaction
 type TxBalanceChange struct {
-	Address   string `json:"address"`
-	AssetCode string `json:"asset_code"`
-	AssetType string `json:"asset_type"`
-	Before    string `json:"before"`
-	After     string `json:"after"`
-	Delta     string `json:"delta"`
+	Address     string `json:"address"`
+	AssetCode   string `json:"asset_code"`
+	AssetType   string `json:"asset_type"`
+	AssetIssuer string `json:"asset_issuer,omitempty"`
+	Before      string `json:"before"`
+	After       string `json:"after"`
+	Delta       string `json:"delta"`
 }
 
 // TxStateChange represents a state change within a transaction

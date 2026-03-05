@@ -1141,7 +1141,7 @@ GET /api/v1/silver/events/generic
 | `event_type` | No | Filter by type: `contract`, `system`, `diagnostic` |
 | `start_ledger` | No | Start of ledger range |
 | `end_ledger` | No | End of ledger range |
-| `limit` | No | Max results (default: 100, max: 1000) |
+| `limit` | No | Max results (default: 20, max: 200) |
 | `cursor` | No | Pagination cursor |
 | `order` | No | Sort order: `asc` or `desc` (default: desc) |
 
@@ -1190,7 +1190,7 @@ GET /api/v1/silver/events/contract/{contract_id}
 |-----------|----------|-------------|
 | `contract_id` | Yes | Contract ID in hex format (path parameter) |
 | `event_type` | No | Filter by type: `contract`, `system`, `diagnostic` |
-| `limit` | No | Max results (default: 100, max: 1000) |
+| `limit` | No | Max results (default: 20, max: 200) |
 | `cursor` | No | Pagination cursor |
 | `order` | No | Sort order: `asc` or `desc` (default: desc) |
 
@@ -1242,7 +1242,7 @@ curl -H "Authorization: Api-Key $API_KEY" \
       "id": "1349200",
       "label": "Ledger #1349200",
       "details": {
-        "tx_count": 5
+        "transaction_count": 5
       }
     }
   ]
@@ -1750,7 +1750,7 @@ curl -H "Authorization: Api-Key $API_KEY" \
   "balance_changes": [
     {
       "address": "GAIH3...",
-      "asset_code": "native",
+      "asset_code": "XLM",
       "asset_type": "native",
       "before": "10000000000",
       "after": "9000000000",

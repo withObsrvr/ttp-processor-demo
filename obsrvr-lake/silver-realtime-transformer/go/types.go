@@ -580,7 +580,7 @@ type TokenRegistryRow struct {
 	AssetIssuer       sql.NullString
 	TokenType         string // "sac" or "custom_soroban"
 	FirstSeenLedger   int64
-	LastUpdatedLedger int64
+	LastModifiedLedger int64
 }
 
 // ConfigSettingsCurrentRow represents a row in the config_settings_current table

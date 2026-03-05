@@ -638,7 +638,7 @@ CREATE TABLE IF NOT EXISTS token_registry (
     asset_issuer    TEXT,          -- from SAC AssetInfo (AssetFromContractData)
     token_type      TEXT NOT NULL, -- 'sac' or 'custom_soroban'
     first_seen_ledger BIGINT,
-    last_updated_ledger BIGINT,
+    last_modified_ledger BIGINT,
     created_at      TIMESTAMPTZ DEFAULT NOW(),
     updated_at      TIMESTAMPTZ DEFAULT NOW()
 );

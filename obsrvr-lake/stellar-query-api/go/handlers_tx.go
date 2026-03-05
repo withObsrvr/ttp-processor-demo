@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gorilla/mux"
@@ -37,7 +38,7 @@ func (h *TxDiffHandlers) HandleTransactionDiffs(w http.ResponseWriter, r *http.R
 
 	diffs, err := h.reader.GetTransactionDiffs(r.Context(), txHash)
 	if err != nil {
-		if err.Error() == "transaction not found: "+txHash {
+		if errors.Is(err, ErrTxNotFound) {
 			respondError(w, err.Error(), http.StatusNotFound)
 			return
 		}

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -11,7 +12,11 @@ import (
 	"time"
 
 	_ "github.com/duckdb/duckdb-go/v2"
+	"github.com/stellar/go/strkey"
 )
+
+// ErrTxNotFound is returned when a transaction hash is not found in any data source.
+var ErrTxNotFound = fmt.Errorf("transaction not found")
 
 // UnifiedDuckDBReader queries both hot (PostgreSQL) and cold (DuckLake) data
 // through a single DuckDB connection using ATTACH mechanism.
@@ -119,7 +124,7 @@ func NewUnifiedDuckDBReader(config UnifiedReaderConfig) (*UnifiedDuckDBReader, e
 		}
 		bronzePgAttach := fmt.Sprintf(`ATTACH '%s' AS bronze_hot_db (TYPE POSTGRES, READ_ONLY)`, bronzePgConnStr)
 		if _, err := db.Exec(bronzePgAttach); err != nil {
-			log.Printf("⚠️  Failed to attach Bronze PostgreSQL: %v", err)
+			log.Printf("⚠️  Failed to attach Bronze PostgreSQL (connection error redacted to protect credentials)")
 			log.Println("     Bronze hot endpoints (generic events, tx diffs) will be limited")
 		} else {
 			bronzeHotSchema = "bronze_hot_db"
@@ -136,7 +141,7 @@ func NewUnifiedDuckDBReader(config UnifiedReaderConfig) (*UnifiedDuckDBReader, e
 		bronzeDlAttach := fmt.Sprintf(`ATTACH '%s' AS bronze_cold_db (DATA_PATH '%s', METADATA_SCHEMA '%s')`,
 			config.BronzeDuckLake.CatalogPath, config.BronzeDuckLake.DataPath, config.BronzeDuckLake.MetadataSchema)
 		if _, err := db.Exec(bronzeDlAttach); err != nil {
-			log.Printf("⚠️  Failed to attach Bronze DuckLake: %v", err)
+			log.Printf("⚠️  Failed to attach Bronze DuckLake (connection error redacted to protect credentials)")
 			log.Println("     Bronze cold data will not be available (only recent hot data)")
 		} else {
 			bronzeColdSchema = fmt.Sprintf("bronze_cold_db.%s", config.BronzeDuckLake.SchemaName)
@@ -4346,12 +4351,15 @@ func (r *UnifiedDuckDBReader) GetSEP41TokenMetadata(ctx context.Context, contrac
 		meta.AssetCode = &assetCode
 	}
 
-	// Enrich from token_registry for name, symbol, decimals, token_type
+	// Enrich from token_registry for name, symbol, decimals, token_type (hot + cold)
 	var regName, regSymbol, regTokenType sql.NullString
 	var regDecimals sql.NullInt32
-	regErr := r.db.QueryRowContext(ctx, fmt.Sprintf(
-		"SELECT token_name, token_symbol, token_decimals, token_type FROM %s.token_registry WHERE contract_id = $1",
-		r.hotSchema), contractID).Scan(&regName, &regSymbol, &regDecimals, &regTokenType)
+	regQuery := fmt.Sprintf(`SELECT token_name, token_symbol, token_decimals, token_type FROM (
+		SELECT token_name, token_symbol, token_decimals, token_type FROM %s.token_registry WHERE contract_id = $1
+		UNION ALL
+		SELECT token_name, token_symbol, token_decimals, token_type FROM %s.token_registry WHERE contract_id = $1
+	) combined LIMIT 1`, r.hotSchema, r.coldSchema)
+	regErr := r.db.QueryRowContext(ctx, regQuery, contractID).Scan(&regName, &regSymbol, &regDecimals, &regTokenType)
 	if regErr == nil {
 		if regName.Valid && regName.String != "" {
 			meta.Name = &regName.String
@@ -4617,12 +4625,15 @@ func (r *UnifiedDuckDBReader) GetSEP41TokenStats(ctx context.Context, contractID
 	stats.TotalSupply = formatStroopsLocal(stats.TotalSupplyRaw)
 	stats.Volume24h = formatStroopsLocal(stats.Volume24hRaw)
 
-	// Enrich from token_registry
+	// Enrich from token_registry (hot + cold)
 	var regName, regSymbol, regTokenType sql.NullString
 	var regDecimals sql.NullInt32
-	regErr := r.db.QueryRowContext(ctx, fmt.Sprintf(
-		"SELECT token_name, token_symbol, token_decimals, token_type FROM %s.token_registry WHERE contract_id = $1",
-		r.hotSchema), contractID).Scan(&regName, &regSymbol, &regDecimals, &regTokenType)
+	regQuery := fmt.Sprintf(`SELECT token_name, token_symbol, token_decimals, token_type FROM (
+		SELECT token_name, token_symbol, token_decimals, token_type FROM %s.token_registry WHERE contract_id = $1
+		UNION ALL
+		SELECT token_name, token_symbol, token_decimals, token_type FROM %s.token_registry WHERE contract_id = $1
+	) combined LIMIT 1`, r.hotSchema, r.coldSchema)
+	regErr := r.db.QueryRowContext(ctx, regQuery, contractID).Scan(&regName, &regSymbol, &regDecimals, &regTokenType)
 	if regErr == nil {
 		if regName.Valid && regName.String != "" {
 			stats.Name = &regName.String
@@ -4740,28 +4751,76 @@ func (r *UnifiedDuckDBReader) GetAddressTokenPortfolio(ctx context.Context, addr
 		holdings = append(holdings, h)
 	}
 
-	// Enrich holdings from token_registry
-	for i := range holdings {
-		if holdings[i].ContractID == nil {
-			continue
+	// Enrich holdings from token_registry (batch query, hot + cold)
+	if len(holdings) > 0 {
+		// Collect contract IDs for batch lookup
+		var contractIDs []string
+		idxMap := map[string][]int{} // contract_id -> indices in holdings
+		for i := range holdings {
+			if holdings[i].ContractID == nil {
+				continue
+			}
+			cid := *holdings[i].ContractID
+			if _, exists := idxMap[cid]; !exists {
+				contractIDs = append(contractIDs, cid)
+			}
+			idxMap[cid] = append(idxMap[cid], i)
 		}
-		var regName, regSymbol, regTokenType sql.NullString
-		var regDecimals sql.NullInt32
-		regErr := r.db.QueryRowContext(ctx, fmt.Sprintf(
-			"SELECT token_name, token_symbol, token_decimals, token_type FROM %s.token_registry WHERE contract_id = $1",
-			r.hotSchema), *holdings[i].ContractID).Scan(&regName, &regSymbol, &regDecimals, &regTokenType)
-		if regErr == nil {
-			if regName.Valid && regName.String != "" {
-				holdings[i].Name = &regName.String
+
+		if len(contractIDs) > 0 {
+			// Build parameterized IN clauses for hot and cold halves of UNION
+			n := len(contractIDs)
+			hotPlaceholders := make([]string, n)
+			coldPlaceholders := make([]string, n)
+			allArgs := make([]interface{}, 0, n*2)
+			for i, cid := range contractIDs {
+				hotPlaceholders[i] = fmt.Sprintf("$%d", i+1)
+				coldPlaceholders[i] = fmt.Sprintf("$%d", n+i+1)
+				allArgs = append(allArgs, cid)
 			}
-			if regSymbol.Valid && regSymbol.String != "" {
-				holdings[i].Symbol = &regSymbol.String
+			// Append again for the cold half
+			for _, cid := range contractIDs {
+				allArgs = append(allArgs, cid)
 			}
-			if regDecimals.Valid {
-				holdings[i].Decimals = int(regDecimals.Int32)
-			}
-			if regTokenType.Valid {
-				holdings[i].TokenType = regTokenType.String
+			hotInClause := strings.Join(hotPlaceholders, ", ")
+			coldInClause := strings.Join(coldPlaceholders, ", ")
+
+			batchQuery := fmt.Sprintf(`SELECT contract_id, token_name, token_symbol, token_decimals, token_type FROM (
+				SELECT contract_id, token_name, token_symbol, token_decimals, token_type FROM %s.token_registry WHERE contract_id IN (%s)
+				UNION ALL
+				SELECT contract_id, token_name, token_symbol, token_decimals, token_type FROM %s.token_registry WHERE contract_id IN (%s)
+			) combined`, r.hotSchema, hotInClause, r.coldSchema, coldInClause)
+
+			regRows, regErr := r.db.QueryContext(ctx, batchQuery, allArgs...)
+			if regErr == nil {
+				defer regRows.Close()
+				seen := map[string]bool{}
+				for regRows.Next() {
+					var cid string
+					var regName, regSymbol, regTokenType sql.NullString
+					var regDecimals sql.NullInt32
+					if err := regRows.Scan(&cid, &regName, &regSymbol, &regDecimals, &regTokenType); err != nil {
+						continue
+					}
+					if seen[cid] {
+						continue // skip duplicates from UNION ALL
+					}
+					seen[cid] = true
+					for _, idx := range idxMap[cid] {
+						if regName.Valid && regName.String != "" {
+							holdings[idx].Name = &regName.String
+						}
+						if regSymbol.Valid && regSymbol.String != "" {
+							holdings[idx].Symbol = &regSymbol.String
+						}
+						if regDecimals.Valid {
+							holdings[idx].Decimals = int(regDecimals.Int32)
+						}
+						if regTokenType.Valid {
+							holdings[idx].TokenType = regTokenType.String
+						}
+					}
+				}
 			}
 		}
 	}
@@ -5006,8 +5065,14 @@ func (r *UnifiedDuckDBReader) GetGenericEvents(ctx context.Context, filters Gene
 		// Cursor format: "ledger_seq:event_index"
 		parts := strings.SplitN(*filters.Cursor, ":", 2)
 		if len(parts) == 2 {
-			cursorLedger, _ := strconv.ParseInt(parts[0], 10, 64)
-			cursorEvent, _ := strconv.ParseInt(parts[1], 10, 64)
+			cursorLedger, err := strconv.ParseInt(parts[0], 10, 64)
+			if err != nil {
+				return nil, "", false, fmt.Errorf("invalid cursor ledger value %q: %w", parts[0], err)
+			}
+			cursorEvent, err := strconv.ParseInt(parts[1], 10, 64)
+			if err != nil {
+				return nil, "", false, fmt.Errorf("invalid cursor event_index value %q: %w", parts[1], err)
+			}
 			if order == "DESC" {
 				conditions = append(conditions, fmt.Sprintf("(ledger_sequence < $%d OR (ledger_sequence = $%d AND event_index < $%d))", argIdx, argIdx, argIdx+1))
 			} else {
@@ -5127,14 +5192,18 @@ func detectQueryType(q string) string {
 }
 
 func (r *UnifiedDuckDBReader) searchAccount(ctx context.Context, accountID string, results *SearchResults) {
-	// Check token_transfers_raw for activity
+	// Check token_transfers_raw for activity (hot + cold)
 	countQuery := fmt.Sprintf(`
 		SELECT COUNT(*) FROM (
 			SELECT 1 FROM %s.token_transfers_raw WHERE from_account = $1
 			UNION ALL
 			SELECT 1 FROM %s.token_transfers_raw WHERE to_account = $1
+			UNION ALL
+			SELECT 1 FROM %s.token_transfers_raw WHERE from_account = $1
+			UNION ALL
+			SELECT 1 FROM %s.token_transfers_raw WHERE to_account = $1
 		) t
-	`, r.hotSchema, r.hotSchema)
+	`, r.hotSchema, r.hotSchema, r.coldSchema, r.coldSchema)
 
 	var count int64
 	if err := r.db.QueryRowContext(ctx, countQuery, accountID).Scan(&count); err != nil {
@@ -5372,7 +5441,7 @@ func (r *UnifiedDuckDBReader) GetTransactionDiffs(ctx context.Context, txHash st
 	var txMetaXDR sql.NullString
 	err := r.db.QueryRowContext(ctx, query, txHash).Scan(&ledgerSeq, &txMetaXDR)
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("transaction not found: %s", txHash)
+		return nil, fmt.Errorf("%w: %s", ErrTxNotFound, txHash)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("GetTransactionDiffs query: %w", err)
@@ -5406,6 +5475,16 @@ func (r *UnifiedDuckDBReader) GetTransactionDiffs(ctx context.Context, txHash st
 // FEATURE 5: SMART WALLET DETECTION
 // ============================================
 
+// contractIDToHex converts a C... strkey contract ID to its hex-encoded 32-byte hash.
+// Bronze tables store contract_id as hex hashes, while APIs receive C... strkey format.
+func contractIDToHex(contractID string) (string, error) {
+	raw, err := strkey.Decode(strkey.VersionByteContract, contractID)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode contract strkey: %w", err)
+	}
+	return hex.EncodeToString(raw), nil
+}
+
 // GetSmartWalletInfo detects if a contract is a SEP-50 smart wallet
 func (r *UnifiedDuckDBReader) GetSmartWalletInfo(ctx context.Context, contractID string) (*SmartWalletInfo, error) {
 	info := &SmartWalletInfo{
@@ -5415,15 +5494,21 @@ func (r *UnifiedDuckDBReader) GetSmartWalletInfo(ctx context.Context, contractID
 	}
 
 	// Check for __check_auth in contract events topics (bronze hot + cold)
+	// Bronze stores contract_id as hex hashes, so convert from C... strkey
 	if r.hasBronze() {
-		innerQuery := r.bronzeUnionQuery("1",
-			"contract_events_stream_v1",
-			"WHERE contract_id = $1 AND topics_decoded LIKE '%__check_auth%'")
-		checkAuthQuery := fmt.Sprintf(`SELECT COUNT(*) FROM (%s) t LIMIT 1`, innerQuery)
+		hexContractID, err := contractIDToHex(contractID)
+		if err != nil {
+			log.Printf("Warning: could not convert contract ID to hex for bronze query: %v", err)
+		} else {
+			innerQuery := r.bronzeUnionQuery("1",
+				"contract_events_stream_v1",
+				"WHERE contract_id = $1 AND topics_decoded LIKE '%__check_auth%'")
+			checkAuthQuery := fmt.Sprintf(`SELECT COUNT(*) FROM (%s) t LIMIT 1`, innerQuery)
 
-		var checkAuthCount int64
-		if err := r.db.QueryRowContext(ctx, checkAuthQuery, contractID).Scan(&checkAuthCount); err == nil {
-			info.HasCheckAuth = checkAuthCount > 0
+			var checkAuthCount int64
+			if err := r.db.QueryRowContext(ctx, checkAuthQuery, hexContractID).Scan(&checkAuthCount); err == nil {
+				info.HasCheckAuth = checkAuthCount > 0
+			}
 		}
 	}
 
@@ -5497,10 +5582,10 @@ func (r *UnifiedDuckDBReader) GetOHLCCandles(ctx context.Context, baseCode, base
 	query := fmt.Sprintf(`
 		SELECT
 			time_bucket(INTERVAL '%s', trade_timestamp) as bucket,
-			FIRST(CAST(price AS DOUBLE)) as open_price,
+			arg_min(CAST(price AS DOUBLE), trade_timestamp) as open_price,
 			MAX(CAST(price AS DOUBLE)) as high_price,
 			MIN(CAST(price AS DOUBLE)) as low_price,
-			LAST(CAST(price AS DOUBLE)) as close_price,
+			arg_max(CAST(price AS DOUBLE), trade_timestamp) as close_price,
 			SUM(CAST(selling_amount AS DOUBLE)) as volume,
 			COUNT(*) as trade_count
 		FROM %s.trades

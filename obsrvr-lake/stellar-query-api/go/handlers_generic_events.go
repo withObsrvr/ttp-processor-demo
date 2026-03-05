@@ -55,7 +55,7 @@ func (h *GenericEventHandlers) HandleGenericEvents(w http.ResponseWriter, r *htt
 // @Description Returns raw contract events for a specific contract from bronze layer
 // @Tags Events
 // @Produce json
-// @Param contract_id path string true "Contract ID (C...)"
+// @Param contract_id path string true "Contract ID (hex format)"
 // @Param event_type query string false "Filter by event type"
 // @Param limit query int false "Max results (default: 20, max: 200)" default(20)
 // @Param cursor query string false "Pagination cursor"
