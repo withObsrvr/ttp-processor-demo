@@ -757,3 +757,44 @@ func DecodeContractDataCursor(cursor string) (*ContractDataCursor, error) {
 		KeyHash:    parts[1],
 	}, nil
 }
+
+// ============================================
+// TOKEN LIST CURSORS
+// ============================================
+
+// Encode encodes a token list cursor to an opaque base64 string
+// Format: holder_count:contract_id:sort_by:sort_order
+func (c SEP41TokenListCursor) Encode() string {
+	raw := fmt.Sprintf("%d:%s:%s:%s", c.HolderCount, c.ContractID, c.SortBy, c.SortOrder)
+	return base64.URLEncoding.EncodeToString([]byte(raw))
+}
+
+// DecodeSEP41TokenListCursor decodes a base64 cursor string into a SEP41TokenListCursor
+// Returns nil if the cursor string is empty
+func DecodeSEP41TokenListCursor(cursor string) (*SEP41TokenListCursor, error) {
+	if cursor == "" {
+		return nil, nil
+	}
+
+	decoded, err := base64.URLEncoding.DecodeString(cursor)
+	if err != nil {
+		return nil, fmt.Errorf("invalid cursor encoding: %w", err)
+	}
+
+	parts := strings.SplitN(string(decoded), ":", 4)
+	if len(parts) != 4 {
+		return nil, fmt.Errorf("invalid cursor format: expected holder_count:contract_id:sort_by:sort_order")
+	}
+
+	holderCount, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid holder_count in cursor: %w", err)
+	}
+
+	return &SEP41TokenListCursor{
+		HolderCount: holderCount,
+		ContractID:  parts[1],
+		SortBy:      parts[2],
+		SortOrder:   parts[3],
+	}, nil
+}

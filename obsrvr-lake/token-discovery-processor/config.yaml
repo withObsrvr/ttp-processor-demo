@@ -1,0 +1,32 @@
+service:
+  name: token-discovery-processor
+  version: "1.0.0"
+  poll_interval_seconds: 30
+
+source_db:
+  host: ${SILVER_HOT_HOST:-localhost}
+  port: ${SILVER_HOT_PORT:-5434}
+  database: silver_hot
+  user: ${DB_USER:-stellar}
+  password: ${DB_PASSWORD:-stellar_dev_password}
+  sslmode: disable
+
+destination_db:
+  host: ${TOKEN_REGISTRY_HOST:-localhost}
+  port: ${TOKEN_REGISTRY_PORT:-5434}
+  database: token_registry
+  user: ${DB_USER:-stellar}
+  password: ${DB_PASSWORD:-stellar_dev_password}
+  sslmode: disable
+
+discovery:
+  batch_size: 1000
+  sep41_min_functions: 3
+  update_stats_interval_seconds: 300
+  max_ledgers_per_cycle: 10000
+
+checkpoint:
+  table: token_discovery_checkpoint
+
+health:
+  port: 8096

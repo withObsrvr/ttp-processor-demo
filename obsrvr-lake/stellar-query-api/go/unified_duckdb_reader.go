@@ -4633,6 +4633,184 @@ func (r *UnifiedDuckDBReader) GetAddressTokenPortfolio(ctx context.Context, addr
 }
 
 // ============================================
+// TOKEN DISCOVERY / LIST QUERIES
+// ============================================
+
+// GetSEP41TokenList returns discovered tokens from the token registry
+// This queries the discovered_tokens table populated by the token-discovery-processor
+func (r *UnifiedDuckDBReader) GetSEP41TokenList(
+	ctx context.Context,
+	filters SEP41TokenListFilters,
+) ([]SEP41TokenSummary, string, bool, error) {
+	// Query the discovered_tokens table in the destination DB
+	// Note: This requires the token registry database to be accessible
+	// For now, we query from hot_db assuming the discovered_tokens table is there
+	query := fmt.Sprintf(`
+		SELECT
+			contract_id,
+			token_type,
+			name,
+			symbol,
+			decimals,
+			holder_count,
+			transfer_count,
+			total_supply,
+			first_seen_ledger,
+			last_activity_ledger,
+			is_sac,
+			classic_asset_code,
+			classic_asset_issuer,
+			sep41_score
+		FROM %s.discovered_tokens
+		WHERE 1=1
+	`, r.hotSchema)
+
+	args := []interface{}{}
+	argIdx := 1
+
+	// Type filter
+	if filters.TokenType != "all" && filters.TokenType != "" {
+		query += fmt.Sprintf(" AND token_type = $%d", argIdx)
+		args = append(args, filters.TokenType)
+		argIdx++
+	}
+
+	// Search filter (ILIKE for case-insensitive)
+	if filters.Search != "" {
+		query += fmt.Sprintf(" AND (symbol ILIKE $%d OR name ILIKE $%d)", argIdx, argIdx)
+		args = append(args, "%"+filters.Search+"%")
+		argIdx++
+	}
+
+	// Min holders filter
+	if filters.MinHolders != nil {
+		query += fmt.Sprintf(" AND holder_count >= $%d", argIdx)
+		args = append(args, *filters.MinHolders)
+		argIdx++
+	}
+
+	// Cursor-based pagination
+	if filters.Cursor != nil {
+		// Use the sort field from cursor to build proper pagination
+		sortBy := filters.SortBy
+		if sortBy == "" {
+			sortBy = "holder_count"
+		}
+		sortOrder := filters.SortOrder
+		if sortOrder == "" {
+			sortOrder = "desc"
+		}
+
+		switch sortBy {
+		case "transfer_count":
+			if sortOrder == "desc" {
+				query += fmt.Sprintf(" AND (transfer_count < $%d OR (transfer_count = $%d AND contract_id > $%d))", argIdx, argIdx, argIdx+1)
+			} else {
+				query += fmt.Sprintf(" AND (transfer_count > $%d OR (transfer_count = $%d AND contract_id > $%d))", argIdx, argIdx, argIdx+1)
+			}
+			args = append(args, filters.Cursor.HolderCount, filters.Cursor.ContractID)
+			argIdx += 2
+		case "last_activity":
+			if sortOrder == "desc" {
+				query += fmt.Sprintf(" AND (last_activity_ledger < $%d OR (last_activity_ledger = $%d AND contract_id > $%d))", argIdx, argIdx, argIdx+1)
+			} else {
+				query += fmt.Sprintf(" AND (last_activity_ledger > $%d OR (last_activity_ledger = $%d AND contract_id > $%d))", argIdx, argIdx, argIdx+1)
+			}
+			args = append(args, filters.Cursor.HolderCount, filters.Cursor.ContractID)
+			argIdx += 2
+		default: // holder_count
+			if sortOrder == "desc" {
+				query += fmt.Sprintf(" AND (holder_count < $%d OR (holder_count = $%d AND contract_id > $%d))", argIdx, argIdx, argIdx+1)
+			} else {
+				query += fmt.Sprintf(" AND (holder_count > $%d OR (holder_count = $%d AND contract_id > $%d))", argIdx, argIdx, argIdx+1)
+			}
+			args = append(args, filters.Cursor.HolderCount, filters.Cursor.ContractID)
+			argIdx += 2
+		}
+	}
+
+	// Build ORDER BY clause
+	sortColumn := "holder_count"
+	switch filters.SortBy {
+	case "transfer_count":
+		sortColumn = "transfer_count"
+	case "last_activity":
+		sortColumn = "last_activity_ledger"
+	}
+
+	sortOrder := "DESC"
+	if filters.SortOrder == "asc" {
+		sortOrder = "ASC"
+	}
+
+	// Request limit+1 to detect hasMore
+	requestLimit := filters.Limit + 1
+	query += fmt.Sprintf(" ORDER BY %s %s, contract_id ASC LIMIT $%d", sortColumn, sortOrder, argIdx)
+	args = append(args, requestLimit)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, "", false, fmt.Errorf("GetSEP41TokenList: %w", err)
+	}
+	defer rows.Close()
+
+	var tokens []SEP41TokenSummary
+	for rows.Next() {
+		var t SEP41TokenSummary
+		if err := rows.Scan(
+			&t.ContractID,
+			&t.TokenType,
+			&t.Name,
+			&t.Symbol,
+			&t.Decimals,
+			&t.HolderCount,
+			&t.TransferCount,
+			&t.TotalSupply,
+			&t.FirstSeenLedger,
+			&t.LastActivityLedger,
+			&t.IsSAC,
+			&t.ClassicAssetCode,
+			&t.ClassicAssetIssuer,
+			&t.SEP41Score,
+		); err != nil {
+			return nil, "", false, fmt.Errorf("GetSEP41TokenList scan: %w", err)
+		}
+		tokens = append(tokens, t)
+	}
+
+	// Determine hasMore and trim to requested limit
+	hasMore := len(tokens) > filters.Limit
+	if hasMore {
+		tokens = tokens[:filters.Limit]
+	}
+
+	// Build next cursor from last result
+	var nextCursor string
+	if hasMore && len(tokens) > 0 {
+		last := tokens[len(tokens)-1]
+		// Use the appropriate value for cursor based on sort field
+		var cursorValue int64
+		switch filters.SortBy {
+		case "transfer_count":
+			cursorValue = last.TransferCount
+		case "last_activity":
+			cursorValue = last.LastActivityLedger
+		default:
+			cursorValue = last.HolderCount
+		}
+		cursor := SEP41TokenListCursor{
+			HolderCount: cursorValue,
+			ContractID:  last.ContractID,
+			SortBy:      filters.SortBy,
+			SortOrder:   filters.SortOrder,
+		}
+		nextCursor = cursor.Encode()
+	}
+
+	return tokens, nextCursor, hasMore, nil
+}
+
+// ============================================
 // TRANSACTION DECODE QUERIES
 // ============================================
 

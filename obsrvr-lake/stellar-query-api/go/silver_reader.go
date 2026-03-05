@@ -1270,3 +1270,44 @@ type ResponseMeta struct {
 	ScannedLedger    *int64       `json:"scanned_ledger,omitempty"`
 	AvailableLedgers *LedgerRange `json:"available_ledgers,omitempty"`
 }
+
+// ============================================
+// TOKEN DISCOVERY / LIST TYPES
+// ============================================
+
+// SEP41TokenListFilters contains filters for listing discovered tokens
+type SEP41TokenListFilters struct {
+	TokenType  string // "sep41", "lp", "sac", "all"
+	Search     string // Search by symbol/name
+	SortBy     string // "holder_count", "transfer_count", "last_activity"
+	SortOrder  string // "asc", "desc"
+	MinHolders *int64
+	Limit      int
+	Cursor     *SEP41TokenListCursor
+}
+
+// SEP41TokenSummary represents a discovered token in list results
+type SEP41TokenSummary struct {
+	ContractID         string  `json:"contract_id"`
+	TokenType          string  `json:"token_type"`
+	Name               *string `json:"name,omitempty"`
+	Symbol             *string `json:"symbol,omitempty"`
+	Decimals           *int    `json:"decimals,omitempty"`
+	HolderCount        int64   `json:"holder_count"`
+	TransferCount      int64   `json:"transfer_count"`
+	TotalSupply        *string `json:"total_supply,omitempty"`
+	FirstSeenLedger    int64   `json:"first_seen_ledger"`
+	LastActivityLedger int64   `json:"last_activity_ledger"`
+	IsSAC              bool    `json:"is_sac"`
+	ClassicAssetCode   *string `json:"classic_asset_code,omitempty"`
+	ClassicAssetIssuer *string `json:"classic_asset_issuer,omitempty"`
+	SEP41Score         int     `json:"sep41_score"`
+}
+
+// SEP41TokenListCursor represents a cursor for paginating token lists
+type SEP41TokenListCursor struct {
+	HolderCount int64
+	ContractID  string
+	SortBy      string
+	SortOrder   string
+}

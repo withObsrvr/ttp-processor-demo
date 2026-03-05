@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/gorilla/mux"
 )
@@ -229,5 +230,72 @@ func (h *SEP41Handlers) HandleAddressTokenPortfolio(w http.ResponseWriter, r *ht
 		"address":  addr,
 		"holdings": holdings,
 		"count":    len(holdings),
+	})
+}
+
+// HandleListTokens returns all discovered SEP-41 tokens
+// @Summary List all tokens
+// @Description Returns all discovered tokens with stats, supports filtering and pagination
+// @Tags Tokens
+// @Produce json
+// @Param type query string false "Token type: sep41, lp, sac, all (default: all)"
+// @Param search query string false "Search by symbol or name"
+// @Param sort_by query string false "Sort: holder_count, transfer_count, last_activity"
+// @Param order query string false "Order: asc, desc (default: desc)"
+// @Param min_holders query int false "Minimum holder count"
+// @Param limit query int false "Max results (default: 50, max: 500)"
+// @Param cursor query string false "Pagination cursor"
+// @Success 200 {object} map[string]interface{}
+// @Router /api/v1/silver/tokens [get]
+func (h *SEP41Handlers) HandleListTokens(w http.ResponseWriter, r *http.Request) {
+	// Parse query params
+	filters := SEP41TokenListFilters{
+		TokenType:  r.URL.Query().Get("type"),
+		Search:     r.URL.Query().Get("search"),
+		SortBy:     r.URL.Query().Get("sort_by"),
+		SortOrder:  r.URL.Query().Get("order"),
+		Limit:      parseLimit(r, 50, 500),
+	}
+
+	// Defaults
+	if filters.TokenType == "" {
+		filters.TokenType = "all"
+	}
+	if filters.SortBy == "" {
+		filters.SortBy = "holder_count"
+	}
+	if filters.SortOrder == "" {
+		filters.SortOrder = "desc"
+	}
+
+	// Parse min_holders
+	if minHoldersStr := r.URL.Query().Get("min_holders"); minHoldersStr != "" {
+		if minHolders, err := strconv.ParseInt(minHoldersStr, 10, 64); err == nil {
+			filters.MinHolders = &minHolders
+		}
+	}
+
+	// Parse cursor
+	if cursorStr := r.URL.Query().Get("cursor"); cursorStr != "" {
+		cursor, err := DecodeSEP41TokenListCursor(cursorStr)
+		if err != nil {
+			respondError(w, "invalid cursor: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		filters.Cursor = cursor
+	}
+
+	// Query
+	tokens, nextCursor, hasMore, err := h.reader.GetSEP41TokenList(r.Context(), filters)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	respondJSON(w, map[string]interface{}{
+		"tokens":      tokens,
+		"count":       len(tokens),
+		"has_more":    hasMore,
+		"next_cursor": nextCursor,
 	})
 }

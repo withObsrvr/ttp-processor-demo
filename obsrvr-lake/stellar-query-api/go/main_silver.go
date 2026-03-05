@@ -395,6 +395,10 @@ func mainWithSilver() {
 			sep41Handlers := NewSEP41Handlers(unifiedDuckDBReader)
 			log.Println("Registering SEP-41 Token API endpoints:")
 
+			// List all discovered tokens (must be registered before {contract_id} routes)
+			router.HandleFunc("/api/v1/silver/tokens", sep41Handlers.HandleListTokens).Methods("GET")
+			log.Println("  ✓ /api/v1/silver/tokens (list all discovered tokens)")
+
 			router.HandleFunc("/api/v1/silver/tokens/{contract_id}/balances", sep41Handlers.HandleTokenBalances).Methods("GET")
 			router.HandleFunc("/api/v1/silver/tokens/{contract_id}/balance/{address}", sep41Handlers.HandleSingleBalance).Methods("GET")
 			router.HandleFunc("/api/v1/silver/tokens/{contract_id}/transfers", sep41Handlers.HandleTokenTransfers).Methods("GET")
