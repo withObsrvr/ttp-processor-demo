@@ -152,6 +152,21 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.contract_data_current (
 CREATE INDEX IF NOT EXISTS idx_contract_data_current_modified ON contract_data_current(last_modified_ledger);
 CREATE INDEX IF NOT EXISTS idx_contract_data_current_contract ON contract_data_current(contract_id);
 
+-- token_registry - Token metadata registry
+CREATE TABLE IF NOT EXISTS testnet_catalog.silver.token_registry (
+    contract_id           TEXT,
+    token_name            TEXT,
+    token_symbol          TEXT,
+    token_decimals        INTEGER,
+    asset_code            TEXT,
+    asset_issuer          TEXT,
+    token_type            TEXT,
+    first_seen_ledger     BIGINT,
+    last_modified_ledger  BIGINT,
+    created_at            TIMESTAMP WITH TIME ZONE,
+    updated_at            TIMESTAMP WITH TIME ZONE
+);
+
 -- 8. contract_code_current - Latest Soroban contract code (WASM)
 CREATE TABLE IF NOT EXISTS testnet_catalog.silver.contract_code_current (
     contract_code_hash    TEXT,

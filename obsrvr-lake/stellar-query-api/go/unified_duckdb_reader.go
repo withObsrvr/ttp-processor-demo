@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -11,16 +12,22 @@ import (
 	"time"
 
 	_ "github.com/duckdb/duckdb-go/v2"
+	"github.com/stellar/go/strkey"
 )
+
+// ErrTxNotFound is returned when a transaction hash is not found in any data source.
+var ErrTxNotFound = fmt.Errorf("transaction not found")
 
 // UnifiedDuckDBReader queries both hot (PostgreSQL) and cold (DuckLake) data
 // through a single DuckDB connection using ATTACH mechanism.
 // This eliminates the need for Go-layer merging of results.
 type UnifiedDuckDBReader struct {
-	db         *sql.DB
-	hotSchema  string // e.g., "hot_db" or "hot_db.public"
-	coldSchema string // e.g., "cold_db.silver"
-	config     UnifiedReaderConfig
+	db               *sql.DB
+	hotSchema        string // e.g., "hot_db" or "hot_db.public"
+	coldSchema       string // e.g., "cold_db.silver"
+	bronzeHotSchema  string // e.g., "bronze_hot_db.public" (bronze hot PostgreSQL)
+	bronzeColdSchema string // e.g., "bronze_cold_db.bronze" (DuckLake bronze cold)
+	config           UnifiedReaderConfig
 }
 
 // NewUnifiedDuckDBReader creates a new unified reader that ATTACHes both
@@ -106,11 +113,49 @@ func NewUnifiedDuckDBReader(config UnifiedReaderConfig) (*UnifiedDuckDBReader, e
 
 	coldSchema := fmt.Sprintf("cold_db.%s", config.DuckLake.SchemaName)
 
+	// ATTACH Bronze PostgreSQL (hot buffer) if configured
+	bronzeHotSchema := ""
+	if config.BronzePostgres != nil {
+		bronzePgConnStr := fmt.Sprintf("dbname=%s host=%s port=%d user=%s password=%s",
+			config.BronzePostgres.Database, config.BronzePostgres.Host, config.BronzePostgres.Port,
+			config.BronzePostgres.User, config.BronzePostgres.Password)
+		if config.BronzePostgres.SSLMode != "" {
+			bronzePgConnStr += fmt.Sprintf(" sslmode=%s", config.BronzePostgres.SSLMode)
+		}
+		bronzePgAttach := fmt.Sprintf(`ATTACH '%s' AS bronze_hot_db (TYPE POSTGRES, READ_ONLY)`, bronzePgConnStr)
+		if _, err := db.Exec(bronzePgAttach); err != nil {
+			log.Printf("⚠️  Failed to attach Bronze PostgreSQL (connection error redacted to protect credentials)")
+			log.Println("     Bronze hot endpoints (generic events, tx diffs) will be limited")
+		} else {
+			bronzeHotSchema = "bronze_hot_db"
+			if config.BronzePostgres.Schema != "" {
+				bronzeHotSchema = fmt.Sprintf("bronze_hot_db.%s", config.BronzePostgres.Schema)
+			}
+			log.Println("✅ Attached Bronze PostgreSQL as bronze_hot_db")
+		}
+	}
+
+	// ATTACH Bronze DuckLake (cold storage) if configured
+	bronzeColdSchema := ""
+	if config.BronzeDuckLake != nil {
+		bronzeDlAttach := fmt.Sprintf(`ATTACH '%s' AS bronze_cold_db (DATA_PATH '%s', METADATA_SCHEMA '%s')`,
+			config.BronzeDuckLake.CatalogPath, config.BronzeDuckLake.DataPath, config.BronzeDuckLake.MetadataSchema)
+		if _, err := db.Exec(bronzeDlAttach); err != nil {
+			log.Printf("⚠️  Failed to attach Bronze DuckLake (connection error redacted to protect credentials)")
+			log.Println("     Bronze cold data will not be available (only recent hot data)")
+		} else {
+			bronzeColdSchema = fmt.Sprintf("bronze_cold_db.%s", config.BronzeDuckLake.SchemaName)
+			log.Println("✅ Attached Bronze DuckLake as bronze_cold_db")
+		}
+	}
+
 	return &UnifiedDuckDBReader{
-		db:         db,
-		hotSchema:  hotSchema,
-		coldSchema: coldSchema,
-		config:     config,
+		db:               db,
+		hotSchema:        hotSchema,
+		coldSchema:       coldSchema,
+		bronzeHotSchema:  bronzeHotSchema,
+		bronzeColdSchema: bronzeColdSchema,
+		config:           config,
 	}, nil
 }
 
@@ -4288,10 +4333,17 @@ func (r *UnifiedDuckDBReader) GetSEP41TokenMetadata(ctx context.Context, contrac
 	var meta SEP41TokenMetadata
 	meta.ContractID = contractID
 	var assetCode string
+	var firstSeen, lastActivity sql.NullString
 	err := r.db.QueryRowContext(ctx, query, contractID).Scan(
 		&assetCode, &meta.AssetIssuer, &meta.SourceType,
-		&meta.HolderCount, &meta.TransferCount, &meta.FirstSeen, &meta.LastActivity,
+		&meta.HolderCount, &meta.TransferCount, &firstSeen, &lastActivity,
 	)
+	if firstSeen.Valid {
+		meta.FirstSeen = firstSeen.String
+	}
+	if lastActivity.Valid {
+		meta.LastActivity = lastActivity.String
+	}
 	if err != nil {
 		return nil, fmt.Errorf("GetSEP41TokenMetadata: %w", err)
 	}
@@ -4299,8 +4351,38 @@ func (r *UnifiedDuckDBReader) GetSEP41TokenMetadata(ctx context.Context, contrac
 		meta.AssetCode = &assetCode
 	}
 
-	// TODO: derive from contract_data_current when decoded columns are available
-	meta.Decimals = 7
+	// Enrich from token_registry for name, symbol, decimals, token_type (hot + cold)
+	var regName, regSymbol, regTokenType sql.NullString
+	var regDecimals sql.NullInt32
+	regQuery := fmt.Sprintf(`SELECT token_name, token_symbol, token_decimals, token_type FROM (
+		SELECT token_name, token_symbol, token_decimals, token_type FROM %s.token_registry WHERE contract_id = $1
+		UNION ALL
+		SELECT token_name, token_symbol, token_decimals, token_type FROM %s.token_registry WHERE contract_id = $1
+	) combined LIMIT 1`, r.hotSchema, r.coldSchema)
+	regErr := r.db.QueryRowContext(ctx, regQuery, contractID).Scan(&regName, &regSymbol, &regDecimals, &regTokenType)
+	if regErr == nil {
+		if regName.Valid && regName.String != "" {
+			meta.Name = &regName.String
+		}
+		if regSymbol.Valid && regSymbol.String != "" {
+			meta.Symbol = &regSymbol.String
+		}
+		if regDecimals.Valid {
+			meta.Decimals = int(regDecimals.Int32)
+		} else {
+			meta.Decimals = 7
+		}
+		if regTokenType.Valid {
+			meta.TokenType = regTokenType.String
+		}
+	} else {
+		meta.Decimals = 7 // fallback default
+		if meta.AssetCode != nil {
+			meta.TokenType = "sac"
+		} else {
+			meta.TokenType = "custom_soroban"
+		}
+	}
 
 	return &meta, nil
 }
@@ -4543,6 +4625,39 @@ func (r *UnifiedDuckDBReader) GetSEP41TokenStats(ctx context.Context, contractID
 	stats.TotalSupply = formatStroopsLocal(stats.TotalSupplyRaw)
 	stats.Volume24h = formatStroopsLocal(stats.Volume24hRaw)
 
+	// Enrich from token_registry (hot + cold)
+	var regName, regSymbol, regTokenType sql.NullString
+	var regDecimals sql.NullInt32
+	regQuery := fmt.Sprintf(`SELECT token_name, token_symbol, token_decimals, token_type FROM (
+		SELECT token_name, token_symbol, token_decimals, token_type FROM %s.token_registry WHERE contract_id = $1
+		UNION ALL
+		SELECT token_name, token_symbol, token_decimals, token_type FROM %s.token_registry WHERE contract_id = $1
+	) combined LIMIT 1`, r.hotSchema, r.coldSchema)
+	regErr := r.db.QueryRowContext(ctx, regQuery, contractID).Scan(&regName, &regSymbol, &regDecimals, &regTokenType)
+	if regErr == nil {
+		if regName.Valid && regName.String != "" {
+			stats.Name = &regName.String
+		}
+		if regSymbol.Valid && regSymbol.String != "" {
+			stats.Symbol = &regSymbol.String
+		}
+		if regDecimals.Valid {
+			stats.Decimals = int(regDecimals.Int32)
+		} else {
+			stats.Decimals = 7
+		}
+		if regTokenType.Valid {
+			stats.TokenType = regTokenType.String
+		}
+	} else {
+		stats.Decimals = 7
+		if stats.AssetCode != nil {
+			stats.TokenType = "sac"
+		} else {
+			stats.TokenType = "custom_soroban"
+		}
+	}
+
 	return &stats, nil
 }
 
@@ -4626,7 +4741,88 @@ func (r *UnifiedDuckDBReader) GetAddressTokenPortfolio(ctx context.Context, addr
 			return nil, err
 		}
 		h.Balance = formatStroopsLocal(h.BalanceRaw)
+		// Set defaults
+		h.Decimals = 7
+		if h.AssetCode != nil && *h.AssetCode != "" {
+			h.TokenType = "sac"
+		} else {
+			h.TokenType = "custom_soroban"
+		}
 		holdings = append(holdings, h)
+	}
+
+	// Enrich holdings from token_registry (batch query, hot + cold)
+	if len(holdings) > 0 {
+		// Collect contract IDs for batch lookup
+		var contractIDs []string
+		idxMap := map[string][]int{} // contract_id -> indices in holdings
+		for i := range holdings {
+			if holdings[i].ContractID == nil {
+				continue
+			}
+			cid := *holdings[i].ContractID
+			if _, exists := idxMap[cid]; !exists {
+				contractIDs = append(contractIDs, cid)
+			}
+			idxMap[cid] = append(idxMap[cid], i)
+		}
+
+		if len(contractIDs) > 0 {
+			// Build parameterized IN clauses for hot and cold halves of UNION
+			n := len(contractIDs)
+			hotPlaceholders := make([]string, n)
+			coldPlaceholders := make([]string, n)
+			allArgs := make([]interface{}, 0, n*2)
+			for i, cid := range contractIDs {
+				hotPlaceholders[i] = fmt.Sprintf("$%d", i+1)
+				coldPlaceholders[i] = fmt.Sprintf("$%d", n+i+1)
+				allArgs = append(allArgs, cid)
+			}
+			// Append again for the cold half
+			for _, cid := range contractIDs {
+				allArgs = append(allArgs, cid)
+			}
+			hotInClause := strings.Join(hotPlaceholders, ", ")
+			coldInClause := strings.Join(coldPlaceholders, ", ")
+
+			batchQuery := fmt.Sprintf(`SELECT contract_id, token_name, token_symbol, token_decimals, token_type FROM (
+				SELECT contract_id, token_name, token_symbol, token_decimals, token_type FROM %s.token_registry WHERE contract_id IN (%s)
+				UNION ALL
+				SELECT contract_id, token_name, token_symbol, token_decimals, token_type FROM %s.token_registry WHERE contract_id IN (%s)
+			) combined`, r.hotSchema, hotInClause, r.coldSchema, coldInClause)
+
+			regRows, regErr := r.db.QueryContext(ctx, batchQuery, allArgs...)
+			if regErr == nil {
+				defer regRows.Close()
+				seen := map[string]bool{}
+				for regRows.Next() {
+					var cid string
+					var regName, regSymbol, regTokenType sql.NullString
+					var regDecimals sql.NullInt32
+					if err := regRows.Scan(&cid, &regName, &regSymbol, &regDecimals, &regTokenType); err != nil {
+						continue
+					}
+					if seen[cid] {
+						continue // skip duplicates from UNION ALL
+					}
+					seen[cid] = true
+					for _, idx := range idxMap[cid] {
+						if regName.Valid && regName.String != "" {
+							holdings[idx].Name = &regName.String
+						}
+						if regSymbol.Valid && regSymbol.String != "" {
+							holdings[idx].Symbol = &regSymbol.String
+						}
+						if regDecimals.Valid {
+							holdings[idx].Decimals = int(regDecimals.Int32)
+						}
+						if regTokenType.Valid {
+							holdings[idx].TokenType = regTokenType.String
+						}
+					}
+				}
+			}
+		}
 	}
 
 	return holdings, nil
@@ -4787,4 +4983,728 @@ func (r *UnifiedDuckDBReader) GetContractFunctions(ctx context.Context, contract
 		functions = append(functions, fn)
 	}
 	return functions, nil
+}
+
+// ============================================
+// BRONZE QUERY HELPERS
+// ============================================
+
+// hasBronze returns true if at least one bronze source is available
+func (r *UnifiedDuckDBReader) hasBronze() bool {
+	return r.bronzeHotSchema != "" || r.bronzeColdSchema != ""
+}
+
+// bronzeUnionQuery builds a UNION ALL query across available bronze hot+cold sources.
+// selectCols is the column list, table is the table name (without schema prefix),
+// whereClause includes "WHERE ..." or is empty.
+func (r *UnifiedDuckDBReader) bronzeUnionQuery(selectCols, table, whereClause string) string {
+	var parts []string
+	if r.bronzeHotSchema != "" {
+		parts = append(parts, fmt.Sprintf("SELECT %s FROM %s.%s %s", selectCols, r.bronzeHotSchema, table, whereClause))
+	}
+	if r.bronzeColdSchema != "" {
+		parts = append(parts, fmt.Sprintf("SELECT %s FROM %s.%s %s", selectCols, r.bronzeColdSchema, table, whereClause))
+	}
+	return strings.Join(parts, " UNION ALL ")
+}
+
+// ============================================
+// FEATURE 1: GENERIC CAP-67 EVENT STREAM
+// ============================================
+
+// GetGenericEvents returns generic contract events from bronze (hot + cold)
+func (r *UnifiedDuckDBReader) GetGenericEvents(ctx context.Context, filters GenericEventFilters) ([]GenericEvent, string, bool, error) {
+	if !r.hasBronze() {
+		return nil, "", false, fmt.Errorf("no bronze database attached")
+	}
+
+	limit := filters.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	requestLimit := limit + 1
+
+	order := "DESC"
+	if filters.Order == "asc" {
+		order = "ASC"
+	}
+
+	var conditions []string
+	var args []any
+	argIdx := 1
+
+	if filters.ContractID != nil && *filters.ContractID != "" {
+		conditions = append(conditions, fmt.Sprintf("contract_id = $%d", argIdx))
+		args = append(args, *filters.ContractID)
+		argIdx++
+	}
+	if filters.EventType != nil && *filters.EventType != "" {
+		conditions = append(conditions, fmt.Sprintf("event_type = $%d", argIdx))
+		args = append(args, *filters.EventType)
+		argIdx++
+	}
+	if filters.TopicMatch != nil && *filters.TopicMatch != "" {
+		conditions = append(conditions, fmt.Sprintf("topics_decoded ILIKE '%%' || $%d || '%%'", argIdx))
+		args = append(args, *filters.TopicMatch)
+		argIdx++
+	}
+	if filters.StartLedger != nil {
+		conditions = append(conditions, fmt.Sprintf("ledger_sequence >= $%d", argIdx))
+		args = append(args, *filters.StartLedger)
+		argIdx++
+	}
+	if filters.EndLedger != nil {
+		conditions = append(conditions, fmt.Sprintf("ledger_sequence <= $%d", argIdx))
+		args = append(args, *filters.EndLedger)
+		argIdx++
+	}
+	if filters.Cursor != nil && *filters.Cursor != "" {
+		// Cursor format: "ledger_seq:event_index"
+		parts := strings.SplitN(*filters.Cursor, ":", 2)
+		if len(parts) == 2 {
+			cursorLedger, err := strconv.ParseInt(parts[0], 10, 64)
+			if err != nil {
+				return nil, "", false, fmt.Errorf("invalid cursor ledger value %q: %w", parts[0], err)
+			}
+			cursorEvent, err := strconv.ParseInt(parts[1], 10, 64)
+			if err != nil {
+				return nil, "", false, fmt.Errorf("invalid cursor event_index value %q: %w", parts[1], err)
+			}
+			if order == "DESC" {
+				conditions = append(conditions, fmt.Sprintf("(ledger_sequence < $%d OR (ledger_sequence = $%d AND event_index < $%d))", argIdx, argIdx, argIdx+1))
+			} else {
+				conditions = append(conditions, fmt.Sprintf("(ledger_sequence > $%d OR (ledger_sequence = $%d AND event_index > $%d))", argIdx, argIdx, argIdx+1))
+			}
+			args = append(args, cursorLedger, cursorEvent)
+			argIdx += 2
+		}
+	}
+
+	whereClause := ""
+	if len(conditions) > 0 {
+		whereClause = "WHERE " + strings.Join(conditions, " AND ")
+	}
+
+	selectCols := `event_id, contract_id, ledger_sequence, transaction_hash, closed_at,
+		event_type, in_successful_contract_call, topics_json, topics_decoded, data_decoded,
+		topic_count, operation_index, event_index`
+
+	innerQuery := r.bronzeUnionQuery(selectCols, "contract_events_stream_v1", whereClause)
+
+	query := fmt.Sprintf(`
+		SELECT event_id, contract_id, ledger_sequence, transaction_hash, closed_at,
+		       event_type, in_successful_contract_call, topics_json, topics_decoded, data_decoded,
+		       topic_count, operation_index, event_index
+		FROM (%s) combined
+		ORDER BY ledger_sequence %s, event_index %s
+		LIMIT $%d
+	`, innerQuery, order, order, argIdx)
+	args = append(args, requestLimit)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, "", false, fmt.Errorf("GetGenericEvents: %w", err)
+	}
+	defer rows.Close()
+
+	var events []GenericEvent
+	for rows.Next() {
+		var e GenericEvent
+		if err := rows.Scan(&e.EventID, &e.ContractID, &e.LedgerSeq, &e.TxHash, &e.ClosedAt,
+			&e.EventType, &e.Successful, &e.TopicsJSON, &e.TopicsDecoded, &e.DataDecoded,
+			&e.TopicCount, &e.OpIndex, &e.EventIndex); err != nil {
+			return nil, "", false, err
+		}
+		events = append(events, e)
+	}
+
+	hasMore := len(events) > limit
+	if hasMore {
+		events = events[:limit]
+	}
+
+	var nextCursor string
+	if len(events) > 0 && hasMore {
+		last := events[len(events)-1]
+		nextCursor = fmt.Sprintf("%d:%d", last.LedgerSeq, last.EventIndex)
+	}
+
+	return events, nextCursor, hasMore, nil
+}
+
+// GetContractGenericEvents returns generic events for a specific contract
+func (r *UnifiedDuckDBReader) GetContractGenericEvents(ctx context.Context, contractID string, filters GenericEventFilters) ([]GenericEvent, string, bool, error) {
+	filters.ContractID = &contractID
+	return r.GetGenericEvents(ctx, filters)
+}
+
+// ============================================
+// FEATURE 2: UNIFIED SEARCH
+// ============================================
+
+// UnifiedSearch performs a search across multiple data types
+func (r *UnifiedDuckDBReader) UnifiedSearch(ctx context.Context, query string) (*SearchResults, error) {
+	results := &SearchResults{
+		Query:   query,
+		Results: []SearchResult{},
+	}
+
+	q := strings.TrimSpace(query)
+	if q == "" {
+		return results, nil
+	}
+
+	queryType := detectQueryType(q)
+
+	switch queryType {
+	case "account":
+		r.searchAccount(ctx, q, results)
+	case "contract":
+		r.searchContract(ctx, q, results)
+	case "tx_hash":
+		r.searchTransaction(ctx, q, results)
+	case "ledger":
+		r.searchLedger(ctx, q, results)
+	default:
+		r.searchAssetCode(ctx, q, results)
+	}
+
+	return results, nil
+}
+
+func detectQueryType(q string) string {
+	if strings.HasPrefix(q, "G") && len(q) == 56 {
+		return "account"
+	}
+	if strings.HasPrefix(q, "C") && len(q) == 56 {
+		return "contract"
+	}
+	if len(q) == 64 {
+		return "tx_hash"
+	}
+	if _, err := strconv.ParseInt(q, 10, 64); err == nil {
+		return "ledger"
+	}
+	return "asset_code"
+}
+
+func (r *UnifiedDuckDBReader) searchAccount(ctx context.Context, accountID string, results *SearchResults) {
+	// Check token_transfers_raw for activity (hot + cold)
+	countQuery := fmt.Sprintf(`
+		SELECT COUNT(*) FROM (
+			SELECT 1 FROM %s.token_transfers_raw WHERE from_account = $1
+			UNION ALL
+			SELECT 1 FROM %s.token_transfers_raw WHERE to_account = $1
+			UNION ALL
+			SELECT 1 FROM %s.token_transfers_raw WHERE from_account = $1
+			UNION ALL
+			SELECT 1 FROM %s.token_transfers_raw WHERE to_account = $1
+		) t
+	`, r.hotSchema, r.hotSchema, r.coldSchema, r.coldSchema)
+
+	var count int64
+	if err := r.db.QueryRowContext(ctx, countQuery, accountID).Scan(&count); err != nil {
+		count = 0
+	}
+
+	label := "Stellar Account"
+	if count > 0 {
+		label = fmt.Sprintf("Stellar Account (%d transfers)", count)
+	}
+
+	results.Results = append(results.Results, SearchResult{
+		Type:  "account",
+		ID:    accountID,
+		Label: label,
+		Details: map[string]any{
+			"transfer_count": count,
+		},
+	})
+}
+
+func (r *UnifiedDuckDBReader) searchContract(ctx context.Context, contractID string, results *SearchResults) {
+	// Check token_registry for name/symbol
+	regQuery := fmt.Sprintf(`
+		SELECT token_name, token_symbol FROM (
+			SELECT token_name, token_symbol FROM %s.token_registry WHERE contract_id = $1
+			UNION ALL
+			SELECT token_name, token_symbol FROM %s.token_registry WHERE contract_id = $1
+		) combined LIMIT 1
+	`, r.hotSchema, r.coldSchema)
+
+	var name, symbol sql.NullString
+	_ = r.db.QueryRowContext(ctx, regQuery, contractID).Scan(&name, &symbol)
+
+	label := "Smart Contract"
+	if name.Valid && name.String != "" {
+		label = name.String
+		if symbol.Valid && symbol.String != "" {
+			label = fmt.Sprintf("%s (%s)", name.String, symbol.String)
+		}
+	}
+
+	details := map[string]any{}
+	if name.Valid {
+		details["token_name"] = name.String
+	}
+	if symbol.Valid {
+		details["token_symbol"] = symbol.String
+	}
+
+	results.Results = append(results.Results, SearchResult{
+		Type:    "contract",
+		ID:      contractID,
+		Label:   label,
+		Details: details,
+	})
+}
+
+func (r *UnifiedDuckDBReader) searchTransaction(ctx context.Context, txHash string, results *SearchResults) {
+	// Check enriched_history_operations for tx existence
+	txQuery := fmt.Sprintf(`
+		SELECT ledger_sequence, COUNT(*) as op_count FROM (
+			SELECT ledger_sequence FROM %s.enriched_history_operations WHERE transaction_hash = $1
+			UNION ALL
+			SELECT ledger_sequence FROM %s.enriched_history_operations WHERE transaction_hash = $1
+		) combined
+		GROUP BY ledger_sequence
+		LIMIT 1
+	`, r.hotSchema, r.coldSchema)
+
+	var ledgerSeq int64
+	var opCount int64
+	if err := r.db.QueryRowContext(ctx, txQuery, txHash).Scan(&ledgerSeq, &opCount); err != nil {
+		// Not found - still return as potential result
+		results.Results = append(results.Results, SearchResult{
+			Type:  "transaction",
+			ID:    txHash,
+			Label: "Transaction (not found in current data)",
+		})
+		return
+	}
+
+	results.Results = append(results.Results, SearchResult{
+		Type:  "transaction",
+		ID:    txHash,
+		Label: fmt.Sprintf("Transaction in ledger %d (%d ops)", ledgerSeq, opCount),
+		Details: map[string]any{
+			"ledger_sequence": ledgerSeq,
+			"operation_count": opCount,
+		},
+	})
+}
+
+func (r *UnifiedDuckDBReader) searchLedger(ctx context.Context, ledgerStr string, results *SearchResults) {
+	ledgerSeq, _ := strconv.ParseInt(ledgerStr, 10, 64)
+
+	// Check enriched_history_operations for any tx at that sequence
+	txQuery := fmt.Sprintf(`
+		SELECT COUNT(DISTINCT transaction_hash) FROM (
+			SELECT transaction_hash FROM %s.enriched_history_operations WHERE ledger_sequence = $1
+			UNION ALL
+			SELECT transaction_hash FROM %s.enriched_history_operations WHERE ledger_sequence = $1
+		) combined
+	`, r.hotSchema, r.coldSchema)
+
+	var txCount int64
+	if err := r.db.QueryRowContext(ctx, txQuery, ledgerSeq).Scan(&txCount); err != nil {
+		txCount = 0
+	}
+
+	label := fmt.Sprintf("Ledger #%d", ledgerSeq)
+	if txCount > 0 {
+		label = fmt.Sprintf("Ledger #%d (%d transactions)", ledgerSeq, txCount)
+	}
+
+	results.Results = append(results.Results, SearchResult{
+		Type:  "ledger",
+		ID:    ledgerStr,
+		Label: label,
+		Details: map[string]any{
+			"ledger_sequence":   ledgerSeq,
+			"transaction_count": txCount,
+		},
+	})
+}
+
+func (r *UnifiedDuckDBReader) searchAssetCode(ctx context.Context, assetCode string, results *SearchResults) {
+	// Search token_registry by symbol or name
+	regQuery := fmt.Sprintf(`
+		SELECT contract_id, token_name, token_symbol FROM (
+			SELECT contract_id, token_name, token_symbol FROM %s.token_registry
+			WHERE token_symbol ILIKE $1 OR token_name ILIKE $1
+			UNION
+			SELECT contract_id, token_name, token_symbol FROM %s.token_registry
+			WHERE token_symbol ILIKE $1 OR token_name ILIKE $1
+		) combined
+		LIMIT 10
+	`, r.hotSchema, r.coldSchema)
+
+	searchTerm := "%" + assetCode + "%"
+	rows, err := r.db.QueryContext(ctx, regQuery, searchTerm)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var contractID string
+		var name, symbol sql.NullString
+		if err := rows.Scan(&contractID, &name, &symbol); err != nil {
+			continue
+		}
+		label := "Token"
+		if symbol.Valid && symbol.String != "" {
+			label = symbol.String
+		}
+		if name.Valid && name.String != "" {
+			if label != "Token" {
+				label = fmt.Sprintf("%s - %s", label, name.String)
+			} else {
+				label = name.String
+			}
+		}
+		results.Results = append(results.Results, SearchResult{
+			Type:  "token",
+			ID:    contractID,
+			Label: label,
+			Details: map[string]any{
+				"contract_id":  contractID,
+				"token_name":   name.String,
+				"token_symbol": symbol.String,
+			},
+		})
+	}
+
+	// Also search classic assets in trustlines_current
+	assetQuery := fmt.Sprintf(`
+		SELECT DISTINCT asset_code, asset_issuer FROM (
+			SELECT asset_code, asset_issuer FROM %s.trustlines_current
+			WHERE asset_code ILIKE $1
+			UNION
+			SELECT asset_code, asset_issuer FROM %s.trustlines_current
+			WHERE asset_code ILIKE $1
+		) combined
+		LIMIT 10
+	`, r.hotSchema, r.coldSchema)
+
+	rows2, err := r.db.QueryContext(ctx, assetQuery, searchTerm)
+	if err != nil {
+		return
+	}
+	defer rows2.Close()
+
+	for rows2.Next() {
+		var code string
+		var issuer sql.NullString
+		if err := rows2.Scan(&code, &issuer); err != nil {
+			continue
+		}
+		issuerStr := ""
+		if issuer.Valid {
+			issuerStr = issuer.String
+		}
+		results.Results = append(results.Results, SearchResult{
+			Type:  "asset",
+			ID:    code + ":" + issuerStr,
+			Label: fmt.Sprintf("%s (Classic Asset)", code),
+			Details: map[string]any{
+				"asset_code":   code,
+				"asset_issuer": issuerStr,
+			},
+		})
+	}
+}
+
+// ============================================
+// FEATURE 4: TRANSACTION DIFFS (Balance/State Changes)
+// ============================================
+
+// GetTransactionDiffs retrieves tx_meta XDR and extracts balance/state changes
+func (r *UnifiedDuckDBReader) GetTransactionDiffs(ctx context.Context, txHash string) (*TxDiffs, error) {
+	if !r.hasBronze() {
+		return nil, fmt.Errorf("no bronze database attached - tx diffs require bronze data")
+	}
+
+	// Fetch tx_meta from bronze transactions_row_v2 (hot + cold)
+	innerQuery := r.bronzeUnionQuery("ledger_sequence, tx_meta", "transactions_row_v2", "WHERE transaction_hash = $1")
+	query := fmt.Sprintf(`
+		SELECT ledger_sequence, tx_meta
+		FROM (%s) combined
+		LIMIT 1
+	`, innerQuery)
+
+	var ledgerSeq int64
+	var txMetaXDR sql.NullString
+	err := r.db.QueryRowContext(ctx, query, txHash).Scan(&ledgerSeq, &txMetaXDR)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("%w: %s", ErrTxNotFound, txHash)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("GetTransactionDiffs query: %w", err)
+	}
+
+	diffs := &TxDiffs{
+		TxHash:         txHash,
+		LedgerSequence: ledgerSeq,
+		BalanceChanges: []TxBalanceChange{},
+		StateChanges:   []TxStateChange{},
+	}
+
+	if !txMetaXDR.Valid || txMetaXDR.String == "" {
+		return diffs, nil
+	}
+
+	// Decode XDR and extract changes
+	balanceChanges, stateChanges, err := decodeTxMetaXDR(txMetaXDR.String)
+	if err != nil {
+		// Return partial result with error note
+		log.Printf("Warning: failed to decode tx_meta XDR for %s: %v", txHash, err)
+		return diffs, nil
+	}
+
+	diffs.BalanceChanges = balanceChanges
+	diffs.StateChanges = stateChanges
+	return diffs, nil
+}
+
+// ============================================
+// FEATURE 5: SMART WALLET DETECTION
+// ============================================
+
+// contractIDToHex converts a C... strkey contract ID to its hex-encoded 32-byte hash.
+// Bronze tables store contract_id as hex hashes, while APIs receive C... strkey format.
+func contractIDToHex(contractID string) (string, error) {
+	raw, err := strkey.Decode(strkey.VersionByteContract, contractID)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode contract strkey: %w", err)
+	}
+	return hex.EncodeToString(raw), nil
+}
+
+// GetSmartWalletInfo detects if a contract is a SEP-50 smart wallet
+func (r *UnifiedDuckDBReader) GetSmartWalletInfo(ctx context.Context, contractID string) (*SmartWalletInfo, error) {
+	info := &SmartWalletInfo{
+		ContractID:    contractID,
+		IsSmartWallet: false,
+		Signers:       []string{},
+	}
+
+	// Check for __check_auth in contract events topics (bronze hot + cold)
+	// Bronze stores contract_id as hex hashes, so convert from C... strkey
+	if r.hasBronze() {
+		hexContractID, err := contractIDToHex(contractID)
+		if err != nil {
+			log.Printf("Warning: could not convert contract ID to hex for bronze query: %v", err)
+		} else {
+			innerQuery := r.bronzeUnionQuery("1",
+				"contract_events_stream_v1",
+				"WHERE contract_id = $1 AND topics_decoded LIKE '%__check_auth%'")
+			checkAuthQuery := fmt.Sprintf(`SELECT COUNT(*) FROM (%s) t LIMIT 1`, innerQuery)
+
+			var checkAuthCount int64
+			if err := r.db.QueryRowContext(ctx, checkAuthQuery, hexContractID).Scan(&checkAuthCount); err == nil {
+				info.HasCheckAuth = checkAuthCount > 0
+			}
+		}
+	}
+
+	// Check contract_data for signer-related keys
+	signerQuery := fmt.Sprintf(`
+		SELECT data_value FROM (
+			SELECT data_value FROM %s.contract_data_current WHERE contract_id = $1
+				AND durability = 'instance'
+			UNION ALL
+			SELECT data_value FROM %s.contract_data_current WHERE contract_id = $1
+				AND durability = 'instance'
+		) combined
+	`, r.hotSchema, r.coldSchema)
+
+	rows, err := r.db.QueryContext(ctx, signerQuery, contractID)
+	if err != nil {
+		// Table may not exist, that's ok
+		if !strings.Contains(err.Error(), "does not exist") {
+			return nil, fmt.Errorf("GetSmartWalletInfo: %w", err)
+		}
+		return info, nil
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var dataValue sql.NullString
+		if err := rows.Scan(&dataValue); err != nil {
+			continue
+		}
+		if dataValue.Valid {
+			// Look for signer-related keys in the data value
+			val := dataValue.String
+			if strings.Contains(val, "Signer") || strings.Contains(val, "signer") || strings.Contains(val, "Policy") {
+				info.Signers = append(info.Signers, val)
+			}
+		}
+	}
+
+	info.SignerCount = len(info.Signers)
+	info.IsSmartWallet = info.HasCheckAuth || info.SignerCount > 0
+
+	return info, nil
+}
+
+// ============================================
+// FEATURE 3: PRICE DATA (OHLC & Latest)
+// ============================================
+
+// GetOHLCCandles returns OHLC price candles for a trading pair
+func (r *UnifiedDuckDBReader) GetOHLCCandles(ctx context.Context, baseCode, baseIssuer, counterCode, counterIssuer, interval string, startTime, endTime time.Time) ([]OHLCCandle, error) {
+	// Validate interval
+	intervalSQL := "1 hour"
+	switch interval {
+	case "1m":
+		intervalSQL = "1 minute"
+	case "5m":
+		intervalSQL = "5 minutes"
+	case "15m":
+		intervalSQL = "15 minutes"
+	case "1h":
+		intervalSQL = "1 hour"
+	case "4h":
+		intervalSQL = "4 hours"
+	case "1d":
+		intervalSQL = "1 day"
+	case "1w":
+		intervalSQL = "7 days"
+	}
+
+	// Use DuckDB time_bucket on silver trades (hot-only, cold may not have trades table)
+	query := fmt.Sprintf(`
+		SELECT
+			time_bucket(INTERVAL '%s', trade_timestamp) as bucket,
+			arg_min(CAST(price AS DOUBLE), trade_timestamp) as open_price,
+			MAX(CAST(price AS DOUBLE)) as high_price,
+			MIN(CAST(price AS DOUBLE)) as low_price,
+			arg_max(CAST(price AS DOUBLE), trade_timestamp) as close_price,
+			SUM(CAST(selling_amount AS DOUBLE)) as volume,
+			COUNT(*) as trade_count
+		FROM %s.trades
+		WHERE (($1 = 'XLM' AND (selling_asset_code IS NULL OR selling_asset_code = '')) OR selling_asset_code = $1)
+		  AND (($2 = 'XLM' AND (buying_asset_code IS NULL OR buying_asset_code = '')) OR buying_asset_code = $2)
+		  AND ($3::text IS NULL OR $3 = '' OR selling_asset_issuer = $3)
+		  AND ($4::text IS NULL OR $4 = '' OR buying_asset_issuer = $4)
+		  AND trade_timestamp >= $5 AND trade_timestamp <= $6
+		GROUP BY bucket
+		ORDER BY bucket ASC
+		LIMIT 500
+	`, intervalSQL, r.hotSchema)
+
+	rows, err := r.db.QueryContext(ctx, query, baseCode, counterCode, baseIssuer, counterIssuer, startTime, endTime)
+	if err != nil {
+		return nil, fmt.Errorf("GetOHLCCandles: %w", err)
+	}
+	defer rows.Close()
+
+	var candles []OHLCCandle
+	for rows.Next() {
+		var c OHLCCandle
+		var ts time.Time
+		if err := rows.Scan(&ts, &c.Open, &c.High, &c.Low, &c.Close, &c.Volume, &c.TradeCount); err != nil {
+			return nil, err
+		}
+		c.Timestamp = ts.Format(time.RFC3339)
+		candles = append(candles, c)
+	}
+
+	return candles, nil
+}
+
+// GetLatestPrice returns the most recent price for a trading pair
+func (r *UnifiedDuckDBReader) GetLatestPrice(ctx context.Context, baseCode, baseIssuer, counterCode, counterIssuer string) (*LatestPrice, error) {
+	// Hot-only query (cold may not have trades table)
+	query := fmt.Sprintf(`
+		WITH latest AS (
+			SELECT CAST(price AS DOUBLE) as price, trade_timestamp
+			FROM %s.trades
+			WHERE (($1 = 'XLM' AND (selling_asset_code IS NULL OR selling_asset_code = '')) OR selling_asset_code = $1)
+			  AND (($2 = 'XLM' AND (buying_asset_code IS NULL OR buying_asset_code = '')) OR buying_asset_code = $2)
+			  AND ($3::text IS NULL OR $3 = '' OR selling_asset_issuer = $3)
+			  AND ($4::text IS NULL OR $4 = '' OR buying_asset_issuer = $4)
+			ORDER BY trade_timestamp DESC
+			LIMIT 1
+		),
+		stats_24h AS (
+			SELECT SUM(CAST(selling_amount AS DOUBLE)) as vol, COUNT(*) as cnt
+			FROM %s.trades
+			WHERE (($1 = 'XLM' AND (selling_asset_code IS NULL OR selling_asset_code = '')) OR selling_asset_code = $1)
+			  AND (($2 = 'XLM' AND (buying_asset_code IS NULL OR buying_asset_code = '')) OR buying_asset_code = $2)
+			  AND ($3::text IS NULL OR $3 = '' OR selling_asset_issuer = $3)
+			  AND ($4::text IS NULL OR $4 = '' OR buying_asset_issuer = $4)
+			  AND trade_timestamp >= NOW() - INTERVAL '24 hours'
+		)
+		SELECT l.price, l.trade_timestamp, COALESCE(s.vol, 0), COALESCE(s.cnt, 0)
+		FROM latest l, stats_24h s
+	`, r.hotSchema, r.hotSchema)
+
+	var lp LatestPrice
+	var ts time.Time
+	err := r.db.QueryRowContext(ctx, query, baseCode, counterCode, baseIssuer, counterIssuer).Scan(
+		&lp.Price, &ts, &lp.Volume24h, &lp.TradeCount24h)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("no trades found for pair %s/%s", baseCode, counterCode)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("GetLatestPrice: %w", err)
+	}
+
+	lp.BaseAsset = baseCode
+	lp.CounterAsset = counterCode
+	lp.Timestamp = ts.Format(time.RFC3339)
+	return &lp, nil
+}
+
+// GetTradePairs returns available trading pairs
+func (r *UnifiedDuckDBReader) GetTradePairs(ctx context.Context) ([]TradePair, error) {
+	// Hot-only query (cold may not have trades table)
+	query := fmt.Sprintf(`
+		SELECT COALESCE(NULLIF(selling_asset_code, ''), 'XLM') as selling_asset_code,
+		       selling_asset_issuer,
+		       COALESCE(NULLIF(buying_asset_code, ''), 'XLM') as buying_asset_code,
+		       buying_asset_issuer,
+		       COUNT(*) as trade_count
+		FROM %s.trades
+		GROUP BY selling_asset_code, selling_asset_issuer, buying_asset_code, buying_asset_issuer
+		HAVING COUNT(*) >= 5
+		ORDER BY trade_count DESC
+		LIMIT 100
+	`, r.hotSchema)
+
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("GetTradePairs: %w", err)
+	}
+	defer rows.Close()
+
+	var pairs []TradePair
+	for rows.Next() {
+		var p TradePair
+		var sellingCode, sellingIssuer, buyingCode, buyingIssuer sql.NullString
+		if err := rows.Scan(&sellingCode, &sellingIssuer, &buyingCode, &buyingIssuer, &p.TradeCount); err != nil {
+			return nil, err
+		}
+		if sellingCode.Valid {
+			p.BaseAssetCode = sellingCode.String
+		}
+		if sellingIssuer.Valid {
+			p.BaseAssetIssuer = sellingIssuer.String
+		}
+		if buyingCode.Valid {
+			p.CounterAssetCode = buyingCode.String
+		}
+		if buyingIssuer.Valid {
+			p.CounterAssetIssuer = buyingIssuer.String
+		}
+		pairs = append(pairs, p)
+	}
+	return pairs, nil
 }

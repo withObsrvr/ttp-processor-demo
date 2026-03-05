@@ -578,6 +578,21 @@ func (sm *SourceManager) QueryConfigSettingsSnapshot(ctx context.Context, startL
 	return nil, fmt.Errorf("unknown source mode: %s", mode)
 }
 
+// QueryTokenMetadataEntries delegates to the appropriate reader
+func (sm *SourceManager) QueryTokenMetadataEntries(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
+	sm.mu.RLock()
+	mode := sm.mode
+	sm.mu.RUnlock()
+
+	switch mode {
+	case SourceModeHot:
+		return sm.hotReader.QueryTokenMetadataEntries(ctx, startLedger, endLedger)
+	case SourceModeBackfill:
+		return sm.coldReader.QueryTokenMetadataEntries(ctx, startLedger, endLedger)
+	}
+	return nil, fmt.Errorf("unknown source mode: %s", mode)
+}
+
 // ForceHotMode forces the source manager back to hot mode, clearing any backfill state.
 // Used when backfill mode is stuck (e.g., cold storage also has a gap).
 func (sm *SourceManager) ForceHotMode() {

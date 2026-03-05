@@ -316,6 +316,22 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.contract_data_current (
     PRIMARY KEY (contract_id, contract_key_type)
 );
 
+-- token_registry - Token metadata registry
+CREATE TABLE IF NOT EXISTS testnet_catalog.silver.token_registry (
+    contract_id VARCHAR NOT NULL,
+    token_name VARCHAR,
+    token_symbol VARCHAR,
+    token_decimals INTEGER,
+    asset_code VARCHAR,
+    asset_issuer VARCHAR,
+    token_type VARCHAR,
+    first_seen_ledger BIGINT,
+    last_modified_ledger BIGINT,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP,
+    PRIMARY KEY (contract_id)
+);
+
 -- 11. contract_code_current - Latest Soroban contract code
 CREATE TABLE IF NOT EXISTS testnet_catalog.silver.contract_code_current (
     contract_code_hash VARCHAR PRIMARY KEY,

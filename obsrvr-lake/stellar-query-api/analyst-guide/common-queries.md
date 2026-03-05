@@ -1122,6 +1122,143 @@ curl -H "Authorization: Api-Key $API_KEY" \
 
 ---
 
+### Generic Contract Events (Bronze)
+
+Access raw Soroban contract events directly from the bronze layer. Unlike the CAP-67 unified events above (which are derived from token transfers), these are the raw `contract_events_stream_v1` events including diagnostic events, system events, and all topic/data payloads.
+
+#### Get All Generic Events
+
+Returns raw contract events with optional filters. Queries both hot (recent) and cold (historical) storage.
+
+```bash
+GET /api/v1/silver/events/generic
+```
+
+**Parameters:**
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `contract_id` | No | Filter by contract ID (hex format) |
+| `event_type` | No | Filter by type: `contract`, `system`, `diagnostic` |
+| `start_ledger` | No | Start of ledger range |
+| `end_ledger` | No | End of ledger range |
+| `limit` | No | Max results (default: 20, max: 200) |
+| `cursor` | No | Pagination cursor |
+| `order` | No | Sort order: `asc` or `desc` (default: desc) |
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/events/generic?event_type=contract&limit=5"
+```
+
+**Response:**
+```json
+{
+  "count": 5,
+  "events": [
+    {
+      "event_id": "c0ef7d6a...:0:0",
+      "contract_id": "d7928b72c2703ccfeaf7eb9ff4ef4d504a55a8b979fc9b450ea2c842b4d1ce61",
+      "ledger_sequence": 1349194,
+      "transaction_hash": "c0ef7d6a7d4d9683b152fe86af4359be608098ebb5b8f1f22c99ccdd1bde4b33",
+      "closed_at": "2026-03-05T21:24:47Z",
+      "event_type": "contract",
+      "topics_json": "[\"AAAADwAAAAh0cmFuc2Zlcg==\", ...]",
+      "topics_decoded": "[\"transfer\", {\"address\":\"GAIH3...\", \"type\":\"account\"}, ...]",
+      "data_decoded": "{\"hi\":0,\"lo\":100000000000,\"type\":\"i128\",\"value\":\"100000000000\"}",
+      "topic_count": 4,
+      "operation_index": 0,
+      "event_index": 0,
+      "in_successful_contract_call": false
+    }
+  ]
+}
+```
+
+> **Note:** `contract_id` in responses is in hex format. Use the hex contract hash, not the C... Stellar address.
+
+---
+
+#### Get Events for a Specific Contract
+
+```bash
+GET /api/v1/silver/events/contract/{contract_id}
+```
+
+**Parameters:**
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `contract_id` | Yes | Contract ID in hex format (path parameter) |
+| `event_type` | No | Filter by type: `contract`, `system`, `diagnostic` |
+| `limit` | No | Max results (default: 20, max: 200) |
+| `cursor` | No | Pagination cursor |
+| `order` | No | Sort order: `asc` or `desc` (default: desc) |
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/events/contract/d7928b72c2703ccfeaf7eb9ff4ef4d504a55a8b979fc9b450ea2c842b4d1ce61?limit=10"
+```
+
+**When to use:** Monitoring specific contract activity, building event-driven dashboards, debugging contract behavior, firehose views.
+
+---
+
+### Unified Search
+
+Search across all data types with a single query. The API auto-detects the query type based on format.
+
+```bash
+GET /api/v1/silver/search?q={query}
+```
+
+**Parameters:**
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `q` | Yes | Search query (account address, contract ID, tx hash, ledger number, or asset code) |
+
+**Query Type Detection:**
+| Input Format | Detected Type | What Gets Searched |
+|-------------|---------------|-------------------|
+| `G...` (56 chars) | Account | Token transfers for from/to matches |
+| `C...` (56 chars) | Contract | Token registry + contract event count |
+| 64 hex chars | Transaction hash | Transaction lookup by hash |
+| Numeric | Ledger sequence | Transactions at that ledger |
+| Other text | Asset code | Token registry by symbol/name |
+
+**Example — Search for a ledger:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/search?q=1349200"
+```
+
+**Response:**
+```json
+{
+  "query": "1349200",
+  "results": [
+    {
+      "type": "ledger",
+      "id": "1349200",
+      "label": "Ledger #1349200",
+      "details": {
+        "transaction_count": 5
+      }
+    }
+  ]
+}
+```
+
+**Example — Search for an account:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/search?q=GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR"
+```
+
+**When to use:** Block explorer search bars, universal lookup, auto-complete integrations.
+
+---
+
 ### SEP-41 Token API
 
 Query SEP-41 fungible tokens — metadata, balances, transfers, and holder statistics. Balances are computed from transfer history (total received minus total sent).
@@ -1591,6 +1728,77 @@ Or with JSON input:
 
 ---
 
+#### Get Transaction Balance & State Diffs
+
+Returns balance changes and ledger state changes for a specific transaction, decoded from the transaction's XDR metadata.
+
+```bash
+GET /api/v1/silver/tx/{hash}/diffs
+```
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/tx/c0ef7d6a7d4d9683b152fe86af4359be608098ebb5b8f1f22c99ccdd1bde4b33/diffs"
+```
+
+**Response:**
+```json
+{
+  "tx_hash": "c0ef7d6a...",
+  "ledger_sequence": 1349194,
+  "balance_changes": [
+    {
+      "address": "GAIH3...",
+      "asset_code": "XLM",
+      "asset_type": "native",
+      "before": "10000000000",
+      "after": "9000000000",
+      "delta": "-1000000000"
+    },
+    {
+      "address": "GBXYZ...",
+      "asset_code": "USDC",
+      "asset_type": "credit_alphanum4",
+      "before": "5000000000",
+      "after": "6000000000",
+      "delta": "1000000000"
+    }
+  ],
+  "state_changes": [
+    {
+      "type": "updated",
+      "entry_type": "account",
+      "key": "GAIH3...",
+      "before": "...",
+      "after": "..."
+    },
+    {
+      "type": "created",
+      "entry_type": "contract_data",
+      "key": "CDEF.../storage_key",
+      "after": "..."
+    }
+  ]
+}
+```
+
+**Balance change types:**
+- **Native (XLM):** Changes to account balance field
+- **Trustline:** Changes to credit_alphanum4/credit_alphanum12 trustline balances
+- **Contract data:** Changes to Soroban contract storage
+
+**State change types:**
+- `created` — New ledger entry added
+- `updated` — Existing entry modified (includes before/after)
+- `removed` — Entry deleted (includes before only)
+
+**When to use:** Transaction detail pages showing "what changed", audit trails, balance reconciliation, understanding Soroban state mutations.
+
+> **Note:** Requires the ingester to populate `tx_meta` XDR in bronze. If `tx_meta` is not available for a transaction, the response returns empty arrays.
+
+---
+
 ### Network Statistics
 
 #### Get Network Stats
@@ -1941,6 +2149,140 @@ curl -H "Authorization: Api-Key $API_KEY" \
 
 ---
 
+### Price & Market Data Endpoints
+
+Aggregated price data computed from DEX trades. Supports OHLC candles and latest price lookups.
+
+#### List Available Trading Pairs
+
+Returns all trading pairs with at least 5 trades.
+
+```bash
+GET /api/v1/silver/prices/pairs
+```
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/prices/pairs"
+```
+
+**Response:**
+```json
+{
+  "count": 100,
+  "pairs": [
+    {
+      "base_asset_code": "XLM",
+      "counter_asset_code": "CADL",
+      "counter_asset_issuer": "GCJHCENDLMNTPBNNCRRKOVGEFTFMP33Y6YWYXAWSPBNFM53XCY5EPAVZ",
+      "trade_count": 907
+    },
+    {
+      "base_asset_code": "CADL",
+      "base_asset_issuer": "GCJHCENDLMNTPBNNCRRKOVGEFTFMP33Y6YWYXAWSPBNFM53XCY5EPAVZ",
+      "counter_asset_code": "USDC",
+      "counter_asset_issuer": "GCJHCENDLMNTPBNNCRRKOVGEFTFMP33Y6YWYXAWSPBNFM53XCY5EPAVZ",
+      "trade_count": 490
+    }
+  ]
+}
+```
+
+**When to use:** Discovering available markets, building pair selectors, market overview dashboards.
+
+---
+
+#### Get Latest Price
+
+Returns the most recent trade price for a trading pair with 24-hour volume.
+
+```bash
+GET /api/v1/silver/prices/{base}/{counter}/latest
+```
+
+**Parameters:**
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `base` | Yes | Base asset code (e.g., `XLM`, `USDC`) |
+| `counter` | Yes | Counter asset code |
+| `base_issuer` | No | Base asset issuer (omit for XLM) |
+| `counter_issuer` | No | Counter asset issuer (omit for XLM) |
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/prices/XLM/CADL/latest?counter_issuer=GCJHCENDLMNTPBNNCRRKOVGEFTFMP33Y6YWYXAWSPBNFM53XCY5EPAVZ"
+```
+
+**Response:**
+```json
+{
+  "base_asset": "XLM",
+  "counter_asset": "CADL",
+  "price": 0.3485383,
+  "timestamp": "2026-01-06T00:17:06Z",
+  "volume_24h": 15234.5,
+  "trade_count_24h": 42
+}
+```
+
+**When to use:** Price tickers, current market rates, portfolio valuation.
+
+---
+
+#### Get OHLC Candles
+
+Returns OHLC (Open/High/Low/Close) candles for a trading pair, aggregated by time interval.
+
+```bash
+GET /api/v1/silver/prices/{base}/{counter}/ohlc
+```
+
+**Parameters:**
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `base` | Yes | Base asset code (e.g., `XLM`, `USDC`) |
+| `counter` | Yes | Counter asset code |
+| `base_issuer` | No | Base asset issuer (omit for XLM) |
+| `counter_issuer` | No | Counter asset issuer (omit for XLM) |
+| `interval` | No | Candle interval: `1m`, `5m`, `15m`, `1h`, `4h`, `1d`, `1w` (default: `1h`) |
+| `start` | No | Start time in RFC3339 format (default: 24 hours ago) |
+| `end` | No | End time in RFC3339 format (default: now) |
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/prices/XLM/USDC/ohlc?interval=1h&counter_issuer=GCJHCENDLMNTPBNNCRRKOVGEFTFMP33Y6YWYXAWSPBNFM53XCY5EPAVZ&start=2026-01-05T00:00:00Z&end=2026-01-06T00:00:00Z"
+```
+
+**Response:**
+```json
+{
+  "base": "XLM",
+  "counter": "USDC",
+  "interval": "1h",
+  "count": 12,
+  "candles": [
+    {
+      "timestamp": "2026-01-05T12:00:00Z",
+      "open": 0.1023,
+      "high": 0.1045,
+      "low": 0.1018,
+      "close": 0.1032,
+      "volume": 45231.5,
+      "trade_count": 18
+    }
+  ]
+}
+```
+
+**When to use:** Price charts, candlestick visualizations, technical analysis, historical price lookups.
+
+> **Note:** Price data comes from the hot buffer (recent trades in PostgreSQL). For very old trades outside the hot buffer window, candles may be empty.
+
+---
+
 ### Effects Endpoints
 
 #### List Effects
@@ -2157,6 +2499,60 @@ curl -H "Authorization: Api-Key $API_KEY" \
 ```bash
 GET /api/v1/silver/soroban/contract-data/entry?contract_id={contract_id}&key_hash={key_hash}
 ```
+
+---
+
+### Smart Wallet Detection (SEP-50)
+
+Detect whether a contract implements the SEP-50 smart wallet standard by checking for `__check_auth` events and signer-related instance storage.
+
+#### Get Smart Wallet Info
+
+```bash
+GET /api/v1/silver/smart-wallet/{contract_id}
+```
+
+**Parameters:**
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `contract_id` | Yes | Contract address in C... Stellar format |
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/smart-wallet/CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC"
+```
+
+**Response (not a smart wallet):**
+```json
+{
+  "contract_id": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+  "is_smart_wallet": false,
+  "signer_count": 0,
+  "has_check_auth": false
+}
+```
+
+**Response (smart wallet detected):**
+```json
+{
+  "contract_id": "CXYZ...",
+  "is_smart_wallet": true,
+  "signer_count": 2,
+  "has_check_auth": true,
+  "signers": [
+    "Signer: ed25519(GABC...)",
+    "Signer: secp256r1(0x04...)"
+  ]
+}
+```
+
+**Detection heuristics:**
+- `has_check_auth` — Contract has emitted events with `__check_auth` in topics (indicates custom auth)
+- `signers` — Contract instance storage contains entries with "Signer" or "Policy" keys
+- `is_smart_wallet` — True if either check auth events or signer storage is found
+
+**When to use:** Account detail pages, wallet type detection, smart wallet-aware UIs.
 
 ---
 
@@ -2895,6 +3291,14 @@ fi
 | Token transfers | N/A | `/silver/tokens/{contract_id}/transfers` |
 | Address token portfolio | N/A | `/silver/address/{addr}/token-balances` |
 | Unified event stream | N/A | `/silver/events` |
+| Generic contract events | N/A | `/silver/events/generic` |
+| Contract events by ID | N/A | `/silver/events/contract/{contract_id}` |
+| Universal search | N/A | `/silver/search?q={query}` |
+| OHLC price candles | N/A | `/silver/prices/{base}/{counter}/ohlc` |
+| Latest trade price | N/A | `/silver/prices/{base}/{counter}/latest` |
+| Trading pairs list | N/A | `/silver/prices/pairs` |
+| Transaction diffs | N/A | `/silver/tx/{hash}/diffs` |
+| Smart wallet detection | N/A | `/silver/smart-wallet/{contract_id}` |
 | Contract interface | N/A | `/silver/contracts/{id}/interface` |
 | Soroban ops by function | N/A | `/silver/operations/soroban/by-function` |
 | Order book | `GET /order_book` | `/bronze/offers` (with filters) |

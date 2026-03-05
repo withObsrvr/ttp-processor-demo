@@ -459,6 +459,11 @@ type ContractDataData struct {
 	// XDR data (1 field)
 	ContractDataXDR string
 
+	// Token metadata (3 fields, nullable - from METADATA key in instance storage)
+	TokenName     *string
+	TokenSymbol   *string
+	TokenDecimals *int32
+
 	// Metadata (2 fields)
 	CreatedAt   time.Time
 	LedgerRange uint32

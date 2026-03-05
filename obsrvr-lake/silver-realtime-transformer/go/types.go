@@ -569,6 +569,20 @@ type RestoredKeyRow struct {
 // Phase 4: Config Settings
 // =============================================================================
 
+// TokenRegistryRow represents a row in the token_registry table
+// Materialized from Bronze contract_data_snapshot_v1 instance entries with token metadata
+type TokenRegistryRow struct {
+	ContractID        string
+	TokenName         sql.NullString
+	TokenSymbol       sql.NullString
+	TokenDecimals     int
+	AssetCode         sql.NullString
+	AssetIssuer       sql.NullString
+	TokenType         string // "sac" or "custom_soroban"
+	FirstSeenLedger   int64
+	LastModifiedLedger int64
+}
+
 // ConfigSettingsCurrentRow represents a row in the config_settings_current table
 // Extracted from Bronze config_settings_snapshot_v1 (UPSERT pattern)
 // Contains Soroban network configuration parameters

@@ -923,6 +923,38 @@ func (br *BronzeReader) QueryRestoredKeys(ctx context.Context, startLedger, endL
 }
 
 // =============================================================================
+// Phase 3.5: Token Registry
+// =============================================================================
+
+// QueryTokenMetadataEntries reads contract instance entries with token metadata
+// Returns entries that have either token_name (from METADATA) or asset_code (from SAC)
+func (br *BronzeReader) QueryTokenMetadataEntries(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
+	query := `
+		SELECT DISTINCT ON (contract_id)
+			contract_id,
+			token_name,
+			token_symbol,
+			token_decimals,
+			asset_code,
+			asset_issuer,
+			ledger_sequence
+		FROM contract_data_snapshot_v1
+		WHERE ledger_sequence BETWEEN $1 AND $2
+		  AND contract_key_type = 'ScValTypeScvLedgerKeyContractInstance'
+		  AND deleted = false
+		  AND (token_name IS NOT NULL OR token_symbol IS NOT NULL OR asset_code IS NOT NULL)
+		ORDER BY contract_id, ledger_sequence DESC
+	`
+
+	rows, err := br.db.QueryContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query token metadata entries: %w", err)
+	}
+
+	return rows, nil
+}
+
+// =============================================================================
 // Phase 4: Config Settings
 // =============================================================================
 

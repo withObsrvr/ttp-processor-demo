@@ -359,6 +359,54 @@ curl -H "Authorization: Api-Key $API_KEY" \
 
 ---
 
+## Bonus Queries
+
+These additional endpoints cover search, market data, and advanced contract analysis.
+
+### 11. Universal Search
+
+**Question:** I have an address/hash/ledger number — what is it?
+
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/search?q=1349200"
+```
+
+**When to use:** Search bars, universal lookup, auto-detecting input type.
+
+---
+
+### 12. Get Trading Pairs and Latest Prices
+
+**Question:** What markets are active on the DEX, and what's the current price?
+
+```bash
+# List all trading pairs
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/prices/pairs"
+
+# Get latest price for XLM/CADL
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/prices/XLM/CADL/latest?counter_issuer=GCJHCENDLMNTPBNNCRRKOVGEFTFMP33Y6YWYXAWSPBNFM53XCY5EPAVZ"
+```
+
+**When to use:** Price tickers, market overview, portfolio valuation.
+
+---
+
+### 13. Get Raw Contract Events
+
+**Question:** What events has this contract emitted (including diagnostic events)?
+
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/events/generic?event_type=contract&limit=5"
+```
+
+**When to use:** Contract debugging, event firehose, monitoring all event types (not just token transfers).
+
+---
+
 ## What's Next?
 
 Now that you've run these queries, explore:
@@ -384,3 +432,11 @@ Now that you've run these queries, explore:
 | DEX trades | `/silver/trades` | Trading activity |
 | Liquidity pools | `/silver/liquidity-pools` | AMM state |
 | TTL expiring | `/silver/soroban/ttl/expiring` | Contract maintenance |
+| Universal search | `/silver/search?q=...` | Auto-detect search |
+| Trading pairs | `/silver/prices/pairs` | Market overview |
+| Latest price | `/silver/prices/{base}/{counter}/latest` | Price lookup |
+| OHLC candles | `/silver/prices/{base}/{counter}/ohlc` | Price charts |
+| Generic events | `/silver/events/generic` | Raw contract events |
+| Contract events | `/silver/events/contract/{id}` | Per-contract events |
+| Tx diffs | `/silver/tx/{hash}/diffs` | Balance changes |
+| Smart wallet | `/silver/smart-wallet/{id}` | SEP-50 detection |

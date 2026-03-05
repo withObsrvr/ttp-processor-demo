@@ -380,6 +380,9 @@ CREATE TABLE IF NOT EXISTS bronze.contract_data_snapshot_v1 (
     contract_data_xdr TEXT,
     created_at TIMESTAMP,
     ledger_range BIGINT,
+    token_name TEXT,
+    token_symbol TEXT,
+    token_decimals INTEGER,
     era_id TEXT,
     version_label TEXT
 );

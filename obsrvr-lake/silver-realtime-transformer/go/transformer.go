@@ -285,6 +285,13 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 	}
 	totalRows += contractDataCount
 
+	// Materialize token registry from contract instance entries with token metadata
+	tokenRegistryCount, err := rt.transformTokenRegistry(ctx, tx, startLedger, endLedger)
+	if err != nil {
+		return fmt.Errorf("failed to transform token registry: %w", err)
+	}
+	totalRows += tokenRegistryCount
+
 	// Transform contract code current (Phase 3 - Soroban Tables)
 	contractCodeCount, err := rt.transformContractCodeCurrent(ctx, tx, startLedger, endLedger)
 	if err != nil {
@@ -1688,6 +1695,72 @@ func (rt *RealtimeTransformer) transformConfigSettingsCurrent(ctx context.Contex
 
 	if err := rows.Err(); err != nil {
 		return count, fmt.Errorf("error iterating config settings: %w", err)
+	}
+
+	return count, nil
+}
+
+// =============================================================================
+// Token Registry
+// =============================================================================
+
+// transformTokenRegistry materializes token metadata into the token_registry table
+func (rt *RealtimeTransformer) transformTokenRegistry(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	rows, err := rt.sourceManager.QueryTokenMetadataEntries(ctx, startLedger, endLedger)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	count := int64(0)
+
+	for rows.Next() {
+		var contractID string
+		var tokenName, tokenSymbol, assetCode, assetIssuer sql.NullString
+		var tokenDecimals sql.NullInt32
+		var ledgerSequence int64
+
+		err := rows.Scan(
+			&contractID, &tokenName, &tokenSymbol, &tokenDecimals,
+			&assetCode, &assetIssuer, &ledgerSequence,
+		)
+		if err != nil {
+			return count, fmt.Errorf("failed to scan token metadata row: %w", err)
+		}
+
+		// Determine token type
+		tokenType := "custom_soroban"
+		if assetCode.Valid && assetCode.String != "" {
+			tokenType = "sac"
+		}
+
+		// Determine decimals (default 7)
+		decimals := 7
+		if tokenDecimals.Valid {
+			decimals = int(tokenDecimals.Int32)
+		}
+
+		row := &TokenRegistryRow{
+			ContractID:        contractID,
+			TokenName:         tokenName,
+			TokenSymbol:       tokenSymbol,
+			TokenDecimals:     decimals,
+			AssetCode:         assetCode,
+			AssetIssuer:       assetIssuer,
+			TokenType:         tokenType,
+			FirstSeenLedger:   ledgerSequence,
+			LastModifiedLedger: ledgerSequence,
+		}
+
+		if err := rt.silverWriter.WriteTokenRegistry(ctx, tx, row); err != nil {
+			return count, fmt.Errorf("failed to write token registry: %w", err)
+		}
+
+		count++
+	}
+
+	if err := rows.Err(); err != nil {
+		return count, fmt.Errorf("error iterating token metadata: %w", err)
 	}
 
 	return count, nil

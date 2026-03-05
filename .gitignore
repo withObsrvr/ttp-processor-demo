@@ -289,3 +289,5 @@ obsrvr-lake/stellar-query-api/SILVER_API_REFERENCE.md
 obsrvr-lake/stellar-query-api/SILVER_API_EXAMPLES.md
 obsrvr-lake/stellar-query-api/SILVER_API_DOCUMENTATION.md
 duckdb-consumer/bin/duckdb-consumer
+obsrvr-lake/silver-cold-flusher/go/silver-cold-flusher
+obsrvr-lake/stellar-postgres-ingester/go/backfill-token-metadata

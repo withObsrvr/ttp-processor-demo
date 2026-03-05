@@ -498,6 +498,11 @@ func (w *Writer) extractContractData(rawLedger *pb.RawLedger) ([]ContractDataDat
 				// XDR data (1 field)
 				ContractDataXDR: contractDataXDR,
 
+				// Token metadata (3 fields, nullable)
+				TokenName:     contractOutput.TokenName,
+				TokenSymbol:   contractOutput.TokenSymbol,
+				TokenDecimals: contractOutput.TokenDecimals,
+
 				// Metadata (2 fields)
 				CreatedAt:   now,
 				LedgerRange: ledgerRange,

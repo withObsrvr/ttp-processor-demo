@@ -25,6 +25,7 @@ var SilverTables = []string{
 	"offers_current",
 	"claimable_balances_current",
 	"contract_data_current",
+	"token_registry",
 
 	// Enriched operations tables
 	"enriched_history_operations",
