@@ -70,9 +70,11 @@ const (
 // UnifiedReaderConfig contains configuration for the UnifiedDuckDBReader
 // which ATTACHes both PostgreSQL (hot) and DuckLake (cold) to a single DuckDB instance
 type UnifiedReaderConfig struct {
-	Postgres UnifiedPostgresConfig `yaml:"postgres"`
-	S3       UnifiedS3Config       `yaml:"s3"`
-	DuckLake UnifiedDuckLakeConfig `yaml:"ducklake"`
+	Postgres       UnifiedPostgresConfig  `yaml:"postgres"`
+	BronzePostgres *UnifiedPostgresConfig `yaml:"bronze_postgres,omitempty"`
+	BronzeDuckLake *UnifiedDuckLakeConfig `yaml:"bronze_ducklake,omitempty"`
+	S3             UnifiedS3Config        `yaml:"s3"`
+	DuckLake       UnifiedDuckLakeConfig  `yaml:"ducklake"`
 }
 
 // UnifiedPostgresConfig contains PostgreSQL connection details for hot data

@@ -377,6 +377,40 @@ func mainWithSilver() {
 		log.Println("  ✓ /api/v1/silver/contracts/{id}/call-summary")
 		log.Println("  ✓ /api/v1/silver/contracts/{id}/analytics (comprehensive analytics)")
 
+		// Prism Block Explorer endpoints (require unified reader)
+		if unifiedDuckDBReader != nil {
+			// Feature 1: Generic CAP-67 Events (from bronze)
+			genericEventHandlers := NewGenericEventHandlers(unifiedDuckDBReader)
+			router.HandleFunc("/api/v1/silver/events/generic", genericEventHandlers.HandleGenericEvents).Methods("GET")
+			router.HandleFunc("/api/v1/silver/events/contract/{contract_id}", genericEventHandlers.HandleContractGenericEvents).Methods("GET")
+			log.Println("  ✓ /api/v1/silver/events/generic (all contract events from bronze)")
+			log.Println("  ✓ /api/v1/silver/events/contract/{contract_id} (contract events)")
+
+			// Feature 2: Unified Search
+			searchHandlers := NewSearchHandlers(unifiedDuckDBReader)
+			router.HandleFunc("/api/v1/silver/search", searchHandlers.HandleSearch).Methods("GET")
+			log.Println("  ✓ /api/v1/silver/search (unified search)")
+
+			// Feature 4: Transaction Diffs (balance/state changes)
+			txDiffHandlers := NewTxDiffHandlers(unifiedDuckDBReader)
+			router.HandleFunc("/api/v1/silver/tx/{hash}/diffs", txDiffHandlers.HandleTransactionDiffs).Methods("GET")
+			log.Println("  ✓ /api/v1/silver/tx/{hash}/diffs (balance/state changes)")
+
+			// Feature 3: Price Data (OHLC & Latest)
+			priceHandlers := NewPriceHandlers(unifiedDuckDBReader)
+			router.HandleFunc("/api/v1/silver/prices/pairs", priceHandlers.HandleTradePairs).Methods("GET")
+			router.HandleFunc("/api/v1/silver/prices/{base}/{counter}/ohlc", priceHandlers.HandleOHLCCandles).Methods("GET")
+			router.HandleFunc("/api/v1/silver/prices/{base}/{counter}/latest", priceHandlers.HandleLatestPrice).Methods("GET")
+			log.Println("  ✓ /api/v1/silver/prices/pairs (available trading pairs)")
+			log.Println("  ✓ /api/v1/silver/prices/{base}/{counter}/ohlc (OHLC candles)")
+			log.Println("  ✓ /api/v1/silver/prices/{base}/{counter}/latest (latest price)")
+
+			// Feature 5: Smart Wallet Detection (SEP-50)
+			smartWalletHandlers := NewSmartWalletHandlers(unifiedDuckDBReader)
+			router.HandleFunc("/api/v1/silver/smart-wallet/{contract_id}", smartWalletHandlers.HandleSmartWalletInfo).Methods("GET")
+			log.Println("  ✓ /api/v1/silver/smart-wallet/{contract_id} (SEP-50 detection)")
+		}
+
 		// CAP-67 Unified Event Stream + SEP-41 Token endpoints
 		if unifiedDuckDBReader != nil {
 			eventHandlers := NewEventHandlers(unifiedDuckDBReader)

@@ -5,14 +5,14 @@ RUN apk add --no-cache git make
 
 WORKDIR /workspace
 
-# Copy workspace dependencies
+# Copy workspace dependencies (datalake is at repo root, not under obsrvr-lake)
 COPY stellar-live-source-datalake/go ./stellar-live-source-datalake/go
 
 # Copy service code
-COPY stellar-postgres-ingester/go ./stellar-postgres-ingester/go
+COPY obsrvr-lake/stellar-postgres-ingester/go ./obsrvr-lake/stellar-postgres-ingester/go
 
 # Build from service directory
-WORKDIR /workspace/stellar-postgres-ingester/go
+WORKDIR /workspace/obsrvr-lake/stellar-postgres-ingester/go
 RUN go mod download
 RUN go mod tidy
 RUN CGO_ENABLED=0 go build -o stellar-postgres-ingester
@@ -29,8 +29,8 @@ RUN addgroup -g 1000 stellar && \
 WORKDIR /app
 
 # Copy binary and config
-COPY --from=builder /workspace/stellar-postgres-ingester/go/stellar-postgres-ingester .
-COPY stellar-postgres-ingester/config.yaml .
+COPY --from=builder /workspace/obsrvr-lake/stellar-postgres-ingester/go/stellar-postgres-ingester .
+COPY obsrvr-lake/stellar-postgres-ingester/config.yaml .
 
 # Change ownership
 RUN chown -R stellar:stellar /app

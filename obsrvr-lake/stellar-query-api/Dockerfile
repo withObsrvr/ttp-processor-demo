@@ -14,8 +14,8 @@ RUN go mod download
 # Copy source code
 COPY go/ ./
 
-# Build binary (CGO required for DuckDB)
-RUN CGO_ENABLED=1 go build -o stellar-query-api
+# Ensure go.sum is up to date and build binary (CGO required for DuckDB)
+RUN go mod tidy && CGO_ENABLED=1 go build -o stellar-query-api
 
 FROM debian:bookworm-slim
 

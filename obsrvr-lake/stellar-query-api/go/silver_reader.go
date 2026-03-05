@@ -804,9 +804,12 @@ type UnifiedEventFilters struct {
 // SEP41TokenMetadata represents metadata for a SEP-41 compliant token
 type SEP41TokenMetadata struct {
 	ContractID    string  `json:"contract_id"`
+	Name          *string `json:"name,omitempty"`
+	Symbol        *string `json:"symbol,omitempty"`
 	AssetCode     *string `json:"asset_code,omitempty"`
 	AssetIssuer   *string `json:"asset_issuer,omitempty"`
 	SourceType    string  `json:"source_type"` // classic or soroban
+	TokenType     string  `json:"token_type"`  // sac or custom_soroban
 	Decimals      int     `json:"decimals"`
 	HolderCount   int64   `json:"holder_count"`
 	TransferCount int64   `json:"transfer_count"`
@@ -831,14 +834,18 @@ type SEP41Transfer = UnifiedEvent
 
 // TokenHolding represents a single token in an address's portfolio
 type TokenHolding struct {
-	ContractID *string `json:"contract_id,omitempty"`
-	AssetCode  *string `json:"asset_code,omitempty"`
+	ContractID  *string `json:"contract_id,omitempty"`
+	Name        *string `json:"name,omitempty"`
+	Symbol      *string `json:"symbol,omitempty"`
+	AssetCode   *string `json:"asset_code,omitempty"`
 	AssetIssuer *string `json:"asset_issuer,omitempty"`
-	SourceType string  `json:"source_type"`
-	Balance    string  `json:"balance"`
-	BalanceRaw int64   `json:"balance_raw"`
-	TxCount    int64   `json:"tx_count"`
-	LastSeen   string  `json:"last_activity"`
+	SourceType  string  `json:"source_type"`
+	TokenType   string  `json:"token_type"`
+	Decimals    int     `json:"decimals"`
+	Balance     string  `json:"balance"`
+	BalanceRaw  int64   `json:"balance_raw"`
+	TxCount     int64   `json:"tx_count"`
+	LastSeen    string  `json:"last_activity"`
 }
 
 // SEP41BalanceFilters contains filters for querying SEP-41 balances
@@ -853,13 +860,112 @@ type SEP41BalanceFilters struct {
 // SEP41TokenStats contains aggregate statistics for a SEP-41 token
 type SEP41TokenStats struct {
 	ContractID     string  `json:"contract_id"`
+	Name           *string `json:"name,omitempty"`
+	Symbol         *string `json:"symbol,omitempty"`
+	AssetCode      *string `json:"asset_code,omitempty"`
+	TokenType      string  `json:"token_type"`
+	Decimals       int     `json:"decimals"`
 	HolderCount    int64   `json:"holder_count"`
 	TotalSupply    string  `json:"total_supply"`
 	TotalSupplyRaw int64   `json:"total_supply_raw"`
 	Transfers24h   int64   `json:"transfers_24h"`
 	Volume24h      string  `json:"volume_24h"`
 	Volume24hRaw   int64   `json:"volume_24h_raw"`
-	AssetCode      *string `json:"asset_code,omitempty"`
+}
+
+// ============================================
+// GENERIC EVENT TYPES (Bronze contract_events_stream_v1)
+// ============================================
+
+// GenericEvent represents a raw contract event from bronze layer
+type GenericEvent struct {
+	EventID       string  `json:"event_id"`
+	ContractID    *string `json:"contract_id,omitempty"`
+	LedgerSeq     int64   `json:"ledger_sequence"`
+	TxHash        string  `json:"transaction_hash"`
+	ClosedAt      string  `json:"closed_at"`
+	EventType     string  `json:"event_type"`
+	TopicsJSON    *string `json:"topics_json,omitempty"`
+	TopicsDecoded *string `json:"topics_decoded,omitempty"`
+	DataDecoded   *string `json:"data_decoded,omitempty"`
+	TopicCount    int     `json:"topic_count"`
+	OpIndex       int     `json:"operation_index"`
+	EventIndex    int     `json:"event_index"`
+	Successful    bool    `json:"in_successful_contract_call"`
+}
+
+// GenericEventFilters contains filters for querying generic contract events
+type GenericEventFilters struct {
+	ContractID  *string
+	EventType   *string // contract, system, diagnostic
+	TopicMatch  *string // match against topics_decoded
+	StartLedger *int64
+	EndLedger   *int64
+	Limit       int
+	Cursor      *string
+	Order       string
+}
+
+// ============================================
+// SEARCH TYPES
+// ============================================
+
+// SearchResult represents a single search result
+type SearchResult struct {
+	Type    string `json:"type"`
+	ID      string `json:"id"`
+	Label   string `json:"label"`
+	Details any    `json:"details,omitempty"`
+}
+
+// SearchResults contains the response for a search query
+type SearchResults struct {
+	Query   string         `json:"query"`
+	Results []SearchResult `json:"results"`
+}
+
+// ============================================
+// TRANSACTION DIFF TYPES
+// ============================================
+
+// TxBalanceChange represents a balance change within a transaction
+type TxBalanceChange struct {
+	Address   string `json:"address"`
+	AssetCode string `json:"asset_code"`
+	AssetType string `json:"asset_type"`
+	Before    string `json:"before"`
+	After     string `json:"after"`
+	Delta     string `json:"delta"`
+}
+
+// TxStateChange represents a state change within a transaction
+type TxStateChange struct {
+	Type      string  `json:"type"`
+	EntryType string  `json:"entry_type"`
+	Key       string  `json:"key"`
+	Before    *string `json:"before,omitempty"`
+	After     *string `json:"after,omitempty"`
+}
+
+// TxDiffs contains all balance and state changes for a transaction
+type TxDiffs struct {
+	TxHash         string            `json:"tx_hash"`
+	LedgerSequence int64             `json:"ledger_sequence"`
+	BalanceChanges []TxBalanceChange `json:"balance_changes"`
+	StateChanges   []TxStateChange   `json:"state_changes"`
+}
+
+// ============================================
+// SMART WALLET TYPES
+// ============================================
+
+// SmartWalletInfo contains information about a SEP-50 smart wallet
+type SmartWalletInfo struct {
+	ContractID   string   `json:"contract_id"`
+	IsSmartWallet bool    `json:"is_smart_wallet"`
+	SignerCount  int      `json:"signer_count"`
+	Signers      []string `json:"signers,omitempty"`
+	HasCheckAuth bool     `json:"has_check_auth"`
 }
 
 // ============================================
@@ -1089,6 +1195,40 @@ type TradeStats struct {
 	UniqueSellers int64   `json:"unique_sellers"`
 	UniqueBuyers  int64   `json:"unique_buyers"`
 	AvgPrice      *string `json:"avg_price,omitempty"`
+}
+
+// ============================================
+// PRICE DATA TYPES
+// ============================================
+
+// OHLCCandle represents a single OHLC price candle
+type OHLCCandle struct {
+	Timestamp  string  `json:"timestamp"`
+	Open       float64 `json:"open"`
+	High       float64 `json:"high"`
+	Low        float64 `json:"low"`
+	Close      float64 `json:"close"`
+	Volume     float64 `json:"volume"`
+	TradeCount int64   `json:"trade_count"`
+}
+
+// LatestPrice represents the most recent price for a trading pair
+type LatestPrice struct {
+	BaseAsset    string  `json:"base_asset"`
+	CounterAsset string  `json:"counter_asset"`
+	Price        float64 `json:"price"`
+	Timestamp    string  `json:"timestamp"`
+	Volume24h    float64 `json:"volume_24h"`
+	TradeCount24h int64  `json:"trade_count_24h"`
+}
+
+// TradePair represents an available trading pair
+type TradePair struct {
+	BaseAssetCode      string `json:"base_asset_code"`
+	BaseAssetIssuer    string `json:"base_asset_issuer,omitempty"`
+	CounterAssetCode   string `json:"counter_asset_code"`
+	CounterAssetIssuer string `json:"counter_asset_issuer,omitempty"`
+	TradeCount         int64  `json:"trade_count"`
 }
 
 // SilverEffect represents an effect from the Silver effects table

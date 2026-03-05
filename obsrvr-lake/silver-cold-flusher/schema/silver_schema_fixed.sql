@@ -123,6 +123,20 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.contract_data_current (
     updated_at TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS testnet_catalog.silver.token_registry (
+    contract_id VARCHAR,
+    token_name VARCHAR,
+    token_symbol VARCHAR,
+    token_decimals INTEGER,
+    asset_code VARCHAR,
+    asset_issuer VARCHAR,
+    token_type VARCHAR,
+    first_seen_ledger BIGINT,
+    last_updated_ledger BIGINT,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS testnet_catalog.silver.enriched_history_operations (
     transaction_hash VARCHAR,
     operation_index INTEGER,

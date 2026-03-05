@@ -33,6 +33,16 @@ type ContractDataOutput struct {
 	Val                       map[string]string `json:"val"`
 	ValDecoded                map[string]string `json:"val_decoded"`
 	ContractDataXDR           string            `json:"contract_data_xdr"`
+	TokenName                 *string           `json:"token_name,omitempty"`
+	TokenSymbol               *string           `json:"token_symbol,omitempty"`
+	TokenDecimals             *int32            `json:"token_decimals,omitempty"`
+}
+
+// TokenMetadata holds decoded token metadata from contract instance storage
+type TokenMetadata struct {
+	Name     string
+	Symbol   string
+	Decimals int32
 }
 
 var (
@@ -42,7 +52,12 @@ var (
 	issuerSym          = xdr.ScSymbol("issuer")
 	assetCodeSym       = xdr.ScSymbol("asset_code")
 	assetInfoSym       = xdr.ScSymbol("AssetInfo")
-	assetInfoVec       = &xdr.ScVec{
+	metadataSym        = xdr.ScSymbol("METADATA")
+	metadataKey        = xdr.ScVal{
+		Type: xdr.ScValTypeScvSymbol,
+		Sym:  &metadataSym,
+	}
+	assetInfoVec = &xdr.ScVec{
 		xdr.ScVal{
 			Type: xdr.ScValTypeScvSymbol,
 			Sym:  &assetInfoSym,
@@ -136,6 +151,23 @@ func (t *TransformContractDataStruct) TransformContractData(ledgerChange ingest.
 		return ContractDataOutput{}, err, false
 	}
 
+	// Extract token metadata from contract instance storage (METADATA key)
+	var tokenName, tokenSymbol *string
+	var tokenDecimals *int32
+	tokenMeta := TokenMetadataFromContractData(ledgerEntry)
+	if tokenMeta != nil {
+		if tokenMeta.Name != "" {
+			name := tokenMeta.Name
+			tokenName = &name
+		}
+		if tokenMeta.Symbol != "" {
+			sym := tokenMeta.Symbol
+			tokenSymbol = &sym
+		}
+		dec := tokenMeta.Decimals
+		tokenDecimals = &dec
+	}
+
 	transformedData := ContractDataOutput{
 		ContractId:                outputContractDataContractId,
 		ContractKeyType:           contractDataKeyType,
@@ -156,6 +188,9 @@ func (t *TransformContractDataStruct) TransformContractData(ledgerChange ingest.
 		Val:                       outputVal,
 		ValDecoded:                outputValDecoded,
 		ContractDataXDR:           outputContractDataXDR,
+		TokenName:                 tokenName,
+		TokenSymbol:               tokenSymbol,
+		TokenDecimals:             tokenDecimals,
 	}
 	return transformedData, nil, true
 }
@@ -297,6 +332,90 @@ func AssetFromContractData(ledgerEntry xdr.LedgerEntry, passphrase string) *xdr.
 	}
 
 	return &asset
+}
+
+// TokenMetadataFromContractData extracts token metadata (name, symbol, decimals)
+// from a contract instance storage entry. Standard Soroban tokens (using
+// soroban-token-sdk) store metadata under a single METADATA symbol key:
+//
+//	Key: ScVal{Sym: "METADATA"}
+//	Value: ScVal{Map: [{Sym("decimal"), U32(n)}, {Sym("name"), Str(s)}, {Sym("symbol"), Str(s)}]}
+//
+// Returns nil if the entry is not a contract instance or doesn't contain METADATA.
+func TokenMetadataFromContractData(ledgerEntry xdr.LedgerEntry) *TokenMetadata {
+	contractData, ok := ledgerEntry.Data.GetContractData()
+	if !ok {
+		return nil
+	}
+	if contractData.Key.Type != xdr.ScValTypeScvLedgerKeyContractInstance {
+		return nil
+	}
+	contractInstanceData, ok := contractData.Val.GetInstance()
+	if !ok || contractInstanceData.Storage == nil {
+		return nil
+	}
+
+	var metadataVal *xdr.ScVal
+	for _, mapEntry := range *contractInstanceData.Storage {
+		if mapEntry.Key.Equals(metadataKey) {
+			// clone the map entry to avoid reference to loop iterator
+			mapValXdr, cloneErr := mapEntry.Val.MarshalBinary()
+			if cloneErr != nil {
+				return nil
+			}
+			metadataVal = &xdr.ScVal{}
+			cloneErr = metadataVal.UnmarshalBinary(mapValXdr)
+			if cloneErr != nil {
+				return nil
+			}
+			break
+		}
+	}
+
+	if metadataVal == nil {
+		return nil
+	}
+
+	mapPtr, ok := metadataVal.GetMap()
+	if !ok || mapPtr == nil {
+		return nil
+	}
+
+	meta := &TokenMetadata{
+		Decimals: 7, // default
+	}
+
+	for _, entry := range *mapPtr {
+		keySym, ok := entry.Key.GetSym()
+		if !ok {
+			continue
+		}
+		switch string(keySym) {
+		case "decimal":
+			if u32, ok := entry.Val.GetU32(); ok {
+				meta.Decimals = int32(u32)
+			}
+		case "name":
+			if str, ok := entry.Val.GetStr(); ok {
+				meta.Name = string(str)
+			} else if bytes, ok := entry.Val.GetBytes(); ok {
+				meta.Name = string(bytes)
+			}
+		case "symbol":
+			if str, ok := entry.Val.GetStr(); ok {
+				meta.Symbol = string(str)
+			} else if bytes, ok := entry.Val.GetBytes(); ok {
+				meta.Symbol = string(bytes)
+			}
+		}
+	}
+
+	// Only return if we got at least a name or symbol
+	if meta.Name == "" && meta.Symbol == "" {
+		return nil
+	}
+
+	return meta
 }
 
 // ContractBalanceFromContractData takes a ledger entry and verifies that the

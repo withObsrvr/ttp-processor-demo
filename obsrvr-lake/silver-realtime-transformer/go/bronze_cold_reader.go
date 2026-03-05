@@ -1270,3 +1270,42 @@ func (r *BronzeColdReader) QueryConfigSettingsSnapshot(ctx context.Context, star
 
 	return rows, nil
 }
+
+// QueryTokenMetadataEntries reads contract instance entries with token metadata from cold storage
+func (r *BronzeColdReader) QueryTokenMetadataEntries(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
+	query := fmt.Sprintf(`
+		WITH ranked AS (
+			SELECT
+				contract_id,
+				token_name,
+				token_symbol,
+				token_decimals,
+				asset_code,
+				asset_issuer,
+				ledger_sequence,
+				ROW_NUMBER() OVER (PARTITION BY contract_id ORDER BY ledger_sequence DESC) as rn
+			FROM %s
+			WHERE ledger_sequence BETWEEN $1 AND $2
+			  AND contract_key_type = 'ScValTypeScvLedgerKeyContractInstance'
+			  AND deleted = false
+			  AND (token_name IS NOT NULL OR asset_code IS NOT NULL)
+		)
+		SELECT
+			contract_id,
+			token_name,
+			token_symbol,
+			token_decimals,
+			asset_code,
+			asset_issuer,
+			ledger_sequence
+		FROM ranked
+		WHERE rn = 1
+	`, r.tableName("contract_data_snapshot_v1"))
+
+	rows, err := r.db.QueryContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query token metadata entries from cold: %w", err)
+	}
+
+	return rows, nil
+}

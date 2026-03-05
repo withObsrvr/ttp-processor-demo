@@ -623,6 +623,31 @@ CREATE INDEX IF NOT EXISTS idx_config_settings_ledger_range ON config_settings_c
 CREATE INDEX IF NOT EXISTS idx_config_settings_ledger_sequence ON config_settings_current(ledger_sequence);
 
 -- ============================================================================
+-- TOKEN REGISTRY TABLE
+-- ============================================================================
+
+-- Table: token_registry
+-- Materialized token metadata from Bronze contract_data_snapshot_v1
+-- Combines SAC asset info and custom Soroban token METADATA
+CREATE TABLE IF NOT EXISTS token_registry (
+    contract_id     TEXT PRIMARY KEY,
+    token_name      TEXT,
+    token_symbol    TEXT,
+    token_decimals  INTEGER NOT NULL DEFAULT 7,
+    asset_code      TEXT,          -- from SAC AssetInfo (AssetFromContractData)
+    asset_issuer    TEXT,          -- from SAC AssetInfo (AssetFromContractData)
+    token_type      TEXT NOT NULL, -- 'sac' or 'custom_soroban'
+    first_seen_ledger BIGINT,
+    last_updated_ledger BIGINT,
+    created_at      TIMESTAMPTZ DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_token_registry_symbol ON token_registry(token_symbol);
+CREATE INDEX IF NOT EXISTS idx_token_registry_type ON token_registry(token_type);
+CREATE INDEX IF NOT EXISTS idx_token_registry_asset ON token_registry(asset_code, asset_issuer) WHERE asset_code IS NOT NULL;
+
+-- ============================================================================
 -- CHECKPOINT TABLE
 -- ============================================================================
 

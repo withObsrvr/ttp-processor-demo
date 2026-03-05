@@ -99,6 +99,7 @@ func GetTablesToFlush() []string {
 		"offers_current",
 		"claimable_balances_current",
 		"contract_data_current",
+		"token_registry",
 
 		// Snapshot tables (5)
 		"accounts_snapshot",

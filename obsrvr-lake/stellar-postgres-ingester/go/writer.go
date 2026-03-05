@@ -1398,9 +1398,10 @@ func (w *Writer) insertContractData(ctx context.Context, tx pgx.Tx, contractData
 			asset_code, asset_issuer, asset_type,
 			balance_holder, balance,
 			last_modified_ledger, ledger_entry_change, deleted, closed_at,
-			contract_data_xdr, created_at, ledger_range
+			contract_data_xdr, created_at, ledger_range,
+			token_name, token_symbol, token_decimals
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
 		)
 		ON CONFLICT (contract_id, ledger_key_hash, ledger_sequence) DO UPDATE SET
 			contract_key_type = EXCLUDED.contract_key_type,
@@ -1413,7 +1414,10 @@ func (w *Writer) insertContractData(ctx context.Context, tx pgx.Tx, contractData
 			last_modified_ledger = EXCLUDED.last_modified_ledger,
 			ledger_entry_change = EXCLUDED.ledger_entry_change,
 			deleted = EXCLUDED.deleted,
-			contract_data_xdr = EXCLUDED.contract_data_xdr
+			contract_data_xdr = EXCLUDED.contract_data_xdr,
+			token_name = EXCLUDED.token_name,
+			token_symbol = EXCLUDED.token_symbol,
+			token_decimals = EXCLUDED.token_decimals
 	`
 
 	for _, data := range contractDataList {
@@ -1435,6 +1439,9 @@ func (w *Writer) insertContractData(ctx context.Context, tx pgx.Tx, contractData
 			data.ContractDataXDR,
 			data.CreatedAt,
 			data.LedgerRange,
+			data.TokenName,
+			data.TokenSymbol,
+			data.TokenDecimals,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to insert contract data %s/%s: %w", data.ContractId, data.LedgerKeyHash, err)

@@ -60,6 +60,27 @@ curl -H "Authorization: Api-Key YOUR_API_KEY" \
   "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/tx/YOUR_TX_HASH/decoded"
 ```
 
+Search across accounts, contracts, transactions, ledgers, and assets with one query:
+
+```bash
+curl -H "Authorization: Api-Key YOUR_API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/search?q=USDC"
+```
+
+Get available DEX trading pairs and latest prices:
+
+```bash
+curl -H "Authorization: Api-Key YOUR_API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/prices/pairs"
+```
+
+Get raw contract events (all event types including diagnostic):
+
+```bash
+curl -H "Authorization: Api-Key YOUR_API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/events/generic?limit=10"
+```
+
 Get a compliance archive with all XLM holders at a specific point in time:
 
 ```bash
@@ -113,9 +134,18 @@ The API automatically queries both hot and cold storage, merging results seamles
 
 **Soroban & Smart Contracts:**
 - [CAP-67 Unified Events](./common-queries.md#cap-67-unified-event-stream) - Unified event stream (transfers, mints, burns)
+- [Generic Contract Events](./common-queries.md#generic-contract-events-bronze) - Raw Soroban events (contract, system, diagnostic)
 - [SEP-41 Token API](./common-queries.md#sep-41-token-api) - Token metadata, balances, transfers, and portfolios
+- [Smart Wallet Detection](./common-queries.md#smart-wallet-detection-sep-50) - Detect SEP-50 smart wallets
 - [Transaction Decoding](./common-queries.md#transaction-decoding) - Human-readable transaction summaries
+- [Transaction Diffs](./common-queries.md#get-transaction-balance--state-diffs) - Balance and state changes per transaction
 - [Soroban Function Filter](./common-queries.md#get-soroban-operations-by-function) - Filter operations by contract and function
+
+**Market Data & Search:**
+- [Unified Search](./common-queries.md#unified-search) - Search across all data types with one query
+- [Trading Pairs](./common-queries.md#list-available-trading-pairs) - Available DEX markets
+- [Latest Prices](./common-queries.md#get-latest-price) - Current trade prices with 24h volume
+- [OHLC Candles](./common-queries.md#get-ohlc-candles) - Price charts and candlestick data
 
 **Compliance & Auditing:**
 - [Gold Layer Endpoints](./common-queries.md#gold-layer-endpoints) - Point-in-time snapshots and compliance archives
