@@ -587,14 +587,20 @@ func (h *ContractCallHandlers) HandleContractMetadata(w http.ResponseWriter, r *
 	ctx := r.Context()
 	resp := ContractMetadataResponse{ContractID: contractID}
 
-	// Query contract_metadata for creator info (from silver hot via legacy reader)
+	// Query contract_metadata for creator info — try hot first, then unified (hot+cold)
 	if h.reader != nil {
 		h.reader.hot.enrichContractMetadata(ctx, &resp)
 	}
+	if resp.CreatorAddress == nil && h.unifiedReader != nil {
+		h.unifiedReader.enrichContractMetadata(ctx, &resp)
+	}
 
-	// Query observed functions from contract_invocations_raw
+	// Query observed functions from contract_invocations_raw — try hot, then unified
 	if h.reader != nil {
 		h.reader.hot.enrichContractFunctions(ctx, &resp)
+	}
+	if len(resp.ExportedFunctions) == 0 && h.unifiedReader != nil {
+		h.unifiedReader.enrichContractFunctions(ctx, &resp)
 	}
 
 	// Query storage summary from contract_data_current
@@ -605,6 +611,12 @@ func (h *ContractCallHandlers) HandleContractMetadata(w http.ResponseWriter, r *
 	// Query WASM metrics from contract_code_current
 	if h.reader != nil && resp.WasmHash != nil {
 		h.reader.hot.enrichContractWasm(ctx, &resp)
+	}
+
+	// Return 404 if no metadata was found from any source
+	if resp.CreatorAddress == nil && len(resp.ExportedFunctions) == 0 && resp.TotalEntries == 0 {
+		respondError(w, "contract not found", http.StatusNotFound)
+		return
 	}
 
 	respondJSON(w, resp)

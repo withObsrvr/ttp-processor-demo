@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"sort"
 	"strconv"
 	"time"
 
@@ -198,22 +197,22 @@ func (h *FeeStatsHandler) HandleLedgerFees(w http.ResponseWriter, r *http.Reques
 		}
 
 		var fees []int64
+		scanErr := false
 		for rows.Next() {
 			var fee int64
 			if err := rows.Scan(&fee); err != nil {
-				rows.Close()
-				continue
+				scanErr = true
+				break
 			}
 			fees = append(fees, fee)
 		}
 		rows.Close()
 
-		if len(fees) == 0 {
-			respondError(w, "no transactions found in ledger", http.StatusNotFound)
-			return
+		if scanErr || len(fees) == 0 {
+			continue // Try next schema (e.g., cold) before returning 404
 		}
 
-		sort.Slice(fees, func(i, j int) bool { return fees[i] < fees[j] })
+		// fees are already sorted by ORDER BY fee_charged in the query
 
 		var totalFees int64
 		for _, f := range fees {
@@ -261,7 +260,7 @@ func (h *FeeStatsHandler) HandleLedgerFees(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	respondError(w, "failed to query ledger fees", http.StatusInternalServerError)
+	respondError(w, "no transactions found in ledger", http.StatusNotFound)
 }
 
 // getBronzeSchemas returns available bronze schemas to query

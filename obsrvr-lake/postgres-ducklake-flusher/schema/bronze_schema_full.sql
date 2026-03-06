@@ -205,7 +205,7 @@ CREATE TABLE IF NOT EXISTS bronze.trades_row_v1 (
 );
 
 CREATE TABLE IF NOT EXISTS bronze.contract_creations_v1 (
-    contract_id TEXT,
+    contract_id TEXT PRIMARY KEY,
     creator_address TEXT,
     wasm_hash TEXT,
     created_ledger BIGINT,

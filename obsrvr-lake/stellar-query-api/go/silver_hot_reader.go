@@ -93,8 +93,11 @@ func (h *SilverHotReader) GetAccountCreatedAt(ctx context.Context, accountID str
 	`
 	var createdAt sql.NullString
 	err := h.db.QueryRowContext(ctx, query, accountID).Scan(&createdAt)
-	if err != nil || !createdAt.Valid {
+	if err != nil {
 		return nil, err
+	}
+	if !createdAt.Valid {
+		return nil, sql.ErrNoRows
 	}
 	return &createdAt.String, nil
 }

@@ -13,6 +13,7 @@ import (
 
 	"github.com/stellar/go-stellar-sdk/ingest"
 	"github.com/stellar/go-stellar-sdk/ingest/sac"
+	"github.com/stellar/go-stellar-sdk/strkey"
 	"github.com/stellar/go-stellar-sdk/xdr"
 	pb "github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/go/gen/raw_ledger_service"
 	"github.com/withObsrvr/ttp-processor-demo/stellar-postgres-ingester/go/internal/processors/contract"
@@ -393,9 +394,9 @@ func (w *Writer) extractContractCreations(rawLedger *pb.RawLedger) ([]ContractCr
 			continue
 		}
 
-		creatorAddress := tx.Envelope.SourceAccount().ToAccountId().Address()
+		txSourceAccount := tx.Envelope.SourceAccount().ToAccountId().Address()
 
-		for _, op := range tx.Envelope.Operations() {
+		for opIdx, op := range tx.Envelope.Operations() {
 			invokeHostFn, ok := op.Body.GetInvokeHostFunctionOp()
 			if !ok {
 				continue
@@ -407,13 +408,19 @@ func (w *Writer) extractContractCreations(rawLedger *pb.RawLedger) ([]ContractCr
 				continue
 			}
 
+			// Use op-level source account if present, otherwise fall back to tx source
+			creatorAddress := txSourceAccount
+			if op.SourceAccount != nil {
+				creatorAddress = op.SourceAccount.ToAccountId().Address()
+			}
+
 			// Get the created contract ID from the transaction meta
-			// The contract ID is in the ledger entry changes
+			// The contract ID is in the ledger entry changes for the current operation
 			if tx.UnsafeMeta.V == 3 {
 				v3 := tx.UnsafeMeta.MustV3()
-				if v3.SorobanMeta != nil {
-					// Look for new contract entries in the changes
-					for _, change := range v3.Operations[0].Changes {
+				if v3.SorobanMeta != nil && opIdx < len(v3.Operations) {
+					// Look for new contract entries in the changes for THIS operation
+					for _, change := range v3.Operations[opIdx].Changes {
 						created, ok := change.GetCreated()
 						if !ok {
 							continue
@@ -426,13 +433,13 @@ func (w *Writer) extractContractCreations(rawLedger *pb.RawLedger) ([]ContractCr
 						// Instance storage entry indicates contract creation
 						if contractData.Durability == xdr.ContractDataDurabilityPersistent {
 							if scAddr, ok := contractData.Contract.GetContractId(); ok {
-								contractID, err := xdr.MarshalHex(scAddr)
+								contractIDStr, err := strkey.Encode(strkey.VersionByteContract, scAddr[:])
 								if err != nil {
 									continue
 								}
 
 								creation := ContractCreationData{
-									ContractID:     "C" + contractID,
+									ContractID:     contractIDStr,
 									CreatorAddress: creatorAddress,
 									CreatedLedger:  ledgerSeq,
 									CreatedAt:      closedAt,

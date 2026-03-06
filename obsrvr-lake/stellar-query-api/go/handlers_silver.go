@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
-	"github.com/lib/pq"
 )
 
 // SilverHandlers contains HTTP handlers for Silver layer queries
@@ -3158,7 +3157,14 @@ func (h *SilverHandlers) HandleTransactionSummaries(w http.ResponseWriter, r *ht
 			return
 		}
 
-		// Build query for batch hash lookup
+		// Build query with individual placeholders (DuckDB doesn't support pq.Array)
+		placeholders := make([]string, len(hashes))
+		args = make([]interface{}, len(hashes))
+		for i, h := range hashes {
+			placeholders[i] = fmt.Sprintf("$%d", i+1)
+			args[i] = strings.TrimSpace(h)
+		}
+
 		query = fmt.Sprintf(`
 			SELECT transaction_hash,
 			       MIN(ledger_sequence) as ledger_seq,
@@ -3170,10 +3176,9 @@ func (h *SilverHandlers) HandleTransactionSummaries(w http.ResponseWriter, r *ht
 			       BOOL_OR(is_soroban_op) as has_soroban,
 			       MIN(contract_id) FILTER (WHERE contract_id IS NOT NULL) as primary_contract
 			FROM %s.enriched_history_operations
-			WHERE transaction_hash = ANY($1)
+			WHERE transaction_hash IN (%s)
 			GROUP BY transaction_hash
-		`, h.unifiedReader.hotSchema)
-		args = []interface{}{pq.Array(hashes)}
+		`, h.unifiedReader.hotSchema, strings.Join(placeholders, ", "))
 	} else {
 		ledgerSeq, err := strconv.ParseInt(ledgerStr, 10, 64)
 		if err != nil {

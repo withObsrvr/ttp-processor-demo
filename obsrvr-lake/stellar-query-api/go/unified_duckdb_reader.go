@@ -299,8 +299,11 @@ func (r *UnifiedDuckDBReader) GetAccountCreatedAt(ctx context.Context, accountID
 
 	var createdAt sql.NullString
 	err := r.db.QueryRowContext(ctx, query, accountID).Scan(&createdAt)
-	if err != nil || !createdAt.Valid {
+	if err != nil {
 		return nil, err
+	}
+	if !createdAt.Valid {
+		return nil, sql.ErrNoRows
 	}
 	return &createdAt.String, nil
 }
@@ -5791,4 +5794,74 @@ func (r *UnifiedDuckDBReader) GetTradePairs(ctx context.Context) ([]TradePair, e
 		pairs = append(pairs, p)
 	}
 	return pairs, nil
+}
+
+// enrichContractMetadata adds creator info from contract_metadata (hot + cold)
+func (r *UnifiedDuckDBReader) enrichContractMetadata(ctx context.Context, resp *ContractMetadataResponse) {
+	query := fmt.Sprintf(`
+		SELECT creator_address, wasm_hash, created_ledger, created_at::text
+		FROM (
+			SELECT creator_address, wasm_hash, created_ledger, created_at
+			FROM %s.contract_metadata WHERE contract_id = $1
+			UNION ALL
+			SELECT creator_address, wasm_hash, created_ledger, created_at
+			FROM %s.contract_metadata WHERE contract_id = $1
+		) combined
+		LIMIT 1
+	`, r.hotSchema, r.coldSchema)
+
+	var creator, wasmHash, createdAt sql.NullString
+	var createdLedger sql.NullInt64
+	err := r.db.QueryRowContext(ctx, query, resp.ContractID).Scan(
+		&creator, &wasmHash, &createdLedger, &createdAt,
+	)
+	if err != nil {
+		return
+	}
+	if creator.Valid {
+		resp.CreatorAddress = &creator.String
+	}
+	if wasmHash.Valid {
+		resp.WasmHash = &wasmHash.String
+	}
+	if createdLedger.Valid {
+		resp.CreatedLedger = &createdLedger.Int64
+	}
+	if createdAt.Valid {
+		resp.CreatedAt = &createdAt.String
+	}
+}
+
+// enrichContractFunctions adds observed function names from contract_invocations_raw (hot + cold)
+func (r *UnifiedDuckDBReader) enrichContractFunctions(ctx context.Context, resp *ContractMetadataResponse) {
+	query := fmt.Sprintf(`
+		SELECT function_name, SUM(call_count) as total_calls
+		FROM (
+			SELECT function_name, COUNT(*) as call_count
+			FROM %s.contract_invocations_raw
+			WHERE contract_id = $1 AND function_name != ''
+			GROUP BY function_name
+			UNION ALL
+			SELECT function_name, COUNT(*) as call_count
+			FROM %s.contract_invocations_raw
+			WHERE contract_id = $1 AND function_name != ''
+			GROUP BY function_name
+		) combined
+		GROUP BY function_name
+		ORDER BY total_calls DESC
+	`, r.hotSchema, r.coldSchema)
+
+	rows, err := r.db.QueryContext(ctx, query, resp.ContractID)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var fc FunctionCallCount
+		if err := rows.Scan(&fc.Name, &fc.CallCount); err != nil {
+			break
+		}
+		resp.ExportedFunctions = append(resp.ExportedFunctions, fc)
+	}
 }
