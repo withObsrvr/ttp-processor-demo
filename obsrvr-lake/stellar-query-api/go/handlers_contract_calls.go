@@ -543,6 +543,73 @@ type ContractCallSummary struct {
 	LastSeen           string `json:"last_seen,omitempty"`
 }
 
+// ContractMetadataResponse represents contract metadata with storage summary
+type ContractMetadataResponse struct {
+	ContractID       string   `json:"contract_id"`
+	CreatorAddress   *string  `json:"creator_address,omitempty"`
+	WasmHash         *string  `json:"wasm_hash,omitempty"`
+	CreatedLedger    *int64   `json:"created_ledger,omitempty"`
+	CreatedAt        *string  `json:"created_at,omitempty"`
+	NInstructions    *int     `json:"n_instructions,omitempty"`
+	NFunctions       *int     `json:"n_functions,omitempty"`
+	NExports         *int     `json:"n_exports,omitempty"`
+	TotalEntries     int      `json:"total_entries"`
+	PersistentEntries int     `json:"persistent_entries"`
+	ExportedFunctions []FunctionCallCount `json:"exported_functions,omitempty"`
+}
+
+// FunctionCallCount represents a function name and its observed call count
+type FunctionCallCount struct {
+	Name      string `json:"name"`
+	CallCount int64  `json:"call_count"`
+}
+
+// HandleContractMetadata returns comprehensive metadata for a contract
+// @Summary Get contract metadata
+// @Description Returns contract metadata including creator, WASM info, storage summary, and observed functions
+// @Tags Contracts
+// @Accept json
+// @Produce json
+// @Param id path string true "Contract ID (C... address)"
+// @Success 200 {object} ContractMetadataResponse "Contract metadata"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 404 {object} map[string]interface{} "Contract not found"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/contracts/{id}/metadata [get]
+func (h *ContractCallHandlers) HandleContractMetadata(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	contractID := vars["id"]
+	if contractID == "" {
+		respondError(w, "contract_id required", http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+	resp := ContractMetadataResponse{ContractID: contractID}
+
+	// Query contract_metadata for creator info (from silver hot via legacy reader)
+	if h.reader != nil {
+		h.reader.hot.enrichContractMetadata(ctx, &resp)
+	}
+
+	// Query observed functions from contract_invocations_raw
+	if h.reader != nil {
+		h.reader.hot.enrichContractFunctions(ctx, &resp)
+	}
+
+	// Query storage summary from contract_data_current
+	if h.reader != nil {
+		h.reader.hot.enrichContractStorage(ctx, &resp)
+	}
+
+	// Query WASM metrics from contract_code_current
+	if h.reader != nil && resp.WasmHash != nil {
+		h.reader.hot.enrichContractWasm(ctx, &resp)
+	}
+
+	respondJSON(w, resp)
+}
+
 // Helper function for JSON encoding (mirrors handlers_silver.go)
 func respondJSONContractCall(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")

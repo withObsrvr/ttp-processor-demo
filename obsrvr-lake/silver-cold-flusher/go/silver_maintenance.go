@@ -31,6 +31,10 @@ var SilverTables = []string{
 	"enriched_history_operations",
 	"enriched_history_operations_soroban",
 	"token_transfers_raw",
+
+	// Contract tracking tables
+	"contract_invocations_raw",
+	"contract_metadata",
 }
 
 // RecreateAllSilverTables drops all Silver tables and recreates them with partitioning

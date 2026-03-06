@@ -349,6 +349,119 @@ func extractContractInvocationArgs(op xdr.Operation) (*string, error) {
 	return argsStr, err
 }
 
+// extractContractCreations extracts contract creation events from raw ledger
+// Looks for InvokeHostFunction ops with HOST_FUNCTION_TYPE_CREATE_CONTRACT or CREATE_CONTRACT_V2
+func (w *Writer) extractContractCreations(rawLedger *pb.RawLedger) ([]ContractCreationData, error) {
+	var creations []ContractCreationData
+
+	var lcm xdr.LedgerCloseMeta
+	if err := lcm.UnmarshalBinary(rawLedger.LedgerCloseMetaXdr); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal XDR: %w", err)
+	}
+
+	var ledgerSeq uint32
+	var closedAt time.Time
+	switch lcm.V {
+	case 0:
+		ledgerSeq = uint32(lcm.MustV0().LedgerHeader.Header.LedgerSeq)
+		closedAt = time.Unix(int64(lcm.MustV0().LedgerHeader.Header.ScpValue.CloseTime), 0).UTC()
+	case 1:
+		ledgerSeq = uint32(lcm.MustV1().LedgerHeader.Header.LedgerSeq)
+		closedAt = time.Unix(int64(lcm.MustV1().LedgerHeader.Header.ScpValue.CloseTime), 0).UTC()
+	case 2:
+		ledgerSeq = uint32(lcm.MustV2().LedgerHeader.Header.LedgerSeq)
+		closedAt = time.Unix(int64(lcm.MustV2().LedgerHeader.Header.ScpValue.CloseTime), 0).UTC()
+	}
+
+	reader, err := ingest.NewLedgerTransactionReaderFromLedgerCloseMeta(
+		w.config.Source.NetworkPassphrase, lcm)
+	if err != nil {
+		return creations, nil
+	}
+	defer reader.Close()
+
+	for {
+		tx, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			continue
+		}
+
+		if !tx.Result.Successful() {
+			continue
+		}
+
+		creatorAddress := tx.Envelope.SourceAccount().ToAccountId().Address()
+
+		for _, op := range tx.Envelope.Operations() {
+			invokeHostFn, ok := op.Body.GetInvokeHostFunctionOp()
+			if !ok {
+				continue
+			}
+
+			fnType := invokeHostFn.HostFunction.Type
+			if fnType != xdr.HostFunctionTypeHostFunctionTypeCreateContract &&
+				fnType != xdr.HostFunctionTypeHostFunctionTypeCreateContractV2 {
+				continue
+			}
+
+			// Get the created contract ID from the transaction meta
+			// The contract ID is in the ledger entry changes
+			if tx.UnsafeMeta.V == 3 {
+				v3 := tx.UnsafeMeta.MustV3()
+				if v3.SorobanMeta != nil {
+					// Look for new contract entries in the changes
+					for _, change := range v3.Operations[0].Changes {
+						created, ok := change.GetCreated()
+						if !ok {
+							continue
+						}
+						contractData, ok := created.Data.GetContractData()
+						if !ok {
+							continue
+						}
+
+						// Instance storage entry indicates contract creation
+						if contractData.Durability == xdr.ContractDataDurabilityPersistent {
+							if scAddr, ok := contractData.Contract.GetContractId(); ok {
+								contractID, err := xdr.MarshalHex(scAddr)
+								if err != nil {
+									continue
+								}
+
+								creation := ContractCreationData{
+									ContractID:     "C" + contractID,
+									CreatorAddress: creatorAddress,
+									CreatedLedger:  ledgerSeq,
+									CreatedAt:      closedAt,
+									LedgerRange:    (ledgerSeq / 10000) * 10000,
+								}
+
+								// Try to extract WASM hash
+								if fnType == xdr.HostFunctionTypeHostFunctionTypeCreateContract {
+									if args, ok := invokeHostFn.HostFunction.GetCreateContract(); ok {
+										if wasmHash, ok := args.Executable.GetWasmHash(); ok {
+											wasmHashStr := hex.EncodeToString(wasmHash[:])
+											creation.WasmHash = &wasmHashStr
+										}
+									}
+								}
+
+								creations = append(creations, creation)
+								break // One contract per op
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return creations, nil
+}
+
 // Wrapper functions to adapt sac package to contract processor signature
 // Reference: ducklake-ingestion-obsrvr-v3/go/contract_data.go lines 18-28
 func sacAssetFromContractData(ledgerEntry xdr.LedgerEntry, passphrase string) *xdr.Asset {

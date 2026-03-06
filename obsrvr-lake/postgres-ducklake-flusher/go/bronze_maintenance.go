@@ -33,6 +33,7 @@ var BronzeTables = []string{
 	"ttl_snapshot_v1",
 	"evicted_keys_state_v1",
 	"config_settings_snapshot_v1",
+	"contract_creations_v1",
 }
 
 // RecreateAllBronzeTables drops all Bronze tables and recreates them with partitioning

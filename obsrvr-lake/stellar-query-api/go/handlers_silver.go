@@ -1,7 +1,9 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"reflect"
@@ -10,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/lib/pq"
 )
 
 // SilverHandlers contains HTTP handlers for Silver layer queries
@@ -1461,6 +1464,22 @@ func (h *SilverHandlers) HandleAccountOverview(w http.ResponseWriter, r *http.Re
 	// Combine transfers
 	transfers := append(transfersFrom, transfersTo...)
 
+	// Fetch created_at (best-effort, non-blocking)
+	if account.CreatedAt == nil {
+		switch h.readerMode {
+		case ReaderModeUnified:
+			if h.unifiedReader != nil {
+				createdAt, _ := h.unifiedReader.GetAccountCreatedAt(r.Context(), accountID)
+				account.CreatedAt = createdAt
+			}
+		default:
+			if h.legacyReader != nil {
+				createdAt, _ := h.legacyReader.hot.GetAccountCreatedAt(r.Context(), accountID)
+				account.CreatedAt = createdAt
+			}
+		}
+	}
+
 	respondJSON(w, map[string]interface{}{
 		"account":           account,
 		"recent_operations": operations,
@@ -1468,6 +1487,64 @@ func (h *SilverHandlers) HandleAccountOverview(w http.ResponseWriter, r *http.Re
 		"operations_count":  len(operations),
 		"transfers_count":   len(transfers),
 	})
+}
+
+// HandleAccountOffers returns offers for a specific account
+// @Summary Get account offers
+// @Description Returns all open offers for a given account
+// @Tags Accounts
+// @Accept json
+// @Produce json
+// @Param id path string true "Account ID (G... address)"
+// @Param limit query int false "Maximum results to return (default: 100, max: 1000)"
+// @Param cursor query string false "Pagination cursor"
+// @Success 200 {object} map[string]interface{} "Account offers"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/accounts/{id}/offers [get]
+func (h *SilverHandlers) HandleAccountOffers(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	accountID := vars["id"]
+	if accountID == "" {
+		respondError(w, "account_id required", http.StatusBadRequest)
+		return
+	}
+
+	cursorStr := r.URL.Query().Get("cursor")
+	cursor, err := DecodeOfferCursor(cursorStr)
+	if err != nil {
+		respondError(w, "invalid cursor: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	filters := OfferFilters{
+		SellerID: accountID,
+		Limit:    parseLimit(r, 100, 1000),
+		Cursor:   cursor,
+	}
+
+	if h.unifiedReader == nil {
+		respondError(w, "offers endpoint requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	offers, nextCursor, hasMore, err := h.unifiedReader.GetOffers(r.Context(), filters)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"account_id": accountID,
+		"offers":     offers,
+		"count":      len(offers),
+		"has_more":   hasMore,
+	}
+	if nextCursor != "" {
+		response["cursor"] = nextCursor
+	}
+
+	respondJSON(w, response)
 }
 
 // HandleTransactionDetails returns full transaction details with operations
@@ -3022,6 +3099,295 @@ func (h *SilverHandlers) HandleContractDataEntry(w http.ResponseWriter, r *http.
 
 	respondJSON(w, map[string]interface{}{
 		"contract_data": data[0],
+	})
+}
+
+// ============================================
+// TRANSACTION SUMMARIES ENDPOINT
+// ============================================
+
+// TransactionSummaryItem represents a summary of a single transaction
+type TransactionSummaryItem struct {
+	TxHash         string  `json:"tx_hash"`
+	LedgerSequence int64   `json:"ledger_sequence"`
+	ClosedAt       string  `json:"closed_at"`
+	SourceAccount  string  `json:"source_account"`
+	FeeCharged     int64   `json:"fee_charged"`
+	OpCount        int64   `json:"op_count"`
+	Successful     bool    `json:"successful"`
+	HasSoroban     bool    `json:"has_soroban"`
+	PrimaryContract *string `json:"primary_contract,omitempty"`
+	TxType         string  `json:"tx_type"`
+}
+
+// HandleTransactionSummaries returns batch transaction summaries
+// @Summary Get transaction summaries
+// @Description Returns summarized transaction data for a batch of hashes or a ledger
+// @Tags Transactions
+// @Accept json
+// @Produce json
+// @Param hashes query string false "Comma-separated transaction hashes (max 25)"
+// @Param ledger query int false "Ledger sequence to get all transactions from"
+// @Param limit query int false "Maximum results (default: 10, max: 100)"
+// @Success 200 {object} map[string]interface{} "Transaction summaries"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/transactions/summaries [get]
+func (h *SilverHandlers) HandleTransactionSummaries(w http.ResponseWriter, r *http.Request) {
+	if h.unifiedReader == nil {
+		respondError(w, "transaction summaries requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	ctx := r.Context()
+	hashesStr := r.URL.Query().Get("hashes")
+	ledgerStr := r.URL.Query().Get("ledger")
+
+	if hashesStr == "" && ledgerStr == "" {
+		respondError(w, "either 'hashes' or 'ledger' parameter required", http.StatusBadRequest)
+		return
+	}
+
+	var query string
+	var args []interface{}
+
+	if hashesStr != "" {
+		hashes := strings.Split(hashesStr, ",")
+		if len(hashes) > 25 {
+			respondError(w, "maximum 25 hashes allowed", http.StatusBadRequest)
+			return
+		}
+
+		// Build query for batch hash lookup
+		query = fmt.Sprintf(`
+			SELECT transaction_hash,
+			       MIN(ledger_sequence) as ledger_seq,
+			       MIN(ledger_closed_at) as closed_at,
+			       MIN(source_account) as source_account,
+			       MIN(tx_fee_charged) as fee_charged,
+			       COUNT(*) as op_count,
+			       BOOL_AND(tx_successful) as successful,
+			       BOOL_OR(is_soroban_op) as has_soroban,
+			       MIN(contract_id) FILTER (WHERE contract_id IS NOT NULL) as primary_contract
+			FROM %s.enriched_history_operations
+			WHERE transaction_hash = ANY($1)
+			GROUP BY transaction_hash
+		`, h.unifiedReader.hotSchema)
+		args = []interface{}{pq.Array(hashes)}
+	} else {
+		ledgerSeq, err := strconv.ParseInt(ledgerStr, 10, 64)
+		if err != nil {
+			respondError(w, "invalid ledger sequence", http.StatusBadRequest)
+			return
+		}
+		limit := parseLimit(r, 10, 100)
+
+		query = fmt.Sprintf(`
+			SELECT transaction_hash,
+			       MIN(ledger_sequence) as ledger_seq,
+			       MIN(ledger_closed_at) as closed_at,
+			       MIN(source_account) as source_account,
+			       MIN(tx_fee_charged) as fee_charged,
+			       COUNT(*) as op_count,
+			       BOOL_AND(tx_successful) as successful,
+			       BOOL_OR(is_soroban_op) as has_soroban,
+			       MIN(contract_id) FILTER (WHERE contract_id IS NOT NULL) as primary_contract
+			FROM %s.enriched_history_operations
+			WHERE ledger_sequence = $1
+			GROUP BY transaction_hash
+			ORDER BY MIN(operation_index)
+			LIMIT $2
+		`, h.unifiedReader.hotSchema)
+		args = []interface{}{ledgerSeq, limit}
+	}
+
+	rows, err := h.unifiedReader.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var summaries []TransactionSummaryItem
+	for rows.Next() {
+		var item TransactionSummaryItem
+		var closedAt sql.NullString
+		var sourceAccount sql.NullString
+		var feeCharged sql.NullInt64
+		var hasSoroban sql.NullBool
+		var primaryContract sql.NullString
+
+		if err := rows.Scan(
+			&item.TxHash, &item.LedgerSequence, &closedAt,
+			&sourceAccount, &feeCharged, &item.OpCount,
+			&item.Successful, &hasSoroban, &primaryContract,
+		); err != nil {
+			respondError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		if closedAt.Valid {
+			item.ClosedAt = closedAt.String
+		}
+		if sourceAccount.Valid {
+			item.SourceAccount = sourceAccount.String
+		}
+		if feeCharged.Valid {
+			item.FeeCharged = feeCharged.Int64
+		}
+		if hasSoroban.Valid {
+			item.HasSoroban = hasSoroban.Bool
+		}
+		if primaryContract.Valid {
+			item.PrimaryContract = &primaryContract.String
+		}
+
+		// Derive tx_type
+		if item.HasSoroban {
+			item.TxType = "soroban"
+		} else {
+			item.TxType = "classic"
+		}
+
+		summaries = append(summaries, item)
+	}
+
+	respondJSON(w, map[string]interface{}{
+		"summaries": summaries,
+		"count":     len(summaries),
+	})
+}
+
+// ============================================
+// CONTRACT STORAGE ENDPOINT
+// ============================================
+
+// ContractStorageEntry represents a contract storage entry with TTL info
+type ContractStorageEntry struct {
+	ContractID          string  `json:"contract_id"`
+	KeyHash             string  `json:"key_hash"`
+	Durability          string  `json:"durability"`
+	DataValue           *string `json:"data_value,omitempty"`
+	LastModifiedLedger  int64   `json:"last_modified_ledger"`
+	ClosedAt            string  `json:"closed_at"`
+	LiveUntilLedgerSeq  *int64  `json:"live_until_ledger_seq,omitempty"`
+	TTLRemaining        *int    `json:"ttl_remaining,omitempty"`
+	Expired             *bool   `json:"expired,omitempty"`
+}
+
+// HandleContractStorage returns storage entries for a contract
+// @Summary Get contract storage entries
+// @Description Returns contract storage entries with TTL information
+// @Tags Contracts
+// @Accept json
+// @Produce json
+// @Param id path string true "Contract ID (C... address)"
+// @Param limit query int false "Maximum results (default: 100, max: 1000)"
+// @Param offset query int false "Offset for pagination (default: 0)"
+// @Param durability query string false "Filter by durability: persistent, temporary, instance"
+// @Success 200 {object} map[string]interface{} "Contract storage entries"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/contracts/{id}/storage [get]
+func (h *SilverHandlers) HandleContractStorage(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	contractID := vars["id"]
+	if contractID == "" {
+		respondError(w, "contract_id required", http.StatusBadRequest)
+		return
+	}
+
+	if h.unifiedReader == nil {
+		respondError(w, "contract storage requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	limit := parseLimit(r, 100, 1000)
+	offsetStr := r.URL.Query().Get("offset")
+	offset := 0
+	if offsetStr != "" {
+		if o, err := strconv.Atoi(offsetStr); err == nil && o >= 0 {
+			offset = o
+		}
+	}
+	durability := r.URL.Query().Get("durability")
+
+	ctx := r.Context()
+
+	// Build query against silver hot
+	query := fmt.Sprintf(`
+		SELECT cd.contract_id, cd.key_hash, cd.durability,
+		       cd.data_value, cd.last_modified_ledger, cd.closed_at,
+		       t.live_until_ledger_seq, t.ttl_remaining, t.expired
+		FROM %s.contract_data_current cd
+		LEFT JOIN %s.ttl_current t ON cd.key_hash = t.key_hash
+		WHERE cd.contract_id = $1
+	`, h.unifiedReader.hotSchema, h.unifiedReader.hotSchema)
+
+	args := []interface{}{contractID}
+	argIdx := 2
+
+	if durability != "" {
+		query += fmt.Sprintf(" AND cd.durability = $%d", argIdx)
+		args = append(args, durability)
+		argIdx++
+	}
+
+	query += " ORDER BY cd.key_hash"
+	query += fmt.Sprintf(" LIMIT $%d OFFSET $%d", argIdx, argIdx+1)
+	args = append(args, limit, offset)
+
+	rows, err := h.unifiedReader.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var entries []ContractStorageEntry
+	for rows.Next() {
+		var entry ContractStorageEntry
+		var dataValue sql.NullString
+		var closedAt sql.NullString
+		var liveUntil sql.NullInt64
+		var ttlRemaining sql.NullInt32
+		var expired sql.NullBool
+
+		if err := rows.Scan(
+			&entry.ContractID, &entry.KeyHash, &entry.Durability,
+			&dataValue, &entry.LastModifiedLedger, &closedAt,
+			&liveUntil, &ttlRemaining, &expired,
+		); err != nil {
+			respondError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		if dataValue.Valid {
+			entry.DataValue = &dataValue.String
+		}
+		if closedAt.Valid {
+			entry.ClosedAt = closedAt.String
+		}
+		if liveUntil.Valid {
+			entry.LiveUntilLedgerSeq = &liveUntil.Int64
+		}
+		if ttlRemaining.Valid {
+			rem := int(ttlRemaining.Int32)
+			entry.TTLRemaining = &rem
+		}
+		if expired.Valid {
+			entry.Expired = &expired.Bool
+		}
+
+		entries = append(entries, entry)
+	}
+
+	respondJSON(w, map[string]interface{}{
+		"contract_id": contractID,
+		"entries":     entries,
+		"count":       len(entries),
+		"limit":       limit,
+		"offset":      offset,
 	})
 }
 

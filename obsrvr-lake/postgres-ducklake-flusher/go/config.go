@@ -122,5 +122,8 @@ func GetTablesToFlush() []string {
 		"ttl_snapshot_v1",
 		"evicted_keys_state_v1",
 		"config_settings_snapshot_v1",
+
+		// Contract creation tracking
+		"contract_creations_v1",
 	}
 }

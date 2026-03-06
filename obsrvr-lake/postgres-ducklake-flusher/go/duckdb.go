@@ -139,8 +139,11 @@ func (c *DuckDBClient) FlushTableFromPostgres(ctx context.Context, postgresDSN, 
 
 	// Determine the sequence column name based on table type
 	sequenceColumn := "ledger_sequence"
-	if tableName == "ledgers_row_v2" {
+	switch tableName {
+	case "ledgers_row_v2":
 		sequenceColumn = "sequence"
+	case "contract_creations_v1":
+		sequenceColumn = "created_ledger"
 	}
 
 	insertSQL := fmt.Sprintf(`

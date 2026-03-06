@@ -79,12 +79,14 @@ func (r *SilverColdReader) Close() error {
 // ============================================
 
 type AccountCurrent struct {
-	AccountID            string `json:"account_id"`
-	Balance              string `json:"balance"`
-	SequenceNumber       string `json:"sequence_number"`
-	NumSubentries        int64  `json:"num_subentries"`
-	LastModifiedLedger   int64  `json:"last_modified_ledger"`
-	UpdatedAt            string `json:"updated_at"`
+	AccountID          string  `json:"account_id"`
+	Balance            string  `json:"balance"`
+	SequenceNumber     string  `json:"sequence_number"`
+	NumSubentries      int64   `json:"num_subentries"`
+	LastModifiedLedger int64   `json:"last_modified_ledger"`
+	UpdatedAt          string  `json:"updated_at"`
+	HomeDomain         *string `json:"home_domain,omitempty"`
+	CreatedAt          *string `json:"created_at,omitempty"`
 }
 
 type AccountSnapshot struct {
@@ -193,15 +195,18 @@ func (r *SilverColdReader) GetAccountCurrent(ctx context.Context, accountID stri
 			sequence_number,
 			num_subentries,
 			last_modified_ledger,
-			updated_at
+			updated_at,
+			home_domain
 		FROM %s.%s.accounts_current
 		WHERE account_id = ?
 	`, r.catalogName, r.schemaName)
 
 	var acc AccountCurrent
+	var homeDomain sql.NullString
 	err := r.db.QueryRowContext(ctx, query, accountID).Scan(
 		&acc.AccountID, &acc.Balance, &acc.SequenceNumber,
 		&acc.NumSubentries, &acc.LastModifiedLedger, &acc.UpdatedAt,
+		&homeDomain,
 	)
 
 	if err == sql.ErrNoRows {
@@ -209,6 +214,10 @@ func (r *SilverColdReader) GetAccountCurrent(ctx context.Context, accountID stri
 	}
 	if err != nil {
 		return nil, err
+	}
+
+	if homeDomain.Valid && homeDomain.String != "" {
+		acc.HomeDomain = &homeDomain.String
 	}
 
 	return &acc, nil
@@ -743,6 +752,13 @@ type DecodedTransaction struct {
 	OpCount    int                `json:"operation_count"`
 	Operations []DecodedOperation `json:"operations"`
 	Events     []UnifiedEvent     `json:"events"`
+
+	// Supplementary fields from bronze transactions_row_v2
+	SourceAccount                *string `json:"source_account,omitempty"`
+	AccountSequence              *int64  `json:"account_sequence,omitempty"`
+	SorobanResourcesInstructions *int64  `json:"soroban_resources_instructions,omitempty"`
+	SorobanResourcesReadBytes    *int64  `json:"soroban_resources_read_bytes,omitempty"`
+	SorobanResourcesWriteBytes   *int64  `json:"soroban_resources_write_bytes,omitempty"`
 }
 
 // DecodedOperation represents a single decoded operation within a transaction
