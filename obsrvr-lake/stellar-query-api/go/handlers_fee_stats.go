@@ -406,6 +406,22 @@ func (h *SorobanStatsHandler) HandleSorobanStats(w http.ResponseWriter, r *http.
 		)
 	}
 
+	// Cold fallback: if silver contract_data_current is empty, try bronze cold
+	if resp.State.PersistentEntries == 0 && resp.State.TemporaryEntries == 0 && h.reader != nil {
+		if h.reader.bronzeColdSchema != "" {
+			coldQuery := fmt.Sprintf(`
+				SELECT
+					COUNT(DISTINCT key_hash) FILTER (WHERE contract_durability = 'persistent') as persistent,
+					COUNT(DISTINCT key_hash) FILTER (WHERE contract_durability = 'temporary') as temporary
+				FROM %s.contract_data_snapshot_v1
+			`, h.reader.bronzeColdSchema)
+			_ = h.reader.db.QueryRowContext(ctx, coldQuery).Scan(
+				&resp.State.PersistentEntries,
+				&resp.State.TemporaryEntries,
+			)
+		}
+	}
+
 	respondJSON(w, resp)
 }
 
