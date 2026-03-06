@@ -144,6 +144,12 @@ func (f *Flusher) flushAllTables(watermark int64) (int64, error) {
 		"enriched_history_operations_soroban": true,
 		"token_transfers_raw":                 true,
 		"soroban_history_operations":          true,
+		"contract_invocations_raw":            true,
+	}
+
+	// Tables with non-standard watermark column
+	customWatermarkCol := map[string]string{
+		"contract_metadata": "created_ledger",
 	}
 
 	for _, tableName := range tables {
@@ -152,7 +158,10 @@ func (f *Flusher) flushAllTables(watermark int64) (int64, error) {
 		var rowsFlushed int64
 		var err error
 
-		if snapshotTables[tableName] || eventTables[tableName] {
+		if col, ok := customWatermarkCol[tableName]; ok {
+			// Use custom watermark column
+			rowsFlushed, err = f.duckDB.FlushTableWithColumn(tableName, watermark, pgConnStr, col)
+		} else if snapshotTables[tableName] || eventTables[tableName] {
 			// Use ledger_sequence for snapshot and event tables
 			rowsFlushed, err = f.duckDB.FlushSnapshotTable(tableName, watermark, pgConnStr)
 		} else {
@@ -192,11 +201,19 @@ func (f *Flusher) deleteFlushedData(watermark int64) (int64, error) {
 		"enriched_history_operations_soroban": true,
 		"token_transfers_raw":                 true,
 		"soroban_history_operations":          true,
+		"contract_invocations_raw":            true,
+	}
+
+	// Tables with non-standard watermark column
+	customWatermarkCol := map[string]string{
+		"contract_metadata": "created_ledger",
 	}
 
 	for _, tableName := range tables {
 		var query string
-		if snapshotTables[tableName] || eventTables[tableName] {
+		if col, ok := customWatermarkCol[tableName]; ok {
+			query = fmt.Sprintf("DELETE FROM %s WHERE %s <= $1", tableName, col)
+		} else if snapshotTables[tableName] || eventTables[tableName] {
 			query = fmt.Sprintf("DELETE FROM %s WHERE ledger_sequence <= $1", tableName)
 		} else {
 			query = fmt.Sprintf("DELETE FROM %s WHERE last_modified_ledger <= $1", tableName)

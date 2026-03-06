@@ -711,6 +711,20 @@ CREATE INDEX IF NOT EXISTS idx_contract_invocations_ledger_range ON contract_inv
 CREATE INDEX IF NOT EXISTS idx_contract_invocations_closed_at ON contract_invocations_raw(closed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_contract_invocations_contract_function ON contract_invocations_raw(contract_id, function_name);
 
+-- Table: contract_metadata
+-- Contract creation metadata (creator, wasm hash, creation time)
+CREATE TABLE IF NOT EXISTS contract_metadata (
+    contract_id TEXT PRIMARY KEY,
+    creator_address TEXT NOT NULL,
+    wasm_hash TEXT,
+    created_ledger BIGINT NOT NULL,
+    created_at TIMESTAMP NOT NULL,
+    inserted_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_contract_metadata_creator ON contract_metadata(creator_address);
+CREATE INDEX IF NOT EXISTS idx_contract_metadata_wasm ON contract_metadata(wasm_hash) WHERE wasm_hash IS NOT NULL;
+
 -- ============================================================================
 -- GRANTS AND PERMISSIONS
 -- ============================================================================

@@ -56,15 +56,18 @@ func (h *SilverHotReader) GetAccountCurrent(ctx context.Context, accountID strin
 			sequence_number,
 			num_subentries,
 			last_modified_ledger,
-			updated_at
+			updated_at,
+			home_domain
 		FROM accounts_current
 		WHERE account_id = $1
 	`
 
 	var acc AccountCurrent
+	var homeDomain sql.NullString
 	err := h.db.QueryRowContext(ctx, query, accountID).Scan(
 		&acc.AccountID, &acc.Balance, &acc.SequenceNumber,
 		&acc.NumSubentries, &acc.LastModifiedLedger, &acc.UpdatedAt,
+		&homeDomain,
 	)
 
 	if err == sql.ErrNoRows {
@@ -74,7 +77,29 @@ func (h *SilverHotReader) GetAccountCurrent(ctx context.Context, accountID strin
 		return nil, err
 	}
 
+	if homeDomain.Valid && homeDomain.String != "" {
+		acc.HomeDomain = &homeDomain.String
+	}
+
 	return &acc, nil
+}
+
+// GetAccountCreatedAt returns the earliest closed_at for an account from accounts_snapshot
+func (h *SilverHotReader) GetAccountCreatedAt(ctx context.Context, accountID string) (*string, error) {
+	query := `
+		SELECT MIN(closed_at)::text
+		FROM accounts_snapshot
+		WHERE account_id = $1
+	`
+	var createdAt sql.NullString
+	err := h.db.QueryRowContext(ctx, query, accountID).Scan(&createdAt)
+	if err != nil {
+		return nil, err
+	}
+	if !createdAt.Valid {
+		return nil, sql.ErrNoRows
+	}
+	return &createdAt.String, nil
 }
 
 // GetAccountHistory returns historical snapshots from hot buffer
@@ -2138,4 +2163,100 @@ func (h *SilverHotReader) GetCurrentLedger(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	return ledger.Int64, nil
+}
+
+// enrichContractMetadata adds creator info from contract_metadata table
+func (h *SilverHotReader) enrichContractMetadata(ctx context.Context, resp *ContractMetadataResponse) {
+	query := `
+		SELECT creator_address, wasm_hash, created_ledger, created_at::text
+		FROM contract_metadata
+		WHERE contract_id = $1
+	`
+	var creator, wasmHash, createdAt sql.NullString
+	var createdLedger sql.NullInt64
+	err := h.db.QueryRowContext(ctx, query, resp.ContractID).Scan(
+		&creator, &wasmHash, &createdLedger, &createdAt,
+	)
+	if err != nil {
+		return
+	}
+	if creator.Valid {
+		resp.CreatorAddress = &creator.String
+	}
+	if wasmHash.Valid {
+		resp.WasmHash = &wasmHash.String
+	}
+	if createdLedger.Valid {
+		resp.CreatedLedger = &createdLedger.Int64
+	}
+	if createdAt.Valid {
+		resp.CreatedAt = &createdAt.String
+	}
+}
+
+// enrichContractFunctions adds observed function names from contract_invocations_raw
+func (h *SilverHotReader) enrichContractFunctions(ctx context.Context, resp *ContractMetadataResponse) {
+	query := `
+		SELECT function_name, COUNT(*) as call_count
+		FROM contract_invocations_raw
+		WHERE contract_id = $1 AND function_name != ''
+		GROUP BY function_name
+		ORDER BY call_count DESC
+	`
+	rows, err := h.db.QueryContext(ctx, query, resp.ContractID)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var fc FunctionCallCount
+		if err := rows.Scan(&fc.Name, &fc.CallCount); err != nil {
+			break
+		}
+		resp.ExportedFunctions = append(resp.ExportedFunctions, fc)
+	}
+}
+
+// enrichContractStorage adds storage summary from contract_data_current
+func (h *SilverHotReader) enrichContractStorage(ctx context.Context, resp *ContractMetadataResponse) {
+	query := `
+		SELECT
+			COUNT(*) as total_entries,
+			COUNT(*) FILTER (WHERE durability = 'persistent') as persistent_entries
+		FROM contract_data_current
+		WHERE contract_id = $1
+	`
+	_ = h.db.QueryRowContext(ctx, query, resp.ContractID).Scan(
+		&resp.TotalEntries, &resp.PersistentEntries,
+	)
+}
+
+// enrichContractWasm adds WASM metrics from contract_code_current
+func (h *SilverHotReader) enrichContractWasm(ctx context.Context, resp *ContractMetadataResponse) {
+	if resp.WasmHash == nil {
+		return
+	}
+	query := `
+		SELECT n_instructions, n_functions, n_exports
+		FROM contract_code_current
+		WHERE contract_code_hash = $1
+	`
+	var nInstr, nFunc, nExport sql.NullInt32
+	err := h.db.QueryRowContext(ctx, query, *resp.WasmHash).Scan(&nInstr, &nFunc, &nExport)
+	if err != nil {
+		return
+	}
+	if nInstr.Valid {
+		v := int(nInstr.Int32)
+		resp.NInstructions = &v
+	}
+	if nFunc.Valid {
+		v := int(nFunc.Int32)
+		resp.NFunctions = &v
+	}
+	if nExport.Valid {
+		v := int(nExport.Int32)
+		resp.NExports = &v
+	}
 }

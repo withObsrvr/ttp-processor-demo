@@ -199,19 +199,44 @@ func (h *DecodeHandlers) HandleFullTransaction(w http.ResponseWriter, r *http.Re
 	}
 
 	// 4. Compose response
-	respondJSON(w, map[string]interface{}{
-		"transaction": map[string]interface{}{
-			"tx_hash":         decoded.TxHash,
-			"ledger_sequence": decoded.LedgerSeq,
-			"closed_at":       decoded.ClosedAt,
-			"successful":      decoded.Successful,
-			"fee":             decoded.Fee,
-			"operation_count": decoded.OpCount,
-		},
+	txMap := map[string]interface{}{
+		"tx_hash":         decoded.TxHash,
+		"ledger_sequence": decoded.LedgerSeq,
+		"closed_at":       decoded.ClosedAt,
+		"successful":      decoded.Successful,
+		"fee":             decoded.Fee,
+		"operation_count": decoded.OpCount,
+	}
+	if decoded.SourceAccount != nil {
+		txMap["source_account"] = *decoded.SourceAccount
+	}
+	if decoded.AccountSequence != nil {
+		txMap["account_sequence"] = *decoded.AccountSequence
+	}
+
+	response := map[string]interface{}{
+		"transaction":        txMap,
 		"summary":            decoded.Summary,
 		"operations":         decoded.Operations,
 		"events":             decoded.Events,
 		"contracts_involved": contractsInvolved,
 		"call_graph":         callGraph,
-	})
+	}
+
+	// Add soroban_resources sub-object if available
+	if decoded.SorobanResourcesInstructions != nil || decoded.SorobanResourcesReadBytes != nil || decoded.SorobanResourcesWriteBytes != nil {
+		sorobanResources := map[string]interface{}{}
+		if decoded.SorobanResourcesInstructions != nil {
+			sorobanResources["instructions"] = *decoded.SorobanResourcesInstructions
+		}
+		if decoded.SorobanResourcesReadBytes != nil {
+			sorobanResources["read_bytes"] = *decoded.SorobanResourcesReadBytes
+		}
+		if decoded.SorobanResourcesWriteBytes != nil {
+			sorobanResources["write_bytes"] = *decoded.SorobanResourcesWriteBytes
+		}
+		response["soroban_resources"] = sorobanResources
+	}
+
+	respondJSON(w, response)
 }

@@ -173,8 +173,11 @@ func (f *Flusher) deleteFromPostgresSelective(ctx context.Context, watermark int
 	for _, tableName := range tables {
 		// Determine the sequence column name based on table type
 		sequenceColumn := "ledger_sequence"
-		if tableName == "ledgers_row_v2" {
+		switch tableName {
+		case "ledgers_row_v2":
 			sequenceColumn = "sequence"
+		case "contract_creations_v1":
+			sequenceColumn = "created_ledger"
 		}
 
 		deleteSQL := fmt.Sprintf("DELETE FROM %s WHERE %s <= $1;", tableName, sequenceColumn)

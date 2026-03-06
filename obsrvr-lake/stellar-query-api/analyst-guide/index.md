@@ -133,6 +133,9 @@ The API automatically queries both hot and cold storage, merging results seamles
 - [Hubble Comparison](./vs-hubble.md) - How Obsrvr Lake compares to Stellar Hubble
 
 **Soroban & Smart Contracts:**
+- [Contract Metadata](./common-queries.md#get-contract-metadata) - Creator, WASM info, storage summary, observed functions
+- [Contract Storage](./common-queries.md#get-contract-storage) - Contract data entries with TTL information
+- [Soroban Stats](./common-queries.md#get-soroban-network-statistics) - Network-wide Soroban runtime statistics
 - [CAP-67 Unified Events](./common-queries.md#cap-67-unified-event-stream) - Unified event stream (transfers, mints, burns)
 - [Generic Contract Events](./common-queries.md#generic-contract-events-bronze) - Raw Soroban events (contract, system, diagnostic)
 - [SEP-41 Token API](./common-queries.md#sep-41-token-api) - Token metadata, balances, transfers, and portfolios
@@ -140,6 +143,11 @@ The API automatically queries both hot and cold storage, merging results seamles
 - [Transaction Decoding](./common-queries.md#transaction-decoding) - Human-readable transaction summaries
 - [Transaction Diffs](./common-queries.md#get-transaction-balance--state-diffs) - Balance and state changes per transaction
 - [Soroban Function Filter](./common-queries.md#get-soroban-operations-by-function) - Filter operations by contract and function
+
+**Fees & Statistics:**
+- [Fee Statistics](./common-queries.md#get-fee-statistics) - Fee percentiles, surge detection, aggregate data
+- [Ledger Fee Distribution](./common-queries.md#get-ledger-fee-distribution) - Per-ledger fee histogram
+- [Transaction Summaries](./common-queries.md#get-transaction-summaries-batch) - Batch transaction lookup
 
 **Market Data & Search:**
 - [Unified Search](./common-queries.md#unified-search) - Search across all data types with one query

@@ -17,9 +17,12 @@ type NetworkStats struct {
 	GeneratedAt   string `json:"generated_at"`
 	DataFreshness string `json:"data_freshness"`
 
-	Accounts     AccountStats     `json:"accounts"`
-	Ledger       LedgerStats      `json:"ledger"`
-	Operations24h OperationStats  `json:"operations_24h"`
+	Accounts      AccountStats       `json:"accounts"`
+	Ledger        LedgerStats        `json:"ledger"`
+	Operations24h OperationStats     `json:"operations_24h"`
+	Transactions24h *TransactionStats24h `json:"transactions_24h,omitempty"`
+	Fees24h       *FeeStats24h       `json:"fees_24h,omitempty"`
+	Soroban       *SorobanNetStats   `json:"soroban,omitempty"`
 }
 
 // AccountStats contains account-related statistics
@@ -47,6 +50,30 @@ type OperationStats struct {
 	ManageOffer      int64 `json:"manage_offer,omitempty"`
 	ContractInvoke   int64 `json:"contract_invoke,omitempty"`
 	Other            int64 `json:"other,omitempty"`
+	PreviousTotal          int64 `json:"previous_total,omitempty"`
+	PreviousContractInvoke int64 `json:"previous_contract_invoke,omitempty"`
+}
+
+// TransactionStats24h contains 24-hour transaction-level statistics
+type TransactionStats24h struct {
+	Total       int64   `json:"total"`
+	Failed      int64   `json:"failed"`
+	FailureRate float64 `json:"failure_rate"`
+}
+
+// FeeStats24h contains 24-hour fee statistics
+type FeeStats24h struct {
+	MedianStroops     int64 `json:"median_stroops"`
+	P99Stroops        int64 `json:"p99_stroops"`
+	DailyTotalStroops int64 `json:"daily_total_stroops"`
+	SurgeActive       bool  `json:"surge_active"`
+}
+
+// SorobanNetStats contains Soroban network statistics
+type SorobanNetStats struct {
+	ActiveContracts24h   int64 `json:"active_contracts_24h"`
+	AvgCpuInsns          int64 `json:"avg_cpu_insns,omitempty"`
+	RentBurned24hStroops int64 `json:"rent_burned_24h_stroops,omitempty"`
 }
 
 // ============================================
@@ -137,6 +164,58 @@ func (h *SilverHotReader) GetNetworkStats(ctx context.Context) (*NetworkStats, e
 	// We'll skip this for now and document it as an enhancement
 	stats.Ledger.AvgCloseTimeSeconds = 5.0 // Default Stellar target
 
+	// Query 6: Previous 24h operations (48h-24h window) for trend comparison
+	prevOpsQuery := `
+		SELECT
+			type,
+			COUNT(*) as count
+		FROM enriched_history_operations
+		WHERE ledger_closed_at BETWEEN NOW() - INTERVAL '48 hours' AND NOW() - INTERVAL '24 hours'
+		GROUP BY type
+	`
+	prevRows, err := h.db.QueryContext(ctx, prevOpsQuery)
+	if err == nil {
+		defer prevRows.Close()
+		for prevRows.Next() {
+			var opType int32
+			var count int64
+			if err := prevRows.Scan(&opType, &count); err != nil {
+				continue
+			}
+			stats.Operations24h.PreviousTotal += count
+			if opType == 24 || opType == 25 || opType == 26 {
+				stats.Operations24h.PreviousContractInvoke += count
+			}
+		}
+	}
+
+	// Query 7: Transaction stats (total, failed)
+	txStats := &TransactionStats24h{}
+	txStatsQuery := `
+		SELECT
+			COUNT(DISTINCT transaction_hash) as total,
+			COUNT(DISTINCT transaction_hash) FILTER (WHERE NOT tx_successful) as failed
+		FROM enriched_history_operations
+		WHERE ledger_closed_at > NOW() - INTERVAL '24 hours'
+	`
+	err = h.db.QueryRowContext(ctx, txStatsQuery).Scan(&txStats.Total, &txStats.Failed)
+	if err == nil && txStats.Total > 0 {
+		txStats.FailureRate = float64(txStats.Failed) / float64(txStats.Total)
+		stats.Transactions24h = txStats
+	}
+
+	// Query 8: Active contracts in 24h
+	sorobanStats := &SorobanNetStats{}
+	activeContractsQuery := `
+		SELECT COUNT(DISTINCT contract_id)
+		FROM contract_invocations_raw
+		WHERE closed_at > NOW() - INTERVAL '24 hours'
+	`
+	err = h.db.QueryRowContext(ctx, activeContractsQuery).Scan(&sorobanStats.ActiveContracts24h)
+	if err == nil && sorobanStats.ActiveContracts24h > 0 {
+		stats.Soroban = sorobanStats
+	}
+
 	return stats, nil
 }
 
@@ -185,8 +264,9 @@ func (u *UnifiedSilverReader) GetNetworkStats(ctx context.Context) (*NetworkStat
 
 // NetworkStatsHandler handles network statistics requests
 type NetworkStatsHandler struct {
-	silverReader *UnifiedSilverReader
-	bronzeReader *ColdReader // Bronze layer for accurate total account count
+	silverReader  *UnifiedSilverReader
+	bronzeReader  *ColdReader // Bronze layer for accurate total account count
+	unifiedReader *UnifiedDuckDBReader // For fee stats from bronze
 }
 
 // NewNetworkStatsHandler creates a new network stats handler
@@ -195,6 +275,11 @@ func NewNetworkStatsHandler(silverReader *UnifiedSilverReader, bronzeReader *Col
 		silverReader: silverReader,
 		bronzeReader: bronzeReader,
 	}
+}
+
+// SetUnifiedReader sets the unified reader for fee/resource queries against bronze
+func (h *NetworkStatsHandler) SetUnifiedReader(reader *UnifiedDuckDBReader) {
+	h.unifiedReader = reader
 }
 
 // HandleNetworkStats returns headline network statistics
@@ -232,11 +317,119 @@ func (h *NetworkStatsHandler) HandleNetworkStats(w http.ResponseWriter, r *http.
 	stats.Accounts.Created24h = hotStats.Accounts.Created24h
 	stats.Ledger = hotStats.Ledger
 	stats.Operations24h = hotStats.Operations24h
+	stats.Transactions24h = hotStats.Transactions24h
+	stats.Soroban = hotStats.Soroban
 
 	// If Bronze failed, fall back to hot/silver total
 	if stats.Accounts.Total == 0 {
 		stats.Accounts.Total = hotStats.Accounts.Total
 	}
 
+	// Fetch fee stats from bronze if unified reader available
+	if h.unifiedReader != nil {
+		feeStats := h.fetchFeeStats(ctx)
+		if feeStats != nil {
+			stats.Fees24h = feeStats
+		}
+		// Fetch avg CPU and rent from bronze for soroban stats
+		if stats.Soroban != nil {
+			avgCPU, rentBurned := h.fetchBronzeSorobanStats(ctx)
+			if avgCPU > 0 {
+				stats.Soroban.AvgCpuInsns = avgCPU
+			}
+			if rentBurned > 0 {
+				stats.Soroban.RentBurned24hStroops = rentBurned
+			}
+		}
+	}
+
 	respondJSON(w, stats)
+}
+
+// fetchFeeStats gets fee percentiles from bronze transactions_row_v2
+func (h *NetworkStatsHandler) fetchFeeStats(ctx context.Context) *FeeStats24h {
+	if h.unifiedReader == nil {
+		return nil
+	}
+
+	// Try bronze hot first, then cold
+	schemas := []string{}
+	if h.unifiedReader.bronzeHotSchema != "" {
+		schemas = append(schemas, h.unifiedReader.bronzeHotSchema)
+	}
+	if h.unifiedReader.bronzeColdSchema != "" {
+		schemas = append(schemas, h.unifiedReader.bronzeColdSchema)
+	}
+
+	for _, schema := range schemas {
+		query := fmt.Sprintf(`
+			SELECT
+				PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY fee_charged) as median,
+				PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY fee_charged) as p99,
+				SUM(fee_charged) as total
+			FROM %s.transactions_row_v2
+			WHERE created_at > NOW() - INTERVAL '24 hours' AND successful = true
+		`, schema)
+
+		var median, p99 sql.NullFloat64
+		var total sql.NullInt64
+		err := h.unifiedReader.db.QueryRowContext(ctx, query).Scan(&median, &p99, &total)
+		if err != nil {
+			continue
+		}
+
+		feeStats := &FeeStats24h{}
+		if median.Valid {
+			feeStats.MedianStroops = int64(median.Float64)
+		}
+		if p99.Valid {
+			feeStats.P99Stroops = int64(p99.Float64)
+		}
+		if total.Valid {
+			feeStats.DailyTotalStroops = total.Int64
+		}
+		// Surge detection: if median > base fee (100 stroops)
+		feeStats.SurgeActive = feeStats.MedianStroops > 100
+		return feeStats
+	}
+	return nil
+}
+
+// fetchBronzeSorobanStats gets average CPU instructions and rent burned from bronze
+func (h *NetworkStatsHandler) fetchBronzeSorobanStats(ctx context.Context) (avgCPU int64, rentBurned int64) {
+	if h.unifiedReader == nil {
+		return 0, 0
+	}
+
+	schemas := []string{}
+	if h.unifiedReader.bronzeHotSchema != "" {
+		schemas = append(schemas, h.unifiedReader.bronzeHotSchema)
+	}
+	if h.unifiedReader.bronzeColdSchema != "" {
+		schemas = append(schemas, h.unifiedReader.bronzeColdSchema)
+	}
+
+	for _, schema := range schemas {
+		query := fmt.Sprintf(`
+			SELECT AVG(soroban_resources_instructions),
+			       COALESCE(SUM(rent_fee_charged), 0)
+			FROM %s.transactions_row_v2
+			WHERE soroban_resources_instructions IS NOT NULL
+			AND created_at > NOW() - INTERVAL '24 hours'
+		`, schema)
+
+		var avgCPUVal sql.NullFloat64
+		var rentVal sql.NullInt64
+		err := h.unifiedReader.db.QueryRowContext(ctx, query).Scan(&avgCPUVal, &rentVal)
+		if err == nil {
+			if avgCPUVal.Valid {
+				avgCPU = int64(avgCPUVal.Float64)
+			}
+			if rentVal.Valid {
+				rentBurned = rentVal.Int64
+			}
+			return
+		}
+	}
+	return 0, 0
 }

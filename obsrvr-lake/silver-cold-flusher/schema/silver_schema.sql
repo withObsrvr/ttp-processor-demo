@@ -436,3 +436,31 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.trustlines_snapshot (
     valid_to TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS testnet_catalog.silver.contract_invocations_raw (
+    ledger_sequence BIGINT,
+    transaction_index INTEGER,
+    operation_index INTEGER,
+    transaction_hash VARCHAR,
+    source_account VARCHAR,
+    contract_id VARCHAR,
+    function_name VARCHAR,
+    arguments_json TEXT,
+    successful BOOLEAN,
+    closed_at TIMESTAMP,
+    ledger_range BIGINT,
+    inserted_at TIMESTAMP,
+    era_id VARCHAR,
+    version_label VARCHAR
+);
+
+CREATE TABLE IF NOT EXISTS testnet_catalog.silver.contract_metadata (
+    contract_id VARCHAR,
+    creator_address VARCHAR,
+    wasm_hash VARCHAR,
+    created_ledger BIGINT,
+    created_at TIMESTAMP,
+    inserted_at TIMESTAMP,
+    era_id VARCHAR,
+    version_label VARCHAR
+);
+

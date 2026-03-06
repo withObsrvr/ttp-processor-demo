@@ -222,10 +222,12 @@ func mainWithSilver() {
 		router.HandleFunc("/api/v1/silver/accounts/top", silverHandlers.HandleTopAccounts)
 		router.HandleFunc("/api/v1/silver/accounts/signers", silverHandlers.HandleAccountSigners)
 		router.HandleFunc("/api/v1/silver/accounts/{id}/balances", silverHandlers.HandleAccountBalances).Methods("GET")
+		router.HandleFunc("/api/v1/silver/accounts/{id}/offers", silverHandlers.HandleAccountOffers).Methods("GET")
 		log.Println("  ✓ /api/v1/silver/accounts (list all)")
 		log.Println("  ✓ /api/v1/silver/accounts/*")
 		log.Println("  ✓ /api/v1/silver/accounts/signers")
 		log.Println("  ✓ /api/v1/silver/accounts/{id}/balances")
+		log.Println("  ✓ /api/v1/silver/accounts/{id}/offers")
 
 		// Token/Asset endpoints
 		// IMPORTANT: /assets must be registered BEFORE /assets/{asset}/* to avoid path matching issues
@@ -331,6 +333,9 @@ func mainWithSilver() {
 		// Network statistics endpoint (Phase 2)
 		// Pass Bronze coldReader for accurate total account count
 		networkStatsHandler := NewNetworkStatsHandler(unifiedSilverReader, coldReader)
+		if unifiedDuckDBReader != nil {
+			networkStatsHandler.SetUnifiedReader(unifiedDuckDBReader)
+		}
 		router.HandleFunc("/api/v1/silver/stats/network", networkStatsHandler.HandleNetworkStats).Methods("GET")
 		log.Println("  ✓ /api/v1/silver/stats/network (headline statistics)")
 
@@ -376,6 +381,33 @@ func mainWithSilver() {
 		log.Println("  ✓ /api/v1/silver/contracts/{id}/callees")
 		log.Println("  ✓ /api/v1/silver/contracts/{id}/call-summary")
 		log.Println("  ✓ /api/v1/silver/contracts/{id}/analytics (comprehensive analytics)")
+
+		// Contract metadata endpoint (uses silver hot reader)
+		router.HandleFunc("/api/v1/silver/contracts/{id}/metadata", contractCallHandlers.HandleContractMetadata).Methods("GET")
+		log.Println("  ✓ /api/v1/silver/contracts/{id}/metadata (contract creator, WASM, storage)")
+
+		// Phase B: New endpoints (require unified reader for contract storage, tx summaries, fees)
+		if unifiedDuckDBReader != nil {
+			// Fee statistics endpoints
+			feeStatsHandler := NewFeeStatsHandler(unifiedDuckDBReader)
+			router.HandleFunc("/api/v1/silver/stats/fees", feeStatsHandler.HandleFeeStats).Methods("GET")
+			router.HandleFunc("/api/v1/silver/ledgers/{seq}/fees", feeStatsHandler.HandleLedgerFees).Methods("GET")
+			log.Println("  ✓ /api/v1/silver/stats/fees (fee percentiles)")
+			log.Println("  ✓ /api/v1/silver/ledgers/{seq}/fees (per-ledger fee histogram)")
+
+			// Contract storage endpoint
+			router.HandleFunc("/api/v1/silver/contracts/{id}/storage", silverHandlers.HandleContractStorage).Methods("GET")
+			log.Println("  ✓ /api/v1/silver/contracts/{id}/storage (contract data entries with TTL)")
+
+			// Soroban stats endpoint
+			sorobanStatsHandler := NewSorobanStatsHandler(unifiedDuckDBReader, unifiedSilverReader.hot)
+			router.HandleFunc("/api/v1/silver/stats/soroban", sorobanStatsHandler.HandleSorobanStats).Methods("GET")
+			log.Println("  ✓ /api/v1/silver/stats/soroban (Soroban network statistics)")
+
+			// Transaction summaries endpoint
+			router.HandleFunc("/api/v1/silver/transactions/summaries", silverHandlers.HandleTransactionSummaries).Methods("GET")
+			log.Println("  ✓ /api/v1/silver/transactions/summaries (batch tx summaries)")
+		}
 
 		// Prism Block Explorer endpoints (require unified reader)
 		if unifiedDuckDBReader != nil {

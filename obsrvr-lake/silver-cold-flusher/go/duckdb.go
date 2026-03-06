@@ -159,6 +159,27 @@ func (c *DuckDBClient) FlushSnapshotTable(tableName string, watermark int64, pgC
 	return rowsAffected, nil
 }
 
+// FlushTableWithColumn flushes a table using a custom watermark column
+func (c *DuckDBClient) FlushTableWithColumn(tableName string, watermark int64, pgConnStr string, column string) (int64, error) {
+	query := fmt.Sprintf(`
+		INSERT INTO %s.%s.%s
+		SELECT * FROM postgres_scan('%s', 'public', '%s')
+		WHERE %s <= %d
+	`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, column, watermark)
+
+	result, err := c.db.Exec(query)
+	if err != nil {
+		return 0, fmt.Errorf("failed to flush table %s: %w", tableName, err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get rows affected for %s: %w", tableName, err)
+	}
+
+	return rowsAffected, nil
+}
+
 // VerifyTableExists checks if a table exists in the DuckLake catalog
 func (c *DuckDBClient) VerifyTableExists(tableName string) error {
 	query := fmt.Sprintf(`

@@ -19,6 +19,8 @@ type TransactionData struct {
 	LedgerRange           uint32
 	SignaturesCount       int
 	NewAccount            bool
+	// Soroban rent tracking (C13)
+	RentFeeCharged        *int64
 }
 
 // OperationData represents a single operation (simplified - core fields only)
@@ -545,6 +547,16 @@ type RestoredKeyData struct {
 	ClosedAt    time.Time
 	LedgerRange uint32
 	CreatedAt   time.Time
+}
+
+// ContractCreationData represents a contract creation event
+type ContractCreationData struct {
+	ContractID     string
+	CreatorAddress string
+	WasmHash       *string
+	CreatedLedger  uint32
+	CreatedAt      time.Time
+	LedgerRange    uint32
 }
 
 // Note: Cycle 2 MVP complete (5 of 19 Hubble tables): ledgers, transactions, operations, effects, trades

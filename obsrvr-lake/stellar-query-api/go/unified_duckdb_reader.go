@@ -250,14 +250,14 @@ func (r *UnifiedDuckDBReader) GetAccountCurrent(ctx context.Context, accountID s
 	// Return the row with highest last_modified_ledger (most recent state)
 	query := fmt.Sprintf(`
 		SELECT account_id, balance, sequence_number, num_subentries,
-		       last_modified_ledger, updated_at
+		       last_modified_ledger, updated_at, home_domain
 		FROM (
 			SELECT account_id, balance, sequence_number, num_subentries,
-			       last_modified_ledger, updated_at
+			       last_modified_ledger, updated_at, home_domain
 			FROM %s.accounts_current WHERE account_id = $1
 			UNION ALL
 			SELECT account_id, balance, sequence_number, num_subentries,
-			       last_modified_ledger, updated_at
+			       last_modified_ledger, updated_at, home_domain
 			FROM %s.accounts_current WHERE account_id = $1
 		) combined
 		ORDER BY last_modified_ledger DESC
@@ -265,9 +265,11 @@ func (r *UnifiedDuckDBReader) GetAccountCurrent(ctx context.Context, accountID s
 	`, r.hotSchema, r.coldSchema)
 
 	var acc AccountCurrent
+	var homeDomain sql.NullString
 	err := r.db.QueryRowContext(ctx, query, accountID).Scan(
 		&acc.AccountID, &acc.Balance, &acc.SequenceNumber,
 		&acc.NumSubentries, &acc.LastModifiedLedger, &acc.UpdatedAt,
+		&homeDomain,
 	)
 
 	if err == sql.ErrNoRows {
@@ -277,7 +279,33 @@ func (r *UnifiedDuckDBReader) GetAccountCurrent(ctx context.Context, accountID s
 		return nil, fmt.Errorf("unified GetAccountCurrent: %w", err)
 	}
 
+	if homeDomain.Valid && homeDomain.String != "" {
+		acc.HomeDomain = &homeDomain.String
+	}
+
 	return &acc, nil
+}
+
+// GetAccountCreatedAt returns the earliest closed_at for an account
+func (r *UnifiedDuckDBReader) GetAccountCreatedAt(ctx context.Context, accountID string) (*string, error) {
+	query := fmt.Sprintf(`
+		SELECT MIN(closed_at)::text
+		FROM (
+			SELECT closed_at FROM %s.accounts_snapshot WHERE account_id = $1
+			UNION ALL
+			SELECT closed_at FROM %s.accounts_snapshot WHERE account_id = $1
+		) combined
+	`, r.hotSchema, r.coldSchema)
+
+	var createdAt sql.NullString
+	err := r.db.QueryRowContext(ctx, query, accountID).Scan(&createdAt)
+	if err != nil {
+		return nil, err
+	}
+	if !createdAt.Valid {
+		return nil, sql.ErrNoRows
+	}
+	return &createdAt.String, nil
 }
 
 // GetAccountHistoryWithCursor returns historical snapshots with cursor-based pagination
@@ -4938,7 +4966,66 @@ func (r *UnifiedDuckDBReader) GetTransactionForDecode(ctx context.Context, txHas
 	// Generate human-readable summary
 	tx.Summary = GenerateTxSummary(tx.Operations, tx.Events)
 
+	// Fetch supplementary bronze data (source_account, account_sequence, soroban resources)
+	r.enrichTransactionFromBronze(ctx, tx, txHash)
+
 	return tx, nil
+}
+
+// enrichTransactionFromBronze adds supplementary fields from bronze transactions_row_v2
+func (r *UnifiedDuckDBReader) enrichTransactionFromBronze(ctx context.Context, tx *DecodedTransaction, txHash string) {
+	if r.bronzeHotSchema == "" && r.bronzeColdSchema == "" {
+		return
+	}
+
+	// Try bronze hot first, then cold
+	schemas := []string{}
+	if r.bronzeHotSchema != "" {
+		schemas = append(schemas, r.bronzeHotSchema)
+	}
+	if r.bronzeColdSchema != "" {
+		schemas = append(schemas, r.bronzeColdSchema)
+	}
+
+	for _, schema := range schemas {
+		query := fmt.Sprintf(`
+			SELECT source_account, account_sequence,
+			       soroban_resources_instructions, soroban_resources_read_bytes,
+			       soroban_resources_write_bytes
+			FROM %s.transactions_row_v2
+			WHERE transaction_hash = $1
+			LIMIT 1
+		`, schema)
+
+		var sourceAccount sql.NullString
+		var accountSequence sql.NullInt64
+		var instructions, readBytes, writeBytes sql.NullInt64
+
+		err := r.db.QueryRowContext(ctx, query, txHash).Scan(
+			&sourceAccount, &accountSequence,
+			&instructions, &readBytes, &writeBytes,
+		)
+		if err != nil {
+			continue
+		}
+
+		if sourceAccount.Valid {
+			tx.SourceAccount = &sourceAccount.String
+		}
+		if accountSequence.Valid {
+			tx.AccountSequence = &accountSequence.Int64
+		}
+		if instructions.Valid {
+			tx.SorobanResourcesInstructions = &instructions.Int64
+		}
+		if readBytes.Valid {
+			tx.SorobanResourcesReadBytes = &readBytes.Int64
+		}
+		if writeBytes.Valid {
+			tx.SorobanResourcesWriteBytes = &writeBytes.Int64
+		}
+		return // Found data, no need to check other schemas
+	}
 }
 
 // GetContractFunctions returns distinct function names observed for a contract
@@ -5707,4 +5794,74 @@ func (r *UnifiedDuckDBReader) GetTradePairs(ctx context.Context) ([]TradePair, e
 		pairs = append(pairs, p)
 	}
 	return pairs, nil
+}
+
+// enrichContractMetadata adds creator info from contract_metadata (hot + cold)
+func (r *UnifiedDuckDBReader) enrichContractMetadata(ctx context.Context, resp *ContractMetadataResponse) {
+	query := fmt.Sprintf(`
+		SELECT creator_address, wasm_hash, created_ledger, created_at::text
+		FROM (
+			SELECT creator_address, wasm_hash, created_ledger, created_at
+			FROM %s.contract_metadata WHERE contract_id = $1
+			UNION ALL
+			SELECT creator_address, wasm_hash, created_ledger, created_at
+			FROM %s.contract_metadata WHERE contract_id = $1
+		) combined
+		LIMIT 1
+	`, r.hotSchema, r.coldSchema)
+
+	var creator, wasmHash, createdAt sql.NullString
+	var createdLedger sql.NullInt64
+	err := r.db.QueryRowContext(ctx, query, resp.ContractID).Scan(
+		&creator, &wasmHash, &createdLedger, &createdAt,
+	)
+	if err != nil {
+		return
+	}
+	if creator.Valid {
+		resp.CreatorAddress = &creator.String
+	}
+	if wasmHash.Valid {
+		resp.WasmHash = &wasmHash.String
+	}
+	if createdLedger.Valid {
+		resp.CreatedLedger = &createdLedger.Int64
+	}
+	if createdAt.Valid {
+		resp.CreatedAt = &createdAt.String
+	}
+}
+
+// enrichContractFunctions adds observed function names from contract_invocations_raw (hot + cold)
+func (r *UnifiedDuckDBReader) enrichContractFunctions(ctx context.Context, resp *ContractMetadataResponse) {
+	query := fmt.Sprintf(`
+		SELECT function_name, SUM(call_count) as total_calls
+		FROM (
+			SELECT function_name, COUNT(*) as call_count
+			FROM %s.contract_invocations_raw
+			WHERE contract_id = $1 AND function_name != ''
+			GROUP BY function_name
+			UNION ALL
+			SELECT function_name, COUNT(*) as call_count
+			FROM %s.contract_invocations_raw
+			WHERE contract_id = $1 AND function_name != ''
+			GROUP BY function_name
+		) combined
+		GROUP BY function_name
+		ORDER BY total_calls DESC
+	`, r.hotSchema, r.coldSchema)
+
+	rows, err := r.db.QueryContext(ctx, query, resp.ContractID)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var fc FunctionCallCount
+		if err := rows.Scan(&fc.Name, &fc.CallCount); err != nil {
+			break
+		}
+		resp.ExportedFunctions = append(resp.ExportedFunctions, fc)
+	}
 }

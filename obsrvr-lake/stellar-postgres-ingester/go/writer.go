@@ -48,6 +48,10 @@ type LedgerData struct {
 	EvictedKeysCount     *int
 	IngestionTimestamp   time.Time
 	LedgerRange          uint32
+	// Soroban aggregates per ledger
+	SorobanOpCount       *int
+	TotalFeeCharged      *int64
+	ContractEventsCount  *int
 }
 
 // NewWriter creates a new PostgreSQL writer
@@ -122,16 +126,14 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 	// Phase 5 accumulators (Day 11: restored_keys)
 	var allRestoredKeys []RestoredKeyData
 
+	// Contract creation tracking (C11)
+	var allContractCreations []ContractCreationData
+
 	for _, rawLedger := range rawLedgers {
 		// Extract ledger data
 		ledgerData, err := w.extractLedgerData(rawLedger)
 		if err != nil {
 			return fmt.Errorf("failed to extract ledger %d: %w", rawLedger.Sequence, err)
-		}
-
-		// Insert ledger
-		if err := w.insertLedger(ctx, tx, ledgerData); err != nil {
-			return fmt.Errorf("failed to insert ledger %d: %w", ledgerData.Sequence, err)
 		}
 
 		// Extract transactions
@@ -148,6 +150,22 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 			log.Printf("Warning: Failed to extract operations for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
 			allOperations = append(allOperations, operations...)
+			// Count Soroban operations for ledger aggregates
+			sorobanOps := 0
+			for _, op := range operations {
+				if op.LedgerSequence == ledgerData.Sequence {
+					// Soroban ops: 24=InvokeHostFunction, 25=ExtendFootprintTTL, 26=RestoreFootprint
+					if op.OpType == 24 || op.OpType == 25 || op.OpType == 26 {
+						sorobanOps++
+					}
+				}
+			}
+			ledgerData.SorobanOpCount = &sorobanOps
+		}
+
+		// Insert ledger (after operations extraction so we have soroban op count)
+		if err := w.insertLedger(ctx, tx, ledgerData); err != nil {
+			return fmt.Errorf("failed to insert ledger %d: %w", ledgerData.Sequence, err)
 		}
 
 		// Extract effects
@@ -276,6 +294,14 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 			log.Printf("Warning: Failed to extract restored keys for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
 			allRestoredKeys = append(allRestoredKeys, restoredKeys...)
+		}
+
+		// Extract contract creations (C11)
+		contractCreations, err := w.extractContractCreations(rawLedger)
+		if err != nil {
+			log.Printf("Warning: Failed to extract contract creations for ledger %d: %v", rawLedger.Sequence, err)
+		} else {
+			allContractCreations = append(allContractCreations, contractCreations...)
 		}
 
 		// Update checkpoint
@@ -437,6 +463,14 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 		log.Printf("Inserted %d restored keys", len(allRestoredKeys))
 	}
 
+	// Insert all contract creations (C11)
+	if len(allContractCreations) > 0 {
+		if err := w.insertContractCreations(ctx, tx, allContractCreations); err != nil {
+			return fmt.Errorf("failed to insert contract creations: %w", err)
+		}
+		log.Printf("Inserted %d contract creations", len(allContractCreations))
+	}
+
 	// Commit transaction
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
@@ -558,6 +592,36 @@ func (w *Writer) extractLedgerData(rawLedger *pb.RawLedger) (*LedgerData, error)
 	data.OperationCount = int(operationCount)
 	data.TxSetOperationCount = int(txSetOperationCount)
 
+	// Compute per-ledger aggregates from TxProcessing
+	var totalFeeCharged int64
+	var contractEventsCount int
+
+	switch lcm.V {
+	case 1:
+		for _, txApply := range lcm.MustV1().TxProcessing {
+			totalFeeCharged += int64(txApply.Result.Result.FeeCharged)
+			if txApply.TxApplyProcessing.V == 3 {
+				v3 := txApply.TxApplyProcessing.MustV3()
+				if v3.SorobanMeta != nil {
+					contractEventsCount += len(v3.SorobanMeta.Events)
+				}
+			}
+		}
+	case 2:
+		for _, txApply := range lcm.MustV2().TxProcessing {
+			totalFeeCharged += int64(txApply.Result.Result.FeeCharged)
+			if txApply.TxApplyProcessing.V == 3 {
+				v3 := txApply.TxApplyProcessing.MustV3()
+				if v3.SorobanMeta != nil {
+					contractEventsCount += len(v3.SorobanMeta.Events)
+				}
+			}
+		}
+	}
+
+	data.TotalFeeCharged = &totalFeeCharged
+	data.ContractEventsCount = &contractEventsCount
+
 	// Protocol 20+ Soroban fields
 	if lcmV1, ok := lcm.GetV1(); ok {
 		if extV1, ok := lcmV1.Ext.GetV1(); ok {
@@ -620,11 +684,12 @@ func (w *Writer) insertLedger(ctx context.Context, tx pgx.Tx, ledger *LedgerData
 			ingestion_timestamp, ledger_range,
 			transaction_count, operation_count, tx_set_operation_count,
 			soroban_fee_write1kb, node_id, signature, ledger_header,
-			bucket_list_size, live_soroban_state_size, evicted_keys_count
+			bucket_list_size, live_soroban_state_size, evicted_keys_count,
+			soroban_op_count, total_fee_charged, contract_events_count
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
 			$11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-			$21, $22, $23, $24
+			$21, $22, $23, $24, $25, $26, $27
 		)
 		ON CONFLICT (sequence) DO UPDATE SET
 			ledger_hash = EXCLUDED.ledger_hash,
@@ -632,7 +697,10 @@ func (w *Writer) insertLedger(ctx context.Context, tx pgx.Tx, ledger *LedgerData
 			transaction_count = EXCLUDED.transaction_count,
 			operation_count = EXCLUDED.operation_count,
 			successful_tx_count = EXCLUDED.successful_tx_count,
-			failed_tx_count = EXCLUDED.failed_tx_count
+			failed_tx_count = EXCLUDED.failed_tx_count,
+			soroban_op_count = EXCLUDED.soroban_op_count,
+			total_fee_charged = EXCLUDED.total_fee_charged,
+			contract_events_count = EXCLUDED.contract_events_count
 	`
 
 	_, err := tx.Exec(ctx, query,
@@ -660,6 +728,9 @@ func (w *Writer) insertLedger(ctx context.Context, tx pgx.Tx, ledger *LedgerData
 		ledger.BucketListSize,
 		ledger.LiveSorobanStateSize,
 		ledger.EvictedKeysCount,
+		ledger.SorobanOpCount,
+		ledger.TotalFeeCharged,
+		ledger.ContractEventsCount,
 	)
 
 	return err
@@ -676,14 +747,15 @@ func (w *Writer) insertTransactions(ctx context.Context, tx pgx.Tx, transactions
 			ledger_sequence, transaction_hash, source_account, fee_charged,
 			max_fee, successful, transaction_result_code, operation_count,
 			memo_type, memo, created_at, account_sequence, ledger_range,
-			signatures_count, new_account
+			signatures_count, new_account, rent_fee_charged
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-			$11, $12, $13, $14, $15
+			$11, $12, $13, $14, $15, $16
 		)
 		ON CONFLICT (ledger_sequence, transaction_hash) DO UPDATE SET
 			successful = EXCLUDED.successful,
-			fee_charged = EXCLUDED.fee_charged
+			fee_charged = EXCLUDED.fee_charged,
+			rent_fee_charged = EXCLUDED.rent_fee_charged
 	`
 
 	for _, txData := range transactions {
@@ -703,6 +775,7 @@ func (w *Writer) insertTransactions(ctx context.Context, tx pgx.Tx, transactions
 			txData.LedgerRange,
 			txData.SignaturesCount,
 			txData.NewAccount,
+			txData.RentFeeCharged,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to insert transaction %s: %w", txData.TransactionHash, err)
@@ -1599,6 +1672,37 @@ func (w *Writer) insertRestoredKeys(ctx context.Context, tx pgx.Tx, restoredKeys
 		)
 		if err != nil {
 			return fmt.Errorf("failed to insert restored key %s: %w", rk.KeyHash, err)
+		}
+	}
+
+	return nil
+}
+
+// insertContractCreations inserts contract creation records into PostgreSQL (C11)
+func (w *Writer) insertContractCreations(ctx context.Context, tx pgx.Tx, creations []ContractCreationData) error {
+	if len(creations) == 0 {
+		return nil
+	}
+
+	query := `
+		INSERT INTO contract_creations_v1 (
+			contract_id, creator_address, wasm_hash,
+			created_ledger, created_at, ledger_range
+		) VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (contract_id) DO NOTHING
+	`
+
+	for _, c := range creations {
+		_, err := tx.Exec(ctx, query,
+			c.ContractID,
+			c.CreatorAddress,
+			c.WasmHash,
+			c.CreatedLedger,
+			c.CreatedAt,
+			c.LedgerRange,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to insert contract creation %s: %w", c.ContractID, err)
 		}
 	}
 

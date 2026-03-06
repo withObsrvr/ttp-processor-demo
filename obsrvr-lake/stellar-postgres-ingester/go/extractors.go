@@ -120,6 +120,15 @@ func (w *Writer) extractTransactions(rawLedger *pb.RawLedger) ([]TransactionData
 			}
 		}
 
+		// Extract Soroban rent fee charged (C13)
+		if tx.UnsafeMeta.V == 3 {
+			v3 := tx.UnsafeMeta.MustV3()
+			if v3.SorobanMeta != nil && v3.SorobanMeta.Ext.V == 1 && v3.SorobanMeta.Ext.V1 != nil {
+				rentFee := int64(v3.SorobanMeta.Ext.V1.RentFeeCharged)
+				txData.RentFeeCharged = &rentFee
+			}
+		}
+
 		transactions = append(transactions, txData)
 	}
 

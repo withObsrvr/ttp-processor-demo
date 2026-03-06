@@ -222,6 +222,48 @@ curl -H "Authorization: Api-Key $API_KEY" \
 
 ---
 
+#### Get Account Offers
+
+Returns DEX offers for a specific account.
+
+```bash
+GET /api/v1/silver/accounts/{account_id}/offers?limit={limit}&cursor={cursor}
+```
+
+**Parameters:**
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `account_id` | Yes | Stellar account address (G...) in URL path |
+| `limit` | No | Max results (default: 100, max: 1000) |
+| `cursor` | No | Pagination cursor |
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/accounts/GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR/offers?limit=10"
+```
+
+**Response:**
+```json
+{
+  "account_id": "GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR",
+  "offers": [
+    {
+      "offer_id": 32,
+      "seller_id": "GAIH3...",
+      "selling_asset": "USDC:GA5ZSE...",
+      "buying_asset": "native",
+      "amount": "100.0000000",
+      "price": "0.1234567"
+    }
+  ],
+  "count": 1,
+  "has_more": false
+}
+```
+
+---
+
 #### Get Account Activity Feed
 
 Returns a unified timeline of all account activity (payments, contract calls, etc.).
@@ -842,6 +884,92 @@ curl -H "Authorization: Api-Key $API_KEY" \
 
 ---
 
+#### Get Contract Metadata
+
+Returns comprehensive metadata for a contract including creator, WASM info, storage summary, and observed functions.
+
+```bash
+GET /api/v1/silver/contracts/{contract_id}/metadata
+```
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/contracts/CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC/metadata"
+```
+
+**Response:**
+```json
+{
+  "contract_id": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+  "creator_address": "GABC...",
+  "wasm_hash": "abc123...",
+  "created_ledger": 1200000,
+  "created_at": "2025-12-17T18:49:47Z",
+  "n_instructions": 50000,
+  "n_functions": 12,
+  "n_exports": 8,
+  "total_entries": 9,
+  "persistent_entries": 7,
+  "exported_functions": [
+    {"name": "transfer", "call_count": 3057},
+    {"name": "approve", "call_count": 932},
+    {"name": "balance", "call_count": 639}
+  ]
+}
+```
+
+> **Note:** `exported_functions` are derived from observed invocations, not WASM exports. Returns 404 if the contract has never been seen.
+
+---
+
+#### Get Contract Storage
+
+Returns contract data entries with TTL information.
+
+```bash
+GET /api/v1/silver/contracts/{contract_id}/storage?limit={limit}&offset={offset}&durability={durability}
+```
+
+**Parameters:**
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `contract_id` | Yes | Contract address (C...) in URL path |
+| `limit` | No | Max results (default: 100) |
+| `offset` | No | Offset for pagination (default: 0) |
+| `durability` | No | Filter: `persistent`, `temporary`, or `instance` |
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/contracts/CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC/storage?limit=5"
+```
+
+**Response:**
+```json
+{
+  "contract_id": "CDLZFC3...",
+  "count": 5,
+  "entries": [
+    {
+      "contract_id": "CDLZFC3...",
+      "key_hash": "07b864d2...",
+      "durability": "ContractDataDurabilityPersistent",
+      "data_value": "AAAAAAAAAA...",
+      "last_modified_ledger": 1362432,
+      "closed_at": "2026-03-06T15:49:14Z",
+      "live_until_ledger_seq": 1880832,
+      "ttl_remaining": 518400,
+      "expired": false
+    }
+  ],
+  "limit": 5,
+  "offset": 0
+}
+```
+
+---
+
 ### Transaction Contract Analysis
 
 #### Get Contracts Involved in Transaction
@@ -952,6 +1080,67 @@ GET /api/v1/silver/tx/{tx_hash}/contracts-summary
   "total_contracts": 2,
   "total_calls": 2,
   "display_format": "wallet_v1"
+}
+```
+
+---
+
+#### Get Transaction Summaries (Batch)
+
+Returns summarized transaction data for a batch of hashes or all transactions in a ledger.
+
+```bash
+GET /api/v1/silver/transactions/summaries?hashes={hash1,hash2,...}
+GET /api/v1/silver/transactions/summaries?ledger={ledger_sequence}&limit={limit}
+```
+
+**Parameters:**
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `hashes` | One of | Comma-separated transaction hashes (max 25) |
+| `ledger` | One of | Ledger sequence to get all transactions from |
+| `limit` | No | Max results when using `ledger` (default: 10, max: 100) |
+
+**Example:**
+```bash
+# By hashes
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/transactions/summaries?hashes=2e7c2efa...,4f9e880a..."
+
+# By ledger
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/transactions/summaries?ledger=1363100&limit=10"
+```
+
+**Response:**
+```json
+{
+  "count": 3,
+  "summaries": [
+    {
+      "tx_hash": "2e7c2efa...",
+      "ledger_sequence": 1363100,
+      "closed_at": "2026-03-06T16:44:58Z",
+      "source_account": "GBTH...",
+      "fee_charged": 9644,
+      "op_count": 1,
+      "successful": true,
+      "has_soroban": true,
+      "primary_contract": "CAUG...",
+      "tx_type": "soroban"
+    },
+    {
+      "tx_hash": "4f9e880a...",
+      "ledger_sequence": 1363100,
+      "closed_at": "2026-03-06T16:44:58Z",
+      "source_account": "GCFH...",
+      "fee_charged": 100,
+      "op_count": 1,
+      "successful": false,
+      "has_soroban": false,
+      "tx_type": "classic"
+    }
+  ]
 }
 ```
 
@@ -1818,24 +2007,154 @@ curl -H "Authorization: Api-Key $API_KEY" \
 **Response:**
 ```json
 {
-  "generated_at": "2026-01-05T12:57:07Z",
+  "generated_at": "2026-03-06T16:47:54Z",
   "data_freshness": "real-time",
   "accounts": {
-    "total": 8500000,
-    "active_24h": 12500,
-    "created_24h": 150
+    "total": 212696,
+    "active_24h": 1484,
+    "created_24h": 2422
   },
   "ledger": {
-    "current_sequence": 21379180,
-    "avg_close_time_seconds": 5.0
+    "current_sequence": 1363128,
+    "avg_close_time_seconds": 5
   },
   "operations_24h": {
-    "total": 85000,
-    "payments": 25000,
-    "path_payments": 5000,
-    "create_account": 150,
-    "contract_invoke": 30000
+    "total": 8579,
+    "payments": 1632,
+    "path_payments": 13,
+    "create_account": 2422,
+    "account_merge": 97,
+    "change_trust": 1012,
+    "manage_offer": 948,
+    "contract_invoke": 2163,
+    "other": 292
+  },
+  "transactions_24h": {
+    "total": 7150,
+    "failed": 1820,
+    "failure_rate": 0.2545
+  },
+  "fees_24h": {
+    "median_stroops": 100,
+    "p99_stroops": 126410,
+    "daily_total_stroops": 112093416,
+    "surge_active": false
+  },
+  "soroban": {
+    "active_contracts_24h": 469
   }
+}
+```
+
+---
+
+#### Get Fee Statistics
+
+Returns fee percentiles, surge detection, and aggregate fee data for a given period.
+
+```bash
+GET /api/v1/silver/stats/fees?period={period}
+```
+
+**Parameters:**
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `period` | No | Time period: `1h`, `24h` (default), `7d` |
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/stats/fees?period=24h"
+```
+
+**Response:**
+```json
+{
+  "period": "24h",
+  "median_fee": 100,
+  "p75_fee": 13343,
+  "p90_fee": 77895,
+  "p99_fee": 126410,
+  "min_fee": 100,
+  "max_fee": 10588183,
+  "total_fees": 112093416,
+  "tx_count": 5330,
+  "surge_active": false,
+  "generated_at": "2026-03-06T16:47:52Z"
+}
+```
+
+> **Surge detection:** `surge_active` is true when the median fee exceeds the base fee (100 stroops), indicating network congestion.
+
+---
+
+#### Get Soroban Network Statistics
+
+Returns Soroban runtime statistics including contract counts, execution metrics, and state entry counts.
+
+```bash
+GET /api/v1/silver/stats/soroban
+```
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/stats/soroban"
+```
+
+**Response:**
+```json
+{
+  "contracts": {
+    "total_deployed": 33026,
+    "active_24h": 469,
+    "active_7d": 3020
+  },
+  "execution": {
+    "total_invocations_24h": 25523,
+    "avg_cpu_insns": 15000000,
+    "total_cpu_insns": 382845000000,
+    "rent_burned_24h_stroops": 5000000
+  },
+  "state": {
+    "persistent_entries": 150000,
+    "temporary_entries": 5000
+  },
+  "generated_at": "2026-03-06T16:50:50Z"
+}
+```
+
+---
+
+#### Get Ledger Fee Distribution
+
+Returns fee histogram and percentiles for a specific ledger.
+
+```bash
+GET /api/v1/silver/ledgers/{ledger_sequence}/fees
+```
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/ledgers/1363100/fees"
+```
+
+**Response:**
+```json
+{
+  "ledger_sequence": 1363100,
+  "tx_count": 4,
+  "min_fee": 100,
+  "max_fee": 9644,
+  "median_fee": 100,
+  "p90_fee": 100,
+  "total_fees": 9944,
+  "histogram": [
+    {"range": "100-200", "count": 3},
+    {"range": "1000-10000", "count": 1}
+  ],
+  "generated_at": "2026-03-06T16:49:14Z"
 }
 ```
 

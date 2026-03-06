@@ -13,6 +13,7 @@ import (
 
 	"github.com/stellar/go-stellar-sdk/ingest"
 	"github.com/stellar/go-stellar-sdk/ingest/sac"
+	"github.com/stellar/go-stellar-sdk/strkey"
 	"github.com/stellar/go-stellar-sdk/xdr"
 	pb "github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/go/gen/raw_ledger_service"
 	"github.com/withObsrvr/ttp-processor-demo/stellar-postgres-ingester/go/internal/processors/contract"
@@ -347,6 +348,125 @@ func extractContractInvocationDetails(op xdr.Operation) (*string, *string, *stri
 func extractContractInvocationArgs(op xdr.Operation) (*string, error) {
 	_, _, argsStr, err := extractContractInvocationDetails(op)
 	return argsStr, err
+}
+
+// extractContractCreations extracts contract creation events from raw ledger
+// Looks for InvokeHostFunction ops with HOST_FUNCTION_TYPE_CREATE_CONTRACT or CREATE_CONTRACT_V2
+func (w *Writer) extractContractCreations(rawLedger *pb.RawLedger) ([]ContractCreationData, error) {
+	var creations []ContractCreationData
+
+	var lcm xdr.LedgerCloseMeta
+	if err := lcm.UnmarshalBinary(rawLedger.LedgerCloseMetaXdr); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal XDR: %w", err)
+	}
+
+	var ledgerSeq uint32
+	var closedAt time.Time
+	switch lcm.V {
+	case 0:
+		ledgerSeq = uint32(lcm.MustV0().LedgerHeader.Header.LedgerSeq)
+		closedAt = time.Unix(int64(lcm.MustV0().LedgerHeader.Header.ScpValue.CloseTime), 0).UTC()
+	case 1:
+		ledgerSeq = uint32(lcm.MustV1().LedgerHeader.Header.LedgerSeq)
+		closedAt = time.Unix(int64(lcm.MustV1().LedgerHeader.Header.ScpValue.CloseTime), 0).UTC()
+	case 2:
+		ledgerSeq = uint32(lcm.MustV2().LedgerHeader.Header.LedgerSeq)
+		closedAt = time.Unix(int64(lcm.MustV2().LedgerHeader.Header.ScpValue.CloseTime), 0).UTC()
+	}
+
+	reader, err := ingest.NewLedgerTransactionReaderFromLedgerCloseMeta(
+		w.config.Source.NetworkPassphrase, lcm)
+	if err != nil {
+		return creations, nil
+	}
+	defer reader.Close()
+
+	for {
+		tx, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			continue
+		}
+
+		if !tx.Result.Successful() {
+			continue
+		}
+
+		txSourceAccount := tx.Envelope.SourceAccount().ToAccountId().Address()
+
+		for opIdx, op := range tx.Envelope.Operations() {
+			invokeHostFn, ok := op.Body.GetInvokeHostFunctionOp()
+			if !ok {
+				continue
+			}
+
+			fnType := invokeHostFn.HostFunction.Type
+			if fnType != xdr.HostFunctionTypeHostFunctionTypeCreateContract &&
+				fnType != xdr.HostFunctionTypeHostFunctionTypeCreateContractV2 {
+				continue
+			}
+
+			// Use op-level source account if present, otherwise fall back to tx source
+			creatorAddress := txSourceAccount
+			if op.SourceAccount != nil {
+				creatorAddress = op.SourceAccount.ToAccountId().Address()
+			}
+
+			// Get the created contract ID from the transaction meta
+			// The contract ID is in the ledger entry changes for the current operation
+			if tx.UnsafeMeta.V == 3 {
+				v3 := tx.UnsafeMeta.MustV3()
+				if v3.SorobanMeta != nil && opIdx < len(v3.Operations) {
+					// Look for new contract entries in the changes for THIS operation
+					for _, change := range v3.Operations[opIdx].Changes {
+						created, ok := change.GetCreated()
+						if !ok {
+							continue
+						}
+						contractData, ok := created.Data.GetContractData()
+						if !ok {
+							continue
+						}
+
+						// Instance storage entry indicates contract creation
+						if contractData.Durability == xdr.ContractDataDurabilityPersistent {
+							if scAddr, ok := contractData.Contract.GetContractId(); ok {
+								contractIDStr, err := strkey.Encode(strkey.VersionByteContract, scAddr[:])
+								if err != nil {
+									continue
+								}
+
+								creation := ContractCreationData{
+									ContractID:     contractIDStr,
+									CreatorAddress: creatorAddress,
+									CreatedLedger:  ledgerSeq,
+									CreatedAt:      closedAt,
+									LedgerRange:    (ledgerSeq / 10000) * 10000,
+								}
+
+								// Try to extract WASM hash
+								if fnType == xdr.HostFunctionTypeHostFunctionTypeCreateContract {
+									if args, ok := invokeHostFn.HostFunction.GetCreateContract(); ok {
+										if wasmHash, ok := args.Executable.GetWasmHash(); ok {
+											wasmHashStr := hex.EncodeToString(wasmHash[:])
+											creation.WasmHash = &wasmHashStr
+										}
+									}
+								}
+
+								creations = append(creations, creation)
+								break // One contract per op
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return creations, nil
 }
 
 // Wrapper functions to adapt sac package to contract processor signature

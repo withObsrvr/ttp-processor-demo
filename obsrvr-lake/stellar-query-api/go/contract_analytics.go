@@ -18,6 +18,11 @@ type ContractAnalyticsSummary struct {
 	// Call statistics
 	Stats ContractStats `json:"stats"`
 
+	// Enhanced analytics
+	SuccessRate  float64 `json:"success_rate"`
+	TotalCalls7d  int64  `json:"total_calls_7d"`
+	TotalCalls30d int64  `json:"total_calls_30d"`
+
 	// Timeline info
 	Timeline ContractTimeline `json:"timeline"`
 
@@ -26,6 +31,9 @@ type ContractAnalyticsSummary struct {
 
 	// Daily call counts for last 7 days
 	DailyCalls7d []DailyCount `json:"daily_calls_7d"`
+
+	// Daily call counts for last 30 days
+	DailyCalls30d []DailyCount `json:"daily_calls_30d,omitempty"`
 }
 
 // ContractStats holds call statistics
@@ -44,8 +52,12 @@ type ContractTimeline struct {
 
 // FunctionCount represents a function and its call count
 type FunctionCount struct {
-	Name  string `json:"name"`
-	Count int    `json:"count"`
+	Name        string  `json:"name"`
+	Count       int     `json:"count"`
+	Calls7d     int64   `json:"calls_7d,omitempty"`
+	Calls30d    int64   `json:"calls_30d,omitempty"`
+	SuccessRate float64 `json:"success_rate,omitempty"`
+	LastCalled  string  `json:"last_called,omitempty"`
 }
 
 // DailyCount represents call count for a single day
@@ -168,6 +180,88 @@ func (h *SilverHotReader) GetContractAnalyticsSummary(ctx context.Context, contr
 		}
 		dc.Date = day.Format("2006-01-02")
 		summary.DailyCalls7d = append(summary.DailyCalls7d, dc)
+	}
+
+	// Query 4: Success rate and time-windowed counts from contract_invocations_raw
+	enhancedQuery := `
+		SELECT
+			COUNT(*) FILTER (WHERE successful) as success_count,
+			COUNT(*) as total_count,
+			COUNT(*) FILTER (WHERE closed_at >= NOW() - INTERVAL '7 days') as calls_7d,
+			COUNT(*) FILTER (WHERE closed_at >= NOW() - INTERVAL '30 days') as calls_30d
+		FROM contract_invocations_raw
+		WHERE contract_id = $1
+	`
+	var successCount, totalCount sql.NullInt64
+	err = h.db.QueryRowContext(ctx, enhancedQuery, contractID).Scan(
+		&successCount, &totalCount,
+		&summary.TotalCalls7d, &summary.TotalCalls30d,
+	)
+	if err == nil && totalCount.Valid && totalCount.Int64 > 0 {
+		summary.SuccessRate = float64(successCount.Int64) / float64(totalCount.Int64)
+	}
+
+	// Query 5: Enhanced top functions with 7d/30d counts and success rates
+	enhancedFunctionsQuery := `
+		SELECT
+			function_name,
+			COUNT(*) as total_count,
+			COUNT(*) FILTER (WHERE closed_at >= NOW() - INTERVAL '7 days') as calls_7d,
+			COUNT(*) FILTER (WHERE closed_at >= NOW() - INTERVAL '30 days') as calls_30d,
+			COUNT(*) FILTER (WHERE successful)::float / NULLIF(COUNT(*), 0) as success_rate,
+			MAX(closed_at) as last_called
+		FROM contract_invocations_raw
+		WHERE contract_id = $1 AND function_name != ''
+		GROUP BY function_name
+		ORDER BY total_count DESC
+		LIMIT 10
+	`
+	funcRows, err := h.db.QueryContext(ctx, enhancedFunctionsQuery, contractID)
+	if err == nil {
+		defer funcRows.Close()
+		enhancedFunctions := []FunctionCount{}
+		for funcRows.Next() {
+			var fc FunctionCount
+			var successRate sql.NullFloat64
+			var lastCalled sql.NullTime
+			if err := funcRows.Scan(&fc.Name, &fc.Count, &fc.Calls7d, &fc.Calls30d, &successRate, &lastCalled); err != nil {
+				break
+			}
+			if successRate.Valid {
+				fc.SuccessRate = successRate.Float64
+			}
+			if lastCalled.Valid {
+				fc.LastCalled = lastCalled.Time.Format(time.RFC3339)
+			}
+			enhancedFunctions = append(enhancedFunctions, fc)
+		}
+		if len(enhancedFunctions) > 0 {
+			summary.TopFunctions = enhancedFunctions
+		}
+	}
+
+	// Query 6: Daily calls for last 30 days
+	daily30dQuery := `
+		SELECT DATE(closed_at) as day, COUNT(*) as call_count
+		FROM contract_invocations_raw
+		WHERE contract_id = $1
+		  AND closed_at >= NOW() - INTERVAL '30 days'
+		GROUP BY DATE(closed_at)
+		ORDER BY day DESC
+	`
+	daily30dRows, err := h.db.QueryContext(ctx, daily30dQuery, contractID)
+	if err == nil {
+		defer daily30dRows.Close()
+		summary.DailyCalls30d = []DailyCount{}
+		for daily30dRows.Next() {
+			var dc DailyCount
+			var day time.Time
+			if err := daily30dRows.Scan(&day, &dc.Count); err != nil {
+				break
+			}
+			dc.Date = day.Format("2006-01-02")
+			summary.DailyCalls30d = append(summary.DailyCalls30d, dc)
+		}
 	}
 
 	return summary, nil

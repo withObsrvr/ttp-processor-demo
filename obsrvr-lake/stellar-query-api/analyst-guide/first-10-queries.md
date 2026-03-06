@@ -440,3 +440,10 @@ Now that you've run these queries, explore:
 | Contract events | `/silver/events/contract/{id}` | Per-contract events |
 | Tx diffs | `/silver/tx/{hash}/diffs` | Balance changes |
 | Smart wallet | `/silver/smart-wallet/{id}` | SEP-50 detection |
+| Fee stats | `/silver/stats/fees` | Fee percentiles & surge detection |
+| Soroban stats | `/silver/stats/soroban` | Soroban runtime metrics |
+| Ledger fees | `/silver/ledgers/{seq}/fees` | Per-ledger fee histogram |
+| Contract metadata | `/silver/contracts/{id}/metadata` | Creator, WASM, functions |
+| Contract storage | `/silver/contracts/{id}/storage` | Storage entries with TTL |
+| Account offers | `/silver/accounts/{id}/offers` | DEX offers for account |
+| Tx summaries | `/silver/transactions/summaries` | Batch tx lookup |

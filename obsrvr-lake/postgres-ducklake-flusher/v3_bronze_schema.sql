@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS bronze.ledgers_row_v2 (
     bucket_list_size BIGINT,
     live_soroban_state_size BIGINT,
     evicted_keys_count INTEGER,
+    soroban_op_count INTEGER,
+    total_fee_charged BIGINT,
+    contract_events_count INTEGER,
     era_id TEXT,
     version_label TEXT
 );
@@ -72,6 +75,7 @@ CREATE TABLE IF NOT EXISTS bronze.transactions_row_v2 (
     soroban_contract_events_count INTEGER,
     signatures_count INTEGER,
     new_account BOOLEAN,
+    rent_fee_charged BIGINT,
     tx_envelope TEXT,
     tx_result TEXT,
     tx_meta TEXT,
@@ -472,6 +476,17 @@ CREATE TABLE IF NOT EXISTS bronze.restored_keys_state_v1 (
     closed_at TIMESTAMP,
     ledger_range BIGINT,
     created_at TIMESTAMP,
+    era_id TEXT,
+    version_label TEXT
+);
+
+CREATE TABLE IF NOT EXISTS bronze.contract_creations_v1 (
+    contract_id TEXT PRIMARY KEY,
+    creator_address TEXT,
+    wasm_hash TEXT,
+    created_ledger BIGINT,
+    created_at TIMESTAMP,
+    ledger_range BIGINT,
     era_id TEXT,
     version_label TEXT
 );
