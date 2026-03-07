@@ -129,6 +129,20 @@ func (w *Writer) extractTransactions(rawLedger *pb.RawLedger) ([]TransactionData
 			}
 		}
 
+		// Extract Soroban resource fields from envelope
+		if instructions, ok := tx.SorobanResourcesInstructions(); ok {
+			val := int64(instructions)
+			txData.SorobanResourcesInstructions = &val
+		}
+		if readBytes, ok := tx.SorobanResourcesDiskReadBytes(); ok {
+			val := int64(readBytes)
+			txData.SorobanResourcesReadBytes = &val
+		}
+		if writeBytes, ok := tx.SorobanResourcesWriteBytes(); ok {
+			val := int64(writeBytes)
+			txData.SorobanResourcesWriteBytes = &val
+		}
+
 		transactions = append(transactions, txData)
 	}
 

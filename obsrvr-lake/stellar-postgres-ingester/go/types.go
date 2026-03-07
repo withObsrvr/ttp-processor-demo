@@ -20,7 +20,11 @@ type TransactionData struct {
 	SignaturesCount       int
 	NewAccount            bool
 	// Soroban rent tracking (C13)
-	RentFeeCharged        *int64
+	RentFeeCharged *int64
+	// Soroban resource fields
+	SorobanResourcesInstructions *int64
+	SorobanResourcesReadBytes    *int64
+	SorobanResourcesWriteBytes   *int64
 }
 
 // OperationData represents a single operation (simplified - core fields only)

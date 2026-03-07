@@ -757,15 +757,20 @@ func (w *Writer) insertTransactions(ctx context.Context, tx pgx.Tx, transactions
 			ledger_sequence, transaction_hash, source_account, fee_charged,
 			max_fee, successful, transaction_result_code, operation_count,
 			memo_type, memo, created_at, account_sequence, ledger_range,
-			signatures_count, new_account, rent_fee_charged
+			signatures_count, new_account, rent_fee_charged,
+			soroban_resources_instructions, soroban_resources_read_bytes,
+			soroban_resources_write_bytes
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-			$11, $12, $13, $14, $15, $16
+			$11, $12, $13, $14, $15, $16, $17, $18, $19
 		)
 		ON CONFLICT (ledger_sequence, transaction_hash) DO UPDATE SET
 			successful = EXCLUDED.successful,
 			fee_charged = EXCLUDED.fee_charged,
-			rent_fee_charged = EXCLUDED.rent_fee_charged
+			rent_fee_charged = EXCLUDED.rent_fee_charged,
+			soroban_resources_instructions = EXCLUDED.soroban_resources_instructions,
+			soroban_resources_read_bytes = EXCLUDED.soroban_resources_read_bytes,
+			soroban_resources_write_bytes = EXCLUDED.soroban_resources_write_bytes
 	`
 
 	for _, txData := range transactions {
@@ -786,6 +791,9 @@ func (w *Writer) insertTransactions(ctx context.Context, tx pgx.Tx, transactions
 			txData.SignaturesCount,
 			txData.NewAccount,
 			txData.RentFeeCharged,
+			txData.SorobanResourcesInstructions,
+			txData.SorobanResourcesReadBytes,
+			txData.SorobanResourcesWriteBytes,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to insert transaction %s: %w", txData.TransactionHash, err)
