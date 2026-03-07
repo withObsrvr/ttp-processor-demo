@@ -69,12 +69,8 @@
               export GOWORK=off
               
               
-              # Build using vendored deps if available
-              if [ -d "vendor" ]; then
-                go build -mod=vendor -o ../stellar_live_source_datalake main.go
-              else
-                go build -mod=vendor -o ../stellar_live_source_datalake main.go
-              fi
+              # Build statically linked for Alpine/musl compatibility
+              CGO_ENABLED=0 go build -mod=vendor -o ../stellar_live_source_datalake main.go
               runHook postBuild
             '';
 
