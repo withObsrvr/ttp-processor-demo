@@ -411,14 +411,20 @@ func (h *SorobanStatsHandler) HandleSorobanStats(w http.ResponseWriter, r *http.
 		if h.reader.bronzeColdSchema != "" {
 			coldQuery := fmt.Sprintf(`
 				SELECT
-					COUNT(DISTINCT key_hash) FILTER (WHERE contract_durability = 'persistent') as persistent,
-					COUNT(DISTINCT key_hash) FILTER (WHERE contract_durability = 'temporary') as temporary
+					COUNT(DISTINCT ledger_key_hash) FILTER (WHERE contract_durability = 'persistent') as persistent,
+					COUNT(DISTINCT ledger_key_hash) FILTER (WHERE contract_durability = 'temporary') as temporary
 				FROM %s.contract_data_snapshot_v1
 			`, h.reader.bronzeColdSchema)
-			_ = h.reader.db.QueryRowContext(ctx, coldQuery).Scan(
-				&resp.State.PersistentEntries,
-				&resp.State.TemporaryEntries,
-			)
+			var persistent, temporary sql.NullInt64
+			err := h.reader.db.QueryRowContext(ctx, coldQuery).Scan(&persistent, &temporary)
+			if err == nil {
+				if persistent.Valid {
+					resp.State.PersistentEntries = persistent.Int64
+				}
+				if temporary.Valid {
+					resp.State.TemporaryEntries = temporary.Int64
+				}
+			}
 		}
 	}
 

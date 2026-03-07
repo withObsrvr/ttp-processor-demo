@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
 	"math"
 	"net/http"
 	"time"
@@ -338,8 +337,13 @@ func (h *NetworkStatsHandler) HandleNetworkStats(w http.ResponseWriter, r *http.
 		}
 		for _, schema := range schemas {
 			query := fmt.Sprintf("SELECT protocol_version FROM %s.ledgers_row_v2 ORDER BY sequence DESC LIMIT 1", schema)
-			_ = h.unifiedReader.db.QueryRowContext(ctx, query).Scan(&stats.Ledger.ProtocolVersion)
-			if stats.Ledger.ProtocolVersion > 0 {
+			var proto sql.NullInt64
+			err := h.unifiedReader.db.QueryRowContext(ctx, query).Scan(&proto)
+			if err != nil {
+				continue
+			}
+			if proto.Valid && proto.Int64 > 0 {
+				stats.Ledger.ProtocolVersion = int(proto.Int64)
 				break
 			}
 		}
@@ -353,7 +357,6 @@ func (h *NetworkStatsHandler) HandleNetworkStats(w http.ResponseWriter, r *http.
 			var cnt sql.NullInt64
 			err := h.unifiedReader.db.QueryRowContext(ctx, query).Scan(&diffSecs, &cnt)
 			if err != nil {
-				log.Printf("avg close time query error (schema=%s): %v", schema, err)
 				continue
 			}
 			if diffSecs.Valid && cnt.Valid && cnt.Int64 > 1 && diffSecs.Float64 > 0 {
