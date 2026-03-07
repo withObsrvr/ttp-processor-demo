@@ -59,11 +59,8 @@
                 --go-grpc_opt=Mraw_ledger_service/raw_ledger_service.proto=github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/gen/raw_ledger_service \
                 ./protos/raw_ledger_service/raw_ledger_service.proto
                 
-              echo "Updating go.mod with replace directives..."
+              # Replace directives are already in go.mod; just cd into go dir
               cd go
-              echo 'replace github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/gen/raw_ledger_service => ./gen/raw_ledger_service' >> go.mod
-              echo 'replace github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/server => ./server' >> go.mod
-              GOWORK=off go mod tidy
             '';
             
             buildPhase = ''

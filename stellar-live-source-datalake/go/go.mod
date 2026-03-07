@@ -5,7 +5,7 @@ go 1.24.0
 toolchain go1.24.8
 
 require (
-	github.com/stellar/go v0.0.0-20251210100531-aab2ea4aca88
+	github.com/stellar/go-stellar-sdk v0.2.0
 	github.com/withobsrvr/flowctl v0.0.4
 	go.uber.org/zap v1.27.1
 	google.golang.org/grpc v1.76.0

@@ -491,6 +491,26 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 	return nil
 }
 
+// countContractEvents counts contract events from a TransactionMeta.
+// Handles V3 (SorobanMeta.Events) and V4 (per-operation events from CAP-67).
+func countContractEvents(meta *xdr.TransactionMeta) int {
+	switch meta.V {
+	case 3:
+		v3 := meta.MustV3()
+		if v3.SorobanMeta != nil {
+			return len(v3.SorobanMeta.Events)
+		}
+	case 4:
+		v4 := meta.MustV4()
+		count := 0
+		for _, op := range v4.Operations {
+			count += len(op.Events)
+		}
+		return count
+	}
+	return 0
+}
+
 // extractLedgerData extracts ledger data from raw ledger protobuf
 func (w *Writer) extractLedgerData(rawLedger *pb.RawLedger) (*LedgerData, error) {
 	// Unmarshal XDR
@@ -600,22 +620,12 @@ func (w *Writer) extractLedgerData(rawLedger *pb.RawLedger) (*LedgerData, error)
 	case 1:
 		for _, txApply := range lcm.MustV1().TxProcessing {
 			totalFeeCharged += int64(txApply.Result.Result.FeeCharged)
-			if txApply.TxApplyProcessing.V == 3 {
-				v3 := txApply.TxApplyProcessing.MustV3()
-				if v3.SorobanMeta != nil {
-					contractEventsCount += len(v3.SorobanMeta.Events)
-				}
-			}
+			contractEventsCount += countContractEvents(&txApply.TxApplyProcessing)
 		}
 	case 2:
 		for _, txApply := range lcm.MustV2().TxProcessing {
 			totalFeeCharged += int64(txApply.Result.Result.FeeCharged)
-			if txApply.TxApplyProcessing.V == 3 {
-				v3 := txApply.TxApplyProcessing.MustV3()
-				if v3.SorobanMeta != nil {
-					contractEventsCount += len(v3.SorobanMeta.Events)
-				}
-			}
+			contractEventsCount += countContractEvents(&txApply.TxApplyProcessing)
 		}
 	}
 

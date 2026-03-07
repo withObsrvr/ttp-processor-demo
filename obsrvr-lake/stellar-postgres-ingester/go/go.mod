@@ -4,7 +4,7 @@ go 1.24.0
 
 require (
 	github.com/jackc/pgx/v5 v5.7.2
-	github.com/stellar/go-stellar-sdk v0.0.0-20251210134752-6c46f8811c13
+	github.com/stellar/go-stellar-sdk v0.2.0
 	github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/go v0.0.0-00010101000000-000000000000
 	google.golang.org/grpc v1.76.0
 	gopkg.in/yaml.v3 v3.0.1
