@@ -1,0 +1,21 @@
+{
+  "name": "stellar-live-source",
+  "version": "v1.0.0",
+  "type": "source",
+  "description": "Stellar blockchain live data source with RPC backend support",
+  "produces": [
+    "stellar.ledger.v1",
+    "stellar.transaction.v1"
+  ],
+  "consumes": [],
+  "env_mapping": {
+    "backend_type": "BACKEND_TYPE",
+    "rpc_endpoint": "RPC_ENDPOINT",
+    "rpc_auth_header": "RPC_AUTH_HEADER",
+    "network_passphrase": "NETWORK_PASSPHRASE",
+    "start_ledger": "START_LEDGER",
+    "end_ledger": "END_LEDGER",
+    "port": "PORT",
+    "health_port": "HEALTH_PORT"
+  }
+}
