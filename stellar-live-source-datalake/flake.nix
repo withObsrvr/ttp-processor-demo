@@ -15,7 +15,7 @@
         packages = {
           default = pkgs.buildGoModule {
             pname = "stellar-live-source-datalake";
-            version = "0.1.0";
+            version = "0.2.0";
             src = ./.;
             
             # Use vendored dependencies for improved build reliability
