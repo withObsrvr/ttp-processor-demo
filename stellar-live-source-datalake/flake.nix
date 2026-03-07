@@ -15,7 +15,7 @@
         packages = {
           default = pkgs.buildGoModule {
             pname = "stellar-live-source-datalake";
-            version = "0.1.0";
+            version = "0.2.0";
             src = ./.;
             
             # Use vendored dependencies for improved build reliability
@@ -59,11 +59,8 @@
                 --go-grpc_opt=Mraw_ledger_service/raw_ledger_service.proto=github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/gen/raw_ledger_service \
                 ./protos/raw_ledger_service/raw_ledger_service.proto
                 
-              echo "Updating go.mod with replace directives..."
+              # Replace directives are already in go.mod; just cd into go dir
               cd go
-              echo 'replace github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/gen/raw_ledger_service => ./gen/raw_ledger_service' >> go.mod
-              echo 'replace github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/server => ./server' >> go.mod
-              GOWORK=off go mod tidy
             '';
             
             buildPhase = ''
@@ -72,12 +69,8 @@
               export GOWORK=off
               
               
-              # Build using vendored deps if available
-              if [ -d "vendor" ]; then
-                go build -mod=vendor -o ../stellar_live_source_datalake main.go
-              else
-                go build -mod=vendor -o ../stellar_live_source_datalake main.go
-              fi
+              # Build statically linked for Alpine/musl compatibility
+              CGO_ENABLED=0 go build -mod=vendor -o ../stellar_live_source_datalake main.go
               runHook postBuild
             '';
 

@@ -5024,7 +5024,11 @@ func (r *UnifiedDuckDBReader) enrichTransactionFromBronze(ctx context.Context, t
 		if writeBytes.Valid {
 			tx.SorobanResourcesWriteBytes = &writeBytes.Int64
 		}
-		return // Found data, no need to check other schemas
+		// If we got basic fields but soroban resources are null, try next schema
+		if tx.SorobanResourcesInstructions == nil && tx.SorobanResourcesReadBytes == nil {
+			continue
+		}
+		return
 	}
 }
 

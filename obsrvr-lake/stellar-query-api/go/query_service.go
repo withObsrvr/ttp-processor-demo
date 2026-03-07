@@ -935,6 +935,7 @@ func scanLedgers(rows *sql.Rows) ([]map[string]interface{}, error) {
 			totalCoins, feePool, baseFee, baseReserve, maxTxSetSize, protocolVersion int64
 			ledgerRange                                                               int64
 			sorobanFeeWrite1kb                                                        sql.NullInt64
+			sorobanOpCount, totalFeeCharged, contractEventsCount                      sql.NullInt64
 			ledgerHash, prevLedgerHash                                                string
 			ledgerHeader, nodeID, signature, eraID, versionLabel                      sql.NullString
 			closedAt, createdAt                                                       time.Time
@@ -944,7 +945,7 @@ func scanLedgers(rows *sql.Rows) ([]map[string]interface{}, error) {
 			&sequence, &ledgerHash, &prevLedgerHash, &txCount, &opCount, &successTxCount, &failedTxCount,
 			&txSetOpCount, &closedAt, &totalCoins, &feePool, &baseFee, &baseReserve, &maxTxSetSize,
 			&protocolVersion, &ledgerHeader, &sorobanFeeWrite1kb, &nodeID, &signature, &ledgerRange,
-			&eraID, &versionLabel, &createdAt,
+			&eraID, &versionLabel, &sorobanOpCount, &totalFeeCharged, &contractEventsCount, &createdAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan ledger row: %w", err)
@@ -987,6 +988,15 @@ func scanLedgers(rows *sql.Rows) ([]map[string]interface{}, error) {
 		}
 		if versionLabel.Valid {
 			result["version_label"] = versionLabel.String
+		}
+		if sorobanOpCount.Valid {
+			result["soroban_op_count"] = sorobanOpCount.Int64
+		}
+		if totalFeeCharged.Valid {
+			result["total_fee_charged"] = totalFeeCharged.Int64
+		}
+		if contractEventsCount.Valid {
+			result["contract_events_count"] = contractEventsCount.Int64
 		}
 
 		results = append(results, result)

@@ -491,6 +491,26 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 	return nil
 }
 
+// countContractEvents counts contract events from a TransactionMeta.
+// Handles V3 (SorobanMeta.Events) and V4 (per-operation events from CAP-67).
+func countContractEvents(meta *xdr.TransactionMeta) int {
+	switch meta.V {
+	case 3:
+		v3 := meta.MustV3()
+		if v3.SorobanMeta != nil {
+			return len(v3.SorobanMeta.Events)
+		}
+	case 4:
+		v4 := meta.MustV4()
+		count := 0
+		for _, op := range v4.Operations {
+			count += len(op.Events)
+		}
+		return count
+	}
+	return 0
+}
+
 // extractLedgerData extracts ledger data from raw ledger protobuf
 func (w *Writer) extractLedgerData(rawLedger *pb.RawLedger) (*LedgerData, error) {
 	// Unmarshal XDR
@@ -600,22 +620,12 @@ func (w *Writer) extractLedgerData(rawLedger *pb.RawLedger) (*LedgerData, error)
 	case 1:
 		for _, txApply := range lcm.MustV1().TxProcessing {
 			totalFeeCharged += int64(txApply.Result.Result.FeeCharged)
-			if txApply.TxApplyProcessing.V == 3 {
-				v3 := txApply.TxApplyProcessing.MustV3()
-				if v3.SorobanMeta != nil {
-					contractEventsCount += len(v3.SorobanMeta.Events)
-				}
-			}
+			contractEventsCount += countContractEvents(&txApply.TxApplyProcessing)
 		}
 	case 2:
 		for _, txApply := range lcm.MustV2().TxProcessing {
 			totalFeeCharged += int64(txApply.Result.Result.FeeCharged)
-			if txApply.TxApplyProcessing.V == 3 {
-				v3 := txApply.TxApplyProcessing.MustV3()
-				if v3.SorobanMeta != nil {
-					contractEventsCount += len(v3.SorobanMeta.Events)
-				}
-			}
+			contractEventsCount += countContractEvents(&txApply.TxApplyProcessing)
 		}
 	}
 
@@ -747,15 +757,20 @@ func (w *Writer) insertTransactions(ctx context.Context, tx pgx.Tx, transactions
 			ledger_sequence, transaction_hash, source_account, fee_charged,
 			max_fee, successful, transaction_result_code, operation_count,
 			memo_type, memo, created_at, account_sequence, ledger_range,
-			signatures_count, new_account, rent_fee_charged
+			signatures_count, new_account, rent_fee_charged,
+			soroban_resources_instructions, soroban_resources_read_bytes,
+			soroban_resources_write_bytes
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-			$11, $12, $13, $14, $15, $16
+			$11, $12, $13, $14, $15, $16, $17, $18, $19
 		)
 		ON CONFLICT (ledger_sequence, transaction_hash) DO UPDATE SET
 			successful = EXCLUDED.successful,
 			fee_charged = EXCLUDED.fee_charged,
-			rent_fee_charged = EXCLUDED.rent_fee_charged
+			rent_fee_charged = EXCLUDED.rent_fee_charged,
+			soroban_resources_instructions = EXCLUDED.soroban_resources_instructions,
+			soroban_resources_read_bytes = EXCLUDED.soroban_resources_read_bytes,
+			soroban_resources_write_bytes = EXCLUDED.soroban_resources_write_bytes
 	`
 
 	for _, txData := range transactions {
@@ -776,6 +791,9 @@ func (w *Writer) insertTransactions(ctx context.Context, tx pgx.Tx, transactions
 			txData.SignaturesCount,
 			txData.NewAccount,
 			txData.RentFeeCharged,
+			txData.SorobanResourcesInstructions,
+			txData.SorobanResourcesReadBytes,
+			txData.SorobanResourcesWriteBytes,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to insert transaction %s: %w", txData.TransactionHash, err)

@@ -92,6 +92,9 @@ func (h *HotReader) QueryLedgers(ctx context.Context, start, end int64, limit in
 			ledger_range,
 			era_id,
 			version_label,
+			soroban_op_count,
+			total_fee_charged,
+			contract_events_count,
 			COALESCE(ingestion_timestamp, closed_at) as created_at
 		FROM ledgers_row_v2
 		WHERE sequence >= $1 AND sequence <= $2

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 	"net/http"
 	"time"
 )
@@ -323,6 +324,47 @@ func (h *NetworkStatsHandler) HandleNetworkStats(w http.ResponseWriter, r *http.
 	// If Bronze failed, fall back to hot/silver total
 	if stats.Accounts.Total == 0 {
 		stats.Accounts.Total = hotStats.Accounts.Total
+	}
+
+	// Fetch protocol_version and avg close time from bronze ledgers
+	if h.unifiedReader != nil {
+		schemas := []string{}
+		if h.unifiedReader.bronzeHotSchema != "" {
+			schemas = append(schemas, h.unifiedReader.bronzeHotSchema)
+		}
+		if h.unifiedReader.bronzeColdSchema != "" {
+			schemas = append(schemas, h.unifiedReader.bronzeColdSchema)
+		}
+		for _, schema := range schemas {
+			query := fmt.Sprintf("SELECT protocol_version FROM %s.ledgers_row_v2 ORDER BY sequence DESC LIMIT 1", schema)
+			var proto sql.NullInt64
+			err := h.unifiedReader.db.QueryRowContext(ctx, query).Scan(&proto)
+			if err != nil {
+				continue
+			}
+			if proto.Valid && proto.Int64 > 0 {
+				stats.Ledger.ProtocolVersion = int(proto.Int64)
+				break
+			}
+		}
+		for _, schema := range schemas {
+			// Compute avg close time: (max_time - min_time) / (count - 1) over recent ledgers
+			query := fmt.Sprintf(`
+				SELECT EXTRACT(EPOCH FROM MAX(closed_at) - MIN(closed_at)), COUNT(*)
+				FROM (SELECT closed_at FROM %s.ledgers_row_v2 ORDER BY sequence DESC LIMIT 100) sub
+			`, schema)
+			var diffSecs sql.NullFloat64
+			var cnt sql.NullInt64
+			err := h.unifiedReader.db.QueryRowContext(ctx, query).Scan(&diffSecs, &cnt)
+			if err != nil {
+				continue
+			}
+			if diffSecs.Valid && cnt.Valid && cnt.Int64 > 1 && diffSecs.Float64 > 0 {
+				avg := diffSecs.Float64 / float64(cnt.Int64-1)
+				stats.Ledger.AvgCloseTimeSeconds = math.Round(avg*100) / 100
+				break
+			}
+		}
 	}
 
 	// Fetch fee stats from bronze if unified reader available

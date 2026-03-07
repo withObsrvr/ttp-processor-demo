@@ -123,6 +123,9 @@ func (c *ColdReader) QueryLedgers(ctx context.Context, start, end int64, limit i
 			ledger_range,
 			era_id,
 			version_label,
+			soroban_op_count,
+			total_fee_charged,
+			contract_events_count,
 			ingestion_timestamp as created_at
 		FROM %s.%s.ledgers_row_v2
 		WHERE sequence >= ? AND sequence <= ?
