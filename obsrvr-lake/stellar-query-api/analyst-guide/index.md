@@ -145,6 +145,8 @@ The API automatically queries both hot and cold storage, merging results seamles
 - [Soroban Function Filter](./common-queries.md#get-soroban-operations-by-function) - Filter operations by contract and function
 
 **Fees & Statistics:**
+- [Bronze Network Stats](./common-queries.md#get-bronze-network-stats) - Freshest ledger data, 24h tx/op counts (no delay)
+- [Silver Network Stats](./common-queries.md#get-silver-network-stats) - Enriched stats with account counts, operation breakdowns
 - [Fee Statistics](./common-queries.md#get-fee-statistics) - Fee percentiles, surge detection, aggregate data
 - [Ledger Fee Distribution](./common-queries.md#get-ledger-fee-distribution) - Per-ledger fee histogram
 - [Transaction Summaries](./common-queries.md#get-transaction-summaries-batch) - Batch transaction lookup
