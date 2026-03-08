@@ -78,6 +78,43 @@ type SorobanNetStats struct {
 }
 
 // ============================================
+// BRONZE NETWORK STATS TYPES
+// ============================================
+
+// BronzeNetworkStats represents headline statistics from the bronze layer
+type BronzeNetworkStats struct {
+	GeneratedAt     string            `json:"generated_at"`
+	DataFreshness   string            `json:"data_freshness"`
+	Ledger          BronzeLedgerStats `json:"ledger"`
+	Transactions24h *BronzeTxStats24h `json:"transactions_24h,omitempty"`
+	Operations24h   *BronzeOpStats24h `json:"operations_24h,omitempty"`
+}
+
+// BronzeLedgerStats contains latest ledger info from bronze
+type BronzeLedgerStats struct {
+	LatestSequence      int64   `json:"latest_sequence"`
+	LatestHash          string  `json:"latest_hash,omitempty"`
+	ClosedAt            string  `json:"closed_at,omitempty"`
+	ProtocolVersion     int     `json:"protocol_version,omitempty"`
+	AvgCloseTimeSeconds float64 `json:"avg_close_time_seconds,omitempty"`
+}
+
+// BronzeTxStats24h contains 24-hour transaction stats from bronze
+type BronzeTxStats24h struct {
+	Total            int64 `json:"total"`
+	Successful       int64 `json:"successful"`
+	Failed           int64 `json:"failed"`
+	SorobanCount     int64 `json:"soroban_count"`
+	TotalFeesCharged int64 `json:"total_fees_charged"`
+}
+
+// BronzeOpStats24h contains 24-hour operation stats from bronze
+type BronzeOpStats24h struct {
+	Total          int64 `json:"total"`
+	SorobanOpCount int64 `json:"soroban_op_count"`
+}
+
+// ============================================
 // HOT READER METHODS
 // ============================================
 
@@ -433,6 +470,197 @@ func (h *NetworkStatsHandler) fetchFeeStats(ctx context.Context) *FeeStats24h {
 		// Surge detection: if median > base fee (100 stroops)
 		feeStats.SurgeActive = feeStats.MedianStroops > 100
 		return feeStats
+	}
+	return nil
+}
+
+// HandleBronzeNetworkStats returns headline network statistics from the bronze layer
+// GET /api/v1/bronze/stats/network
+func (h *NetworkStatsHandler) HandleBronzeNetworkStats(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	if h.unifiedReader == nil {
+		respondError(w, "bronze layer not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	stats := &BronzeNetworkStats{
+		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
+		DataFreshness: "real-time",
+	}
+
+	// Build ordered schema list: hot first, cold fallback
+	schemas := []string{}
+	if h.unifiedReader.bronzeHotSchema != "" {
+		schemas = append(schemas, h.unifiedReader.bronzeHotSchema)
+	}
+	if h.unifiedReader.bronzeColdSchema != "" {
+		schemas = append(schemas, h.unifiedReader.bronzeColdSchema)
+	}
+	if len(schemas) == 0 {
+		respondError(w, "no bronze schemas configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Query 1: Latest ledger — try hot first, fall back to cold
+	for _, schema := range schemas {
+		query := fmt.Sprintf(`SELECT sequence, ledger_hash, closed_at, protocol_version
+			FROM %s.ledgers_row_v2 ORDER BY sequence DESC LIMIT 1`, schema)
+		var seq sql.NullInt64
+		var hash sql.NullString
+		var closedAt sql.NullTime
+		var proto sql.NullInt64
+		err := h.unifiedReader.db.QueryRowContext(ctx, query).Scan(&seq, &hash, &closedAt, &proto)
+		if err != nil {
+			continue
+		}
+		if seq.Valid {
+			stats.Ledger.LatestSequence = seq.Int64
+		}
+		if hash.Valid {
+			stats.Ledger.LatestHash = hash.String
+		}
+		if closedAt.Valid {
+			stats.Ledger.ClosedAt = closedAt.Time.UTC().Format(time.RFC3339)
+		}
+		if proto.Valid {
+			stats.Ledger.ProtocolVersion = int(proto.Int64)
+		}
+		break
+	}
+
+	// Query 2: Avg close time from recent 100 ledgers — try hot first
+	for _, schema := range schemas {
+		query := fmt.Sprintf(`
+			SELECT EXTRACT(EPOCH FROM MAX(closed_at) - MIN(closed_at)), COUNT(*)
+			FROM (SELECT closed_at FROM %s.ledgers_row_v2 ORDER BY sequence DESC LIMIT 100) sub
+		`, schema)
+		var diffSecs sql.NullFloat64
+		var cnt sql.NullInt64
+		err := h.unifiedReader.db.QueryRowContext(ctx, query).Scan(&diffSecs, &cnt)
+		if err != nil {
+			continue
+		}
+		if diffSecs.Valid && cnt.Valid && cnt.Int64 > 1 && diffSecs.Float64 > 0 {
+			avg := diffSecs.Float64 / float64(cnt.Int64-1)
+			stats.Ledger.AvgCloseTimeSeconds = math.Round(avg*100) / 100
+			break
+		}
+	}
+
+	// Query 3: 24h transaction stats — UNION ALL across hot+cold
+	txStats := h.fetchBronzeTxStats24h(ctx, schemas)
+	if txStats != nil {
+		stats.Transactions24h = txStats
+	}
+
+	// Query 4: 24h operation stats — UNION ALL across hot+cold
+	opStats := h.fetchBronzeOpStats24h(ctx, schemas)
+	if opStats != nil {
+		stats.Operations24h = opStats
+	}
+
+	respondJSON(w, stats)
+}
+
+// fetchBronzeTxStats24h gets 24h transaction stats using UNION ALL across schemas
+func (h *NetworkStatsHandler) fetchBronzeTxStats24h(ctx context.Context, schemas []string) *BronzeTxStats24h {
+	// Try UNION ALL first if we have both schemas
+	if len(schemas) == 2 {
+		query := fmt.Sprintf(`
+			SELECT COUNT(*),
+			       SUM(CASE WHEN successful THEN 1 ELSE 0 END),
+			       SUM(fee_charged),
+			       COUNT(*) FILTER (WHERE soroban_resources_instructions IS NOT NULL)
+			FROM (
+				SELECT successful, fee_charged, soroban_resources_instructions
+				FROM %s.transactions_row_v2 WHERE created_at > NOW() - INTERVAL '24 hours'
+				UNION ALL
+				SELECT successful, fee_charged, soroban_resources_instructions
+				FROM %s.transactions_row_v2 WHERE created_at > NOW() - INTERVAL '24 hours'
+			) combined
+		`, schemas[0], schemas[1])
+		var total, successful, fees, soroban sql.NullInt64
+		err := h.unifiedReader.db.QueryRowContext(ctx, query).Scan(&total, &successful, &fees, &soroban)
+		if err == nil && total.Valid && total.Int64 > 0 {
+			return &BronzeTxStats24h{
+				Total:            total.Int64,
+				Successful:       successful.Int64,
+				Failed:           total.Int64 - successful.Int64,
+				SorobanCount:     soroban.Int64,
+				TotalFeesCharged: fees.Int64,
+			}
+		}
+	}
+
+	// Fallback: try each schema individually
+	for _, schema := range schemas {
+		query := fmt.Sprintf(`
+			SELECT COUNT(*),
+			       SUM(CASE WHEN successful THEN 1 ELSE 0 END),
+			       SUM(fee_charged),
+			       COUNT(*) FILTER (WHERE soroban_resources_instructions IS NOT NULL)
+			FROM %s.transactions_row_v2
+			WHERE created_at > NOW() - INTERVAL '24 hours'
+		`, schema)
+		var total, successful, fees, soroban sql.NullInt64
+		err := h.unifiedReader.db.QueryRowContext(ctx, query).Scan(&total, &successful, &fees, &soroban)
+		if err != nil {
+			continue
+		}
+		if total.Valid && total.Int64 > 0 {
+			return &BronzeTxStats24h{
+				Total:            total.Int64,
+				Successful:       successful.Int64,
+				Failed:           total.Int64 - successful.Int64,
+				SorobanCount:     soroban.Int64,
+				TotalFeesCharged: fees.Int64,
+			}
+		}
+	}
+	return nil
+}
+
+// fetchBronzeOpStats24h gets 24h operation stats using UNION ALL across schemas
+func (h *NetworkStatsHandler) fetchBronzeOpStats24h(ctx context.Context, schemas []string) *BronzeOpStats24h {
+	// Try UNION ALL first if we have both schemas
+	if len(schemas) == 2 {
+		query := fmt.Sprintf(`
+			SELECT SUM(operation_count), SUM(soroban_op_count)
+			FROM (
+				SELECT operation_count, soroban_op_count FROM %s.ledgers_row_v2 WHERE closed_at > NOW() - INTERVAL '24 hours'
+				UNION ALL
+				SELECT operation_count, soroban_op_count FROM %s.ledgers_row_v2 WHERE closed_at > NOW() - INTERVAL '24 hours'
+			) combined
+		`, schemas[0], schemas[1])
+		var total, soroban sql.NullInt64
+		err := h.unifiedReader.db.QueryRowContext(ctx, query).Scan(&total, &soroban)
+		if err == nil && total.Valid && total.Int64 > 0 {
+			return &BronzeOpStats24h{
+				Total:          total.Int64,
+				SorobanOpCount: soroban.Int64,
+			}
+		}
+	}
+
+	// Fallback: try each schema individually
+	for _, schema := range schemas {
+		query := fmt.Sprintf(`
+			SELECT SUM(operation_count), SUM(soroban_op_count)
+			FROM %s.ledgers_row_v2
+			WHERE closed_at > NOW() - INTERVAL '24 hours'
+		`, schema)
+		var total, soroban sql.NullInt64
+		err := h.unifiedReader.db.QueryRowContext(ctx, query).Scan(&total, &soroban)
+		if err != nil {
+			continue
+		}
+		if total.Valid && total.Int64 > 0 {
+			return &BronzeOpStats24h{
+				Total:          total.Int64,
+				SorobanOpCount: soroban.Int64,
+			}
+		}
 	}
 	return nil
 }
