@@ -1990,9 +1990,53 @@ curl -H "Authorization: Api-Key $API_KEY" \
 
 ### Network Statistics
 
-#### Get Network Stats
+#### Get Bronze Network Stats
 
-Returns headline network statistics.
+Returns headline network statistics directly from the bronze layer (raw ledger data). This endpoint has the freshest data with no polling delay — ideal for monitoring the latest ledger, protocol version, and real-time network activity.
+
+```bash
+GET /api/v1/bronze/stats/network
+```
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/bronze/stats/network"
+```
+
+**Response:**
+```json
+{
+  "generated_at": "2026-03-08T12:00:00Z",
+  "data_freshness": "real-time",
+  "ledger": {
+    "latest_sequence": 1381515,
+    "latest_hash": "abc123...",
+    "closed_at": "2026-03-08T11:59:55Z",
+    "protocol_version": 22,
+    "avg_close_time_seconds": 5.02
+  },
+  "transactions_24h": {
+    "total": 12345,
+    "successful": 12000,
+    "failed": 345,
+    "soroban_count": 5000,
+    "total_fees_charged": 987654
+  },
+  "operations_24h": {
+    "total": 45000,
+    "soroban_op_count": 8000
+  }
+}
+```
+
+> **When to use bronze vs silver stats:** Use bronze stats when you need the absolute latest ledger sequence or close time (e.g., polling for new ledgers). Use silver stats when you need enriched data like account counts, operation breakdowns by type, or active contract counts.
+
+---
+
+#### Get Silver Network Stats
+
+Returns headline network statistics from the silver layer with enriched analytics.
 
 ```bash
 GET /api/v1/silver/stats/network
