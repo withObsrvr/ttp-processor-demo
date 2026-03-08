@@ -160,7 +160,7 @@ docs/duckdb-appender-api-guide.md
 docs/shape-up-ducklake-ingestion-obsrvr-v2.md
 docs/v2-*.md
 manifest*.json
-docs/
+
 !stellar-query-api/docs/analyst-guide
 *GUIDE.md
 shape-up/
@@ -290,3 +290,18 @@ obsrvr-lake/stellar-query-api/SILVER_API_DOCUMENTATION.md
 duckdb-consumer/bin/duckdb-consumer
 obsrvr-lake/silver-cold-flusher/go/silver-cold-flusher
 obsrvr-lake/stellar-postgres-ingester/go/backfill-token-metadata
+docs/API_REFERENCE.md
+docs/ARCHITECTURE_PIVOT.md
+docs/CUSTOMER_DATA_OPTIONS.md
+docs/CUSTOMER_MIGRATION_EXAMPLE.md
+docs/GOLD_LAYER_PATTERNS.md
+docs/HOSTED_PIPELINE_ARCHITECTURE.md
+docs/MULTI_TENANT_GOLD_ARCHITECTURE.md
+docs/PIPELINE_ARCHITECTURE_SUMMARY.md
+docs/PIVOT_ACTION_PLAN.md
+docs/README.md
+ducklake-ingestion-obsrvr-v2/docs/INCREMENTAL_VERSIONING_IMPLEMENTATION.md
+ducklake-ingestion-obsrvr-v2/docs/PROTOCOL_25_UPGRADE_RUNBOOK.md
+ducklake-ingestion-obsrvr-v2/docs/STELLAR_EVENTS_RECONCILIATION_RUNBOOK.md
+obsrvr-lake/docs/shapeup/README.md
+obsrvr-lake/docs/shapeup/CULTURE_ALIGNMENT_BET_TABLE.md

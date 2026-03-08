@@ -1,0 +1,4428 @@
+basePath: /
+definitions:
+  main.AccountBalancesResponse:
+    properties:
+      account_id:
+        type: string
+      balances:
+        items:
+          $ref: '#/definitions/main.Balance'
+        type: array
+      total_balances:
+        type: integer
+    type: object
+  main.AccountSigner:
+    properties:
+      key:
+        type: string
+      sponsor:
+        type: string
+      type:
+        type: string
+      weight:
+        type: integer
+    type: object
+  main.AccountSignersResponse:
+    properties:
+      account_id:
+        type: string
+      signers:
+        items:
+          $ref: '#/definitions/main.AccountSigner'
+        type: array
+      thresholds:
+        properties:
+          high_threshold:
+            type: integer
+          low_threshold:
+            type: integer
+          med_threshold:
+            type: integer
+        type: object
+    type: object
+  main.ArchiveArtifact:
+    properties:
+      checksum:
+        type: string
+      generated_at:
+        type: string
+      name:
+        type: string
+      row_count:
+        type: integer
+      snapshot_at:
+        type: string
+      type:
+        description: transactions, balance_snapshot, supply_timeline, manifest
+        type: string
+    type: object
+  main.ArchiveLineageEntry:
+    properties:
+      archive_id:
+        type: string
+      artifacts_count:
+        type: integer
+      asset_code:
+        type: string
+      asset_issuer:
+        type: string
+      checksums:
+        additionalProperties:
+          type: string
+        type: object
+      generated_at:
+        type: string
+      methodology_version:
+        type: string
+      period_end:
+        type: string
+      period_start:
+        type: string
+      status:
+        type: string
+    type: object
+  main.AssetInfo:
+    properties:
+      code:
+        type: string
+      issuer:
+        type: string
+      type:
+        type: string
+    type: object
+  main.AssetListResponse:
+    properties:
+      assets:
+        items:
+          $ref: '#/definitions/main.AssetSummary'
+        type: array
+      cursor:
+        type: string
+      generated_at:
+        type: string
+      has_more:
+        type: boolean
+      total_assets:
+        type: integer
+    type: object
+  main.AssetSummary:
+    properties:
+      asset_code:
+        type: string
+      asset_issuer:
+        type: string
+      asset_type:
+        type: string
+      circulating_supply:
+        type: string
+      first_seen:
+        type: string
+      holder_count:
+        type: integer
+      last_activity:
+        type: string
+      top_10_concentration:
+        type: number
+      transfers_24h:
+        type: integer
+      volume_24h:
+        type: string
+    type: object
+  main.BronzeLedgerStats:
+    properties:
+      avg_close_time_seconds:
+        type: number
+      closed_at:
+        type: string
+      latest_hash:
+        type: string
+      latest_sequence:
+        type: integer
+      protocol_version:
+        type: integer
+    type: object
+  main.BronzeNetworkStats:
+    properties:
+      data_freshness:
+        type: string
+      generated_at:
+        type: string
+      ledger:
+        $ref: '#/definitions/main.BronzeLedgerStats'
+      operations_24h:
+        $ref: '#/definitions/main.BronzeOpStats24h'
+      transactions_24h:
+        $ref: '#/definitions/main.BronzeTxStats24h'
+    type: object
+  main.BronzeOpStats24h:
+    properties:
+      soroban_op_count:
+        type: integer
+      total:
+        type: integer
+    type: object
+  main.BronzeTxStats24h:
+    properties:
+      failed:
+        type: integer
+      soroban_count:
+        type: integer
+      successful:
+        type: integer
+      total:
+        type: integer
+      total_fees_charged:
+        type: integer
+    type: object
+  main.Balance:
+    properties:
+      asset_code:
+        type: string
+      asset_issuer:
+        type: string
+      asset_type:
+        type: string
+      balance:
+        type: string
+      balance_stroops:
+        type: integer
+      is_authorized:
+        type: boolean
+      limit:
+        type: string
+    type: object
+  main.BatchAccountsRequest:
+    properties:
+      account_ids:
+        items:
+          type: string
+        type: array
+      timestamp:
+        type: string
+    type: object
+  main.ContractCallSummary:
+    properties:
+      contract_id:
+        type: string
+      first_seen:
+        type: string
+      last_seen:
+        type: string
+      total_calls_as_callee:
+        type: integer
+      total_calls_as_caller:
+        type: integer
+      unique_callees:
+        type: integer
+      unique_callers:
+        type: integer
+    type: object
+  main.ContractMetadataResponse:
+    properties:
+      contract_id:
+        type: string
+      created_at:
+        type: string
+      created_ledger:
+        type: integer
+      creator_address:
+        type: string
+      exported_functions:
+        items:
+          $ref: '#/definitions/main.FunctionCallCount'
+        type: array
+      n_exports:
+        type: integer
+      n_functions:
+        type: integer
+      n_instructions:
+        type: integer
+      persistent_entries:
+        type: integer
+      total_entries:
+        type: integer
+      wasm_hash:
+        type: string
+    type: object
+  main.DecodedOperation:
+    properties:
+      amount:
+        type: string
+      arguments_json:
+        type: string
+      asset_code:
+        type: string
+      contract_id:
+        type: string
+      destination:
+        type: string
+      function_name:
+        type: string
+      index:
+        type: integer
+      is_soroban_op:
+        type: boolean
+      source_account:
+        type: string
+      type:
+        type: integer
+      type_name:
+        type: string
+    type: object
+  main.DecodedScVal:
+    properties:
+      display:
+        type: string
+      type:
+        type: string
+      value: {}
+    type: object
+  main.DecodedTransaction:
+    properties:
+      account_sequence:
+        type: integer
+      closed_at:
+        type: string
+      events:
+        items:
+          $ref: '#/definitions/main.UnifiedEvent'
+        type: array
+      fee:
+        type: integer
+      ledger_sequence:
+        type: integer
+      operation_count:
+        type: integer
+      operations:
+        items:
+          $ref: '#/definitions/main.DecodedOperation'
+        type: array
+      soroban_resources_instructions:
+        type: integer
+      soroban_resources_read_bytes:
+        type: integer
+      soroban_resources_write_bytes:
+        type: integer
+      source_account:
+        description: Supplementary fields from bronze transactions_row_v2
+        type: string
+      successful:
+        type: boolean
+      summary:
+        $ref: '#/definitions/main.TxSummary'
+      tx_hash:
+        type: string
+    type: object
+  main.FeeBucket:
+    properties:
+      count:
+        type: integer
+      range:
+        type: string
+    type: object
+  main.FeeStatsResponse:
+    properties:
+      generated_at:
+        type: string
+      max_fee:
+        type: integer
+      median_fee:
+        type: integer
+      min_fee:
+        type: integer
+      p75_fee:
+        type: integer
+      p90_fee:
+        type: integer
+      p99_fee:
+        type: integer
+      period:
+        type: string
+      surge_active:
+        type: boolean
+      surge_pct_of_ledgers:
+        type: number
+      total_fees:
+        type: integer
+      tx_count:
+        type: integer
+    type: object
+  main.FullArchiveRequest:
+    properties:
+      asset_code:
+        type: string
+      asset_issuer:
+        type: string
+      balance_snapshots:
+        description: specific dates for balance snapshots
+        items:
+          type: string
+        type: array
+      end_date:
+        type: string
+      format:
+        description: '"json" or "csv"'
+        type: string
+      include:
+        description: '["transactions", "balances", "supply"]'
+        items:
+          type: string
+        type: array
+      start_date:
+        type: string
+    type: object
+  main.FullArchiveResponse:
+    properties:
+      archive_id:
+        type: string
+      callback_url:
+        type: string
+      created_at:
+        type: string
+      estimated_completion:
+        type: string
+      status:
+        type: string
+    type: object
+  main.FullArchiveStatusResponse:
+    properties:
+      archive_id:
+        type: string
+      artifacts:
+        items:
+          $ref: '#/definitions/main.ArchiveArtifact'
+        type: array
+      asset:
+        $ref: '#/definitions/main.AssetInfo'
+      completed_at:
+        type: string
+      created_at:
+        type: string
+      error:
+        type: string
+      methodology_version:
+        type: string
+      period:
+        $ref: '#/definitions/main.PeriodInfo'
+      status:
+        type: string
+    type: object
+  main.FunctionCallCount:
+    properties:
+      call_count:
+        type: integer
+      name:
+        type: string
+    type: object
+  main.LatestPrice:
+    properties:
+      base_asset:
+        type: string
+      counter_asset:
+        type: string
+      price:
+        type: number
+      timestamp:
+        type: string
+      trade_count_24h:
+        type: integer
+      volume_24h:
+        type: number
+    type: object
+  main.LedgerFeesResponse:
+    properties:
+      generated_at:
+        type: string
+      histogram:
+        items:
+          $ref: '#/definitions/main.FeeBucket'
+        type: array
+      ledger_sequence:
+        type: integer
+      max_fee:
+        type: integer
+      median_fee:
+        type: integer
+      min_fee:
+        type: integer
+      p90_fee:
+        type: integer
+      total_fees:
+        type: integer
+      tx_count:
+        type: integer
+    type: object
+  main.LineageResponse:
+    properties:
+      archives:
+        items:
+          $ref: '#/definitions/main.ArchiveLineageEntry'
+        type: array
+      count:
+        type: integer
+      generated_at:
+        type: string
+    type: object
+  main.PeriodInfo:
+    properties:
+      end:
+        type: string
+      end_ledger:
+        type: integer
+      start:
+        type: string
+      start_ledger:
+        type: integer
+    type: object
+  main.SEP41TokenMetadata:
+    properties:
+      asset_code:
+        type: string
+      asset_issuer:
+        type: string
+      contract_id:
+        type: string
+      decimals:
+        type: integer
+      first_seen:
+        type: string
+      holder_count:
+        type: integer
+      last_activity:
+        type: string
+      name:
+        type: string
+      source_type:
+        description: classic or soroban
+        type: string
+      symbol:
+        type: string
+      token_type:
+        description: sac or custom_soroban
+        type: string
+      transfer_count:
+        type: integer
+    type: object
+  main.SEP41TokenStats:
+    properties:
+      asset_code:
+        type: string
+      contract_id:
+        type: string
+      decimals:
+        type: integer
+      holder_count:
+        type: integer
+      name:
+        type: string
+      symbol:
+        type: string
+      token_type:
+        type: string
+      total_supply:
+        type: string
+      total_supply_raw:
+        type: integer
+      transfers_24h:
+        type: integer
+      volume_24h:
+        type: string
+      volume_24h_raw:
+        type: integer
+    type: object
+  main.SearchResult:
+    properties:
+      details: {}
+      id:
+        type: string
+      label:
+        type: string
+      type:
+        type: string
+    type: object
+  main.SearchResults:
+    properties:
+      query:
+        type: string
+      results:
+        items:
+          $ref: '#/definitions/main.SearchResult'
+        type: array
+    type: object
+  main.SmartWalletInfo:
+    properties:
+      contract_id:
+        type: string
+      has_check_auth:
+        type: boolean
+      is_smart_wallet:
+        type: boolean
+      signer_count:
+        type: integer
+      signers:
+        items:
+          type: string
+        type: array
+    type: object
+  main.SorobanContractStats:
+    properties:
+      active_7d:
+        type: integer
+      active_24h:
+        type: integer
+      total_deployed:
+        type: integer
+    type: object
+  main.SorobanExecutionStats:
+    properties:
+      avg_cpu_insns:
+        type: integer
+      rent_burned_24h_stroops:
+        type: integer
+      total_cpu_insns:
+        type: integer
+      total_invocations_24h:
+        type: integer
+    type: object
+  main.SorobanStateStats:
+    properties:
+      persistent_entries:
+        type: integer
+      temporary_entries:
+        type: integer
+    type: object
+  main.SorobanStatsResponse:
+    properties:
+      contracts:
+        $ref: '#/definitions/main.SorobanContractStats'
+      execution:
+        $ref: '#/definitions/main.SorobanExecutionStats'
+      generated_at:
+        type: string
+      state:
+        $ref: '#/definitions/main.SorobanStateStats'
+    type: object
+  main.SwapDetail:
+    properties:
+      bought_amount:
+        type: string
+      bought_asset:
+        type: string
+      router:
+        type: string
+      sold_amount:
+        type: string
+      sold_asset:
+        type: string
+      trader:
+        type: string
+    type: object
+  main.TokenHolder:
+    properties:
+      account_id:
+        type: string
+      balance:
+        type: string
+      balance_stroops:
+        type: integer
+      rank:
+        type: integer
+    type: object
+  main.TokenHoldersResponse:
+    properties:
+      asset:
+        $ref: '#/definitions/main.AssetInfo'
+      cursor:
+        type: string
+      has_more:
+        type: boolean
+      holders:
+        items:
+          $ref: '#/definitions/main.TokenHolder'
+        type: array
+      total_holders:
+        type: integer
+    type: object
+  main.TokenStats:
+    properties:
+      circulating_supply:
+        description: Total supply in circulation
+        type: string
+      top_10_concentration:
+        description: Fraction held by top 10 holders
+        type: number
+      total_holders:
+        description: Accounts with balance > 0
+        type: integer
+      total_trustlines:
+        description: All trustlines (including 0 balance)
+        type: integer
+      transfers_24h:
+        description: Transfer count in last 24h
+        type: integer
+      unique_accounts_24h:
+        description: Unique accounts in last 24h
+        type: integer
+      volume_24h:
+        description: Transfer volume in last 24h
+        type: string
+    type: object
+  main.TokenStatsResponse:
+    properties:
+      asset:
+        $ref: '#/definitions/main.AssetInfo'
+      generated_at:
+        type: string
+      stats:
+        $ref: '#/definitions/main.TokenStats'
+    type: object
+  main.TransferDetail:
+    properties:
+      amount:
+        type: string
+      asset:
+        type: string
+      from:
+        type: string
+      to:
+        type: string
+    type: object
+  main.TxBalanceChange:
+    properties:
+      address:
+        type: string
+      after:
+        type: string
+      asset_code:
+        type: string
+      asset_issuer:
+        type: string
+      asset_type:
+        type: string
+      before:
+        type: string
+      delta:
+        type: string
+    type: object
+  main.TxDiffs:
+    properties:
+      balance_changes:
+        items:
+          $ref: '#/definitions/main.TxBalanceChange'
+        type: array
+      ledger_sequence:
+        type: integer
+      state_changes:
+        items:
+          $ref: '#/definitions/main.TxStateChange'
+        type: array
+      tx_hash:
+        type: string
+    type: object
+  main.TxLocation:
+    properties:
+      closed_at:
+        type: string
+      indexed_at:
+        type: string
+      ledger_range:
+        type: integer
+      ledger_sequence:
+        type: integer
+      operation_count:
+        type: integer
+      successful:
+        type: boolean
+      tx_hash:
+        type: string
+    type: object
+  main.TxStateChange:
+    properties:
+      after:
+        type: string
+      before:
+        type: string
+      entry_type:
+        type: string
+      key:
+        type: string
+      type:
+        type: string
+    type: object
+  main.TxSummary:
+    properties:
+      burn:
+        $ref: '#/definitions/main.TransferDetail'
+      description:
+        type: string
+      involved_contracts:
+        items:
+          type: string
+        type: array
+      mint:
+        $ref: '#/definitions/main.TransferDetail'
+      swap:
+        $ref: '#/definitions/main.SwapDetail'
+      transfer:
+        $ref: '#/definitions/main.TransferDetail'
+      type:
+        description: transfer, mint, burn, swap, contract_call, classic
+        type: string
+    type: object
+  main.UnifiedEvent:
+    properties:
+      amount:
+        type: string
+      asset_code:
+        type: string
+      asset_issuer:
+        type: string
+      closed_at:
+        type: string
+      contract_id:
+        type: string
+      event_id:
+        type: string
+      event_index:
+        type: integer
+      event_type:
+        description: transfer, mint, burn
+        type: string
+      from:
+        type: string
+      ledger_sequence:
+        type: integer
+      operation_type:
+        type: integer
+      source_type:
+        description: classic, soroban
+        type: string
+      to:
+        type: string
+      tx_hash:
+        type: string
+    type: object
+host: gateway.withobsrvr.com
+info:
+  contact:
+    email: support@obsrvr.com
+    name: OBSRVR Team
+    url: https://obsrvr.com
+  description: |-
+    API for querying Stellar blockchain data across Bronze, Silver, and Gold data layers.
+
+    ## Data Layers
+    - **Bronze**: Raw blockchain data (ledgers, transactions, operations, effects)
+    - **Silver**: Enriched and processed data (accounts, assets, transfers, trades)
+    - **Gold**: Analytical views (snapshots, compliance reports)
+    - **Index Plane**: Fast lookup services (transaction hash, contract events)
+
+    ## Amount Formatting
+    All amounts are returned in decimal format with 7 decimal places (Stellar stroops conversion).
+    Example: Raw stroops `10000000` is formatted as `"1.0000000"`
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0.html
+  title: Stellar Query API
+  version: "1.0"
+paths:
+  /api/v1/bronze/accounts:
+    get:
+      consumes:
+      - application/json
+      description: Returns raw account snapshots from hot and cold storage for a given
+        account ID
+      parameters:
+      - description: Stellar account ID (G...)
+        in: query
+        name: account_id
+        required: true
+        type: string
+      - description: Maximum results to return
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Account data
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get raw account data
+      tags:
+      - Bronze
+  /api/v1/bronze/contract_events:
+    get:
+      consumes:
+      - application/json
+      description: Returns raw Soroban contract event data from hot and cold storage
+        for a given ledger sequence range
+      parameters:
+      - description: Start ledger sequence
+        in: query
+        name: start
+        required: true
+        type: integer
+      - description: End ledger sequence
+        in: query
+        name: end
+        required: true
+        type: integer
+      - description: Maximum results to return
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Contract event data
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get raw contract events
+      tags:
+      - Bronze
+  /api/v1/bronze/effects:
+    get:
+      consumes:
+      - application/json
+      description: Returns raw effect data from hot and cold storage for a given ledger
+        sequence range
+      parameters:
+      - description: Start ledger sequence
+        in: query
+        name: start
+        required: true
+        type: integer
+      - description: End ledger sequence
+        in: query
+        name: end
+        required: true
+        type: integer
+      - description: Maximum results to return
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Effect data
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get raw effects
+      tags:
+      - Bronze
+  /api/v1/bronze/ledgers:
+    get:
+      consumes:
+      - application/json
+      description: Returns raw ledger data from hot and cold storage for a given sequence
+        range
+      parameters:
+      - description: Start ledger sequence
+        in: query
+        name: start
+        required: true
+        type: integer
+      - description: End ledger sequence
+        in: query
+        name: end
+        required: true
+        type: integer
+      - description: Maximum results to return
+        in: query
+        name: limit
+        type: integer
+      - description: 'Sort order: sequence_asc (default), sequence_desc, closed_at_asc,
+          closed_at_desc, tx_count_desc'
+        in: query
+        name: sort
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Ledger data with source info
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get raw ledgers
+      tags:
+      - Bronze
+  /api/v1/bronze/offers:
+    get:
+      consumes:
+      - application/json
+      description: Returns raw DEX offer data from hot and cold storage for a given
+        seller ID
+      parameters:
+      - description: Seller account ID (G...)
+        in: query
+        name: seller_id
+        required: true
+        type: string
+      - description: Maximum results to return
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Offer data
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get raw offers
+      tags:
+      - Bronze
+  /api/v1/bronze/operations:
+    get:
+      consumes:
+      - application/json
+      description: Returns raw operation data from hot and cold storage for a given
+        ledger sequence range
+      parameters:
+      - description: Start ledger sequence
+        in: query
+        name: start
+        required: true
+        type: integer
+      - description: End ledger sequence
+        in: query
+        name: end
+        required: true
+        type: integer
+      - description: Maximum results to return
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Operation data
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get raw operations
+      tags:
+      - Bronze
+  /api/v1/bronze/trades:
+    get:
+      consumes:
+      - application/json
+      description: Returns raw DEX trade data from hot and cold storage for a given
+        ledger sequence range
+      parameters:
+      - description: Start ledger sequence
+        in: query
+        name: start
+        required: true
+        type: integer
+      - description: End ledger sequence
+        in: query
+        name: end
+        required: true
+        type: integer
+      - description: Maximum results to return
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Trade data
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get raw trades
+      tags:
+      - Bronze
+  /api/v1/bronze/transactions:
+    get:
+      consumes:
+      - application/json
+      description: Returns raw transaction data from hot and cold storage for a given
+        ledger sequence range
+      parameters:
+      - description: Start ledger sequence
+        in: query
+        name: start
+        required: true
+        type: integer
+      - description: End ledger sequence
+        in: query
+        name: end
+        required: true
+        type: integer
+      - description: Maximum results to return
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Transaction data
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get raw transactions
+      tags:
+      - Bronze
+  /api/v1/bronze/trustlines:
+    get:
+      consumes:
+      - application/json
+      description: Returns raw trustline data from hot and cold storage for a given
+        account ID
+      parameters:
+      - description: Stellar account ID (G...)
+        in: query
+        name: account_id
+        required: true
+        type: string
+      - description: Maximum results to return
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Trustline data
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get raw trustlines
+      tags:
+      - Bronze
+  /api/v1/bronze/stats/network:
+    get:
+      consumes:
+      - application/json
+      description: Returns headline network statistics directly from the bronze layer
+        with no polling delay. Includes latest ledger info, 24h transaction and operation
+        counts.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Bronze network statistics
+          schema:
+            $ref: '#/definitions/main.BronzeNetworkStats'
+        "503":
+          description: Bronze layer not configured
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get bronze network statistics
+      tags:
+      - Bronze
+      - Statistics
+  /api/v1/gold/compliance/archive:
+    post:
+      consumes:
+      - application/json
+      description: Creates an async archive job for comprehensive compliance data
+        export with methodology documentation
+      parameters:
+      - description: Archive job request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/main.FullArchiveRequest'
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Archive job created
+          schema:
+            $ref: '#/definitions/main.FullArchiveResponse'
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "405":
+          description: Method not allowed
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Create full compliance archive job
+      tags:
+      - Compliance
+  /api/v1/gold/compliance/archive/{id}:
+    get:
+      consumes:
+      - application/json
+      description: Returns the current status and artifacts of an archive job
+      parameters:
+      - description: Archive job ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Archive job status
+          schema:
+            $ref: '#/definitions/main.FullArchiveStatusResponse'
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Archive not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get archive job status
+      tags:
+      - Compliance
+  /api/v1/gold/compliance/archive/{id}/download/{artifact}:
+    get:
+      consumes:
+      - application/json
+      description: Downloads specific artifacts from a completed archive (methodology.md,
+        manifest.json)
+      parameters:
+      - description: Archive job ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Artifact name (methodology.md, manifest.json)
+        in: path
+        name: artifact
+        required: true
+        type: string
+      produces:
+      - application/octet-stream
+      responses:
+        "200":
+          description: Artifact file download
+          schema:
+            type: file
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Archive or artifact not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Download archive artifact
+      tags:
+      - Compliance
+  /api/v1/gold/compliance/balances:
+    get:
+      consumes:
+      - application/json
+      description: Returns all holders of an asset at a specific timestamp (supports
+        JSON, CSV, Parquet export)
+      parameters:
+      - description: Asset code (e.g., USDC, XLM)
+        in: query
+        name: asset_code
+        required: true
+        type: string
+      - description: Asset issuer account ID (required for non-native assets)
+        in: query
+        name: asset_issuer
+        type: string
+      - description: 'Point in time: RFC3339 (2025-12-31T23:59:59Z) or date (2025-12-31)'
+        in: query
+        name: timestamp
+        required: true
+        type: string
+      - description: Minimum balance filter (in stroops)
+        in: query
+        name: min_balance
+        type: string
+      - description: 'Maximum results to return (default: 1000, max: 10000)'
+        in: query
+        name: limit
+        type: integer
+      - description: 'Output format: json (default), csv, parquet'
+        in: query
+        name: format
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Balance archive data
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get asset balance archive at timestamp
+      tags:
+      - Compliance
+  /api/v1/gold/compliance/lineage:
+    get:
+      consumes:
+      - application/json
+      description: Returns audit trail of completed archives for an asset
+      parameters:
+      - description: Filter by asset code
+        in: query
+        name: asset_code
+        type: string
+      - description: Filter by asset issuer
+        in: query
+        name: asset_issuer
+        type: string
+      - description: 'Maximum results to return (default: 50, max: 100)'
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Archive lineage data
+          schema:
+            $ref: '#/definitions/main.LineageResponse'
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get archive lineage
+      tags:
+      - Compliance
+  /api/v1/gold/compliance/supply:
+    get:
+      consumes:
+      - application/json
+      description: Returns daily/weekly/monthly supply totals for an asset over a
+        date range
+      parameters:
+      - description: Asset code (e.g., USDC, XLM)
+        in: query
+        name: asset_code
+        required: true
+        type: string
+      - description: Asset issuer account ID (required for non-native assets)
+        in: query
+        name: asset_issuer
+        type: string
+      - description: Start date (YYYY-MM-DD format)
+        in: query
+        name: start_date
+        required: true
+        type: string
+      - description: End date (YYYY-MM-DD format)
+        in: query
+        name: end_date
+        required: true
+        type: string
+      - description: 'Time interval: day (default), week, month'
+        in: query
+        name: interval
+        type: string
+      - description: 'Output format: json (default), csv, parquet'
+        in: query
+        name: format
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Supply timeline data
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get asset supply timeline
+      tags:
+      - Compliance
+  /api/v1/gold/compliance/transactions:
+    get:
+      consumes:
+      - application/json
+      description: Returns transaction lineage for an asset within a date range (supports
+        JSON, CSV, Parquet export)
+      parameters:
+      - description: Asset code (e.g., USDC, XLM)
+        in: query
+        name: asset_code
+        required: true
+        type: string
+      - description: Asset issuer account ID (required for non-native assets)
+        in: query
+        name: asset_issuer
+        type: string
+      - description: Start date (YYYY-MM-DD format)
+        in: query
+        name: start_date
+        required: true
+        type: string
+      - description: End date (YYYY-MM-DD format)
+        in: query
+        name: end_date
+        required: true
+        type: string
+      - description: 'Include failed transactions (default: false)'
+        in: query
+        name: include_failed
+        type: boolean
+      - description: 'Maximum results to return (default: 1000, max: 10000)'
+        in: query
+        name: limit
+        type: integer
+      - description: 'Output format: json (default), csv, parquet'
+        in: query
+        name: format
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Transaction archive data
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get asset transaction archive
+      tags:
+      - Compliance
+  /api/v1/gold/snapshots/account:
+    get:
+      consumes:
+      - application/json
+      description: Returns the state of an account at a specific point in time (point-in-time
+        query)
+      parameters:
+      - description: Stellar account ID (G...)
+        in: query
+        name: account_id
+        required: true
+        type: string
+      - description: 'Point in time: RFC3339 (2025-12-31T23:59:59Z) or date (2025-12-31)'
+        in: query
+        name: timestamp
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Account state at timestamp
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get account snapshot at timestamp
+      tags:
+      - Gold
+  /api/v1/gold/snapshots/accounts/batch:
+    post:
+      consumes:
+      - application/json
+      description: Returns state for multiple accounts (up to 100) at a specific point
+        in time
+      parameters:
+      - description: Batch request with account IDs and timestamp
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/main.BatchAccountsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Account states at timestamp
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get batch account snapshots at timestamp
+      tags:
+      - Gold
+  /api/v1/gold/snapshots/balance:
+    get:
+      consumes:
+      - application/json
+      description: Returns all holders of an asset at a specific point in time with
+        their balances
+      parameters:
+      - description: Asset code (e.g., USDC, XLM)
+        in: query
+        name: asset_code
+        required: true
+        type: string
+      - description: Asset issuer account ID (required for non-native assets)
+        in: query
+        name: asset_issuer
+        type: string
+      - description: 'Point in time: RFC3339 (2025-12-31T23:59:59Z) or date (2025-12-31)'
+        in: query
+        name: timestamp
+        required: true
+        type: string
+      - description: 'Maximum results to return (default: 1000, max: 10000)'
+        in: query
+        name: limit
+        type: integer
+      - description: Minimum balance filter (in stroops)
+        in: query
+        name: min_balance
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: List of asset holders at timestamp
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get asset holders at timestamp
+      tags:
+      - Gold
+  /api/v1/gold/snapshots/portfolio:
+    get:
+      consumes:
+      - application/json
+      description: Returns all asset balances for an account at a specific point in
+        time (point-in-time query)
+      parameters:
+      - description: Stellar account ID (G...)
+        in: query
+        name: account_id
+        required: true
+        type: string
+      - description: 'Point in time: RFC3339 (2025-12-31T23:59:59Z) or date (2025-12-31)'
+        in: query
+        name: timestamp
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Portfolio balances at timestamp
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get portfolio snapshot at timestamp
+      tags:
+      - Gold
+  /api/v1/index/contracts/{contract_id}/ledgers:
+    get:
+      consumes:
+      - application/json
+      description: Returns list of ledger sequences containing events from a specific
+        contract
+      parameters:
+      - description: Contract ID (C... address or 64-char hex hash)
+        in: path
+        name: contract_id
+        required: true
+        type: string
+      - description: Minimum ledger sequence filter
+        in: query
+        name: start_ledger
+        type: integer
+      - description: Maximum ledger sequence filter
+        in: query
+        name: end_ledger
+        type: integer
+      - description: 'Maximum results to return (default: 1000, max: 10000)'
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: List of ledger sequences
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get ledgers with contract events
+      tags:
+      - ContractIndex
+  /api/v1/index/contracts/{contract_id}/summary:
+    get:
+      consumes:
+      - application/json
+      description: Returns detailed event summary for a contract including event types
+        and counts
+      parameters:
+      - description: Contract ID (C... address or 64-char hex hash)
+        in: path
+        name: contract_id
+        required: true
+        type: string
+      - description: Minimum ledger sequence filter
+        in: query
+        name: start_ledger
+        type: integer
+      - description: Maximum ledger sequence filter
+        in: query
+        name: end_ledger
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Contract event summary
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get contract event summary
+      tags:
+      - ContractIndex
+  /api/v1/index/contracts/health:
+    get:
+      consumes:
+      - application/json
+      description: Returns Contract Event Index health status and coverage statistics
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Index health status and statistics
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get Contract Index health
+      tags:
+      - ContractIndex
+  /api/v1/index/contracts/lookup:
+    post:
+      consumes:
+      - application/json
+      description: Lookup ledger activity for up to 100 contracts in a single request
+      parameters:
+      - description: Request body with contract_ids array
+        in: body
+        name: request
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Batch lookup results
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "405":
+          description: Method not allowed (POST required)
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Batch lookup contracts
+      tags:
+      - ContractIndex
+  /api/v1/index/health:
+    get:
+      consumes:
+      - application/json
+      description: Returns Index Plane health status and coverage statistics
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Index health status and statistics
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get Index Plane health
+      tags:
+      - Index
+  /api/v1/index/transactions/{hash}:
+    get:
+      consumes:
+      - application/json
+      description: Fast O(1) lookup of transaction location by hash using the Index
+        Plane
+      parameters:
+      - description: Transaction hash
+        in: path
+        name: hash
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Transaction location data
+          schema:
+            $ref: '#/definitions/main.TxLocation'
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Transaction not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Lookup transaction by hash
+      tags:
+      - Index
+  /api/v1/index/transactions/lookup:
+    post:
+      consumes:
+      - application/json
+      description: Lookup up to 1000 transaction hashes in a single request
+      parameters:
+      - description: Request body with hashes array
+        in: body
+        name: request
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Batch lookup results with found/total counts
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "405":
+          description: Method not allowed (POST required)
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Batch lookup transactions by hash
+      tags:
+      - Index
+  /api/v1/silver/accounts:
+    get:
+      consumes:
+      - application/json
+      description: Returns a paginated list of all Stellar accounts with sorting and
+        filtering options
+      parameters:
+      - description: 'Maximum results to return (default: 100, max: 1000)'
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination cursor from previous response
+        in: query
+        name: cursor
+        type: string
+      - description: 'Sort field: balance (default)'
+        in: query
+        name: sort_by
+        type: string
+      - description: 'Sort order: asc, desc (default)'
+        in: query
+        name: order
+        type: string
+      - description: Minimum balance filter in stroops
+        in: query
+        name: min_balance
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: List of accounts with pagination info
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters or cursor mismatch
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: List all accounts
+      tags:
+      - Accounts
+  /api/v1/silver/accounts/{id}/balances:
+    get:
+      consumes:
+      - application/json
+      description: Returns all balances including XLM and trustlines for a Stellar
+        account
+      parameters:
+      - description: Stellar account ID (G...)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Account balances
+          schema:
+            $ref: '#/definitions/main.AccountBalancesResponse'
+        "400":
+          description: Missing account_id
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Account not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get account balances
+      tags:
+      - Accounts
+  /api/v1/silver/accounts/{id}/offers:
+    get:
+      consumes:
+      - application/json
+      description: Returns all open offers for a given account
+      parameters:
+      - description: Account ID (G... address)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 'Maximum results to return (default: 100, max: 1000)'
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination cursor
+        in: query
+        name: cursor
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Account offers
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get account offers
+      tags:
+      - Accounts
+  /api/v1/silver/accounts/current:
+    get:
+      consumes:
+      - application/json
+      description: Returns the current state of a Stellar account including balance,
+        sequence number, and subentries
+      parameters:
+      - description: Stellar account ID (G...)
+        in: query
+        name: account_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Account data
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Missing or invalid account_id
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Account not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get current account state
+      tags:
+      - Accounts
+  /api/v1/silver/accounts/history:
+    get:
+      consumes:
+      - application/json
+      description: Returns historical snapshots of an account's state over time with
+        cursor-based pagination
+      parameters:
+      - description: Stellar account ID (G...)
+        in: query
+        name: account_id
+        required: true
+        type: string
+      - description: 'Maximum results to return (default: 50, max: 500)'
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination cursor from previous response
+        in: query
+        name: cursor
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Account history with pagination info
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Missing or invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get account history
+      tags:
+      - Accounts
+  /api/v1/silver/accounts/signers:
+    get:
+      consumes:
+      - application/json
+      description: Returns the signers and thresholds for a Stellar account in Horizon-compatible
+        format
+      parameters:
+      - description: Stellar account ID (G...)
+        in: query
+        name: account_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Account signers and thresholds
+          schema:
+            $ref: '#/definitions/main.AccountSignersResponse'
+        "400":
+          description: Missing account_id
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Account not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get account signers
+      tags:
+      - Accounts
+  /api/v1/silver/accounts/top:
+    get:
+      consumes:
+      - application/json
+      description: Returns accounts with the highest XLM balances, useful for leaderboards
+      parameters:
+      - description: 'Maximum results to return (default: 100, max: 1000)'
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: List of top accounts
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get top accounts by balance
+      tags:
+      - Accounts
+  /api/v1/silver/address/{addr}/events:
+    get:
+      consumes:
+      - application/json
+      description: Returns CAP-67 events where the address appears as sender (from)
+        or receiver (to)
+      parameters:
+      - description: Stellar account or contract address
+        in: path
+        name: addr
+        required: true
+        type: string
+      - description: 'Filter by event type: transfer, mint, burn'
+        in: query
+        name: event_type
+        type: string
+      - description: 'Filter by source: classic or soroban'
+        in: query
+        name: source_type
+        type: string
+      - default: 20
+        description: 'Max results (default: 20, max: 200)'
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination cursor
+        in: query
+        name: cursor
+        type: string
+      - default: desc
+        description: Sort order
+        enum:
+        - asc
+        - desc
+        in: query
+        name: order
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Address events with pagination
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Missing address
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get events for an address
+      tags:
+      - Events
+  /api/v1/silver/address/{addr}/token-balances:
+    get:
+      consumes:
+      - application/json
+      description: Returns all SEP-41 token holdings for an address across all tokens,
+        with computed balances from transfer history
+      parameters:
+      - description: Stellar account or contract address
+        in: path
+        name: addr
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Token holdings for the address
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Missing address
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get address token portfolio
+      tags:
+      - Tokens
+  /api/v1/silver/assets:
+    get:
+      consumes:
+      - application/json
+      description: Returns a paginated list of all assets on the Stellar network with
+        holder counts, supply, and 24h activity
+      parameters:
+      - description: 'Maximum results to return (default: 100, max: 1000)'
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination cursor from previous response
+        in: query
+        name: cursor
+        type: string
+      - description: 'Sort field: holder_count (default), volume_24h, transfers_24h,
+          circulating_supply'
+        in: query
+        name: sort_by
+        type: string
+      - description: 'Sort order: asc, desc (default)'
+        in: query
+        name: order
+        type: string
+      - description: Minimum holder count filter
+        in: query
+        name: min_holders
+        type: integer
+      - description: Minimum 24h volume in stroops
+        in: query
+        name: min_volume_24h
+        type: integer
+      - description: 'Asset type: credit_alphanum4, credit_alphanum12, native'
+        in: query
+        name: asset_type
+        type: string
+      - description: Search by asset code prefix
+        in: query
+        name: search
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: List of assets with pagination info
+          schema:
+            $ref: '#/definitions/main.AssetListResponse'
+        "400":
+          description: Invalid parameters or cursor mismatch
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: List all assets
+      tags:
+      - Assets
+  /api/v1/silver/assets/{asset}/holders:
+    get:
+      consumes:
+      - application/json
+      description: Returns a paginated list of accounts holding a specific token,
+        sorted by balance
+      parameters:
+      - description: 'Asset identifier: XLM or CODE:ISSUER'
+        in: path
+        name: asset
+        required: true
+        type: string
+      - description: 'Maximum results to return (default: 100, max: 1000)'
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination cursor from previous response
+        in: query
+        name: cursor
+        type: string
+      - description: Minimum balance filter in stroops
+        in: query
+        name: min_balance
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Token holders with pagination info
+          schema:
+            $ref: '#/definitions/main.TokenHoldersResponse'
+        "400":
+          description: Invalid asset format or cursor
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get token holders
+      tags:
+      - Assets
+  /api/v1/silver/assets/{asset}/stats:
+    get:
+      consumes:
+      - application/json
+      description: Returns aggregated statistics for a specific token including holder
+        count, supply, and 24h activity
+      parameters:
+      - description: 'Asset identifier: XLM or CODE:ISSUER'
+        in: path
+        name: asset
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Token statistics
+          schema:
+            $ref: '#/definitions/main.TokenStatsResponse'
+        "400":
+          description: Invalid asset format
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get token statistics
+      tags:
+      - Assets
+  /api/v1/silver/calls:
+    get:
+      consumes:
+      - application/json
+      description: Returns Soroban invoke_host_function operations filtered by contract_id
+        and/or function_name
+      parameters:
+      - description: Contract ID to filter by
+        in: query
+        name: contract_id
+        type: string
+      - description: Function name to filter by
+        in: query
+        name: function_name
+        type: string
+      - default: 50
+        description: Number of results
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination cursor
+        in: query
+        name: cursor
+        type: string
+      - default: desc
+        description: Sort order
+        enum:
+        - asc
+        - desc
+        in: query
+        name: order
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Filtered Soroban operations
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get Soroban operations by function
+      tags:
+      - Operations
+  /api/v1/silver/claimable-balances:
+    get:
+      consumes:
+      - application/json
+      description: Returns a paginated list of claimable balances with optional sponsor
+        filter
+      parameters:
+      - description: Filter by sponsor account ID
+        in: query
+        name: sponsor
+        type: string
+      - description: 'Maximum results to return (default: 100, max: 1000)'
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination cursor from previous response
+        in: query
+        name: cursor
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: List of claimable balances with pagination info
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid cursor
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: List claimable balances
+      tags:
+      - State
+  /api/v1/silver/contracts/{id}/analytics:
+    get:
+      consumes:
+      - application/json
+      description: Returns comprehensive analytics including stats, top functions,
+        and daily trends
+      parameters:
+      - description: Contract ID (C... address)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Full analytics with stats, top functions, and trends
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: No activity found for contract
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get contract analytics
+      tags:
+      - Contracts
+  /api/v1/silver/contracts/{id}/call-summary:
+    get:
+      consumes:
+      - application/json
+      description: Returns aggregated call statistics for a specific contract
+      parameters:
+      - description: Contract ID (C... address)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Call summary with totals and unique counts
+          schema:
+            $ref: '#/definitions/main.ContractCallSummary'
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get contract call summary
+      tags:
+      - Contracts
+  /api/v1/silver/contracts/{id}/callees:
+    get:
+      consumes:
+      - application/json
+      description: Returns list of contracts that have been called by a specific contract
+      parameters:
+      - description: Contract ID (C... address)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 'Maximum results to return (default: 50, max: 200)'
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: List of callee contracts with call counts and functions
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get contract callees
+      tags:
+      - Contracts
+  /api/v1/silver/contracts/{id}/callers:
+    get:
+      consumes:
+      - application/json
+      description: Returns list of contracts that have called a specific contract
+      parameters:
+      - description: Contract ID (C... address)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 'Maximum results to return (default: 50, max: 200)'
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: List of caller contracts with call counts and functions
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get contract callers
+      tags:
+      - Contracts
+  /api/v1/silver/contracts/{id}/interface:
+    get:
+      consumes:
+      - application/json
+      description: Returns the detected interface type (SEP-41 or unknown) for a contract
+        based on observed function calls. SEP-41 detection requires at least 3 of
+        5 standard function signatures.
+      parameters:
+      - description: Contract ID (C...)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Detected interface with observed functions
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Missing contract_id
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get contract interface detection
+      tags:
+      - Contracts
+  /api/v1/silver/contracts/{id}/metadata:
+    get:
+      consumes:
+      - application/json
+      description: Returns contract metadata including creator, WASM info, storage
+        summary, and observed functions
+      parameters:
+      - description: Contract ID (C... address)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Contract metadata
+          schema:
+            $ref: '#/definitions/main.ContractMetadataResponse'
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Contract not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get contract metadata
+      tags:
+      - Contracts
+  /api/v1/silver/contracts/{id}/recent-calls:
+    get:
+      consumes:
+      - application/json
+      description: Returns recent calls involving a specific contract (as caller and
+        callee)
+      parameters:
+      - description: Contract ID (C... address)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 'Maximum results to return (default: 100, max: 1000)'
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Recent calls with as_caller and as_callee counts
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get recent contract calls
+      tags:
+      - Contracts
+  /api/v1/silver/contracts/{id}/storage:
+    get:
+      consumes:
+      - application/json
+      description: Returns contract storage entries with TTL information
+      parameters:
+      - description: Contract ID (C... address)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 'Maximum results (default: 100, max: 1000)'
+        in: query
+        name: limit
+        type: integer
+      - description: 'Offset for pagination (default: 0)'
+        in: query
+        name: offset
+        type: integer
+      - description: 'Filter by durability: persistent, temporary, instance'
+        in: query
+        name: durability
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Contract storage entries
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get contract storage entries
+      tags:
+      - Contracts
+  /api/v1/silver/contracts/top:
+    get:
+      consumes:
+      - application/json
+      description: Returns most active contracts ranked by call count for a given
+        period
+      parameters:
+      - description: 'Time period: 24h (default), 7d, 30d, all'
+        in: query
+        name: period
+        type: string
+      - description: 'Maximum results to return (default: 20, max: 100)'
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: List of top contracts with call counts
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get top contracts by activity
+      tags:
+      - Contracts
+  /api/v1/silver/data-boundaries:
+    get:
+      consumes:
+      - application/json
+      description: Returns the range of ledgers available in the data store (oldest
+        and latest)
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Data boundaries with ledger range
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get data boundaries
+      tags:
+      - Data
+  /api/v1/silver/decode/scval:
+    post:
+      consumes:
+      - application/json
+      description: 'Decodes a Soroban ScVal from XDR (base64) or JSON into a human-readable
+        format. Supports types: bool, u32, i32, u64, i64, u128, i128, address, symbol,
+        string, bytes, vec, map.'
+      parameters:
+      - description: ScVal to decode
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Decoded ScVal with type, value, and display
+          schema:
+            $ref: '#/definitions/main.DecodedScVal'
+        "400":
+          description: Invalid request body or missing xdr/json field
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Decode Soroban ScVal
+      tags:
+      - Soroban
+  /api/v1/silver/events:
+    get:
+      consumes:
+      - application/json
+      description: Returns the unified CAP-67 event stream with optional filters for
+        contract, event type, source type, and ledger range. Events are derived from
+        token_transfers_raw with type inferred from from/to nullity.
+      parameters:
+      - description: Filter by token contract ID (C...)
+        in: query
+        name: contract_id
+        type: string
+      - description: 'Filter by event type: transfer, mint, burn'
+        in: query
+        name: event_type
+        type: string
+      - description: 'Filter by source: classic or soroban'
+        in: query
+        name: source_type
+        type: string
+      - description: Start of ledger range
+        in: query
+        name: start_ledger
+        type: integer
+      - description: End of ledger range
+        in: query
+        name: end_ledger
+        type: integer
+      - default: 20
+        description: 'Max results (default: 20, max: 200)'
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination cursor from previous response
+        in: query
+        name: cursor
+        type: string
+      - default: desc
+        description: Sort order
+        enum:
+        - asc
+        - desc
+        in: query
+        name: order
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Unified events with pagination
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get unified CAP-67 event stream
+      tags:
+      - Events
+  /api/v1/silver/events/by-contract:
+    get:
+      consumes:
+      - application/json
+      description: Returns CAP-67 events filtered to a specific token contract
+      parameters:
+      - description: Token contract ID (C...)
+        in: query
+        name: contract_id
+        required: true
+        type: string
+      - description: 'Filter by event type: transfer, mint, burn'
+        in: query
+        name: event_type
+        type: string
+      - description: 'Filter by source: classic or soroban'
+        in: query
+        name: source_type
+        type: string
+      - default: 20
+        description: 'Max results (default: 20, max: 200)'
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination cursor
+        in: query
+        name: cursor
+        type: string
+      - default: desc
+        description: Sort order
+        enum:
+        - asc
+        - desc
+        in: query
+        name: order
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Contract events with pagination
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Missing contract_id
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get events by contract
+      tags:
+      - Events
+  /api/v1/silver/events/contract/{contract_id}:
+    get:
+      description: Returns raw contract events for a specific contract from bronze
+        layer
+      parameters:
+      - description: Contract ID (hex format)
+        in: path
+        name: contract_id
+        required: true
+        type: string
+      - description: Filter by event type
+        in: query
+        name: event_type
+        type: string
+      - default: 20
+        description: 'Max results (default: 20, max: 200)'
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination cursor
+        in: query
+        name: cursor
+        type: string
+      - default: desc
+        description: Sort order
+        enum:
+        - asc
+        - desc
+        in: query
+        name: order
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Contract events with pagination
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Missing contract_id
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get contract events by contract ID
+      tags:
+      - Events
+  /api/v1/silver/events/generic:
+    get:
+      description: Returns raw contract events from bronze layer with optional filters
+      parameters:
+      - description: Filter by contract ID (C...)
+        in: query
+        name: contract_id
+        type: string
+      - description: 'Filter by event type: contract, system, diagnostic'
+        in: query
+        name: event_type
+        type: string
+      - description: Search within topics_decoded
+        in: query
+        name: topic_match
+        type: string
+      - description: Start of ledger range
+        in: query
+        name: start_ledger
+        type: integer
+      - description: End of ledger range
+        in: query
+        name: end_ledger
+        type: integer
+      - default: 20
+        description: 'Max results (default: 20, max: 200)'
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination cursor
+        in: query
+        name: cursor
+        type: string
+      - default: desc
+        description: Sort order
+        enum:
+        - asc
+        - desc
+        in: query
+        name: order
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Generic events with pagination
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get generic contract events
+      tags:
+      - Events
+  /api/v1/silver/explorer/account:
+    get:
+      consumes:
+      - application/json
+      description: Returns comprehensive account overview including current state,
+        recent operations, and transfers
+      parameters:
+      - description: Stellar account ID (G...)
+        in: query
+        name: account_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Account overview with recent activity
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Missing account_id
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Account not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get account overview
+      tags:
+      - Explorer
+  /api/v1/silver/explorer/asset:
+    get:
+      consumes:
+      - application/json
+      description: Returns asset statistics including holder count, supply, and recent
+        transfers
+      parameters:
+      - description: Asset code
+        in: query
+        name: asset_code
+        required: true
+        type: string
+      - description: Asset issuer (omit for XLM)
+        in: query
+        name: asset_issuer
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Asset overview with statistics and transfers
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Missing asset_code
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get asset overview
+      tags:
+      - Explorer
+  /api/v1/silver/explorer/transaction:
+    get:
+      consumes:
+      - application/json
+      description: Returns full transaction details including all operations and transfers
+      parameters:
+      - description: Transaction hash
+        in: query
+        name: tx_hash
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Transaction details with operations
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Missing tx_hash
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Transaction not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get transaction details
+      tags:
+      - Explorer
+  /api/v1/silver/ledgers/{seq}/fees:
+    get:
+      consumes:
+      - application/json
+      description: Returns fee histogram and percentiles for a specific ledger
+      parameters:
+      - description: Ledger sequence number
+        in: path
+        name: seq
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Ledger fee distribution
+          schema:
+            $ref: '#/definitions/main.LedgerFeesResponse'
+        "400":
+          description: Invalid ledger sequence
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: No transactions in ledger
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get ledger fee distribution
+      tags:
+      - Statistics
+  /api/v1/silver/liquidity-pools:
+    get:
+      consumes:
+      - application/json
+      description: Returns a paginated list of AMM liquidity pools
+      parameters:
+      - description: 'Maximum results to return (default: 100, max: 1000)'
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination cursor from previous response
+        in: query
+        name: cursor
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: List of liquidity pools with pagination info
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid cursor
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: List liquidity pools
+      tags:
+      - DEX
+  /api/v1/silver/offers:
+    get:
+      consumes:
+      - application/json
+      description: Returns a paginated list of DEX offers with optional seller filter
+      parameters:
+      - description: Filter by seller account ID
+        in: query
+        name: seller_id
+        type: string
+      - description: 'Maximum results to return (default: 100, max: 1000)'
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination cursor from previous response
+        in: query
+        name: cursor
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: List of offers with pagination info
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid cursor
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: List offers
+      tags:
+      - DEX
+  /api/v1/silver/operations/enriched:
+    get:
+      consumes:
+      - application/json
+      description: Returns operations with full context including transaction details,
+        account info, and asset metadata
+      parameters:
+      - description: Filter by account ID
+        in: query
+        name: account_id
+        type: string
+      - description: Filter by transaction hash
+        in: query
+        name: tx_hash
+        type: string
+      - description: Filter for payment operations only
+        in: query
+        name: payments_only
+        type: boolean
+      - description: Filter for Soroban operations only
+        in: query
+        name: soroban_only
+        type: boolean
+      - description: Start ledger sequence (mutually exclusive with cursor)
+        in: query
+        name: start_ledger
+        type: integer
+      - description: End ledger sequence
+        in: query
+        name: end_ledger
+        type: integer
+      - description: 'Maximum results to return (default: 100, max: 1000)'
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination cursor from previous response
+        in: query
+        name: cursor
+        type: string
+      - description: 'Sort order: asc or desc (default: desc)'
+        in: query
+        name: order
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Enriched operations with pagination info
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get enriched operations
+      tags:
+      - Operations
+  /api/v1/silver/operations/soroban:
+    get:
+      consumes:
+      - application/json
+      description: Returns Soroban smart contract operations (invoke_host_function,
+        etc.)
+      parameters:
+      - description: Filter by account ID
+        in: query
+        name: account_id
+        type: string
+      - description: 'Maximum results to return (default: 50, max: 500)'
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination cursor from previous response
+        in: query
+        name: cursor
+        type: string
+      - description: 'Sort order: asc or desc (default: desc)'
+        in: query
+        name: order
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Soroban operations with pagination info
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid cursor
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get Soroban operations
+      tags:
+      - Operations
+  /api/v1/silver/operations/soroban/by-function:
+    get:
+      consumes:
+      - application/json
+      description: Returns Soroban invoke_host_function operations filtered by contract_id
+        and/or function_name
+      parameters:
+      - description: Contract ID to filter by
+        in: query
+        name: contract_id
+        type: string
+      - description: Function name to filter by
+        in: query
+        name: function_name
+        type: string
+      - default: 50
+        description: Number of results
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination cursor
+        in: query
+        name: cursor
+        type: string
+      - default: desc
+        description: Sort order
+        enum:
+        - asc
+        - desc
+        in: query
+        name: order
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Filtered Soroban operations
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get Soroban operations by function
+      tags:
+      - Operations
+  /api/v1/silver/payments:
+    get:
+      consumes:
+      - application/json
+      description: Returns payment operations (payment, path_payment, etc.) filtered
+        by account
+      parameters:
+      - description: Filter by account ID
+        in: query
+        name: account_id
+        type: string
+      - description: 'Maximum results to return (default: 50, max: 500)'
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination cursor from previous response
+        in: query
+        name: cursor
+        type: string
+      - description: 'Sort order: asc or desc (default: desc)'
+        in: query
+        name: order
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Payment operations with pagination info
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid cursor
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get payment operations
+      tags:
+      - Operations
+  /api/v1/silver/prices/{base}/{counter}/latest:
+    get:
+      description: Returns the most recent trade price for a trading pair with 24h
+        volume
+      parameters:
+      - description: Base asset code
+        in: path
+        name: base
+        required: true
+        type: string
+      - description: Counter asset code
+        in: path
+        name: counter
+        required: true
+        type: string
+      - description: Base asset issuer
+        in: query
+        name: base_issuer
+        type: string
+      - description: Counter asset issuer
+        in: query
+        name: counter_issuer
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Latest price
+          schema:
+            $ref: '#/definitions/main.LatestPrice'
+        "404":
+          description: No trades found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get latest price
+      tags:
+      - Prices
+  /api/v1/silver/prices/{base}/{counter}/ohlc:
+    get:
+      description: Returns OHLC (Open/High/Low/Close) candles for a trading pair,
+        aggregated by time interval
+      parameters:
+      - description: Base asset code (e.g., XLM, USDC)
+        in: path
+        name: base
+        required: true
+        type: string
+      - description: Counter asset code
+        in: path
+        name: counter
+        required: true
+        type: string
+      - default: 1h
+        description: 'Time interval: 1m, 5m, 15m, 1h, 4h, 1d, 1w'
+        in: query
+        name: interval
+        type: string
+      - description: Base asset issuer (omit for XLM)
+        in: query
+        name: base_issuer
+        type: string
+      - description: Counter asset issuer (omit for XLM)
+        in: query
+        name: counter_issuer
+        type: string
+      - default: 24 hours ago
+        description: Start time (RFC3339)
+        in: query
+        name: start
+        type: string
+      - default: now
+        description: End time (RFC3339)
+        in: query
+        name: end
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OHLC candles
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get OHLC price candles
+      tags:
+      - Prices
+  /api/v1/silver/prices/pairs:
+    get:
+      description: Returns available trading pairs with trade counts (minimum 5 trades)
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Trading pairs
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: List trading pairs
+      tags:
+      - Prices
+  /api/v1/silver/search:
+    get:
+      description: Detects query type (account, contract, transaction, ledger, asset)
+        and returns categorized results
+      parameters:
+      - description: Search query (account address, contract ID, tx hash, ledger number,
+          or asset code/name)
+        in: query
+        name: q
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Search results
+          schema:
+            $ref: '#/definitions/main.SearchResults'
+        "400":
+          description: Missing query
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Unified search
+      tags:
+      - Search
+  /api/v1/silver/smart-wallet/{contract_id}:
+    get:
+      description: Heuristically detects if a contract implements SEP-50 smart wallet
+        by checking for __check_auth events and signer storage
+      parameters:
+      - description: Contract ID (C...)
+        in: path
+        name: contract_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Smart wallet info
+          schema:
+            $ref: '#/definitions/main.SmartWalletInfo'
+        "400":
+          description: Missing contract_id
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Detect SEP-50 smart wallet
+      tags:
+      - Smart Wallets
+  /api/v1/silver/stats/fees:
+    get:
+      consumes:
+      - application/json
+      description: Returns fee percentiles, surge detection, and aggregate fee data
+      parameters:
+      - description: 'Time period: 1h, 24h (default), 7d'
+        in: query
+        name: period
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Fee statistics
+          schema:
+            $ref: '#/definitions/main.FeeStatsResponse'
+        "400":
+          description: Invalid period
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get fee statistics
+      tags:
+      - Statistics
+  /api/v1/silver/stats/soroban:
+    get:
+      consumes:
+      - application/json
+      description: Returns contract, execution, and state statistics for the Soroban
+        runtime
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Soroban statistics
+          schema:
+            $ref: '#/definitions/main.SorobanStatsResponse'
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get Soroban network statistics
+      tags:
+      - Statistics
+  /api/v1/silver/tokens/{contract_id}:
+    get:
+      consumes:
+      - application/json
+      description: Returns metadata for a SEP-41 token including asset code, holder
+        count, and transfer count
+      parameters:
+      - description: Token contract ID (C...)
+        in: path
+        name: contract_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Token metadata
+          schema:
+            $ref: '#/definitions/main.SEP41TokenMetadata'
+        "400":
+          description: Missing contract_id
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get SEP-41 token metadata
+      tags:
+      - Tokens
+  /api/v1/silver/tokens/{contract_id}/balance/{address}:
+    get:
+      consumes:
+      - application/json
+      description: Returns the computed balance (received minus sent) of a specific
+        address for a SEP-41 token
+      parameters:
+      - description: Token contract ID (C...)
+        in: path
+        name: contract_id
+        required: true
+        type: string
+      - description: Holder address (G... or C...)
+        in: path
+        name: address
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Single address balance
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Missing contract_id or address
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get single address balance for a token
+      tags:
+      - Tokens
+  /api/v1/silver/tokens/{contract_id}/balances:
+    get:
+      consumes:
+      - application/json
+      description: Returns computed balances for all holders of a token, derived from
+        transfer history (received minus sent), ranked by balance
+      parameters:
+      - description: Token contract ID (C...)
+        in: path
+        name: contract_id
+        required: true
+        type: string
+      - default: 20
+        description: 'Max results (default: 20, max: 200)'
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination cursor
+        in: query
+        name: cursor
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Token balances with pagination
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Missing contract_id or invalid cursor
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get SEP-41 token holder balances
+      tags:
+      - Tokens
+  /api/v1/silver/tokens/{contract_id}/stats:
+    get:
+      consumes:
+      - application/json
+      description: Returns aggregate statistics for a token including holder count,
+        total supply, 24h transfer count and volume
+      parameters:
+      - description: Token contract ID (C...)
+        in: path
+        name: contract_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Token statistics
+          schema:
+            $ref: '#/definitions/main.SEP41TokenStats'
+        "400":
+          description: Missing contract_id
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get SEP-41 token statistics
+      tags:
+      - Tokens
+  /api/v1/silver/tokens/{contract_id}/transfers:
+    get:
+      consumes:
+      - application/json
+      description: Returns transfer history (transfers, mints, burns) for a specific
+        SEP-41 token
+      parameters:
+      - description: Token contract ID (C...)
+        in: path
+        name: contract_id
+        required: true
+        type: string
+      - description: 'Filter by type: transfer, mint, burn'
+        in: query
+        name: event_type
+        type: string
+      - default: 20
+        description: 'Max results (default: 20, max: 200)'
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination cursor
+        in: query
+        name: cursor
+        type: string
+      - default: desc
+        description: Sort order
+        enum:
+        - asc
+        - desc
+        in: query
+        name: order
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Token transfers with pagination
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Missing contract_id
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get SEP-41 token transfer history
+      tags:
+      - Tokens
+  /api/v1/silver/transactions/summaries:
+    get:
+      consumes:
+      - application/json
+      description: Returns summarized transaction data for a batch of hashes or a
+        ledger
+      parameters:
+      - description: Comma-separated transaction hashes (max 25)
+        in: query
+        name: hashes
+        type: string
+      - description: Ledger sequence to get all transactions from
+        in: query
+        name: ledger
+        type: integer
+      - description: 'Maximum results (default: 10, max: 100)'
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Transaction summaries
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get transaction summaries
+      tags:
+      - Transactions
+  /api/v1/silver/transfers:
+    get:
+      consumes:
+      - application/json
+      description: Returns unified token transfers from both classic payments and
+        Soroban contract transfers
+      parameters:
+      - description: Filter by asset code
+        in: query
+        name: asset_code
+        type: string
+      - description: Filter by sender account
+        in: query
+        name: from_account
+        type: string
+      - description: Filter by recipient account
+        in: query
+        name: to_account
+        type: string
+      - description: 'Filter by source type: classic, soroban'
+        in: query
+        name: source_type
+        type: string
+      - description: 'Start time in RFC3339 format (default: 24h ago)'
+        in: query
+        name: start_time
+        type: string
+      - description: 'End time in RFC3339 format (default: now)'
+        in: query
+        name: end_time
+        type: string
+      - description: 'Maximum results to return (default: 100, max: 1000)'
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination cursor from previous response
+        in: query
+        name: cursor
+        type: string
+      - description: 'Sort order: asc or desc (default: desc)'
+        in: query
+        name: order
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Token transfers with pagination info
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid cursor
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get token transfers
+      tags:
+      - Transfers
+  /api/v1/silver/transfers/stats:
+    get:
+      consumes:
+      - application/json
+      description: Returns aggregated transfer statistics grouped by asset, source
+        type, hour, or day
+      parameters:
+      - description: 'Group by: asset (default), source_type, hour, day'
+        in: query
+        name: group_by
+        type: string
+      - description: 'Start time in RFC3339 format (default: 24h ago)'
+        in: query
+        name: start_time
+        type: string
+      - description: 'End time in RFC3339 format (default: now)'
+        in: query
+        name: end_time
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Transfer statistics
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid group_by value
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get transfer statistics
+      tags:
+      - Transfers
+  /api/v1/silver/tx/{hash}/call-graph:
+    get:
+      consumes:
+      - application/json
+      description: Returns contract-to-contract call graph showing execution flow
+      parameters:
+      - description: Transaction hash
+        in: path
+        name: hash
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Call graph with from/to/function/depth/order
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get transaction call graph
+      tags:
+      - Contracts
+  /api/v1/silver/tx/{hash}/contracts-involved:
+    get:
+      consumes:
+      - application/json
+      description: Returns list of all contract addresses involved in a transaction
+        (for Freighter wallet)
+      parameters:
+      - description: Transaction hash
+        in: path
+        name: hash
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: List of contracts involved
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: No contracts found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get contracts involved in transaction
+      tags:
+      - Contracts
+  /api/v1/silver/tx/{hash}/contracts-summary:
+    get:
+      consumes:
+      - application/json
+      description: Returns contracts involved in a transaction optimized for wallet
+        display (Freighter, etc.)
+      parameters:
+      - description: Transaction hash
+        in: path
+        name: hash
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Wallet-friendly contract summary
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get wallet-friendly contracts summary
+      tags:
+      - Contracts
+  /api/v1/silver/tx/{hash}/decoded:
+    get:
+      consumes:
+      - application/json
+      description: 'Returns a decoded transaction with human-readable summary, decoded
+        operations (with contract/function details), and associated CAP-67 events.
+        Summary type is auto-detected: transfer, mint, burn, swap, contract_call,
+        or classic.'
+      parameters:
+      - description: Transaction hash
+        in: path
+        name: hash
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Decoded transaction with summary, operations, and events
+          schema:
+            $ref: '#/definitions/main.DecodedTransaction'
+        "400":
+          description: Missing transaction hash
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Transaction not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get decoded transaction with human-readable summary
+      tags:
+      - Transactions
+  /api/v1/silver/tx/{hash}/diffs:
+    get:
+      description: Decodes tx_meta XDR to extract balance changes and state changes
+        for a transaction
+      parameters:
+      - description: Transaction hash
+        in: path
+        name: hash
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Transaction diffs
+          schema:
+            $ref: '#/definitions/main.TxDiffs'
+        "400":
+          description: Missing transaction hash
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Transaction not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get transaction balance/state diffs
+      tags:
+      - Transactions
+  /api/v1/silver/tx/{hash}/events:
+    get:
+      consumes:
+      - application/json
+      description: Returns all CAP-67 events (transfers, mints, burns) for a specific
+        transaction
+      parameters:
+      - description: Transaction hash
+        in: path
+        name: hash
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Transaction events
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Missing transaction hash
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get events for a transaction
+      tags:
+      - Events
+  /api/v1/silver/tx/{hash}/full:
+    get:
+      consumes:
+      - application/json
+      description: Returns a composite view combining the decoded transaction (summary,
+        operations, events), contracts involved, and the contract call graph in a
+        single request.
+      parameters:
+      - description: Transaction hash
+        in: path
+        name: hash
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Full transaction analysis
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Missing transaction hash
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Transaction not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get full transaction analysis
+      tags:
+      - Transactions
+  /api/v1/silver/tx/{hash}/hierarchy:
+    get:
+      consumes:
+      - application/json
+      description: Returns hierarchical view of contract calls with root/child relationships
+      parameters:
+      - description: Transaction hash
+        in: path
+        name: hash
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Contract hierarchy with root/child/path/depth
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get transaction contract hierarchy
+      tags:
+      - Contracts
+schemes:
+- https
+securityDefinitions:
+  ApiKeyAuth:
+    description: 'API Key authentication. Format: "Api-Key YOUR_API_KEY"'
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"
