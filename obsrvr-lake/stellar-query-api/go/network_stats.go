@@ -503,6 +503,7 @@ func (h *NetworkStatsHandler) HandleBronzeNetworkStats(w http.ResponseWriter, r 
 	}
 
 	// Query 1: Latest ledger — try hot first, fall back to cold
+	ledgerFound := false
 	for _, schema := range schemas {
 		query := fmt.Sprintf(`SELECT sequence, ledger_hash, closed_at, protocol_version
 			FROM %s.ledgers_row_v2 ORDER BY sequence DESC LIMIT 1`, schema)
@@ -516,6 +517,7 @@ func (h *NetworkStatsHandler) HandleBronzeNetworkStats(w http.ResponseWriter, r 
 		}
 		if seq.Valid {
 			stats.Ledger.LatestSequence = seq.Int64
+			ledgerFound = true
 		}
 		if hash.Valid {
 			stats.Ledger.LatestHash = hash.String
@@ -527,6 +529,10 @@ func (h *NetworkStatsHandler) HandleBronzeNetworkStats(w http.ResponseWriter, r 
 			stats.Ledger.ProtocolVersion = int(proto.Int64)
 		}
 		break
+	}
+	if !ledgerFound {
+		respondError(w, "unable to query bronze ledger data", http.StatusServiceUnavailable)
+		return
 	}
 
 	// Query 2: Avg close time from recent 100 ledgers — try hot first
@@ -563,9 +569,9 @@ func (h *NetworkStatsHandler) HandleBronzeNetworkStats(w http.ResponseWriter, r 
 	respondJSON(w, stats)
 }
 
-// fetchBronzeTxStats24h gets 24h transaction stats using UNION ALL across schemas
+// fetchBronzeTxStats24h gets 24h transaction stats, deduplicating across hot+cold by transaction_hash
 func (h *NetworkStatsHandler) fetchBronzeTxStats24h(ctx context.Context, schemas []string) *BronzeTxStats24h {
-	// Try UNION ALL first if we have both schemas
+	// UNION ALL with dedup via DISTINCT ON to avoid double-counting during flush overlap
 	if len(schemas) == 2 {
 		query := fmt.Sprintf(`
 			SELECT COUNT(*),
@@ -573,12 +579,15 @@ func (h *NetworkStatsHandler) fetchBronzeTxStats24h(ctx context.Context, schemas
 			       SUM(fee_charged),
 			       COUNT(*) FILTER (WHERE soroban_resources_instructions IS NOT NULL)
 			FROM (
-				SELECT successful, fee_charged, soroban_resources_instructions
-				FROM %s.transactions_row_v2 WHERE created_at > NOW() - INTERVAL '24 hours'
-				UNION ALL
-				SELECT successful, fee_charged, soroban_resources_instructions
-				FROM %s.transactions_row_v2 WHERE created_at > NOW() - INTERVAL '24 hours'
-			) combined
+				SELECT DISTINCT ON (transaction_hash) successful, fee_charged, soroban_resources_instructions
+				FROM (
+					SELECT transaction_hash, successful, fee_charged, soroban_resources_instructions
+					FROM %s.transactions_row_v2 WHERE created_at > NOW() - INTERVAL '24 hours'
+					UNION ALL
+					SELECT transaction_hash, successful, fee_charged, soroban_resources_instructions
+					FROM %s.transactions_row_v2 WHERE created_at > NOW() - INTERVAL '24 hours'
+				) raw
+			) deduped
 		`, schemas[0], schemas[1])
 		var total, successful, fees, soroban sql.NullInt64
 		err := h.unifiedReader.db.QueryRowContext(ctx, query).Scan(&total, &successful, &fees, &soroban)
@@ -593,7 +602,7 @@ func (h *NetworkStatsHandler) fetchBronzeTxStats24h(ctx context.Context, schemas
 		}
 	}
 
-	// Fallback: try each schema individually
+	// Fallback: single schema, no dedup needed
 	for _, schema := range schemas {
 		query := fmt.Sprintf(`
 			SELECT COUNT(*),
@@ -621,17 +630,20 @@ func (h *NetworkStatsHandler) fetchBronzeTxStats24h(ctx context.Context, schemas
 	return nil
 }
 
-// fetchBronzeOpStats24h gets 24h operation stats using UNION ALL across schemas
+// fetchBronzeOpStats24h gets 24h operation stats, deduplicating across hot+cold by ledger sequence
 func (h *NetworkStatsHandler) fetchBronzeOpStats24h(ctx context.Context, schemas []string) *BronzeOpStats24h {
-	// Try UNION ALL first if we have both schemas
+	// UNION ALL with dedup via DISTINCT ON(sequence) to avoid double-counting during flush overlap
 	if len(schemas) == 2 {
 		query := fmt.Sprintf(`
 			SELECT SUM(operation_count), SUM(soroban_op_count)
 			FROM (
-				SELECT operation_count, soroban_op_count FROM %s.ledgers_row_v2 WHERE closed_at > NOW() - INTERVAL '24 hours'
-				UNION ALL
-				SELECT operation_count, soroban_op_count FROM %s.ledgers_row_v2 WHERE closed_at > NOW() - INTERVAL '24 hours'
-			) combined
+				SELECT DISTINCT ON (sequence) operation_count, soroban_op_count
+				FROM (
+					SELECT sequence, operation_count, soroban_op_count FROM %s.ledgers_row_v2 WHERE closed_at > NOW() - INTERVAL '24 hours'
+					UNION ALL
+					SELECT sequence, operation_count, soroban_op_count FROM %s.ledgers_row_v2 WHERE closed_at > NOW() - INTERVAL '24 hours'
+				) raw
+			) deduped
 		`, schemas[0], schemas[1])
 		var total, soroban sql.NullInt64
 		err := h.unifiedReader.db.QueryRowContext(ctx, query).Scan(&total, &soroban)
@@ -643,7 +655,7 @@ func (h *NetworkStatsHandler) fetchBronzeOpStats24h(ctx context.Context, schemas
 		}
 	}
 
-	// Fallback: try each schema individually
+	// Fallback: single schema, no dedup needed
 	for _, schema := range schemas {
 		query := fmt.Sprintf(`
 			SELECT SUM(operation_count), SUM(soroban_op_count)

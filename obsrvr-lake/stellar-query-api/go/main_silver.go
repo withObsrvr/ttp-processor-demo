@@ -335,11 +335,11 @@ func mainWithSilver() {
 		networkStatsHandler := NewNetworkStatsHandler(unifiedSilverReader, coldReader)
 		if unifiedDuckDBReader != nil {
 			networkStatsHandler.SetUnifiedReader(unifiedDuckDBReader)
+			router.HandleFunc("/api/v1/bronze/stats/network", networkStatsHandler.HandleBronzeNetworkStats).Methods("GET")
+			log.Println("  ✓ /api/v1/bronze/stats/network (bronze headline statistics)")
 		}
 		router.HandleFunc("/api/v1/silver/stats/network", networkStatsHandler.HandleNetworkStats).Methods("GET")
 		log.Println("  ✓ /api/v1/silver/stats/network (headline statistics)")
-		router.HandleFunc("/api/v1/bronze/stats/network", networkStatsHandler.HandleBronzeNetworkStats).Methods("GET")
-		log.Println("  ✓ /api/v1/bronze/stats/network (bronze headline statistics)")
 
 		// Data boundaries endpoint (RPC v2 compatibility)
 		router.HandleFunc("/api/v1/silver/data-boundaries", silverHandlers.HandleDataBoundaries).Methods("GET")
