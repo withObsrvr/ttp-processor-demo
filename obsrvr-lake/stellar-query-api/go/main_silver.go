@@ -527,7 +527,7 @@ func mainWithSilver() {
 		log.Println("  ✓ /api/v1/gold/compliance/lineage (GET: archive audit trail)")
 
 		// Semantic layer endpoints
-		semanticHandlers := NewSemanticHandlers(unifiedSilverReader.hot)
+		semanticHandlers := NewSemanticHandlers(unifiedSilverReader)
 		log.Println("Registering Semantic Layer API endpoints:")
 
 		router.HandleFunc("/api/v1/semantic/activities", semanticHandlers.HandleSemanticActivities).Methods("GET")

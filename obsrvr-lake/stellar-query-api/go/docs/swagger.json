@@ -1396,7 +1396,8 @@
                 "transaction_hash": {
                     "type": "string"
                 },
-                "operation_index": {
+                "operation_type": {
+                    "description": "Stellar operation type code (1=payment, 2=path_payment, 13=path_payment_strict_send, 24=invoke_host_function)",
                     "type": "integer"
                 },
                 "successful": {

@@ -1101,7 +1101,7 @@ Unified feed of all on-chain actions with human-readable descriptions.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `id` | string | Unique ID (`{ledger_sequence}:{op_index}`) |
+| `id` | string | Unique ID (`{transaction_hash}:{operation_index}`) |
 | `ledger_sequence` | int | Block number |
 | `timestamp` | timestamp | When the activity occurred |
 | `activity_type` | string | `payment`, `contract_call`, `account_created`, `path_payment`, `manage_offer`, `inflation` |
@@ -1157,6 +1157,7 @@ Normalized value transfers across all asset types.
 | `asset_type` | string | `native`, `credit_alphanum4`, `credit_alphanum12`, `soroban_token` |
 | `amount` | string | Transfer amount |
 | `transaction_hash` | string | Parent transaction hash |
+| `operation_type` | int | Stellar operation type code (1=payment, 2=path_payment, 13=path_payment_strict_send, 24=invoke_host_function) |
 | `successful` | bool | Whether the transaction succeeded |
 
 ---

@@ -1932,7 +1932,7 @@ func (rt *RealtimeTransformer) transformSemanticFlows(ctx context.Context, tx *s
 			id, ledger_sequence, timestamp, flow_type,
 			from_account, to_account, contract_id,
 			asset_code, asset_issuer, asset_type,
-			amount, transaction_hash, operation_index, successful
+			amount, transaction_hash, operation_type, successful
 		)
 		SELECT
 			t.transaction_hash || ':' || ROW_NUMBER() OVER (PARTITION BY t.transaction_hash ORDER BY t.from_account, t.to_account),

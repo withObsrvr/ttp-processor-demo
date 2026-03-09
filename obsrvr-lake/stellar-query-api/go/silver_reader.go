@@ -1413,6 +1413,97 @@ type ContractDataFilters struct {
 }
 
 // ============================================
+// SEMANTIC LAYER QUERIES
+// ============================================
+
+// GetSemanticActivities queries semantic_activities from cold storage (DuckLake)
+func (r *SilverColdReader) GetSemanticActivities(ctx context.Context, filters SemanticActivityFilters) ([]SemanticActivity, error) {
+	query := fmt.Sprintf(`SELECT id, ledger_sequence, timestamp, activity_type, description,
+		source_account, destination_account, contract_id,
+		asset_code, asset_issuer, amount,
+		is_soroban, soroban_function_name,
+		transaction_hash, operation_index, successful, fee_charged
+		FROM %s.%s.semantic_activities WHERE 1=1`, r.catalogName, r.schemaName)
+
+	args := []any{}
+
+	if filters.Account != "" {
+		query += " AND (source_account = ? OR destination_account = ?)"
+		args = append(args, filters.Account, filters.Account)
+	}
+	if filters.ContractID != "" {
+		query += " AND contract_id = ?"
+		args = append(args, filters.ContractID)
+	}
+	if filters.ActivityType != "" {
+		query += " AND activity_type = ?"
+		args = append(args, filters.ActivityType)
+	}
+	if filters.Before != nil {
+		query += " AND timestamp < ?"
+		args = append(args, filters.Before.Format(time.RFC3339))
+	}
+	if filters.After != nil {
+		query += " AND timestamp > ?"
+		args = append(args, filters.After.Format(time.RFC3339))
+	}
+
+	query += " ORDER BY timestamp DESC LIMIT ?"
+	args = append(args, filters.Limit)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanActivities(rows)
+}
+
+// GetSemanticFlows queries semantic_flows_value from cold storage (DuckLake)
+func (r *SilverColdReader) GetSemanticFlows(ctx context.Context, filters SemanticFlowFilters) ([]SemanticFlow, error) {
+	query := fmt.Sprintf(`SELECT id, ledger_sequence, timestamp, flow_type,
+		from_account, to_account, contract_id,
+		asset_code, asset_issuer, asset_type,
+		amount, transaction_hash, operation_type, successful
+		FROM %s.%s.semantic_flows_value WHERE 1=1`, r.catalogName, r.schemaName)
+
+	args := []any{}
+
+	if filters.Account != "" {
+		query += " AND (from_account = ? OR to_account = ?)"
+		args = append(args, filters.Account, filters.Account)
+	}
+	if filters.AssetCode != "" {
+		query += " AND asset_code = ?"
+		args = append(args, filters.AssetCode)
+	}
+	if filters.FlowType != "" {
+		query += " AND flow_type = ?"
+		args = append(args, filters.FlowType)
+	}
+	if filters.Before != nil {
+		query += " AND timestamp < ?"
+		args = append(args, filters.Before.Format(time.RFC3339))
+	}
+	if filters.After != nil {
+		query += " AND timestamp > ?"
+		args = append(args, filters.After.Format(time.RFC3339))
+	}
+
+	query += " ORDER BY timestamp DESC LIMIT ?"
+	args = append(args, filters.Limit)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanFlows(rows)
+}
+
+// ============================================
 // RESPONSE METADATA TYPES (RPC v2 Compatibility)
 // ============================================
 

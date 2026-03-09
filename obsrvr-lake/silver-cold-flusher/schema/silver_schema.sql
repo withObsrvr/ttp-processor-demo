@@ -515,7 +515,7 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.semantic_flows_value (
     asset_type VARCHAR,
     amount VARCHAR,
     transaction_hash VARCHAR,
-    operation_index INTEGER,
+    operation_type INTEGER,
     successful BOOLEAN,
     created_at TIMESTAMP
 );

@@ -587,3 +587,101 @@ func (u *UnifiedSilverReader) GetContractCallSummary(ctx context.Context, contra
 	// TODO: Merge with cold storage for comprehensive statistics
 	return summary, nil
 }
+
+// ============================================
+// SEMANTIC LAYER QUERIES
+// ============================================
+
+// GetSemanticActivities queries hot first, then cold if more results are needed
+func (u *UnifiedSilverReader) GetSemanticActivities(ctx context.Context, filters SemanticActivityFilters) ([]SemanticActivity, bool, error) {
+	requestedLimit := filters.Limit
+	var results []SemanticActivity
+
+	// Query hot first (request extra to detect has_more)
+	hotFilters := filters
+	hotFilters.Limit = requestedLimit + 1
+	hotResults, err := u.hot.GetSemanticActivities(ctx, hotFilters)
+	if err != nil {
+		log.Printf("Warning: failed to query hot storage for semantic activities: %v", err)
+	} else {
+		results = append(results, hotResults...)
+	}
+
+	// Query cold if we need more results
+	if u.cold != nil && len(results) <= requestedLimit {
+		remainingLimit := (requestedLimit + 1) - len(results)
+		coldFilters := filters
+		coldFilters.Limit = remainingLimit
+
+		// Advance cursor: continue from where hot results ended
+		if len(results) > 0 {
+			lastHot := results[len(results)-1]
+			ts, parseErr := time.Parse(time.RFC3339Nano, lastHot.Timestamp)
+			if parseErr != nil {
+				ts, _ = time.Parse(time.RFC3339, lastHot.Timestamp)
+			}
+			coldFilters.Before = &ts
+		}
+
+		coldResults, coldErr := u.cold.GetSemanticActivities(ctx, coldFilters)
+		if coldErr != nil {
+			log.Printf("Warning: failed to query cold storage for semantic activities: %v", coldErr)
+		} else {
+			results = append(results, coldResults...)
+		}
+	}
+
+	hasMore := len(results) > requestedLimit
+	if hasMore {
+		results = results[:requestedLimit]
+	}
+
+	return results, hasMore, nil
+}
+
+// GetSemanticFlows queries hot first, then cold if more results are needed
+func (u *UnifiedSilverReader) GetSemanticFlows(ctx context.Context, filters SemanticFlowFilters) ([]SemanticFlow, bool, error) {
+	requestedLimit := filters.Limit
+	var results []SemanticFlow
+
+	// Query hot first (request extra to detect has_more)
+	hotFilters := filters
+	hotFilters.Limit = requestedLimit + 1
+	hotResults, err := u.hot.GetSemanticFlows(ctx, hotFilters)
+	if err != nil {
+		log.Printf("Warning: failed to query hot storage for semantic flows: %v", err)
+	} else {
+		results = append(results, hotResults...)
+	}
+
+	// Query cold if we need more results
+	if u.cold != nil && len(results) <= requestedLimit {
+		remainingLimit := (requestedLimit + 1) - len(results)
+		coldFilters := filters
+		coldFilters.Limit = remainingLimit
+
+		// Advance cursor: continue from where hot results ended
+		if len(results) > 0 {
+			lastHot := results[len(results)-1]
+			ts, parseErr := time.Parse(time.RFC3339Nano, lastHot.Timestamp)
+			if parseErr != nil {
+				ts, _ = time.Parse(time.RFC3339, lastHot.Timestamp)
+			}
+			coldFilters.Before = &ts
+		}
+
+		coldResults, coldErr := u.cold.GetSemanticFlows(ctx, coldFilters)
+		if coldErr != nil {
+			log.Printf("Warning: failed to query cold storage for semantic flows: %v", coldErr)
+		} else {
+			results = append(results, coldResults...)
+		}
+	}
+
+	hasMore := len(results) > requestedLimit
+	if hasMore {
+		results = results[:requestedLimit]
+	}
+
+	return results, hasMore, nil
+}

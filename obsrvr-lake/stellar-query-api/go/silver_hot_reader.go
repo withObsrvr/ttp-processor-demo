@@ -2260,3 +2260,106 @@ func (h *SilverHotReader) enrichContractWasm(ctx context.Context, resp *Contract
 		resp.NExports = &v
 	}
 }
+
+// ============================================
+// SEMANTIC LAYER QUERIES
+// ============================================
+
+// GetSemanticActivities queries semantic_activities from hot storage
+func (h *SilverHotReader) GetSemanticActivities(ctx context.Context, filters SemanticActivityFilters) ([]SemanticActivity, error) {
+	query := `SELECT id, ledger_sequence, timestamp, activity_type, description,
+		source_account, destination_account, contract_id,
+		asset_code, asset_issuer, amount,
+		is_soroban, soroban_function_name,
+		transaction_hash, operation_index, successful, fee_charged
+		FROM semantic_activities WHERE 1=1`
+
+	args := []any{}
+	argIdx := 1
+
+	if filters.Account != "" {
+		query += fmt.Sprintf(" AND (source_account = $%d OR destination_account = $%d)", argIdx, argIdx)
+		args = append(args, filters.Account)
+		argIdx++
+	}
+	if filters.ContractID != "" {
+		query += fmt.Sprintf(" AND contract_id = $%d", argIdx)
+		args = append(args, filters.ContractID)
+		argIdx++
+	}
+	if filters.ActivityType != "" {
+		query += fmt.Sprintf(" AND activity_type = $%d", argIdx)
+		args = append(args, filters.ActivityType)
+		argIdx++
+	}
+	if filters.Before != nil {
+		query += fmt.Sprintf(" AND timestamp < $%d", argIdx)
+		args = append(args, *filters.Before)
+		argIdx++
+	}
+	if filters.After != nil {
+		query += fmt.Sprintf(" AND timestamp > $%d", argIdx)
+		args = append(args, *filters.After)
+		argIdx++
+	}
+
+	query += fmt.Sprintf(" ORDER BY timestamp DESC LIMIT $%d", argIdx)
+	args = append(args, filters.Limit)
+
+	rows, err := h.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanActivities(rows)
+}
+
+// GetSemanticFlows queries semantic_flows_value from hot storage
+func (h *SilverHotReader) GetSemanticFlows(ctx context.Context, filters SemanticFlowFilters) ([]SemanticFlow, error) {
+	query := `SELECT id, ledger_sequence, timestamp, flow_type,
+		from_account, to_account, contract_id,
+		asset_code, asset_issuer, asset_type,
+		amount, transaction_hash, operation_type, successful
+		FROM semantic_flows_value WHERE 1=1`
+
+	args := []any{}
+	argIdx := 1
+
+	if filters.Account != "" {
+		query += fmt.Sprintf(" AND (from_account = $%d OR to_account = $%d)", argIdx, argIdx)
+		args = append(args, filters.Account)
+		argIdx++
+	}
+	if filters.AssetCode != "" {
+		query += fmt.Sprintf(" AND asset_code = $%d", argIdx)
+		args = append(args, filters.AssetCode)
+		argIdx++
+	}
+	if filters.FlowType != "" {
+		query += fmt.Sprintf(" AND flow_type = $%d", argIdx)
+		args = append(args, filters.FlowType)
+		argIdx++
+	}
+	if filters.Before != nil {
+		query += fmt.Sprintf(" AND timestamp < $%d", argIdx)
+		args = append(args, *filters.Before)
+		argIdx++
+	}
+	if filters.After != nil {
+		query += fmt.Sprintf(" AND timestamp > $%d", argIdx)
+		args = append(args, *filters.After)
+		argIdx++
+	}
+
+	query += fmt.Sprintf(" ORDER BY timestamp DESC LIMIT $%d", argIdx)
+	args = append(args, filters.Limit)
+
+	rows, err := h.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanFlows(rows)
+}

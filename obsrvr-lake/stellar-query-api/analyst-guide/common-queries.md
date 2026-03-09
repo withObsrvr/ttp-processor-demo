@@ -3809,7 +3809,7 @@ curl -H "Authorization: Api-Key $API_KEY" \
       "asset_type": "native",
       "amount": "210000000",
       "transaction_hash": "2c72bdc1...",
-      "operation_index": 1,
+      "operation_type": 1,
       "successful": false
     }
   ],
