@@ -35,6 +35,11 @@ var SilverTables = []string{
 	// Contract tracking tables
 	"contract_invocations_raw",
 	"contract_metadata",
+
+	// Semantic layer tables
+	"semantic_activities",
+	"semantic_entities_contracts",
+	"semantic_flows_value",
 }
 
 // RecreateAllSilverTables drops all Silver tables and recreates them with partitioning

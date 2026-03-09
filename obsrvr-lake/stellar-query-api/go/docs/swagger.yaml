@@ -802,6 +802,141 @@ definitions:
       tx_hash:
         type: string
     type: object
+  main.SemanticActivity:
+    properties:
+      id:
+        type: string
+      ledger_sequence:
+        type: integer
+      timestamp:
+        type: string
+      activity_type:
+        description: 'payment, contract_call, account_created, path_payment, manage_offer,
+          inflation'
+        type: string
+      description:
+        type: string
+      source_account:
+        type: string
+      destination_account:
+        type: string
+      contract_id:
+        type: string
+      asset_code:
+        type: string
+      asset_issuer:
+        type: string
+      amount:
+        type: string
+      is_soroban:
+        type: boolean
+      soroban_function_name:
+        type: string
+      transaction_hash:
+        type: string
+      operation_index:
+        type: integer
+      successful:
+        type: boolean
+      fee_charged:
+        type: integer
+    type: object
+  main.SemanticActivitiesResponse:
+    properties:
+      activities:
+        items:
+          $ref: '#/definitions/main.SemanticActivity'
+        type: array
+      count:
+        type: integer
+      has_more:
+        type: boolean
+    type: object
+  main.SemanticContract:
+    properties:
+      contract_id:
+        type: string
+      contract_type:
+        description: 'sep41_token, unknown'
+        type: string
+      token_name:
+        type: string
+      token_symbol:
+        type: string
+      token_decimals:
+        type: integer
+      deployer_account:
+        type: string
+      deployed_at:
+        type: string
+      deployed_ledger:
+        type: integer
+      total_invocations:
+        type: integer
+      last_activity:
+        type: string
+      unique_callers:
+        type: integer
+      observed_functions:
+        items:
+          type: string
+        type: array
+    type: object
+  main.SemanticContractsResponse:
+    properties:
+      contracts:
+        items:
+          $ref: '#/definitions/main.SemanticContract'
+        type: array
+      count:
+        type: integer
+      has_more:
+        type: boolean
+    type: object
+  main.SemanticFlow:
+    properties:
+      id:
+        type: string
+      ledger_sequence:
+        type: integer
+      timestamp:
+        type: string
+      flow_type:
+        description: 'transfer, mint, burn'
+        type: string
+      from_account:
+        type: string
+      to_account:
+        type: string
+      contract_id:
+        type: string
+      asset_code:
+        type: string
+      asset_issuer:
+        type: string
+      asset_type:
+        description: 'native, credit_alphanum4, credit_alphanum12, soroban_token'
+        type: string
+      amount:
+        type: string
+      transaction_hash:
+        type: string
+      operation_index:
+        type: integer
+      successful:
+        type: boolean
+    type: object
+  main.SemanticFlowsResponse:
+    properties:
+      flows:
+        items:
+          $ref: '#/definitions/main.SemanticFlow'
+        type: array
+      count:
+        type: integer
+      has_more:
+        type: boolean
+    type: object
 host: gateway.withobsrvr.com
 info:
   contact:
@@ -809,11 +944,12 @@ info:
     name: OBSRVR Team
     url: https://obsrvr.com
   description: |-
-    API for querying Stellar blockchain data across Bronze, Silver, and Gold data layers.
+    API for querying Stellar blockchain data across Bronze, Silver, Semantic, and Gold data layers.
 
     ## Data Layers
     - **Bronze**: Raw blockchain data (ledgers, transactions, operations, effects)
     - **Silver**: Enriched and processed data (accounts, assets, transfers, trades)
+    - **Semantic**: Meaning-oriented views (activities, contracts, value flows)
     - **Gold**: Analytical views (snapshots, compliance reports)
     - **Index Plane**: Fast lookup services (transaction hash, contract events)
 
@@ -4417,6 +4553,133 @@ paths:
       summary: Get transaction contract hierarchy
       tags:
       - Contracts
+  /api/v1/semantic/activities:
+    get:
+      consumes:
+      - application/json
+      description: Returns a unified feed of on-chain actions (payments, contract calls,
+        account creations, etc.) with human-readable descriptions
+      parameters:
+      - description: Filter by source or destination account (G...)
+        in: query
+        name: account
+        type: string
+      - description: Filter by contract address (C...)
+        in: query
+        name: contract_id
+        type: string
+      - description: 'Filter by activity type: payment, contract_call, account_created,
+          path_payment, manage_offer, inflation'
+        in: query
+        name: activity_type
+        type: string
+      - description: Only activities before this timestamp (ISO 8601)
+        in: query
+        name: before
+        type: string
+      - description: Only activities after this timestamp (ISO 8601)
+        in: query
+        name: after
+        type: string
+      - description: Maximum results (default 50, max 200)
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: List of semantic activities
+          schema:
+            $ref: '#/definitions/main.SemanticActivitiesResponse'
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get on-chain activity feed
+      tags:
+      - Semantic
+  /api/v1/semantic/contracts:
+    get:
+      consumes:
+      - application/json
+      description: Returns classified contracts with type detection, usage statistics,
+        and observed function signatures
+      parameters:
+      - description: 'Filter by contract type: sep41_token, unknown'
+        in: query
+        name: contract_type
+        type: string
+      - description: Filter by deployer account (G...)
+        in: query
+        name: deployer
+        type: string
+      - description: Maximum results (default 50, max 200)
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: List of contracts with stats
+          schema:
+            $ref: '#/definitions/main.SemanticContractsResponse'
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get contract registry
+      tags:
+      - Semantic
+  /api/v1/semantic/flows:
+    get:
+      consumes:
+      - application/json
+      description: Returns normalized value transfers across all asset types (classic
+        payments, Soroban token transfers) with flow type classification
+      parameters:
+      - description: Filter by sender or recipient account (G...)
+        in: query
+        name: account
+        type: string
+      - description: Filter by asset code (e.g., XLM, USDC)
+        in: query
+        name: asset_code
+        type: string
+      - description: 'Filter by flow type: transfer, mint, burn'
+        in: query
+        name: flow_type
+        type: string
+      - description: Only flows before this timestamp (ISO 8601)
+        in: query
+        name: before
+        type: string
+      - description: Only flows after this timestamp (ISO 8601)
+        in: query
+        name: after
+        type: string
+      - description: Maximum results (default 50, max 200)
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: List of value flows
+          schema:
+            $ref: '#/definitions/main.SemanticFlowsResponse'
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get value flows
+      tags:
+      - Semantic
 schemes:
 - https
 securityDefinitions:

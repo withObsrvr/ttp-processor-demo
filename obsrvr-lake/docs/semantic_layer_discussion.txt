@@ -1,0 +1,3709 @@
+This was posted in the Stellar discord. An on/off ramp for stellar is a regulated entity but what could be the first step on supporting this? 
+
+Hi everyone,
+We are currently building a PoC and we’ve hit an infrastructure roadblock regarding cross-chain bridging into Soroban.
+Our Architecture / Flow:
+1. User initiates from a Crossmint Smart Account on Base.
+2. Bridge USDC to a Crossmint Smart Account on Stellar (Soroban).
+3. The Stellar Smart Account then interacts with Defindex.
+The Problem:
+We’ve been testing the bridging layer using Allbridge and Near Intents, but both confirmed they do not support bridging directly to a Soroban Smart Contract address. Their systems still rely on classic Stellar account architecture and look for traditional manual trustlines before releasing funds, which obviously fails or isn't supported when the destination is a Smart Contract
+My questions are:
+1. Are there any bridges currently live that support sending assets directly to a Soroban Smart Contract address?
+2. If direct bridging isn't supported yet, what is the recommended design pattern for this flow? Are devs currently bridging to a classic Stellar account first, and then using a relayer/bot/contract to forward the funds to the Smart Account and execute the next steps?
+
+Technically, the first step is **not** “become the ramp.” It is to support the pattern that lets regulated ramps and bridges **land assets into a Soroban-aware destination safely**.
+
+What the protocol already gives you is important:
+
+Stellar’s **Address** type can represent a classic account, a custom Soroban account, or an arbitrary contract address, so Soroban is already designed around more than classic `G...` accounts. ([developers.stellar.org][1])
+
+Also, the **Stellar Asset Contract (SAC)** explicitly supports assets being held by both **accounts and contracts**. Stellar’s docs say the SAC can interact with assets held by Stellar accounts **or contracts**, and that transfers between an account and a contract debit the account trustline and credit contract data, or vice versa. ([developers.stellar.org][2]) Once the SAC for an asset is deployed, any contract can hold, receive, and send that asset. ([developers.stellar.org][3])
+
+So the blocker here is not Soroban itself. The blocker is that bridge/ramp implementations and wallet abstractions still often assume a **classic-wallet deposit model**. That lines up with what you saw from NEAR Intents: their Stellar support is documented in terms of **SEP-53 Stellar wallets**, not Soroban smart-account destinations. ([docs.near-intents.org][4]) Crossmint’s Stellar smart account is also clearly a Soroban smart-contract account system, not a classic account wrapper. ([GitHub][5])
+
+My read is this:
+
+**Direct bridge-to-Soroban-smart-account support is still immature or inconsistent.** I did not find strong evidence from current public docs that Allbridge or NEAR Intents broadly support “send directly to arbitrary Soroban smart-account/contract address and complete delivery there” as a standard production flow. What I *did* find is that Allbridge has Soroban-native bridge contracts and plumbing on Stellar, which shows the chain-side pieces exist, but that is different from universal destination support for smart-account addresses. ([allbridge.io][6])
+
+Because of that, the best current design pattern is usually:
+
+1. **Bridge into a classic Stellar account you control**
+2. Ensure the needed asset’s **SAC is deployed**
+3. Have a **relayer/orchestrator** submit a Soroban invocation that moves funds from that landing account into the smart account / contract
+4. In the same transaction or next step, call Defindex
+
+That is the most practical first implementation because it works with today’s bridge assumptions while still ending in the Soroban-native flow.
+
+My opinion is that the **first thing to support** for this ecosystem problem is a **Soroban-aware settlement adapter**, not a full regulated on/off ramp. Concretely, that means building:
+
+* a **landing-account pattern** for each supported asset/network
+* an **asset/SAC registry** so you know whether the asset can be forwarded contract-to-contract
+* a **forwarder/relayer service** that watches the landing account, validates arrival, and invokes the smart-account/Defindex flow
+* optional **memo / intent correlation** so a bridge deposit can be matched to a specific Soroban execution request
+
+That becomes valuable infrastructure for regulated ramps, wallets, and bridges without you being the regulated fiat endpoint yourself.
+
+If I were defining the “first step” product-wise, I would make it:
+
+**“Soroban Deposit Forwarder”**
+
+* Input: bridged funds arrive at a classic Stellar settlement account
+* Logic: detect deposit, verify asset + amount + source mapping
+* Action: invoke SAC transfer into the Soroban smart account, then call the target protocol
+* Output: one reliable bridge-to-Soroban execution path
+
+That solves the immediate pain in the Discord post.
+
+For the two questions in that thread, I would answer them like this:
+
+**1. Are there live bridges that support sending directly to a Soroban smart contract address?**
+I would treat that as **not reliably supported today** unless a specific provider confirms it for your exact address type and asset. Soroban itself supports contract-held balances through SAC, but public bridge docs still appear more aligned with wallet/classic-account flows than arbitrary smart-account destinations. ([docs.near-intents.org][4])
+
+**2. What is the recommended design pattern right now?**
+Yes: **bridge to a classic account first, then forward via a relayer/bot/contract into the smart account and continue execution.** That is the safest near-term pattern because it matches current bridge expectations while still using Soroban correctly.
+
+For Obsrvr specifically, this could turn into a real support surface:
+
+* monitor landing accounts in near real time
+* decode incoming bridge settlements
+* resolve asset-to-SAC mappings
+* trigger the forwarding invocation
+* expose status APIs and webhooks for “deposit detected / forwarded / Defindex step executed / failed”
+
+That is a very plausible first infrastructure product around ramps without touching the regulated fiat edge yourself.
+
+If you want, I can turn this into a short Discord reply you can post.
+
+[1]: https://developers.stellar.org/docs/learn/fundamentals/contract-development/types/built-in-types "Built-in types used as smart contract inputs and outputs."
+[2]: https://developers.stellar.org/docs/tokens/stellar-asset-contract "Use Issued Assets in Smart Contracts with the Stellar Asset Contract (SAC) | Stellar Docs"
+[3]: https://developers.stellar.org/docs/tools/cli/cookbook/deploy-stellar-asset-contract "Deploy the Stellar Asset Contract for a Stellar asset | Stellar Docs"
+[4]: https://docs.near-intents.org/resources/chain-support "Supported Chains - NEAR Intents"
+[5]: https://github.com/Crossmint/stellar-smart-account "GitHub - Crossmint/stellar-smart-account · GitHub"
+[6]: https://allbridge.io/assets/docs/reports/24-01-1500-REP-Allbridge%20Soroban%20Bridge-v1.2.pdf "Allbridge Soroban Bridge"
+
+
+Stellar put out an RFP around this: 
+
+Stellar Community Fund - Handbook
+Search…
+
+More
+
+Ask
+
+SCF AWARDS
+Build Award
+RFP Track
+The RFP (Request for Proposals) Track funds developer tooling that solves known problems in the ecosystem. These submissions must align with an active SCF RFP.
+
+✅ Who This Track Is For:
+Devs and teams building tools, SDKs, APIs, explorers, or testing infra
+
+Experienced builders solving problems for other developers
+
+🚫 Who This Track Is Not For
+Builders without much prior experience in domain or the Stellar ecosystem
+
+→ Better fit for Instawards
+
+Teams building apps, protocols, or integrations for end users
+→ Consider either the Open Track or Integration Track, depending on your focus
+
+Teams proposing a tooling idea not aligned with an active RFP
+→  Wait for a future RFP that matches your concept
+
+📋 Requirements
+Your submission must address an open RFP from the current quarter—read the RFP carefully and respond directly to its needs.
+
+You must clearly show:
+
+Why you’re a good fit to solve this (provide examples of past dev-focused work if possible)
+
+What makes your solution technically strong
+
+Clear, testable milestones 
+
+How your tool will be maintained post-launch
+
+Current Open RFPs
+RFPs are sourced from ideas submitted by the Stellar ecosystem, selected by Delegates through the SCF Quarterly Process, and published here at the start of each quarter:
+
+C-Address Tooling & Onboarding
+Added: Q1 2026
+
+1. Scope of Work
+Well-researched approach with reference/example implementation with onboarding flow on how to easily fund a C-address (Soroban Smart Account) without first using a traditional G-address.
+
+2. Background & Context
+The shift to C-addresses (Soroban smart accounts) is critical for next-generation dApps on Stellar, but two major adoption blockers persist: 1) the inability to easily fund a C-address without first using a traditional G-address, and a2) a lack of core, modern mobile tooling around the Smart Account standard by OpenZeppelin. This technical friction limits the utility of C-addresses for end-users and exchanges.
+
+3. Requirements
+C-Address Onboarding/Funding Solution with G-to-C Seamless Bridge: A protocol or service that enables the direct funding of a C-address using G-addresses, CEX withdrawals, and  possibly off-ramp solutions (e.g., a proxy service routing from credit card to G-address to C-address). The goal is to make the G-address step transparent or unnecessary for the end-user.
+
+Viable C-Address Wallet: A reference implementation of a production level wallet to showcase the tooling and standard at parity with the Freighter wallet, including support showing all tokens held, history of transfers. 
+
+Onboarding Kit/UX Flow: Develop a standard, open-source "onboarding kit" that creates a standard user experience flow for wallet providers/Stellar wallets. This kit should encompass:
+
+A seamless flow for C-address creation, asset bridging, adding assets, and funding with XLM for fees.
+
+Easy integrations with existing bridges when selecting a Stellar wallet.
+
+An onboarding flow that supports funding a C-address from a standard G-address or CEX withdrawal.
+
+Wishlist Item: The onboarding flow should allow users to sign in with other ecosystem wallets (e.g., Metamask, Phantom, Rabby, etc.), derive a new address, and then proceed through the funding flow, potentially funding their account/adding assets based on policies like address activity.
+
+Associated tooling for building on and with C-address wallets as part of the reference implementation on the web and on mobile
+
+Approach and structure needs to be designed with input from potential users (such as Ecosystem wallets)
+
+The implementation should be fully Open Source
+
+4. Evaluation Criteria
+High technical capability and proven experience building on both Stellar operations and Soroban smart contracts
+
+Ecosystem alignment and demonstrated ability and willingness to connect with the existing ecosystem (wallets) as they’d be the potential users of this
+
+Coherent integration plan and timeline
+
+5. Expected Deliverables
+Smart contracts
+
+SDKs or libraries
+
+Documentation
+
+Test suite
+
+Audit fixes
+
+Production-ready version
+
+Example integrations
+
+Tillman, this RFP is actually **much bigger than it appears on the surface**, and you are unusually well positioned to solve it because of the infrastructure you already run (Radar, ingestion pipelines, Flow, API endpoints). Let me break down what Stellar is *really asking for* and what the **minimal winning solution** looks like.
+
+---
+
+# What the RFP Is Actually Asking For
+
+The problem statement is deceptively simple:
+
+> “Fund a C-address without using a G-address.”
+
+But technically, this is not really possible at the protocol layer today.
+
+Soroban **C-addresses are contracts**, not accounts in the classic ledger model. They cannot:
+
+* receive **classic Stellar payments**
+* hold **trustlines**
+* receive **CEX withdrawals**
+* receive **bridge transfers**
+
+because almost all infrastructure assumes a **G-address** destination.
+
+So the ecosystem needs an **abstraction layer** that hides this limitation.
+
+The real requirement is:
+
+**Create a system where users think they are funding a C-address, even though the funds land in a temporary G-account and are forwarded automatically.**
+
+In other words:
+
+> **Make the G-address invisible.**
+
+This is exactly the architecture pattern we discussed earlier with relayers.
+
+---
+
+# The Architecture Stellar Is Expecting
+
+The most realistic architecture looks like this.
+
+```
+User / CEX / Bridge
+        │
+        │ withdraw to deposit address
+        ▼
+Temporary G Address (deposit account)
+        │
+        │ detected by service
+        ▼
+Forwarder Service / Relayer
+        │
+        │ Soroban invocation
+        ▼
+C Address (Smart Account)
+        │
+        ▼
+Target protocol (DeFindex etc)
+```
+
+From the user's perspective:
+
+```
+Send → C Address
+```
+
+But behind the scenes:
+
+```
+Send → Deposit Account → Smart Account
+```
+
+This is **exactly how many rollups and smart wallets already work**.
+
+---
+
+# Why This RFP Exists
+
+Right now the Stellar ecosystem has three major blockers:
+
+### 1. Bridges don't support C-addresses
+
+As the Discord user discovered:
+
+* Allbridge
+* NEAR Intents
+* others
+
+still assume **classic trustlines**.
+
+---
+
+### 2. CEX withdrawals require G-addresses
+
+Exchanges will not change this anytime soon.
+
+They require:
+
+* `G...` address
+* optional memo
+
+---
+
+### 3. Wallet infrastructure is immature
+
+Freighter still focuses on **classic accounts**, not **smart accounts**.
+
+---
+
+So Stellar needs **developer tooling to bridge the gap.**
+
+---
+
+# The Minimal Winning Proposal
+
+The winning SCF proposal will likely include **four components**.
+
+---
+
+# 1. C-Address Funding Proxy
+
+Core system.
+
+### Responsibilities
+
+* Generate **deposit G-address**
+* Map deposit address → target C-address
+* Watch ledger for incoming payments
+* Trigger forwarding transaction
+
+### Forwarding flow
+
+```
+Payment received
+   │
+   ▼
+Invoke smart contract
+   │
+   ▼
+Transfer asset → C-address
+```
+
+This can be done with **Stellar Asset Contracts (SAC)**.
+
+---
+
+# 2. Smart Contract Forwarder
+
+A Soroban contract that:
+
+* receives assets
+* credits the smart account
+* optionally executes next action
+
+Example interface:
+
+```
+deposit_and_execute(
+    asset,
+    amount,
+    c_address,
+    payload
+)
+```
+
+This enables flows like:
+
+```
+fund wallet
+swap
+stake
+deposit
+```
+
+---
+
+# 3. C-Address Wallet Reference Implementation
+
+This is basically:
+
+**Freighter but smart-account native**
+
+Needs:
+
+* transaction history
+* token balances
+* contract calls
+* asset management
+* gas management
+
+Important:
+
+It proves the onboarding flow works.
+
+---
+
+# 4. Onboarding SDK
+
+This is actually the most important part of the RFP.
+
+Wallets and apps should be able to do:
+
+```
+createSmartAccount()
+getDepositAddress()
+waitForFunding()
+activateWallet()
+```
+
+Example SDK flow:
+
+```
+const wallet = await createSmartAccount()
+
+const depositAddress = await wallet.getFundingAddress()
+
+showDepositInstructions(depositAddress)
+
+await wallet.waitForFunding()
+
+wallet.activate()
+```
+
+---
+
+# Where You Have a Massive Advantage
+
+Because of **Obsrvr infrastructure**, you already have pieces that others would need months to build.
+
+You already have:
+
+### Real-time ledger ingestion
+
+via:
+
+* Flow
+* ingestion pipelines
+* DuckDB lake
+
+Which means you can **detect deposits faster** than Horizon polling.
+
+---
+
+### Event infrastructure
+
+Flow pipelines could easily do:
+
+```
+ledger → payment event → trigger forwarder
+```
+
+---
+
+### API layer
+
+You could expose:
+
+```
+POST /c-address/create
+GET /c-address/deposit-address
+GET /c-address/status
+```
+
+---
+
+### Explorer infrastructure
+
+Radar can visualize:
+
+```
+Deposit account
+Forwarding transaction
+Smart account state
+```
+
+---
+
+# The Best Way For You To Pitch This
+
+Your proposal should not be:
+
+> “We built a wallet”
+
+That is too small.
+
+Instead pitch:
+
+# Soroban Smart Account Onboarding Infrastructure
+
+Components:
+
+1. **C-Address Funding Proxy**
+2. **Deposit Detection Engine**
+3. **Smart Account Forwarder Contracts**
+4. **Onboarding SDK**
+5. **Reference Wallet**
+6. **Explorer support**
+
+---
+
+# Where Obsrvr Fits Perfectly
+
+Your platform could run the **deposit detection network**.
+
+Think of it as:
+
+**"Stripe for funding smart accounts."**
+
+Flow pipeline example:
+
+```
+stellar-ledger
+     │
+     ▼
+payment processor
+     │
+     ▼
+deposit matcher
+     │
+     ▼
+forwarder trigger
+```
+
+---
+
+# The Real Opportunity (Most Builders Will Miss)
+
+Most teams will build:
+
+```
+Wallet + forwarding script
+```
+
+That's a **toy implementation**.
+
+The real infrastructure is:
+
+### C-Address Funding Network
+
+Which provides:
+
+* funding
+* bridging
+* monitoring
+* APIs
+* SDKs
+
+for the entire ecosystem.
+
+---
+
+# If I Were Writing The Winning Proposal
+
+I would call the project:
+
+**Soroban OnRamp**
+
+or
+
+**C-Address Gateway**
+
+Architecture:
+
+```
+┌─────────────────────────┐
+│     Funding Sources     │
+│                         │
+│  CEX                    │
+│  Bridges                │
+│  Wallets                │
+│  Credit Card Ramps      │
+└───────────┬─────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│   C-Address Gateway     │
+│                         │
+│ deposit address mapping │
+│ payment detection       │
+│ relay execution         │
+└───────────┬─────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│ Soroban Smart Accounts  │
+│                         │
+│ wallets                 │
+│ protocols               │
+└─────────────────────────┘
+```
+
+---
+
+# Why This Could Actually Win
+
+You already satisfy **two key evaluation criteria**.
+
+### Proven ecosystem work
+
+You have:
+
+* Radar
+* Flow
+* Stellar infrastructure
+* analytics
+
+Very few teams do.
+
+---
+
+### Technical capability
+
+This requires:
+
+* Stellar ops knowledge
+* Soroban contracts
+* relayer infrastructure
+
+Most devs only know **one side of that stack**.
+
+You know both.
+
+---
+
+# My Strong Recommendation
+
+Submit **two SCF proposals this cycle**:
+
+1️⃣ **Prism (Soroban Explorer)**
+2️⃣ **C-Address Funding Infrastructure**
+
+They reinforce each other.
+
+Explorer helps debug smart accounts.
+
+Funding infrastructure enables adoption.
+
+Together they position Obsrvr as:
+
+> **The developer infrastructure layer for Soroban.**
+
+---
+
+If you'd like, I can also show you something extremely important most people will miss in this RFP:
+
+**Why the real solution is actually an ERC-4337 style "Account Abstraction Bundler" for Stellar.**
+
+And interestingly… **Soroban smart accounts are already halfway there.**
+
+
+
+One thing that I've been thinking about with Obsrvr lake is if I have the right table setup. I've been following the hubble structure but I'm not sure if there is a better structure for dealing with soroban.
+
+https://developers.stellar.org/docs/data/analytics/hubble/data-catalog/data-dictionary/bronze
+
+
+Yes — I think there **is** a better structure for dealing with Soroban than simply mirroring Hubble Bronze one-for-one.
+
+My opinion is:
+
+**Keep Hubble compatibility in Bronze, but do not let Bronze define your Soroban product model.**
+Use Bronze as the raw ingestion contract, then make Silver and Gold much more Soroban-native.
+
+Why I say that:
+
+Hubble’s own docs describe Bronze as the place for **deep dives into raw Stellar data** and explicitly say to check whether Silver or Gold already fit the use case first, because Bronze is large and expensive to query. ([developers.stellar.org][1])
+
+And Hubble already hints at the right direction for Soroban in Silver:
+
+* `contract_data_current` is just the latest-state filter of Bronze contract data. ([developers.stellar.org][2])
+* `enriched_history_operations_soroban` exists as a Soroban-focused Silver table. ([developers.stellar.org][3])
+* `token_transfers_raw` includes Soroban-aware fields like `contract_id`. ([developers.stellar.org][4])
+
+So the signal from Stellar’s own model is not “do everything in Bronze.” It is closer to:
+
+**raw contract facts in Bronze → usable Soroban models in Silver.**
+
+For Obsrvr Lake specifically, your current internal direction already reflects that split: Bronze mirrors native/raw data, while Silver is meant to be analytics-ready and denormalized. Your draft model already puts Soroban primitives like `contract_events_stream_v1`, `contract_data_snapshot_v1`, `contract_code_snapshot_v1`, and `ttl_snapshot_v1` in Bronze, and then introduces Silver tables like `enriched_history_operations_soroban`, `token_transfers_raw`, and `contract_invocations_raw`.  
+
+That is the right instinct. I would just push it further.
+
+## What I would change
+
+I would organize Soroban around **three separate concerns** instead of one flat “Soroban support” bucket:
+
+### 1. Execution
+
+This is “what happened in a transaction.”
+
+Keep raw transaction and operation facts in Bronze, because Hubble’s Bronze `history_transactions` already exposes Soroban fee/resource fields like `resource_fee`, `rent_fee_charged`, and instruction/read/write byte counts. `history_operations` also carries Soroban function details and decoded parameters. ([developers.stellar.org][5])
+
+But in Silver, create a first-class execution layer:
+
+* `contracts.invocations`
+* `contracts.invocation_edges`
+* `contracts.authz`
+* `contracts.tx_execution_summary`
+
+This is where Obsrvr can be much better than Hubble. Your own docs already position call graphs, caller/callee analysis, and function-level analytics as the differentiator. 
+
+### 2. State
+
+This is “what storage exists now, and how did it change.”
+
+Hubble Bronze `contract_data` is useful, but it is still fundamentally a raw storage-entry table with keys, values, durability, ledger change flags, and XDR/decoded fields. Its natural key is `ledger_key_hash, closed_at`, partitioned by `closed_at`, and clustered by `last_modified_ledger, contract_id`. ([developers.stellar.org][6])
+
+That is good for raw fidelity, but not ideal as your main Soroban analytic surface.
+
+For Silver, I would separate:
+
+* `contracts.storage_current`
+* `contracts.storage_snapshot`
+* `contracts.storage_changes`
+* `contracts.ttl_current`
+* `contracts.ttl_changes`
+* `contracts.code_current`
+
+This matters because Soroban state is not just “data rows.” TTL, restoration, eviction, and code lifecycle are part of the actual product surface. Hubble Bronze has dedicated tables for TTL, restored keys, and evicted keys, which is a clue that Soroban state needs lifecycle modeling, not just a generic storage table. ([developers.stellar.org][7])
+
+### 3. Asset movement
+
+This is “who got paid, in what token, by what mechanism.”
+
+This is where many schemas get messy. If you rely only on classic `history_operations`, Soroban token movement becomes harder to reason about.
+
+Hubble already moves in the right direction with `token_transfers_raw` in Silver, which normalizes transfers and includes `contract_id`. ([developers.stellar.org][4])
+
+So for Obsrvr, I would make token movement a separate Soroban-ready domain:
+
+* `assets.token_transfers`
+* `assets.token_balances_current`
+* `assets.token_holders_current`
+* `assets.token_holders_daily`
+
+That gives you one unified model for:
+
+* classic payments
+* path payment outcomes
+* SAC transfers
+* smart account funding flows
+* DEX / protocol movements
+
+## The structural mistake I would avoid
+
+I would **not** let `contract_data` become your main Soroban table.
+
+That table is necessary, but by itself it leads people into low-level key/value archaeology. It is a storage substrate, not a product model.
+
+If Obsrvr Lake wants to be Soroban-first, the user should more naturally query:
+
+* contract invocations
+* function calls
+* event emissions
+* state changes
+* token transfers
+* smart account activity
+* contract relationships
+
+not just:
+
+* raw operations
+* raw events
+* raw contract_data rows
+
+Your own standards doc is already pointing there. It recommends adopting Hubble’s core schema structure, but then differentiating with real-time streaming, Soroban event decoding, and Gold-layer Soroban analytics like invocation volume, top contracts by gas, and smart wallet activity.  
+
+## My recommendation for Obsrvr Lake
+
+I would use this shape:
+
+### Bronze
+
+Stay close to Hubble and ledger truth.
+
+Keep:
+
+* ledgers
+* transactions
+* operations
+* effects
+* trades
+* contract_events
+* contract_data
+* contract_code
+* ttl
+* evicted_keys
+* restored_keys
+
+That aligns with both Stellar’s current Bronze catalog and your own draft Bronze layer. ([developers.stellar.org][6]) 
+
+### Silver
+
+Split into domains instead of a generic flat layer.
+
+I would use namespaces like:
+
+* `core.*` for Hubble-compatible history/current tables
+* `contracts.*` for Soroban execution/state
+* `assets.*` for token movement and balances
+* `accounts.*` for smart-account and actor-centric views
+
+Examples:
+
+* `core.history_transactions`
+* `core.history_operations`
+* `contracts.invocations`
+* `contracts.invocation_edges`
+* `contracts.events_enriched`
+* `contracts.storage_current`
+* `contracts.storage_changes`
+* `contracts.ttl_current`
+* `assets.token_transfers`
+* `accounts.smart_account_activity`
+
+### Gold
+
+Make this the Soroban product layer.
+
+Examples:
+
+* top contracts by gas
+* top contracts by invocations
+* contract retention / churn
+* smart account funding funnels
+* protocol usage by function
+* cross-contract dependency graphs
+* contract failure rates
+* rent / TTL pressure metrics
+
+That is also consistent with your own Gold ideas like `contracts.invocation_volume_daily_v1`, `contracts.top_contracts_by_gas_daily_v1`, and `contracts.smart_wallet_activity_daily_v1`. 
+
+## The simple rule I would follow
+
+**Hubble for compatibility. Obsrvr for semantics.**
+
+Meaning:
+
+* In **Bronze**, copy Hubble’s grain and naming wherever practical.
+* In **Silver**, stop thinking in terms of raw ledger tables and start thinking in terms of **developer questions**.
+* In **Gold**, optimize for **product surfaces and APIs**, especially Soroban-native ones.
+
+That is why I would not abandon the Hubble structure, but I also would not stop at it.
+
+The best version of Obsrvr Lake is probably:
+
+> **Hubble-compatible at the foundation, Soroban-native in the serving layer.**
+
+That gives you:
+
+* easier migration from Hubble
+* lower cognitive overhead for people who already know Stellar analytics
+* a much stronger position for smart contracts, smart accounts, and protocol analytics
+
+If you want, I can sketch a concrete proposed schema tree for Obsrvr Lake showing exactly which Soroban tables belong in Bronze, Silver, and Gold.
+
+[1]: https://developers.stellar.org/docs/data/analytics/hubble/data-catalog/data-dictionary/bronze?utm_source=chatgpt.com "Bronze 🥉 | Stellar Docs"
+[2]: https://developers.stellar.org/docs/data/analytics/hubble/data-catalog/data-dictionary/silver/contract-data-current?utm_source=chatgpt.com "Contract Data Current"
+[3]: https://developers.stellar.org/docs/data/analytics/hubble/data-catalog/data-dictionary/silver/enriched-history-operations-soroban?utm_source=chatgpt.com "Enriched History Operations Soroban"
+[4]: https://developers.stellar.org/docs/data/analytics/hubble/data-catalog/data-dictionary/silver/token-transfers-raw?utm_source=chatgpt.com "Token Transfers"
+[5]: https://developers.stellar.org/docs/data/analytics/hubble/data-catalog/data-dictionary/bronze/history-transactions?utm_source=chatgpt.com "History Transactions"
+[6]: https://developers.stellar.org/docs/data/analytics/hubble/data-catalog/data-dictionary/bronze/contract-data?utm_source=chatgpt.com "Contract Data | Stellar Docs"
+[7]: https://developers.stellar.org/docs/data/analytics/hubble/data-catalog/data-dictionary/bronze/ttl?utm_source=chatgpt.com "TTL | Stellar Docs"
+
+
+
+Sketch a concrete proposed schema tree for Obsrvr Lake showing exactly which Soroban tables belong in Bronze, Silver, and Gold
+
+
+Absolutely. Here is a **concrete proposed schema tree** for a **Soroban-capable Obsrvr Lake** that keeps **Hubble compatibility where it matters** while making the serving layers much more useful for smart contracts, smart accounts, token contracts, and protocol analytics.
+
+This proposal is grounded in your current Lake model, where Bronze mirrors raw Stellar-native structures and Silver already includes Soroban-focused tables like `enriched_history_operations_soroban`, `token_transfers_raw`, and `contract_invocations_raw`.    It also follows your own standards work: keep core compatibility with Hubble naming and structure, then differentiate with Soroban analytics, ABI-aware decoding, smart wallet tracking, and cross-contract graphs.  
+
+## Design rule
+
+My recommendation is:
+
+**Bronze = raw truth**
+**Silver = canonical, queryable semantic model**
+**Gold = product-facing metrics and reusable datasets**
+
+That matches your data culture brief, which defines Bronze as immutable raw ledger data, Silver as canonical normalized tables, and Gold as aggregated, query-ready domain datasets. 
+
+---
+
+# Proposed schema tree for Obsrvr Lake
+
+```text
+lake
+├── bronze
+│   ├── core
+│   │   ├── ledgers_row_v2
+│   │   ├── transactions_row_v2
+│   │   ├── operations_row_v2
+│   │   ├── effects_row_v1
+│   │   ├── trades_row_v1
+│   │   ├── accounts_snapshot_v1
+│   │   ├── trustlines_snapshot_v1
+│   │   ├── account_signers_snapshot_v1
+│   │   ├── native_balances_snapshot_v1
+│   │   ├── offers_snapshot_v1
+│   │   ├── liquidity_pools_snapshot_v1
+│   │   ├── claimable_balances_snapshot_v1
+│   │   └── config_settings_snapshot_v1
+│   │
+│   └── contracts
+│       ├── contract_events_stream_v1
+│       ├── contract_data_snapshot_v1
+│       ├── contract_code_snapshot_v1
+│       ├── ttl_snapshot_v1
+│       ├── evicted_keys_state_v1
+│       └── restored_keys_state_v1
+│
+├── silver
+│   ├── core
+│   │   ├── history_ledgers_row_v1
+│   │   ├── history_transactions_row_v1
+│   │   ├── history_operations_row_v1
+│   │   ├── history_effects_row_v1
+│   │   ├── history_trades_row_v1
+│   │   ├── accounts_current_v1
+│   │   ├── trustlines_current_v1
+│   │   ├── liquidity_pools_current_v1
+│   │   ├── offers_current_v1
+│   │   ├── account_signers_current_v1
+│   │   ├── native_balances_current_v1
+│   │   ├── enriched_history_operations_v1
+│   │   └── enriched_history_operations_soroban_v1
+│   │
+│   ├── contracts
+│   │   ├── contract_events_row_v1
+│   │   ├── contract_events_decoded_v1
+│   │   ├── contract_data_current_v1
+│   │   ├── contract_data_history_v1
+│   │   ├── contract_storage_changes_row_v1
+│   │   ├── contract_code_current_v1
+│   │   ├── contract_ttl_current_v1
+│   │   ├── contract_ttl_history_v1
+│   │   ├── contract_invocations_raw_v1
+│   │   ├── contract_invocations_enriched_v1
+│   │   ├── contract_call_edges_v1
+│   │   ├── contract_call_trees_v1
+│   │   ├── contract_auth_invocations_v1
+│   │   ├── contract_failures_v1
+│   │   ├── contract_metrics_current_v1
+│   │   └── smart_accounts_current_v1
+│   │
+│   ├── assets
+│   │   ├── token_transfers_raw_v1
+│   │   ├── token_transfers_enriched_v1
+│   │   ├── token_balances_current_v1
+│   │   ├── token_holders_current_v1
+│   │   ├── token_metadata_current_v1
+│   │   ├── sac_contract_registry_v1
+│   │   └── asset_movements_unified_v1
+│   │
+│   ├── accounts
+│   │   ├── account_activity_daily_base_v1
+│   │   ├── smart_account_activity_row_v1
+│   │   ├── account_contract_relationships_v1
+│   │   ├── fee_payers_row_v1
+│   │   └── account_funding_paths_v1
+│   │
+│   └── dex
+│       ├── swaps_enriched_v1
+│       ├── liquidity_pool_events_v1
+│       └── orderbook_events_v1
+│
+├── gold
+│   ├── metrics
+│   │   ├── network_activity_hourly_v1
+│   │   ├── network_activity_daily_v1
+│   │   ├── soroban_activity_hourly_v1
+│   │   ├── soroban_activity_daily_v1
+│   │   └── fee_market_daily_v1
+│   │
+│   ├── contracts
+│   │   ├── invocation_volume_daily_v1
+│   │   ├── top_contracts_by_gas_daily_v1
+│   │   ├── top_contracts_by_invocations_daily_v1
+│   │   ├── contract_failure_rates_daily_v1
+│   │   ├── contract_user_counts_daily_v1
+│   │   ├── contract_retention_cohorts_v1
+│   │   ├── contract_dependency_graph_daily_v1
+│   │   ├── smart_wallet_activity_daily_v1
+│   │   ├── smart_account_funding_funnel_daily_v1
+│   │   └── contract_storage_growth_daily_v1
+│   │
+│   ├── assets
+│   │   ├── token_transfers_daily_v1
+│   │   ├── token_holder_snapshots_daily_v1
+│   │   ├── token_distribution_daily_v1
+│   │   ├── token_velocity_daily_v1
+│   │   └── stablecoin_flow_daily_v1
+│   │
+│   ├── dex
+│   │   ├── swap_volume_daily_v1
+│   │   ├── liquidity_pool_metrics_daily_v1
+│   │   └── orderbook_depth_snapshots_hourly_v1
+│   │
+│   └── accounts
+│       ├── new_accounts_daily_v1
+│       ├── active_accounts_daily_v1
+│       ├── churned_accounts_daily_v1
+│       ├── smart_accounts_new_daily_v1
+│       └── account_segment_daily_v1
+│
+└── _meta
+    ├── _meta_datasets
+    ├── _meta_lineage
+    ├── _meta_quality
+    └── _meta_changes
+```
+
+Your own docs already establish the `_meta_*` tables as foundational and not optional, so I would keep them outside the Bronze/Silver/Gold business domains as system tables.  
+
+---
+
+# What belongs in Bronze
+
+Bronze should stay very close to what you already drafted:
+
+* raw ledger streams
+* raw state snapshots
+* raw Soroban event/state primitives
+
+That matches your current `data-model.md`, which already places `contract_events_stream_v1`, `contract_data_snapshot_v1`, `contract_code_snapshot_v1`, `ttl_snapshot_v1`, `evicted_keys_state_v1`, and `restored_keys_state_v1` in Bronze. 
+
+## Bronze / contracts
+
+These are the Soroban Bronze tables I would keep:
+
+* `contract_events_stream_v1`
+* `contract_data_snapshot_v1`
+* `contract_code_snapshot_v1`
+* `ttl_snapshot_v1`
+* `evicted_keys_state_v1`
+* `restored_keys_state_v1`
+
+### Why these stay in Bronze
+
+Because they are **raw substrate tables**, not user-facing analytics models. They preserve:
+
+* original event emissions
+* storage keys and values
+* code lifecycle
+* TTL state
+* eviction/restoration lifecycle
+
+This also aligns with your Hubble compatibility work, which treats `contract_events` and `contract_data` as the core Soroban foundation. 
+
+---
+
+# What belongs in Silver
+
+Silver is where I think Obsrvr should become distinctly **Soroban-native**.
+
+Your current materials already suggest that Silver is where common questions become easy, denormalized, and API-ready, and where Soroban differentiation like call graphs and contract analytics belongs.  
+
+## Silver / core
+
+These keep Hubble-style compatibility and should remain your canonical base:
+
+* `history_ledgers_row_v1`
+* `history_transactions_row_v1`
+* `history_operations_row_v1`
+* `history_effects_row_v1`
+* `history_trades_row_v1`
+* `accounts_current_v1`
+* `trustlines_current_v1`
+* `liquidity_pools_current_v1`
+* `offers_current_v1`
+* `account_signers_current_v1`
+* `native_balances_current_v1`
+* `enriched_history_operations_v1`
+* `enriched_history_operations_soroban_v1`
+
+This is consistent with your standards work recommending `history_*` and `*_current` naming and using those tables as the canonical Silver foundation.  
+
+## Silver / contracts
+
+This is where the Soroban model should really expand.
+
+### Execution tables
+
+* `contract_invocations_raw_v1`
+* `contract_invocations_enriched_v1`
+* `contract_call_edges_v1`
+* `contract_call_trees_v1`
+* `contract_auth_invocations_v1`
+* `contract_failures_v1`
+
+These are a direct extension of your existing `contract_invocations_raw` concept and your stated differentiation around function-level analytics, callers/callees, and call graphs.  
+
+### Event tables
+
+* `contract_events_row_v1`
+* `contract_events_decoded_v1`
+
+Your standards doc already proposes ABI-aware decoding as a major differentiator, and even sketches decoded event fields like `data_decoded` and `event_name`. 
+
+### State tables
+
+* `contract_data_current_v1`
+* `contract_data_history_v1`
+* `contract_storage_changes_row_v1`
+* `contract_code_current_v1`
+* `contract_ttl_current_v1`
+* `contract_ttl_history_v1`
+
+This is the piece I think you should add more explicitly. Bronze has the raw snapshots, but Silver should expose:
+
+* current state
+* change history
+* TTL change history
+* current deployed code
+
+That gives analysts and app developers a useful contract-state model instead of forcing them to dig through raw storage snapshots.
+
+### Smart-account tables
+
+* `smart_accounts_current_v1`
+* `smart_account_activity_row_v1`
+
+This lines up with your own stated goal of smart wallet analytics and OpenZeppelin primitive tracking.  
+
+## Silver / assets
+
+I would explicitly separate Soroban token movement from generic contract activity.
+
+* `token_transfers_raw_v1`
+* `token_transfers_enriched_v1`
+* `token_balances_current_v1`
+* `token_holders_current_v1`
+* `token_metadata_current_v1`
+* `sac_contract_registry_v1`
+* `asset_movements_unified_v1`
+
+This builds on your current `token_transfers_raw`, which already aims to unify classic and Soroban transfer activity and includes a Soroban token contract field. 
+
+The `sac_contract_registry_v1` table is especially useful because Soroban assets are contract-centric; a registry table makes downstream analytics much cleaner.
+
+## Silver / accounts
+
+I would give accounts their own semantic layer for smart-account onboarding and contract interaction:
+
+* `account_activity_daily_base_v1`
+* `account_contract_relationships_v1`
+* `fee_payers_row_v1`
+* `account_funding_paths_v1`
+
+This becomes helpful for flows like:
+
+* “which account funded this smart account?”
+* “which fee payer is sponsoring these invocations?”
+* “what contracts does this account interact with most?”
+
+---
+
+# What belongs in Gold
+
+Gold should be the delivery layer for reusable insights, not raw mechanics. That is exactly how your data-culture docs define it. 
+
+Your standards analysis already names several Gold datasets, including `contracts.invocation_volume_daily_v1`, `contracts.top_contracts_by_gas_daily_v1`, and `contracts.smart_wallet_activity_daily_v1`. 
+
+## Gold / contracts
+
+I would include:
+
+* `invocation_volume_daily_v1`
+* `top_contracts_by_gas_daily_v1`
+* `top_contracts_by_invocations_daily_v1`
+* `contract_failure_rates_daily_v1`
+* `contract_user_counts_daily_v1`
+* `contract_retention_cohorts_v1`
+* `contract_dependency_graph_daily_v1`
+* `smart_wallet_activity_daily_v1`
+* `smart_account_funding_funnel_daily_v1`
+* `contract_storage_growth_daily_v1`
+
+These are the tables that make Obsrvr feel “Soroban-first” rather than merely “Hubble-compatible.”
+
+## Gold / assets
+
+* `token_transfers_daily_v1`
+* `token_holder_snapshots_daily_v1`
+* `token_distribution_daily_v1`
+* `token_velocity_daily_v1`
+* `stablecoin_flow_daily_v1`
+
+This extends the asset analytics direction you already documented. 
+
+## Gold / metrics
+
+* `network_activity_hourly_v1`
+* `network_activity_daily_v1`
+* `soroban_activity_hourly_v1`
+* `soroban_activity_daily_v1`
+* `fee_market_daily_v1`
+
+Your docs already call out network activity metrics as a Gold pattern. 
+
+---
+
+# The most important structural decision
+
+If I had to give one opinionated recommendation, it would be this:
+
+## Do not make `contract_data` the center of the Soroban model
+
+It should exist, but it should not be the main interface people think through.
+
+Instead, organize Soroban around four first-class questions:
+
+### 1. What executed?
+
+* `contract_invocations_*`
+* `contract_call_edges_*`
+* `contract_failures_*`
+
+### 2. What emitted?
+
+* `contract_events_*`
+* `contract_events_decoded_*`
+
+### 3. What state changed?
+
+* `contract_storage_changes_*`
+* `contract_data_current_*`
+* `contract_ttl_*`
+
+### 4. What value moved?
+
+* `token_transfers_*`
+* `token_balances_*`
+* `token_holders_*`
+
+That is how you get from “raw contract support” to “Soroban analytics platform.”
+
+---
+
+# My recommended naming convention adjustment
+
+Your docs show two parallel naming instincts:
+
+* older API-style names like `accounts_current`
+* stronger versioned dataset names like `core.history_ledgers_row_v1` and `metrics.network_activity_daily_v1`  
+
+I would standardize on this:
+
+**`<domain>.<subject>_<grain>_v<major>`**
+
+Examples:
+
+* `contracts.contract_invocations_enriched_v1`
+* `assets.token_transfers_enriched_v1`
+* `contracts.smart_accounts_current_v1`
+
+That is cleaner, versionable, and more consistent with your data-culture naming standard. 
+
+---
+
+# Recommended minimum Soroban MVP
+
+If you want the smallest strong version of this tree, I would launch these first:
+
+## Bronze
+
+* `contracts.contract_events_stream_v1`
+* `contracts.contract_data_snapshot_v1`
+* `contracts.contract_code_snapshot_v1`
+* `contracts.ttl_snapshot_v1`
+
+## Silver
+
+* `core.enriched_history_operations_soroban_v1`
+* `contracts.contract_events_decoded_v1`
+* `contracts.contract_invocations_enriched_v1`
+* `contracts.contract_call_edges_v1`
+* `contracts.contract_data_current_v1`
+* `contracts.contract_ttl_current_v1`
+* `assets.token_transfers_enriched_v1`
+* `contracts.smart_accounts_current_v1`
+
+## Gold
+
+* `contracts.invocation_volume_daily_v1`
+* `contracts.top_contracts_by_gas_daily_v1`
+* `contracts.smart_wallet_activity_daily_v1`
+* `assets.token_transfers_daily_v1`
+
+That would give you a very credible Soroban-first foundation without trying to build everything at once.
+
+---
+
+# Bottom line
+
+My recommended structure is:
+
+**Bronze:** raw Soroban substrate
+**Silver:** execution, events, state, assets, smart accounts
+**Gold:** product metrics, rankings, funnels, cohorts, and protocol analytics
+
+In practical terms:
+
+* keep Hubble compatibility in `silver.core`
+* put Soroban differentiation in `silver.contracts`, `silver.assets`, and `silver.accounts`
+* make Gold the layer that powers APIs, dashboards, and premium analytics
+
+That gives Obsrvr Lake a schema that is not just “Hubble plus extras,” but a real **Soroban-native analytics model**.
+
+I can turn this into a Markdown spec next, with each table getting a one-line purpose, primary key, grain, and upstream dependencies.
+
+
+
+Turn this into a Markdown spec
+
+
+Below is a **formal Markdown specification** for the **Obsrvr Lake Soroban-native schema model**.
+
+This document is designed to be:
+
+* **compatible with Stellar Hubble where possible**
+* **Soroban-first for smart contracts**
+* **usable for APIs, analytics, and Flow pipelines**
+* **versioned and stable**
+
+You can drop this into your repo as something like:
+
+```
+docs/lakehouse/obsrvr-lake-schema.md
+```
+
+---
+
+# Obsrvr Lake — Soroban Data Model Specification
+
+## Overview
+
+Obsrvr Lake implements a **medallion architecture** for Stellar and Soroban data:
+
+```
+Bronze → Silver → Gold
+```
+
+| Layer  | Purpose                                      |
+| ------ | -------------------------------------------- |
+| Bronze | Raw ledger ingestion and immutable snapshots |
+| Silver | Canonical normalized domain tables           |
+| Gold   | Aggregated analytics datasets                |
+
+This structure provides:
+
+* **Hubble compatibility**
+* **Soroban-native analytics**
+* **API-ready datasets**
+* **long-term schema stability**
+
+---
+
+# Naming Convention
+
+All datasets follow the convention:
+
+```
+<domain>.<dataset>_<grain>_v<version>
+```
+
+Example:
+
+```
+contracts.contract_invocations_enriched_v1
+assets.token_transfers_daily_v1
+```
+
+### Dataset components
+
+| Component | Meaning                                               |
+| --------- | ----------------------------------------------------- |
+| domain    | logical grouping (`core`, `contracts`, `assets`, etc) |
+| dataset   | subject of the table                                  |
+| grain     | level of aggregation (`row`, `daily`, `current`)      |
+| version   | schema version                                        |
+
+---
+
+# Data Domains
+
+```
+core        Stellar ledger primitives
+contracts   Soroban smart contract execution/state
+assets      token movement and balances
+accounts    account and smart wallet behavior
+dex         trading activity
+metrics     network level metrics
+_meta       metadata and lineage
+```
+
+---
+
+# Bronze Layer
+
+## Purpose
+
+Bronze tables contain **raw ledger-derived data** with minimal transformation.
+
+Characteristics:
+
+* Immutable
+* Append-only
+* Near real-time ingestion
+* Minimal denormalization
+
+---
+
+# Bronze Schema
+
+```
+lake.bronze
+```
+
+## core domain
+
+### core.ledgers_row_v2
+
+Ledger close information.
+
+**Primary key**
+
+```
+ledger_sequence
+```
+
+**Grain**
+
+```
+1 row per ledger
+```
+
+---
+
+### core.transactions_row_v2
+
+Raw transaction records.
+
+**Primary key**
+
+```
+transaction_hash
+```
+
+**Grain**
+
+```
+1 row per transaction
+```
+
+---
+
+### core.operations_row_v2
+
+Raw operation records.
+
+**Primary key**
+
+```
+operation_id
+```
+
+**Grain**
+
+```
+1 row per operation
+```
+
+---
+
+### core.effects_row_v1
+
+State changes emitted by operations.
+
+**Primary key**
+
+```
+effect_id
+```
+
+---
+
+### core.trades_row_v1
+
+DEX trade events.
+
+---
+
+### core.accounts_snapshot_v1
+
+Ledger snapshots of account state.
+
+---
+
+### core.trustlines_snapshot_v1
+
+Snapshot of asset trustlines.
+
+---
+
+### core.account_signers_snapshot_v1
+
+Account signer configuration.
+
+---
+
+### core.native_balances_snapshot_v1
+
+XLM balance state.
+
+---
+
+### core.offers_snapshot_v1
+
+Orderbook offers.
+
+---
+
+### core.liquidity_pools_snapshot_v1
+
+AMM pool state.
+
+---
+
+### core.claimable_balances_snapshot_v1
+
+Claimable balance entries.
+
+---
+
+### core.config_settings_snapshot_v1
+
+Network configuration state.
+
+---
+
+# Bronze Soroban Domain
+
+```
+lake.bronze.contracts
+```
+
+These tables represent the **raw Soroban substrate**.
+
+---
+
+### contracts.contract_events_stream_v1
+
+Raw Soroban events.
+
+**Primary key**
+
+```
+(event_id, ledger_sequence)
+```
+
+**Grain**
+
+```
+1 row per contract event
+```
+
+---
+
+### contracts.contract_data_snapshot_v1
+
+Snapshot of contract storage entries.
+
+**Primary key**
+
+```
+ledger_key_hash
+```
+
+---
+
+### contracts.contract_code_snapshot_v1
+
+Contract WASM code snapshots.
+
+---
+
+### contracts.ttl_snapshot_v1
+
+Time-to-live metadata for contract storage.
+
+---
+
+### contracts.evicted_keys_state_v1
+
+Contract storage keys removed due to TTL expiration.
+
+---
+
+### contracts.restored_keys_state_v1
+
+Previously evicted storage restored.
+
+---
+
+# Silver Layer
+
+## Purpose
+
+Silver contains **canonical normalized datasets** used for:
+
+* analytics
+* APIs
+* application queries
+
+Silver tables are derived from Bronze.
+
+---
+
+# Silver Schema
+
+```
+lake.silver
+```
+
+---
+
+# Silver Core Domain
+
+```
+lake.silver.core
+```
+
+---
+
+### core.history_ledgers_row_v1
+
+Normalized ledger history.
+
+---
+
+### core.history_transactions_row_v1
+
+Transaction history.
+
+---
+
+### core.history_operations_row_v1
+
+Operation history.
+
+---
+
+### core.history_effects_row_v1
+
+Effect history.
+
+---
+
+### core.history_trades_row_v1
+
+DEX trade history.
+
+---
+
+### core.accounts_current_v1
+
+Latest state of all accounts.
+
+---
+
+### core.trustlines_current_v1
+
+Latest trustline state.
+
+---
+
+### core.liquidity_pools_current_v1
+
+Latest liquidity pool state.
+
+---
+
+### core.offers_current_v1
+
+Latest orderbook offers.
+
+---
+
+### core.account_signers_current_v1
+
+Current signer configuration.
+
+---
+
+### core.native_balances_current_v1
+
+Latest XLM balances.
+
+---
+
+### core.enriched_history_operations_v1
+
+Operations enriched with decoded fields.
+
+---
+
+### core.enriched_history_operations_soroban_v1
+
+Soroban operation enrichment.
+
+Includes:
+
+* contract calls
+* function names
+* decoded parameters
+* resource usage
+
+---
+
+# Silver Contracts Domain
+
+```
+lake.silver.contracts
+```
+
+This is the **primary Soroban analytics layer**.
+
+---
+
+### contracts.contract_events_row_v1
+
+Normalized contract events.
+
+---
+
+### contracts.contract_events_decoded_v1
+
+ABI-decoded events.
+
+Fields may include:
+
+```
+event_name
+contract_id
+topic
+data_decoded
+```
+
+---
+
+### contracts.contract_invocations_raw_v1
+
+Raw contract invocation records.
+
+---
+
+### contracts.contract_invocations_enriched_v1
+
+Enriched invocation data.
+
+Includes:
+
+* caller
+* callee
+* function name
+* gas usage
+* result status
+
+---
+
+### contracts.contract_call_edges_v1
+
+Call graph edges between contracts.
+
+```
+caller_contract → callee_contract
+```
+
+---
+
+### contracts.contract_call_trees_v1
+
+Multi-level call graphs.
+
+---
+
+### contracts.contract_auth_invocations_v1
+
+Authorization relationships for invocations.
+
+---
+
+### contracts.contract_failures_v1
+
+Failed contract calls.
+
+---
+
+### contracts.contract_data_current_v1
+
+Current contract storage state.
+
+---
+
+### contracts.contract_data_history_v1
+
+Historical contract storage.
+
+---
+
+### contracts.contract_storage_changes_row_v1
+
+Storage mutations over time.
+
+---
+
+### contracts.contract_code_current_v1
+
+Current deployed contract code.
+
+---
+
+### contracts.contract_ttl_current_v1
+
+Current TTL status for storage.
+
+---
+
+### contracts.contract_ttl_history_v1
+
+Historical TTL changes.
+
+---
+
+### contracts.smart_accounts_current_v1
+
+Detected Soroban smart accounts.
+
+---
+
+# Silver Assets Domain
+
+```
+lake.silver.assets
+```
+
+---
+
+### assets.token_transfers_raw_v1
+
+Token transfers across Stellar and Soroban.
+
+---
+
+### assets.token_transfers_enriched_v1
+
+Enriched token transfers.
+
+Includes:
+
+```
+sender
+receiver
+token_contract
+amount
+transfer_type
+```
+
+---
+
+### assets.token_balances_current_v1
+
+Latest token balances.
+
+---
+
+### assets.token_holders_current_v1
+
+Token holder distribution.
+
+---
+
+### assets.token_metadata_current_v1
+
+Token metadata.
+
+---
+
+### assets.sac_contract_registry_v1
+
+Registry of Stellar Asset Contracts.
+
+---
+
+### assets.asset_movements_unified_v1
+
+Unified value movement table across:
+
+* payments
+* swaps
+* token transfers
+
+---
+
+# Silver Accounts Domain
+
+```
+lake.silver.accounts
+```
+
+---
+
+### accounts.account_activity_daily_base_v1
+
+Daily account activity.
+
+---
+
+### accounts.smart_account_activity_row_v1
+
+Smart account behavior.
+
+---
+
+### accounts.account_contract_relationships_v1
+
+Account to contract interaction mapping.
+
+---
+
+### accounts.fee_payers_row_v1
+
+Fee sponsor tracking.
+
+---
+
+### accounts.account_funding_paths_v1
+
+Tracks funding flow between accounts.
+
+---
+
+# Silver DEX Domain
+
+```
+lake.silver.dex
+```
+
+---
+
+### dex.swaps_enriched_v1
+
+DEX swap transactions.
+
+---
+
+### dex.liquidity_pool_events_v1
+
+AMM liquidity events.
+
+---
+
+### dex.orderbook_events_v1
+
+Orderbook activity.
+
+---
+
+# Gold Layer
+
+## Purpose
+
+Gold contains **aggregated analytics datasets**.
+
+These power:
+
+* dashboards
+* APIs
+* research
+* ecosystem analytics
+
+---
+
+# Gold Schema
+
+```
+lake.gold
+```
+
+---
+
+# Gold Metrics Domain
+
+### metrics.network_activity_hourly_v1
+
+Hourly network activity.
+
+---
+
+### metrics.network_activity_daily_v1
+
+Daily network activity.
+
+---
+
+### metrics.soroban_activity_hourly_v1
+
+Hourly Soroban usage.
+
+---
+
+### metrics.soroban_activity_daily_v1
+
+Daily Soroban usage.
+
+---
+
+### metrics.fee_market_daily_v1
+
+Network fee metrics.
+
+---
+
+# Gold Contracts Domain
+
+### contracts.invocation_volume_daily_v1
+
+Daily contract invocation counts.
+
+---
+
+### contracts.top_contracts_by_gas_daily_v1
+
+Contracts ranked by gas usage.
+
+---
+
+### contracts.top_contracts_by_invocations_daily_v1
+
+Contracts ranked by call volume.
+
+---
+
+### contracts.contract_failure_rates_daily_v1
+
+Failure rates per contract.
+
+---
+
+### contracts.contract_user_counts_daily_v1
+
+Unique users interacting with contracts.
+
+---
+
+### contracts.contract_retention_cohorts_v1
+
+User retention cohorts.
+
+---
+
+### contracts.contract_dependency_graph_daily_v1
+
+Contract interaction graphs.
+
+---
+
+### contracts.smart_wallet_activity_daily_v1
+
+Smart wallet activity metrics.
+
+---
+
+### contracts.smart_account_funding_funnel_daily_v1
+
+Smart account onboarding flow.
+
+---
+
+### contracts.contract_storage_growth_daily_v1
+
+Growth of contract storage usage.
+
+---
+
+# Gold Assets Domain
+
+### assets.token_transfers_daily_v1
+
+Daily token transfer metrics.
+
+---
+
+### assets.token_holder_snapshots_daily_v1
+
+Daily token holder snapshots.
+
+---
+
+### assets.token_distribution_daily_v1
+
+Token supply distribution.
+
+---
+
+### assets.token_velocity_daily_v1
+
+Token circulation velocity.
+
+---
+
+### assets.stablecoin_flow_daily_v1
+
+Stablecoin movement metrics.
+
+---
+
+# Gold DEX Domain
+
+### dex.swap_volume_daily_v1
+
+DEX swap volume.
+
+---
+
+### dex.liquidity_pool_metrics_daily_v1
+
+AMM pool statistics.
+
+---
+
+### dex.orderbook_depth_snapshots_hourly_v1
+
+Orderbook depth snapshots.
+
+---
+
+# Metadata Tables
+
+```
+lake._meta
+```
+
+---
+
+### _meta._meta_datasets
+
+Dataset registry.
+
+---
+
+### _meta._meta_lineage
+
+Pipeline lineage tracking.
+
+---
+
+### _meta._meta_quality
+
+Data quality metrics.
+
+---
+
+### _meta._meta_changes
+
+Schema change history.
+
+---
+
+# Soroban Design Principles
+
+The Soroban model is built around **four primary analytical questions**.
+
+### Execution
+
+What contract calls executed?
+
+Tables:
+
+```
+contract_invocations
+contract_call_edges
+contract_failures
+```
+
+---
+
+### Events
+
+What events were emitted?
+
+Tables:
+
+```
+contract_events
+contract_events_decoded
+```
+
+---
+
+### State
+
+What contract state changed?
+
+Tables:
+
+```
+contract_storage_changes
+contract_data_current
+contract_ttl
+```
+
+---
+
+### Value Movement
+
+What value moved?
+
+Tables:
+
+```
+token_transfers
+token_balances
+token_holders
+```
+
+---
+
+# Implementation Notes
+
+Recommended engines:
+
+```
+DuckDB
+Iceberg / DuckLake
+Parquet storage
+```
+
+Recommended partitioning:
+
+```
+ledger_sequence
+date
+contract_id
+asset
+```
+
+---
+
+# Final Architecture
+
+```
+Bronze
+   raw ledger ingestion
+
+Silver
+   canonical blockchain model
+
+Gold
+   analytics + product datasets
+```
+
+---
+
+If you'd like, I can also show you something that would **dramatically simplify this schema** and make Obsrvr Lake **feel more like Databricks Lakebase or Snowflake Cortex** while still supporting all of Soroban.
+
+It involves introducing **one additional layer that most blockchain data platforms are missing.**
+
+
+
+yes, show me something that would dramatically simplify this schema that other data platforms are missing
+
+
+Yes. The missing layer is a **semantic serving layer** sitting **above Silver and below Gold**.
+
+My opinion is that most blockchain data platforms stop too early:
+
+```text
+Bronze → Silver → Gold
+```
+
+That is good for data engineering, but not good enough for product ergonomics.
+
+The layer I would add is:
+
+```text
+Bronze → Silver → Semantic → Gold
+```
+
+Or, if you want to keep the medallion story intact publicly:
+
+```text
+Bronze → Silver → Gold
+               └── semantic serving model inside Gold
+```
+
+## What this layer is
+
+It is not “another copy of the data.”
+
+It is a **contract of meaning**:
+
+* canonical entities
+* reusable business logic
+* stable metrics definitions
+* intent-based query surfaces
+* graph and state abstractions
+
+In other words, instead of forcing every consumer to know:
+
+* which Silver tables to join
+* how Soroban state should be reconstructed
+* how to interpret smart accounts
+* how to unify classic payments and SAC transfers
+
+you give them a small set of **first-class concepts**.
+
+That fits your own architecture philosophy very well, because your docs already position Silver as the canonical source of truth and Gold as the delivery layer for insights.  And your stated differentiation is not just raw access, but **intentional data products** that people can understand and build on. 
+
+## Why this simplifies the schema
+
+Right now, a Soroban-capable schema tends to explode into many tables:
+
+* invocations
+* events
+* decoded events
+* storage current
+* storage history
+* TTL current
+* token transfers
+* smart accounts
+* fee payers
+* call edges
+* call trees
+
+That is correct internally, but most consumers do not actually want tables. They want answers to questions like:
+
+* What happened in this transaction?
+* What contracts did this wallet use?
+* What token moved?
+* What state changed?
+* What protocol action occurred?
+* Is this account a smart account?
+* How was this smart account funded?
+
+Your current docs already point toward this style of product surface. Obsrvr Lake is meant to provide REST endpoints and analytics-ready datasets so users do not need complex SQL.  And your common queries file is already structured around intent surfaces like account overview, transaction details, contract summaries, and indexed lookups.  
+
+The semantic layer is what makes those surfaces coherent instead of ad hoc.
+
+## The missing idea: “entities + facts + intents”
+
+I would model the serving layer around three things.
+
+### 1. Entities
+
+Stable objects users care about.
+
+Examples:
+
+* `account`
+* `smart_account`
+* `contract`
+* `token`
+* `pool`
+* `transaction`
+* `protocol`
+
+### 2. Facts
+
+Canonical events and states.
+
+Examples:
+
+* `transfer`
+* `invocation`
+* `event`
+* `state_change`
+* `balance`
+* `authorization`
+* `funding_path`
+
+### 3. Intents
+
+User-facing actions inferred from raw chain behavior.
+
+Examples:
+
+* `swap`
+* `add_liquidity`
+* `withdraw_liquidity`
+* `fund_smart_account`
+* `contract_deploy`
+* `contract_upgrade`
+* `token_mint`
+* `token_burn`
+
+That gives you a much smaller, more understandable interface than exposing every underlying table directly.
+
+## The key shift
+
+Instead of asking users to query this:
+
+```text
+contracts.contract_invocations_enriched_v1
+contracts.contract_call_edges_v1
+contracts.contract_events_decoded_v1
+contracts.contract_storage_changes_row_v1
+assets.token_transfers_enriched_v1
+accounts.account_funding_paths_v1
+```
+
+you let them query this:
+
+```text
+semantic.activities
+semantic.entities_accounts
+semantic.entities_contracts
+semantic.entities_tokens
+semantic.flows_value
+semantic.flows_funding
+semantic.state_changes
+semantic.protocol_actions
+```
+
+That is dramatically simpler.
+
+## What other platforms are usually missing
+
+Most blockchain platforms have:
+
+* raw tables
+* maybe normalized tables
+* maybe dashboards
+
+But they do not have a **canonical behavioral model**.
+
+That is especially important for Soroban, because Soroban is not just transfers. It is:
+
+* execution
+* emitted events
+* storage mutations
+* authorization
+* fee sponsorship
+* smart account patterns
+* protocol-specific actions
+
+If you stop at raw or normalized tables, every downstream consumer has to rebuild the meaning layer over and over.
+
+That directly conflicts with your own principle of **data minimalism** and avoiding redundant processing.  
+
+## What I would actually add to Obsrvr Lake
+
+I would add a new domain:
+
+```text
+lake.semantic
+```
+
+And I would keep it intentionally small.
+
+# Proposed semantic layer
+
+## 1. semantic.activities_row_v1
+
+A unified ledger activity table.
+
+One row per meaningful action.
+
+Possible activity types:
+
+* `payment`
+* `token_transfer`
+* `swap`
+* `contract_invoke`
+* `contract_deploy`
+* `trustline_change`
+* `smart_account_funding`
+* `liquidity_add`
+* `liquidity_remove`
+
+Core columns:
+
+* `activity_id`
+* `activity_type`
+* `ledger_seq`
+* `closed_at`
+* `tx_hash`
+* `op_index`
+* `actor_account`
+* `target_account`
+* `contract_id`
+* `token_id`
+* `amount`
+* `status`
+* `semantic_confidence`
+* `source_tables`
+
+This becomes the answer to “what happened?”
+
+## 2. semantic.entities_accounts_current_v1
+
+Canonical account entity table.
+
+This would unify:
+
+* classic accounts
+* smart accounts
+* fee-paying accounts
+* contract-associated accounts
+
+Columns:
+
+* `account_id`
+* `account_kind` (`classic`, `smart`, `system`, `issuer`, `pool_related`)
+* `first_seen_at`
+* `last_seen_at`
+* `funded_by_account`
+* `is_active`
+* `primary_contract_id`
+* `labels`
+
+## 3. semantic.entities_contracts_current_v1
+
+Canonical contract entity table.
+
+Columns:
+
+* `contract_id`
+* `contract_type` (`token`, `dex`, `smart_account`, `app`, `unknown`)
+* `deployer_account`
+* `first_seen_at`
+* `last_seen_at`
+* `wasm_hash`
+* `protocol_id`
+* `known_interfaces`
+* `is_upgradeable`
+
+## 4. semantic.entities_tokens_current_v1
+
+Canonical token entity table.
+
+This should unify:
+
+* classic Stellar assets
+* SAC-backed representations
+* Soroban token contracts
+
+Columns:
+
+* `token_id`
+* `asset_mode` (`classic`, `sac`, `native_soroban`)
+* `asset_code`
+* `asset_issuer`
+* `contract_id`
+* `decimals`
+* `symbol`
+* `name`
+* `is_stablecoin`
+
+This is important because right now users mentally think “token,” not “classic asset vs SAC vs contract.” Your schema should follow the mental model, not force the chain model on them.
+
+## 5. semantic.flows_value_row_v1
+
+Unified value movement.
+
+This is the table that says:
+“Value moved from A to B by this mechanism.”
+
+Mechanisms:
+
+* `payment`
+* `path_payment`
+* `token_transfer`
+* `swap_output`
+* `mint`
+* `burn`
+* `lp_deposit`
+* `lp_withdrawal`
+
+Columns:
+
+* `flow_id`
+* `tx_hash`
+* `ledger_seq`
+* `from_entity_id`
+* `to_entity_id`
+* `token_id`
+* `amount`
+* `usd_reference`
+* `mechanism`
+* `related_activity_id`
+
+This is much better than making every consumer union together payments, SAC transfers, swaps, and protocol outputs by hand.
+
+## 6. semantic.flows_funding_row_v1
+
+Funding and onboarding paths.
+
+This is where you can become truly Soroban-first.
+
+Examples:
+
+* G-account funded smart account
+* CEX withdrawal funded deposit account
+* deposit account forwarded to smart account
+* sponsor paid initial fees
+
+Columns:
+
+* `funding_flow_id`
+* `origin_type` (`cex`, `wallet`, `bridge`, `account`, `ramp`)
+* `origin_account`
+* `landing_account`
+* `destination_account`
+* `destination_contract`
+* `token_id`
+* `amount`
+* `is_initial_funding`
+* `is_fee_seed`
+* `forwarding_tx_hash`
+
+This would be extremely powerful for the C-address onboarding problem too.
+
+## 7. semantic.state_changes_row_v1
+
+One canonical table for meaningful state transitions.
+
+Instead of exposing raw storage mechanics first, expose:
+
+* `state_domain` (`contract_storage`, `ttl`, `balance`, `trustline`, `offer`, `liquidity_pool`)
+* `entity_id`
+* `key`
+* `old_value`
+* `new_value`
+* `change_type`
+
+That becomes the answer to “what changed?”
+
+## 8. semantic.protocol_actions_row_v1
+
+Inferred higher-level protocol actions.
+
+This is one of the biggest opportunities.
+
+Examples:
+
+* swap on DeFindex
+* deposit to lending protocol
+* borrow
+* repay
+* smart wallet install signer
+* upgrade contract
+* create vault
+
+Columns:
+
+* `protocol_action_id`
+* `protocol_id`
+* `action_type`
+* `tx_hash`
+* `actor_account`
+* `contract_id`
+* `token_in_id`
+* `token_out_id`
+* `amount_in`
+* `amount_out`
+* `raw_activity_ids`
+
+This is the difference between “data platform” and “usable product.”
+
+## How this reduces complexity
+
+Internally, you still keep the full Bronze and Silver model. That is important because your own architecture relies on Bronze as immutable truth and Silver as canonical normalized tables.  
+
+But externally, most APIs, dashboards, and even many Gold datasets stop depending on 12+ tables directly and instead depend on 5–8 semantic tables.
+
+That means:
+
+* fewer joins
+* fewer duplicated transformations
+* easier API design
+* easier documentation
+* easier protocol adapters
+* better backward compatibility
+
+## Why this fits Obsrvr specifically
+
+This idea actually matches several things you already believe.
+
+Your docs say:
+
+* Silver should be the single source of truth. 
+* Gold should be the delivery layer for insights. 
+* Obsrvr should expose intentional data products, not just infrastructure. 
+* Obsrvr’s Soroban differentiation is call graphs, caller/callee analysis, and top contract analytics. 
+
+The semantic layer is the cleanest way to operationalize all of that.
+
+It lets Silver remain rigorous and canonical, while letting product surfaces stay compact and human-readable.
+
+## The simplest mental model
+
+Think of it this way:
+
+* **Bronze** = what the ledger said
+* **Silver** = what the chain mechanics were
+* **Semantic** = what the action meant
+* **Gold** = how it trends over time
+
+That is the missing layer.
+
+## What I would do next
+
+If you want the most leverage with the least churn, I would not rebuild everything. I would add just these three semantic tables first:
+
+* `semantic.activities_row_v1`
+* `semantic.flows_value_row_v1`
+* `semantic.entities_contracts_current_v1`
+
+Those three alone would simplify a huge amount of Soroban complexity.
+
+Then expand into:
+
+* `semantic.flows_funding_row_v1`
+* `semantic.protocol_actions_row_v1`
+
+That would make Obsrvr Lake feel much closer to a true application data platform instead of only a blockchain warehouse.
+
+The strongest version of the pitch is:
+
+> **Hubble-compatible at Silver, meaning-driven at Semantic, product-ready at Gold.**
+
+If you want, I can turn this into a concrete Markdown spec with table definitions, keys, and example rows.
+
+
+
+
+Turn this into a concrete Markdown spec with table definitions, keys, and example rows
+
+
+
+Below is a **concrete Markdown specification** for the **Obsrvr Lake Semantic Layer**.
+
+This document defines:
+
+* table schemas
+* primary keys
+* important columns
+* example rows
+* upstream dependencies
+
+It assumes the following architecture:
+
+```text
+Bronze → Silver → Semantic → Gold
+```
+
+Where:
+
+* **Bronze** = raw ledger ingestion
+* **Silver** = normalized blockchain model
+* **Semantic** = meaning layer (entities, flows, activities)
+* **Gold** = analytics and aggregates
+
+---
+
+# Obsrvr Lake Semantic Layer Specification
+
+## Version
+
+```text
+semantic_layer_version: v1
+```
+
+---
+
+# Overview
+
+The Semantic Layer converts low-level blockchain data into **human-understandable behavioral datasets**.
+
+It organizes blockchain activity into three conceptual groups:
+
+```text
+Entities  → objects on the network
+Facts     → actions that occurred
+Flows     → movement of value
+State     → changes to system state
+Intents   → inferred protocol actions
+```
+
+These tables power:
+
+* APIs
+* explorers
+* analytics dashboards
+* automation workflows
+* AI agents
+
+---
+
+# Schema
+
+```text
+lake.semantic
+```
+
+---
+
+# Table: semantic.activities_row_v1
+
+## Purpose
+
+Unified activity table representing meaningful blockchain actions.
+
+This table answers:
+
+> “What happened?”
+
+It normalizes events across:
+
+* classic operations
+* Soroban contract calls
+* token transfers
+* DEX swaps
+* protocol interactions
+
+---
+
+## Primary Key
+
+```text
+activity_id
+```
+
+---
+
+## Grain
+
+```text
+1 row per meaningful blockchain action
+```
+
+---
+
+## Columns
+
+| column              | type          | description          |
+| ------------------- | ------------- | -------------------- |
+| activity_id         | string        | unique identifier    |
+| activity_type       | string        | type of activity     |
+| ledger_seq          | int           | ledger sequence      |
+| closed_at           | timestamp     | ledger close time    |
+| tx_hash             | string        | transaction hash     |
+| op_index            | int           | operation index      |
+| actor_account       | string        | initiating account   |
+| target_account      | string        | recipient account    |
+| contract_id         | string        | involved contract    |
+| token_id            | string        | token identifier     |
+| amount              | numeric       | transferred amount   |
+| status              | string        | success / failure    |
+| semantic_confidence | float         | inference confidence |
+| source_tables       | array<string> | upstream datasets    |
+
+---
+
+## Activity Types
+
+```text
+payment
+token_transfer
+contract_invoke
+swap
+add_liquidity
+remove_liquidity
+smart_account_funding
+contract_deploy
+trustline_change
+offer_create
+```
+
+---
+
+## Example Row
+
+```json
+{
+  "activity_id": "act_3f2b1c",
+  "activity_type": "token_transfer",
+  "ledger_seq": 54398211,
+  "closed_at": "2026-02-14T03:10:12Z",
+  "tx_hash": "b0c1b9c4e9a",
+  "op_index": 1,
+  "actor_account": "GABCD123",
+  "target_account": "GXYZ987",
+  "contract_id": "CABCDEF123",
+  "token_id": "USDC:SAC",
+  "amount": 150.25,
+  "status": "success",
+  "semantic_confidence": 1.0,
+  "source_tables": [
+    "silver.contracts.contract_invocations_enriched_v1",
+    "silver.assets.token_transfers_enriched_v1"
+  ]
+}
+```
+
+---
+
+# Table: semantic.entities_accounts_current_v1
+
+## Purpose
+
+Canonical entity table representing accounts.
+
+Supports:
+
+* classic accounts
+* Soroban smart accounts
+* system accounts
+* issuer accounts
+
+---
+
+## Primary Key
+
+```text
+account_id
+```
+
+---
+
+## Grain
+
+```text
+1 row per account
+```
+
+---
+
+## Columns
+
+| column              | type          | description              |
+| ------------------- | ------------- | ------------------------ |
+| account_id          | string        | Stellar account ID       |
+| account_kind        | string        | classic / smart / system |
+| first_seen_at       | timestamp     | first appearance         |
+| last_seen_at        | timestamp     | last activity            |
+| funded_by_account   | string        | funding source           |
+| is_active           | boolean       | account activity flag    |
+| primary_contract_id | string        | associated contract      |
+| labels              | array<string> | tags                     |
+
+---
+
+## Example Row
+
+```json
+{
+  "account_id": "GABCD123",
+  "account_kind": "smart",
+  "first_seen_at": "2026-01-12T01:12:44Z",
+  "last_seen_at": "2026-02-14T03:10:12Z",
+  "funded_by_account": "GROOT111",
+  "is_active": true,
+  "primary_contract_id": "CSMARTACC123",
+  "labels": ["smart_wallet", "openzeppelin"]
+}
+```
+
+---
+
+# Table: semantic.entities_contracts_current_v1
+
+## Purpose
+
+Canonical contract registry.
+
+Provides a stable entity model for Soroban contracts.
+
+---
+
+## Primary Key
+
+```text
+contract_id
+```
+
+---
+
+## Grain
+
+```text
+1 row per contract
+```
+
+---
+
+## Columns
+
+| column           | type          | description                 |
+| ---------------- | ------------- | --------------------------- |
+| contract_id      | string        | contract identifier         |
+| contract_type    | string        | token / dex / smart_account |
+| deployer_account | string        | deploying account           |
+| wasm_hash        | string        | contract code hash          |
+| first_seen_at    | timestamp     | deployment time             |
+| last_seen_at     | timestamp     | latest invocation           |
+| protocol_id      | string        | associated protocol         |
+| known_interfaces | array<string> | detected standards          |
+| is_upgradeable   | boolean       | upgrade capability          |
+
+---
+
+## Example Row
+
+```json
+{
+  "contract_id": "CDEX111",
+  "contract_type": "dex",
+  "deployer_account": "GDEPLOY123",
+  "wasm_hash": "af12983d1f",
+  "first_seen_at": "2026-01-02T11:45:10Z",
+  "last_seen_at": "2026-02-14T03:10:12Z",
+  "protocol_id": "defindex",
+  "known_interfaces": ["swap", "liquidity_pool"],
+  "is_upgradeable": true
+}
+```
+
+---
+
+# Table: semantic.entities_tokens_current_v1
+
+## Purpose
+
+Canonical token entity table.
+
+Unifies:
+
+* classic Stellar assets
+* SAC assets
+* Soroban token contracts
+
+---
+
+## Primary Key
+
+```text
+token_id
+```
+
+---
+
+## Grain
+
+```text
+1 row per token
+```
+
+---
+
+## Columns
+
+| column        | type    | description                |
+| ------------- | ------- | -------------------------- |
+| token_id      | string  | canonical token identifier |
+| asset_mode    | string  | classic / sac / soroban    |
+| asset_code    | string  | asset symbol               |
+| asset_issuer  | string  | issuer account             |
+| contract_id   | string  | token contract             |
+| decimals      | int     | token decimals             |
+| symbol        | string  | display symbol             |
+| name          | string  | token name                 |
+| is_stablecoin | boolean | stablecoin flag            |
+
+---
+
+## Example Row
+
+```json
+{
+  "token_id": "USDC",
+  "asset_mode": "sac",
+  "asset_code": "USDC",
+  "asset_issuer": "GUSDCISSUER",
+  "contract_id": "CUSDC123",
+  "decimals": 6,
+  "symbol": "USDC",
+  "name": "USD Coin",
+  "is_stablecoin": true
+}
+```
+
+---
+
+# Table: semantic.flows_value_row_v1
+
+## Purpose
+
+Unified table describing **movement of value**.
+
+Supports:
+
+* payments
+* swaps
+* token transfers
+* mint/burn
+* liquidity flows
+
+---
+
+## Primary Key
+
+```text
+flow_id
+```
+
+---
+
+## Grain
+
+```text
+1 row per value transfer
+```
+
+---
+
+## Columns
+
+| column              | type    | description            |
+| ------------------- | ------- | ---------------------- |
+| flow_id             | string  | unique flow identifier |
+| tx_hash             | string  | transaction            |
+| ledger_seq          | int     | ledger sequence        |
+| from_entity_id      | string  | sender                 |
+| to_entity_id        | string  | receiver               |
+| token_id            | string  | transferred token      |
+| amount              | numeric | amount                 |
+| usd_reference       | numeric | USD estimate           |
+| mechanism           | string  | payment / swap / mint  |
+| related_activity_id | string  | activity reference     |
+
+---
+
+## Example Row
+
+```json
+{
+  "flow_id": "flow_98af11",
+  "tx_hash": "b0c1b9c4e9a",
+  "ledger_seq": 54398211,
+  "from_entity_id": "GABCD123",
+  "to_entity_id": "CDEX111",
+  "token_id": "USDC",
+  "amount": 150.25,
+  "usd_reference": 150.25,
+  "mechanism": "swap_input",
+  "related_activity_id": "act_3f2b1c"
+}
+```
+
+---
+
+# Table: semantic.flows_funding_row_v1
+
+## Purpose
+
+Tracks **account funding paths**, particularly important for Soroban onboarding.
+
+Captures flows such as:
+
+* CEX withdrawal → account
+* G account → smart account
+* bridge → deposit account
+* deposit account → contract
+
+---
+
+## Primary Key
+
+```text
+funding_flow_id
+```
+
+---
+
+## Grain
+
+```text
+1 row per funding path
+```
+
+---
+
+## Columns
+
+| column               | type    | description              |
+| -------------------- | ------- | ------------------------ |
+| funding_flow_id      | string  | unique id                |
+| origin_type          | string  | cex / wallet / bridge    |
+| origin_account       | string  | origin address           |
+| landing_account      | string  | intermediate account     |
+| destination_account  | string  | final account            |
+| destination_contract | string  | final contract           |
+| token_id             | string  | funding token            |
+| amount               | numeric | amount                   |
+| is_initial_funding   | boolean | account creation funding |
+| is_fee_seed          | boolean | fee funding              |
+| forwarding_tx_hash   | string  | forwarding transaction   |
+
+---
+
+## Example Row
+
+```json
+{
+  "funding_flow_id": "fund_1921",
+  "origin_type": "cex",
+  "origin_account": null,
+  "landing_account": "GDEPOSIT1",
+  "destination_account": "GSMART123",
+  "destination_contract": "COPENZEP1",
+  "token_id": "XLM",
+  "amount": 10,
+  "is_initial_funding": true,
+  "is_fee_seed": true,
+  "forwarding_tx_hash": "fa91b21"
+}
+```
+
+---
+
+# Table: semantic.state_changes_row_v1
+
+## Purpose
+
+Canonical representation of **state mutations**.
+
+---
+
+## Primary Key
+
+```text
+change_id
+```
+
+---
+
+## Grain
+
+```text
+1 row per state mutation
+```
+
+---
+
+## Columns
+
+| column       | type   | description                |
+| ------------ | ------ | -------------------------- |
+| change_id    | string | unique identifier          |
+| ledger_seq   | int    | ledger sequence            |
+| entity_id    | string | affected entity            |
+| state_domain | string | contract_storage / balance |
+| key          | string | state key                  |
+| old_value    | string | previous value             |
+| new_value    | string | new value                  |
+| change_type  | string | create / update / delete   |
+| tx_hash      | string | transaction                |
+
+---
+
+## Example Row
+
+```json
+{
+  "change_id": "state_111",
+  "ledger_seq": 54398211,
+  "entity_id": "CDEX111",
+  "state_domain": "contract_storage",
+  "key": "pool_liquidity",
+  "old_value": "100000",
+  "new_value": "100150",
+  "change_type": "update",
+  "tx_hash": "b0c1b9c4e9a"
+}
+```
+
+---
+
+# Table: semantic.protocol_actions_row_v1
+
+## Purpose
+
+Inferred high-level protocol actions.
+
+Examples:
+
+* swaps
+* lending
+* deposits
+* vault operations
+
+---
+
+## Primary Key
+
+```text
+protocol_action_id
+```
+
+---
+
+## Grain
+
+```text
+1 row per protocol-level action
+```
+
+---
+
+## Columns
+
+| column             | type          | description       |
+| ------------------ | ------------- | ----------------- |
+| protocol_action_id | string        | unique id         |
+| protocol_id        | string        | protocol name     |
+| action_type        | string        | swap / deposit    |
+| tx_hash            | string        | transaction       |
+| actor_account      | string        | user              |
+| contract_id        | string        | contract          |
+| token_in_id        | string        | input token       |
+| token_out_id       | string        | output token      |
+| amount_in          | numeric       | input amount      |
+| amount_out         | numeric       | output amount     |
+| raw_activity_ids   | array<string> | linked activities |
+
+---
+
+## Example Row
+
+```json
+{
+  "protocol_action_id": "pa_111",
+  "protocol_id": "defindex",
+  "action_type": "swap",
+  "tx_hash": "b0c1b9c4e9a",
+  "actor_account": "GABCD123",
+  "contract_id": "CDEX111",
+  "token_in_id": "USDC",
+  "token_out_id": "XLM",
+  "amount_in": 150.25,
+  "amount_out": 149.80,
+  "raw_activity_ids": ["act_3f2b1c"]
+}
+```
+
+---
+
+# Semantic Layer Dependencies
+
+These tables derive from Silver datasets:
+
+```text
+silver.contracts.contract_invocations_enriched_v1
+silver.contracts.contract_events_decoded_v1
+silver.contracts.contract_data_current_v1
+silver.assets.token_transfers_enriched_v1
+silver.accounts.account_funding_paths_v1
+```
+
+---
+
+# Resulting Architecture
+
+```text
+Bronze
+ raw ledger ingestion
+
+Silver
+ normalized blockchain tables
+
+Semantic
+ meaning layer (entities, flows, activities)
+
+Gold
+ analytics metrics
+```
+
+---
+
+# Why This Layer Matters
+
+This layer dramatically simplifies blockchain data consumption.
+
+Instead of joining 10+ tables, consumers query:
+
+```text
+semantic.activities
+semantic.entities
+semantic.flows
+semantic.protocol_actions
+```
+
+This enables:
+
+* simpler APIs
+* easier analytics
+* faster product development
+* AI-friendly datasets
+
+---
+
+If you want, I can also show you the **one architectural trick used by Databricks, Snowflake, and modern AI data platforms that would make Obsrvr Lake feel dramatically more powerful than most blockchain analytics systems.**
+
+
+yes, show me
+
+
+Tillman, you are thinking about the right problem. The real risk right now is **scope explosion**. The architecture we just discussed is strong, but trying to build all of it simultaneously would slow you down dramatically.
+
+What you need is **a sequencing strategy**, not a reduction in ambition.
+
+I’ll give you a practical roadmap based on three criteria:
+
+1. **What unlocks the most downstream capability**
+2. **What you already partially built**
+3. **What aligns with your immediate products (Flow, Prism, Radar, Lake)**
+
+---
+
+# The Key Insight
+
+You do **not** need to build all four layers immediately.
+
+This is the real dependency chain:
+
+```text
+Bronze → Silver → Semantic → Graph → Gold
+```
+
+But in practice:
+
+* Graph depends on Semantic
+* Gold depends on Semantic
+* APIs depend on Semantic
+* Explorer depends on Semantic
+
+So the **real keystone layer** is:
+
+> **Semantic**
+
+If you get that right, everything else becomes much easier.
+
+---
+
+# What You Should Build First
+
+## Phase 1 — Silver (Minimal)
+
+You already have much of this.
+
+Goal: **canonical chain model**
+
+Tables to prioritize:
+
+```
+silver.core.history_transactions
+silver.core.history_operations
+silver.contracts.contract_invocations_enriched
+silver.contracts.contract_events_decoded
+silver.assets.token_transfers_enriched
+```
+
+These five tables unlock almost everything.
+
+Why?
+
+Because they answer:
+
+* what transactions happened
+* what contracts were called
+* what events emitted
+* what tokens moved
+
+That is the entire Soroban runtime.
+
+You likely already have most of this from Flow ingestion.
+
+---
+
+# Phase 2 — Semantic Layer (Most Important)
+
+This is where the real simplification happens.
+
+Only build **three tables first**.
+
+```
+semantic.activities
+semantic.entities_contracts
+semantic.flows_value
+```
+
+These give you:
+
+### activities
+
+“What happened”
+
+### entities_contracts
+
+“What contracts exist”
+
+### flows_value
+
+“What value moved”
+
+With those three tables, you can build:
+
+* block explorer
+* protocol analytics
+* wallet analytics
+* token analytics
+* most APIs
+
+---
+
+# Phase 3 — Explorer Support
+
+Now Prism becomes trivial.
+
+Explorer needs:
+
+```
+transaction view
+contract view
+wallet view
+token view
+```
+
+Those map directly to semantic tables.
+
+Example:
+
+### Transaction page
+
+```
+semantic.activities
+semantic.flows_value
+```
+
+### Contract page
+
+```
+semantic.entities_contracts
+semantic.activities
+```
+
+### Wallet page
+
+```
+semantic.activities
+semantic.flows_value
+```
+
+So once Semantic exists, the explorer is mostly UI work.
+
+---
+
+# Phase 4 — Funding Graph
+
+Now you add the graph tables.
+
+```
+graph.account_contract_edges
+graph.contract_call_edges
+graph.token_flow_edges
+```
+
+These unlock:
+
+* protocol dependency graphs
+* wallet graphs
+* contract graphs
+
+Nice to have, but not required for MVP.
+
+---
+
+# Phase 5 — Gold Metrics
+
+Now add aggregated analytics.
+
+Examples:
+
+```
+contracts.invocation_volume_daily
+contracts.top_contracts_by_gas
+assets.token_transfers_daily
+metrics.soroban_activity_daily
+```
+
+These power dashboards and research.
+
+But they are **derived products**, not the foundation.
+
+---
+
+# What This Means in Practice
+
+Your real roadmap should look like this:
+
+```
+STEP 1
+Finish Silver Soroban tables
+
+STEP 2
+Build Semantic layer (3 tables)
+
+STEP 3
+Build Prism explorer
+
+STEP 4
+Add graph layer
+
+STEP 5
+Add gold metrics
+```
+
+This keeps the project **focused**.
+
+---
+
+# Why This Aligns With Your Current Work
+
+Look at your active efforts:
+
+You are building:
+
+* **Flow** → ingestion + pipelines
+* **Prism** → explorer
+* **Radar** → network analytics
+* **Lake** → storage + query layer
+
+The Semantic layer becomes the **bridge between all four**.
+
+```
+Flow → Silver tables
+Silver → Semantic tables
+Semantic → Prism APIs
+Semantic → Radar analytics
+Semantic → future automation
+```
+
+Without Semantic, every product rebuilds logic.
+
+With Semantic, they share the same model.
+
+---
+
+# The Minimum Viable Obsrvr Lake
+
+If you forced me to pick **the smallest possible version**, it would be:
+
+### Silver
+
+```
+history_transactions
+contract_invocations_enriched
+contract_events_decoded
+token_transfers_enriched
+```
+
+### Semantic
+
+```
+activities
+entities_contracts
+flows_value
+```
+
+That’s it.
+
+Only **7 important tables**.
+
+From those 7 tables you can power:
+
+* explorer
+* analytics
+* APIs
+* dashboards
+* protocol research
+
+---
+
+# A Simple Rule to Keep You Focused
+
+Whenever you consider building something, ask:
+
+> “Does this make the Semantic layer better?”
+
+If the answer is no, it can wait.
+
+---
+
+# The Strategic Perspective
+
+You are not just building a data warehouse.
+
+You are building:
+
+> **The canonical behavioral model of the Stellar network.**
+
+That is why the Semantic layer matters so much.
+
+It becomes the **Rosetta Stone** between:
+
+* raw ledger mechanics
+* developer understanding
+* analytics
+* AI agents
+
+---
+
+If you'd like, I can also show you **the single design decision that will determine whether Obsrvr Lake stays maintainable for 10 years or becomes a schema nightmare in 2–3 years.**
+

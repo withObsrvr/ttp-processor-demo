@@ -1,112 +1,192 @@
 # Stellar Query API
 
-Unified query API that transparently combines hot (PostgreSQL) and cold (DuckLake) data storage for Stellar blockchain data.
+Unified query API for Stellar blockchain data across Bronze (raw), Silver (analytics), Semantic (meaning-oriented), and Gold (compliance) data layers. Transparently combines hot (PostgreSQL) and cold (DuckLake/Parquet) storage.
 
 ## Documentation
 
-- **[Analyst Guide](./docs/analyst-guide/index.md)** - Quick start and common queries
-- **[Data Model](./docs/analyst-guide/data-model.md)** - Bronze/Silver and Hot/Cold explained
-- **[Common Queries](./docs/analyst-guide/common-queries.md)** - Recipes for top use cases
-- **[nebu for Analysts](./docs/analyst-guide/nebu-for-analysts.md)** - Power user CLI guide
-- **[vs Hubble](./docs/analyst-guide/vs-hubble.md)** - When to use which tool
-- **[Silver API Reference](./SILVER_API_REFERENCE.md)** - Full endpoint documentation
+- **[Analyst Guide](./analyst-guide/index.md)** - Quick start, common queries, and architecture overview
+- **[Data Model](./analyst-guide/data-model.md)** - Bronze/Silver/Semantic layers and Hot/Cold storage explained
+- **[API Reference](./analyst-guide/common-queries.md)** - Complete endpoint documentation with examples
+- **[Horizon Migration](./analyst-guide/horizon-migration.md)** - Side-by-side Horizon vs Query API mappings
+- **[nebu for Analysts](./analyst-guide/nebu-for-analysts.md)** - Power user CLI guide
+- **[vs Hubble](./analyst-guide/vs-hubble.md)** - When to use which tool
 
 ## Architecture
 
-The Query API implements a **lambda architecture** pattern with two data sources:
-
 ```
-┌─────────────────────────────────────────────────┐
-│          Stellar Query API (Port 8092)          │
-├─────────────────────────────────────────────────┤
-│  Hot/Cold Query Merging Logic                   │
-├──────────────────────┬──────────────────────────┤
-│   Hot Reader (Recent)│   Cold Reader (Historical)│
-│   PostgreSQL :5434   │   DuckLake Bronze (S3)   │
-│   Last 10-20 mins    │   All historical data    │
-└──────────────────────┴──────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│              Stellar Query API (Port 8092)                    │
+├──────────────────────────────────────────────────────────────┤
+│  Bronze │ Silver │ Semantic │ Gold │ Index Plane             │
+├─────────┴────────┴──────────┴──────┴─────────────────────────┤
+│  Hot/Cold Query Merging + Unified Silver Reader              │
+├──────────────────────┬───────────────────────────────────────┤
+│   Hot (PostgreSQL)   │   Cold (DuckLake on S3/B2)           │
+│   Last ~7 days       │   Full history (Parquet)             │
+└──────────────────────┴───────────────────────────────────────┘
 ```
 
-### Query Strategy
-
-The API automatically determines which storage layer(s) to query based on the requested ledger range:
-
-- **Hot-only**: If the entire range is in PostgreSQL hot buffer
-- **Cold-only**: If the entire range is before the hot buffer watermark
-- **Hot + Cold**: If the range spans both storage layers
+The API automatically determines which storage layer(s) to query and merges results seamlessly. You don't need to think about where data lives.
 
 ## API Endpoints
 
-All endpoints return JSON responses.
+All endpoints return JSON. See the [full API reference](./analyst-guide/common-queries.md) for parameters and examples.
 
-### Health Check
+### Bronze Layer (Raw Data)
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/v1/bronze/ledgers` | Raw ledger data by sequence range |
+| `GET /api/v1/bronze/transactions` | Raw transaction data |
+| `GET /api/v1/bronze/operations` | Raw operation data |
+| `GET /api/v1/bronze/effects` | Raw effect data |
+| `GET /api/v1/bronze/trades` | Raw DEX trade data |
+| `GET /api/v1/bronze/accounts` | Raw account snapshots |
+| `GET /api/v1/bronze/trustlines` | Raw trustline snapshots |
+| `GET /api/v1/bronze/offers` | Raw DEX offer snapshots |
+| `GET /api/v1/bronze/contract_events` | Raw Soroban contract events |
+| `GET /api/v1/bronze/stats` | Network statistics (freshest data) |
+
+### Silver Layer (Analytics-Ready)
+
+**Accounts:**
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/v1/silver/accounts` | List/search accounts with sorting |
+| `GET /api/v1/silver/accounts/current` | Current state for a specific account |
+| `GET /api/v1/silver/accounts/history` | Historical account snapshots |
+| `GET /api/v1/silver/accounts/top` | Top accounts by balance |
+| `GET /api/v1/silver/accounts/signers` | Account signer configurations |
+| `GET /api/v1/silver/accounts/{id}/balances` | All balances (XLM + trustlines) |
+| `GET /api/v1/silver/accounts/{id}/offers` | Account DEX offers |
+| `GET /api/v1/silver/accounts/{id}/activity` | Account activity feed |
+| `POST /api/v1/silver/accounts/batch` | Batch account lookup |
+
+**Operations & Payments:**
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/v1/silver/operations/enriched` | Operations with full context |
+| `GET /api/v1/silver/operations/soroban` | Soroban operations only |
+| `GET /api/v1/silver/operations/soroban/by-function` | Filter by contract/function |
+| `GET /api/v1/silver/payments` | Payment operations |
+| `GET /api/v1/silver/transfers` | Unified token transfers (classic + SAC) |
+| `GET /api/v1/silver/calls` | Soroban contract calls (alias) |
+
+**Assets & Tokens:**
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/v1/silver/assets` | List all tracked assets |
+| `GET /api/v1/silver/assets/{code}:{issuer}/holders` | Asset holder list |
+| `GET /api/v1/silver/assets/{code}:{issuer}/stats` | Asset statistics |
+| `GET /api/v1/silver/tokens/{contract_id}` | SEP-41 token metadata |
+| `GET /api/v1/silver/tokens/{contract_id}/balances` | Token holder balances |
+| `GET /api/v1/silver/tokens/{contract_id}/balance/{addr}` | Single holder balance |
+| `GET /api/v1/silver/tokens/{contract_id}/transfers` | Token transfer history |
+| `GET /api/v1/silver/address/{addr}/token-balances` | Address token portfolio |
+
+**DEX & Prices:**
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/v1/silver/prices/pairs` | Available trading pairs |
+| `GET /api/v1/silver/prices/{base}/{counter}/latest` | Latest trade price |
+| `GET /api/v1/silver/prices/{base}/{counter}/ohlc` | OHLC candlestick data |
+
+**Contracts:**
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/v1/silver/contracts/top` | Most active contracts |
+| `GET /api/v1/silver/contracts/{id}/analytics` | Per-contract analytics |
+| `GET /api/v1/silver/contracts/{id}/interface` | Detected contract ABI |
+| `GET /api/v1/silver/smart-wallet/{id}` | SEP-50 smart wallet detection |
+
+**Events:**
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/v1/silver/events` | CAP-67 unified event stream |
+| `GET /api/v1/silver/events/generic` | Raw contract events (all types) |
+| `GET /api/v1/silver/events/by-contract` | Events for a specific contract |
+
+**Transactions:**
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/v1/silver/tx/{hash}/decoded` | Human-readable transaction summary |
+| `GET /api/v1/silver/tx/{hash}/diffs` | Balance and state diffs |
+| `GET /api/v1/silver/tx/{hash}/events` | Transaction events |
+| `GET /api/v1/silver/tx/{hash}/full` | Full transaction analysis |
+| `GET /api/v1/silver/tx/{hash}/hierarchy` | Contract call hierarchy |
+| `POST /api/v1/silver/tx/batch` | Batch transaction summaries |
+
+**Statistics:**
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/v1/silver/stats/network` | Network-wide statistics |
+| `GET /api/v1/silver/stats/soroban` | Soroban runtime statistics |
+| `GET /api/v1/silver/fees/stats` | Fee percentiles and surge detection |
+| `GET /api/v1/silver/fees/distribution` | Per-ledger fee histogram |
+
+**Search:**
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/v1/silver/search` | Universal search across all data types |
+
+### Semantic Layer (Meaning-Oriented)
+
+Human-readable analytics that answer high-level questions without requiring Stellar internals knowledge.
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/v1/semantic/activities` | Unified on-chain activity feed (payments, contract calls, etc.) |
+| `GET /api/v1/semantic/contracts` | Contract registry with type classification and usage stats |
+| `GET /api/v1/semantic/flows` | Normalized value transfers (transfers, mints, burns) |
+
+**Quick examples:**
+
 ```bash
-GET /health
+# What happened on-chain recently?
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/semantic/activities?limit=10"
+
+# What contracts exist and how active are they?
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/semantic/contracts?limit=10"
+
+# What value moved on-chain?
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/semantic/flows?asset_code=XLM&limit=10"
 ```
 
-### Ledger Queries (Time-Series Tables)
+### Gold Layer (Compliance & Auditing)
 
-**Ledgers**:
-```bash
-GET /ledgers?start=1000000&end=1000100&limit=100
-```
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/v1/gold/compliance/balances` | Point-in-time balance snapshots |
+| `GET /api/v1/gold/compliance/supply` | Supply timeline with audit trail |
+| `GET /api/v1/gold/compliance/archives` | Compliance archive index |
+| `GET /api/v1/gold/compliance/archives/{id}` | Archive details and artifacts |
+| `GET /api/v1/gold/compliance/archives/{id}/download` | Download archive artifacts |
+| `GET /api/v1/gold/compliance/lineage` | Audit lineage and checksums |
 
-**Transactions**:
-```bash
-GET /transactions?start=1000000&end=1000100&limit=100
-```
+### Index Plane (Fast Lookups)
 
-**Operations**:
-```bash
-GET /operations?start=1000000&end=1000100&limit=1000
-```
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/v1/index/tx/{hash}` | Transaction lookup by hash |
+| `POST /api/v1/index/tx/lookup` | Batch transaction lookup |
+| `GET /api/v1/index/health` | Index coverage statistics |
+| `GET /api/v1/index/contracts/{id}/ledgers` | Ledgers containing contract events |
+| `GET /api/v1/index/contracts/{id}/summary` | Contract event summary |
+| `POST /api/v1/index/contracts/lookup` | Batch contract lookup |
+| `GET /api/v1/index/contracts/health` | Contract index health |
 
-**Effects**:
-```bash
-GET /effects?start=1000000&end=1000100&limit=1000
-```
+### Other
 
-**Trades**:
-```bash
-GET /trades?start=1000000&end=1000100&limit=100
-```
-
-**Contract Events**:
-```bash
-GET /contract_events?start=1000000&end=1000100&limit=1000
-```
-
-### Snapshot Queries (Entity Tables)
-
-**Accounts**:
-```bash
-GET /accounts?account_id=GXXXXXXX&limit=10
-```
-
-**Trustlines**:
-```bash
-GET /trustlines?account_id=GXXXXXXX&limit=100
-```
-
-**Offers**:
-```bash
-GET /offers?seller_id=GXXXXXXX&limit=100
-```
-
-## Query Parameters
-
-### Time-Series Endpoints
-- `start` (required): Starting ledger sequence
-- `end` (required): Ending ledger sequence
-- `limit` (optional): Maximum number of results (default: 100, max: 10000)
-
-### Snapshot Endpoints
-- `account_id` / `seller_id` (required): Account or seller identifier
-- `limit` (optional): Maximum number of results (default: 100, max: 10000)
+| Endpoint | Description |
+|----------|-------------|
+| `GET /health` | Service health check |
 
 ## Configuration
 
-Edit `config.yaml`:
+Edit `config.yaml` (or `config.silver.yaml` for Silver mode):
 
 ```yaml
 service:
@@ -135,6 +215,15 @@ ducklake:
   aws_region: "us-west-004"
   aws_endpoint: "https://s3.us-west-004.backblazeb2.com"
 
+silver:
+  hot:
+    host: localhost
+    port: 25060
+    database: silver_hot
+    user: doadmin
+    password: "..."
+    sslmode: require
+
 query:
   default_limit: 100
   max_limit: 10000
@@ -155,170 +244,10 @@ go build -o ../bin/stellar-query-api
 ./bin/stellar-query-api -config config.yaml
 ```
 
-## Example Usage
-
-### Query Recent Ledgers (Hot Buffer)
-```bash
-curl "http://localhost:8092/ledgers?start=2000000&end=2000010&limit=10"
-```
-
-### Query Historical Ledgers (DuckLake Bronze)
-```bash
-curl "http://localhost:8092/ledgers?start=500000&end=500010&limit=10"
-```
-
-### Query Spanning Hot + Cold
-```bash
-# Assumes hot watermark is at 1900000
-curl "http://localhost:8092/ledgers?start=1899990&end=1900010&limit=20"
-```
-
-### Query Account State
-```bash
-curl "http://localhost:8092/accounts?account_id=GABC...&limit=5"
-```
-
-### Query Contract Events
-```bash
-curl "http://localhost:8092/contract_events?start=1000000&end=1010000&limit=100"
-```
-
-## Response Format
-
-### Time-Series Tables
-```json
-{
-  "ledgers": [
-    {
-      "sequence": 1000000,
-      "ledger_hash": "abc123...",
-      "transaction_count": 42,
-      "closed_at": "2024-01-01T00:00:00Z",
-      ...
-    }
-  ],
-  "count": 10,
-  "start": 1000000,
-  "end": 1000010
-}
-```
-
-### Snapshot Tables
-```json
-{
-  "accounts": [
-    {
-      "account_id": "GABC...",
-      "balance": "1000000000",
-      "sequence_number": 12345,
-      "ledger_sequence": 1000000,
-      ...
-    }
-  ],
-  "count": 1,
-  "account_id": "GABC..."
-}
-```
-
-## Architecture Details
-
-### Hot Reader (PostgreSQL)
-
-- **Purpose**: Fast queries for recent data (last 10-20 minutes)
-- **Storage**: UNLOGGED PostgreSQL tables
-- **Connection**: Direct PostgreSQL connection pool
-- **Tables**: All 19 Hubble-compatible tables
-
-### Cold Reader (DuckLake)
-
-- **Purpose**: Analytics queries for historical data
-- **Storage**: Parquet files on S3/B2 with PostgreSQL catalog
-- **Connection**: DuckDB with DuckLake extension
-- **Tables**: All 19 Bronze tables (V3 expanded schemas)
-
-### Query Merging
-
-1. **Determine Split Point**: Get hot buffer watermarks (min/max ledger sequence)
-2. **Query Cold**: If range overlaps with historical data
-3. **Query Hot**: If range overlaps with recent data
-4. **Merge Results**: Combine and sort by sequence number
-5. **Return**: JSON response with unified results
-
-### Performance
-
-- **Hot Queries**: < 100ms (PostgreSQL B-tree indexes)
-- **Cold Queries**: < 2s (DuckLake Parquet with partition pruning)
-- **Merged Queries**: Sum of hot + cold query times
-
-## Supported Tables
-
-All 19 Hubble-compatible tables:
-
-**Core Tables** (5):
-- ledgers_row_v2
-- transactions_row_v2
-- operations_row_v2
-- effects_row_v1
-- trades_row_v1
-
-**Snapshot Tables** (7):
-- accounts_snapshot_v1
-- trustlines_snapshot_v1
-- offers_snapshot_v1
-- native_balances_snapshot_v1
-- account_signers_snapshot_v1
-- claimable_balances_snapshot_v1
-- liquidity_pools_snapshot_v1
-
-**Soroban Tables** (4):
-- contract_events_stream_v1
-- contract_data_snapshot_v1
-- contract_code_snapshot_v1
-- restored_keys_stream_v1
-
-**State Tables** (3):
-- config_settings_snapshot_v1
-- ttl_snapshot_v1
-- evicted_keys_stream_v1
-
 ## Dependencies
 
 - Go 1.21+
 - PostgreSQL connection (`github.com/lib/pq`)
 - DuckDB Go bindings (`github.com/duckdb/duckdb-go/v2`)
 - YAML config (`gopkg.in/yaml.v3`)
-
-## Next Steps
-
-1. **Add Data**: Run `stellar-postgres-ingester` to populate hot buffer
-2. **Flush Data**: Run `postgres-ducklake-flusher` to move data to Bronze
-3. **Query**: Use this API to query unified hot + cold data
-4. **Monitor**: Check `/health` endpoint for service status
-
-## Cycle 4 Status: ✅ Complete
-
-**Deliverable**: Production-ready query API with hot/cold lambda architecture
-
-**Completed**:
-- ✅ Service structure and configuration
-- ✅ Hot reader (PostgreSQL queries)
-- ✅ Cold reader (DuckLake queries)
-- ✅ Query merging logic (hot + cold union)
-- ✅ 9 API endpoints for all major table types
-- ✅ JSON response formatting
-- ✅ Error handling and logging
-- ✅ Health endpoint
-- ✅ Build and deployment tested
-
-**Tested**:
-- ✅ Service builds successfully
-- ✅ Connects to PostgreSQL hot buffer
-- ✅ Connects to DuckLake Bronze catalog
-- ✅ Health endpoint responds
-- ✅ Query endpoints return valid JSON
-- ✅ Empty result handling works correctly
-
-**Pending**:
-- End-to-end test with actual data (requires ingester to stream ledgers)
-- Performance benchmarking under load
-- Caching layer (optional enhancement)
+- Gorilla Mux (`github.com/gorilla/mux`)

@@ -327,6 +327,25 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 	}
 	totalRows += configSettingsCount
 
+	// Semantic layer transforms (Silver-to-Silver, INSERT-from-SELECT)
+	semanticActivitiesCount, err := rt.transformSemanticActivities(ctx, tx, startLedger, endLedger)
+	if err != nil {
+		return fmt.Errorf("failed to transform semantic activities: %w", err)
+	}
+	totalRows += semanticActivitiesCount
+
+	semanticEntitiesCount, err := rt.transformSemanticEntities(ctx, tx, startLedger, endLedger)
+	if err != nil {
+		return fmt.Errorf("failed to transform semantic entities: %w", err)
+	}
+	totalRows += semanticEntitiesCount
+
+	semanticFlowsCount, err := rt.transformSemanticFlows(ctx, tx, startLedger, endLedger)
+	if err != nil {
+		return fmt.Errorf("failed to transform semantic flows: %w", err)
+	}
+	totalRows += semanticFlowsCount
+
 	// Only advance checkpoint if actual data was transformed
 	// This prevents runaway cursor advancement when source is down
 	if totalRows == 0 {
@@ -1763,5 +1782,193 @@ func (rt *RealtimeTransformer) transformTokenRegistry(ctx context.Context, tx *s
 		return count, fmt.Errorf("error iterating token metadata: %w", err)
 	}
 
+	return count, nil
+}
+
+// ============================================================================
+// SEMANTIC LAYER TRANSFORMS (Silver-to-Silver)
+// ============================================================================
+
+// transformSemanticActivities materializes the unified activity feed from Silver hot tables.
+// Uses INSERT-from-SELECT against enriched_history_operations with CASE-based activity_type derivation.
+func (rt *RealtimeTransformer) transformSemanticActivities(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	query := `
+		INSERT INTO semantic_activities (
+			id, ledger_sequence, timestamp, activity_type, description,
+			source_account, destination_account, contract_id,
+			asset_code, asset_issuer, amount,
+			is_soroban, soroban_function_name,
+			transaction_hash, operation_index, successful, fee_charged
+		)
+		SELECT
+			e.transaction_hash || ':' || e.operation_index,
+			e.ledger_sequence,
+			COALESCE(e.ledger_closed_at, e.created_at),
+			CASE
+				WHEN e.type = 0 THEN 'account_created'
+				WHEN e.type = 1 THEN 'payment'
+				WHEN e.type = 2 THEN 'path_payment'
+				WHEN e.type = 6 THEN 'path_payment'
+				WHEN e.type = 13 THEN 'path_payment'
+				WHEN e.type = 3 THEN 'manage_offer'
+				WHEN e.type = 4 THEN 'create_passive_offer'
+				WHEN e.type = 5 THEN 'set_options'
+				WHEN e.type = 7 THEN 'account_merge'
+				WHEN e.type = 8 THEN 'inflation'
+				WHEN e.type = 9 THEN 'manage_data'
+				WHEN e.type = 10 THEN 'bump_sequence'
+				WHEN e.type = 12 THEN 'manage_offer'
+				WHEN e.type = 24 AND e.function_name IS NOT NULL THEN 'contract_call'
+				WHEN e.type = 24 THEN 'invoke_host_function'
+				ELSE 'other'
+			END,
+			CASE
+				WHEN e.type = 0 THEN 'Created account ' || COALESCE(e.destination, '')
+				WHEN e.type = 1 THEN 'Sent ' || COALESCE(CAST(e.amount AS TEXT), '?') || ' ' || COALESCE(e.asset_code, 'XLM') || ' to ' || COALESCE(e.destination, '')
+				WHEN e.type IN (2, 6, 13) THEN 'Path payment ' || COALESCE(CAST(e.amount AS TEXT), '?') || ' ' || COALESCE(e.asset_code, 'XLM')
+				WHEN e.type = 7 THEN 'Merged into ' || COALESCE(e.into_account, '')
+				WHEN e.type = 24 AND e.function_name IS NOT NULL THEN 'Called ' || e.function_name || ' on ' || COALESCE(e.contract_id, '')
+				WHEN e.type = 24 THEN 'Invoked host function'
+				ELSE NULL
+			END,
+			e.source_account,
+			COALESCE(e.destination, e.to_address),
+			e.contract_id,
+			e.asset_code,
+			e.asset_issuer,
+			e.amount,
+			COALESCE(e.is_soroban_op, false),
+			e.function_name,
+			e.transaction_hash,
+			e.operation_index,
+			COALESCE(e.transaction_successful, false),
+			e.tx_fee_charged
+		FROM enriched_history_operations e
+		WHERE e.ledger_sequence BETWEEN $1 AND $2
+		ON CONFLICT (id) DO NOTHING
+	`
+
+	result, err := tx.ExecContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return 0, fmt.Errorf("failed to insert semantic activities: %w", err)
+	}
+
+	count, _ := result.RowsAffected()
+	return count, nil
+}
+
+// transformSemanticEntities upserts the contract entity registry from Silver hot tables.
+// Merges contract_invocations_raw (for activity stats) + token_registry (for token metadata)
+// + contract_metadata (for deployment info).
+func (rt *RealtimeTransformer) transformSemanticEntities(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	query := `
+		INSERT INTO semantic_entities_contracts (
+			contract_id, contract_type,
+			token_name, token_symbol, token_decimals,
+			deployer_account, deployed_at, deployed_ledger,
+			total_invocations, last_activity, unique_callers,
+			observed_functions, updated_at
+		)
+		SELECT
+			ci.contract_id,
+			COALESCE(tr.token_type, 'unknown'),
+			tr.token_name,
+			tr.token_symbol,
+			tr.token_decimals,
+			cm.creator_address,
+			cm.created_at,
+			cm.created_ledger,
+			COUNT(*),
+			MAX(ci.closed_at),
+			COUNT(DISTINCT ci.source_account),
+			ARRAY_AGG(DISTINCT ci.function_name),
+			NOW()
+		FROM contract_invocations_raw ci
+		LEFT JOIN token_registry tr ON tr.contract_id = ci.contract_id
+		LEFT JOIN contract_metadata cm ON cm.contract_id = ci.contract_id
+		WHERE ci.ledger_sequence BETWEEN $1 AND $2
+		GROUP BY ci.contract_id, tr.token_type, tr.token_name, tr.token_symbol, tr.token_decimals,
+			cm.creator_address, cm.created_at, cm.created_ledger
+		ON CONFLICT (contract_id) DO UPDATE SET
+			contract_type = CASE
+				WHEN EXCLUDED.contract_type != 'unknown' THEN EXCLUDED.contract_type
+				ELSE semantic_entities_contracts.contract_type
+			END,
+			token_name = COALESCE(EXCLUDED.token_name, semantic_entities_contracts.token_name),
+			token_symbol = COALESCE(EXCLUDED.token_symbol, semantic_entities_contracts.token_symbol),
+			token_decimals = COALESCE(EXCLUDED.token_decimals, semantic_entities_contracts.token_decimals),
+			deployer_account = COALESCE(EXCLUDED.deployer_account, semantic_entities_contracts.deployer_account),
+			deployed_at = COALESCE(EXCLUDED.deployed_at, semantic_entities_contracts.deployed_at),
+			deployed_ledger = COALESCE(EXCLUDED.deployed_ledger, semantic_entities_contracts.deployed_ledger),
+			total_invocations = semantic_entities_contracts.total_invocations + EXCLUDED.total_invocations,
+			last_activity = GREATEST(semantic_entities_contracts.last_activity, EXCLUDED.last_activity),
+			unique_callers = (
+				SELECT COUNT(DISTINCT source_account)
+				FROM contract_invocations_raw
+				WHERE contract_id = EXCLUDED.contract_id
+			),
+			observed_functions = (
+				SELECT ARRAY_AGG(DISTINCT function_name)
+				FROM contract_invocations_raw
+				WHERE contract_id = EXCLUDED.contract_id
+			),
+			updated_at = NOW()
+	`
+
+	result, err := tx.ExecContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return 0, fmt.Errorf("failed to upsert semantic entities: %w", err)
+	}
+
+	count, _ := result.RowsAffected()
+	return count, nil
+}
+
+// transformSemanticFlows materializes normalized value transfers from Silver hot tables.
+// Combines token_transfers_raw (classic + Soroban) into a unified flow format.
+func (rt *RealtimeTransformer) transformSemanticFlows(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	query := `
+		INSERT INTO semantic_flows_value (
+			id, ledger_sequence, timestamp, flow_type,
+			from_account, to_account, contract_id,
+			asset_code, asset_issuer, asset_type,
+			amount, transaction_hash, operation_index, successful
+		)
+		SELECT
+			t.transaction_hash || ':' || ROW_NUMBER() OVER (PARTITION BY t.transaction_hash ORDER BY t.from_account, t.to_account),
+			t.ledger_sequence,
+			t.timestamp,
+			CASE
+				WHEN t.from_account IS NULL OR t.from_account = '' THEN 'mint'
+				WHEN t.to_account IS NULL OR t.to_account = '' THEN 'burn'
+				ELSE 'transfer'
+			END,
+			t.from_account,
+			t.to_account,
+			t.token_contract_id,
+			t.asset_code,
+			t.asset_issuer,
+			CASE
+				WHEN t.source_type = 'soroban' THEN 'soroban_token'
+				WHEN t.asset_code IS NULL OR t.asset_code = '' THEN 'native'
+				WHEN LENGTH(t.asset_code) <= 4 THEN 'credit_alphanum4'
+				ELSE 'credit_alphanum12'
+			END,
+			COALESCE(t.amount, 0),
+			t.transaction_hash,
+			t.operation_type,
+			COALESCE(t.transaction_successful, false)
+		FROM token_transfers_raw t
+		WHERE t.ledger_sequence BETWEEN $1 AND $2
+		  AND t.amount IS NOT NULL
+		ON CONFLICT (id) DO NOTHING
+	`
+
+	result, err := tx.ExecContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return 0, fmt.Errorf("failed to insert semantic flows: %w", err)
+	}
+
+	count, _ := result.RowsAffected()
 	return count, nil
 }

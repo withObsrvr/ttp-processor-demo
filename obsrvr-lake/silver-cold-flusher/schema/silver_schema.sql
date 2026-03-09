@@ -464,3 +464,59 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.contract_metadata (
     version_label VARCHAR
 );
 
+CREATE TABLE IF NOT EXISTS testnet_catalog.silver.semantic_activities (
+    id VARCHAR,
+    ledger_sequence BIGINT,
+    timestamp TIMESTAMP,
+    activity_type VARCHAR,
+    description VARCHAR,
+    source_account VARCHAR,
+    destination_account VARCHAR,
+    contract_id VARCHAR,
+    asset_code VARCHAR,
+    asset_issuer VARCHAR,
+    amount VARCHAR,
+    is_soroban BOOLEAN,
+    soroban_function_name VARCHAR,
+    transaction_hash VARCHAR,
+    operation_index INTEGER,
+    successful BOOLEAN,
+    fee_charged BIGINT,
+    created_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS testnet_catalog.silver.semantic_entities_contracts (
+    contract_id VARCHAR,
+    contract_type VARCHAR,
+    token_name VARCHAR,
+    token_symbol VARCHAR,
+    token_decimals INTEGER,
+    deployer_account VARCHAR,
+    deployed_at TIMESTAMP,
+    deployed_ledger BIGINT,
+    total_invocations BIGINT,
+    last_activity TIMESTAMP,
+    unique_callers BIGINT,
+    observed_functions VARCHAR,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS testnet_catalog.silver.semantic_flows_value (
+    id VARCHAR,
+    ledger_sequence BIGINT,
+    timestamp TIMESTAMP,
+    flow_type VARCHAR,
+    from_account VARCHAR,
+    to_account VARCHAR,
+    contract_id VARCHAR,
+    asset_code VARCHAR,
+    asset_issuer VARCHAR,
+    asset_type VARCHAR,
+    amount VARCHAR,
+    transaction_hash VARCHAR,
+    operation_index INTEGER,
+    successful BOOLEAN,
+    created_at TIMESTAMP
+);
+

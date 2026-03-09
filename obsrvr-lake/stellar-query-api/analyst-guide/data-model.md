@@ -98,6 +98,24 @@ Silver tables are pre-processed for common analytics queries. Use Silver when yo
 │                                                                  │
 │ API: /api/v1/silver/*                                           │
 └─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ SEMANTIC LAYER (Meaning-oriented, human-readable)               │
+│                                                                  │
+│ Activities:                                                      │
+│   semantic_activities         - Unified on-chain action feed    │
+│                                 (payments, swaps, contract calls)│
+│                                                                  │
+│ Entities:                                                        │
+│   semantic_entities_contracts - Contract registry with types,   │
+│                                 usage stats, observed functions  │
+│                                                                  │
+│ Flows:                                                           │
+│   semantic_flows_value        - Normalized value transfers      │
+│                                 (transfers, mints, burns)       │
+│                                                                  │
+│ API: /api/v1/semantic/*                                         │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ## Hot vs Cold Storage
@@ -1068,6 +1086,78 @@ Continue until `has_more: false`.
 - `cursor` and `start_ledger` are mutually exclusive
 - Results are ordered by ledger sequence (descending by default)
 - No duplicate records across pages
+
+---
+
+## Semantic Layer Tables Reference
+
+The semantic layer sits on top of Silver tables and provides meaning-oriented views for answering human questions directly. These tables are materialized in real-time by the `silver-realtime-transformer`.
+
+### semantic_activities
+
+Unified feed of all on-chain actions with human-readable descriptions.
+
+**Endpoint:** `GET /api/v1/semantic/activities`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | string | Unique ID (`{ledger_sequence}:{op_index}`) |
+| `ledger_sequence` | int | Block number |
+| `timestamp` | timestamp | When the activity occurred |
+| `activity_type` | string | `payment`, `contract_call`, `account_created`, `path_payment`, `manage_offer`, `inflation` |
+| `description` | string | Human-readable summary (e.g., "Sent 100 XLM to G...") |
+| `source_account` | string | Account that initiated the action |
+| `destination_account` | string | Target account (for payments) |
+| `contract_id` | string | Contract address (for Soroban ops) |
+| `asset_code` | string | Asset code (for value transfers) |
+| `amount` | string | Transfer amount |
+| `is_soroban` | bool | Whether this is a Soroban operation |
+| `soroban_function_name` | string | Function called (for contract_call) |
+| `transaction_hash` | string | Parent transaction hash |
+| `successful` | bool | Whether the transaction succeeded |
+| `fee_charged` | int | Fee in stroops |
+
+### semantic_entities_contracts
+
+Contract registry with type classification, usage stats, and observed function signatures.
+
+**Endpoint:** `GET /api/v1/semantic/contracts`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `contract_id` | string | Contract address (C...) |
+| `contract_type` | string | `sep41_token`, `unknown` (more types coming) |
+| `token_name` | string | Token name (if SEP-41) |
+| `token_symbol` | string | Token symbol (if SEP-41) |
+| `token_decimals` | int | Token decimals (if SEP-41) |
+| `deployer_account` | string | Account that deployed the contract |
+| `deployed_at` | timestamp | When contract was deployed |
+| `total_invocations` | int | Total number of calls to this contract |
+| `last_activity` | timestamp | Most recent invocation |
+| `unique_callers` | int | Number of distinct callers |
+| `observed_functions` | array | Function names observed (e.g., `["transfer", "mint"]`) |
+
+### semantic_flows_value
+
+Normalized value transfers across all asset types.
+
+**Endpoint:** `GET /api/v1/semantic/flows`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | string | Unique ID (`{tx_hash}:{flow_index}`) |
+| `ledger_sequence` | int | Block number |
+| `timestamp` | timestamp | When the transfer occurred |
+| `flow_type` | string | `transfer`, `mint`, `burn` |
+| `from_account` | string | Sender (null for mints) |
+| `to_account` | string | Recipient (null for burns) |
+| `contract_id` | string | Contract address (for Soroban transfers) |
+| `asset_code` | string | Asset code |
+| `asset_issuer` | string | Asset issuer |
+| `asset_type` | string | `native`, `credit_alphanum4`, `credit_alphanum12`, `soroban_token` |
+| `amount` | string | Transfer amount |
+| `transaction_hash` | string | Parent transaction hash |
+| `successful` | bool | Whether the transaction succeeded |
 
 ---
 

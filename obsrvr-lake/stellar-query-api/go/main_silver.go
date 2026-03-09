@@ -526,6 +526,17 @@ func mainWithSilver() {
 		log.Println("  ✓ /api/v1/gold/compliance/archive/{id}/download/{artifact} (GET: download artifact)")
 		log.Println("  ✓ /api/v1/gold/compliance/lineage (GET: archive audit trail)")
 
+		// Semantic layer endpoints
+		semanticHandlers := NewSemanticHandlers(unifiedSilverReader.hot)
+		log.Println("Registering Semantic Layer API endpoints:")
+
+		router.HandleFunc("/api/v1/semantic/activities", semanticHandlers.HandleSemanticActivities).Methods("GET")
+		router.HandleFunc("/api/v1/semantic/contracts", semanticHandlers.HandleSemanticContracts).Methods("GET")
+		router.HandleFunc("/api/v1/semantic/flows", semanticHandlers.HandleSemanticFlows).Methods("GET")
+		log.Println("  ✓ /api/v1/semantic/activities (unified activity feed)")
+		log.Println("  ✓ /api/v1/semantic/contracts (contract registry)")
+		log.Println("  ✓ /api/v1/semantic/flows (value transfer flows)")
+
 	}
 
 	// Index Plane endpoints (if enabled)
