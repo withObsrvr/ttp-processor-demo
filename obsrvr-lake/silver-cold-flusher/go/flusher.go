@@ -145,6 +145,8 @@ func (f *Flusher) flushAllTables(watermark int64) (int64, error) {
 		"token_transfers_raw":                 true,
 		"soroban_history_operations":          true,
 		"contract_invocations_raw":            true,
+		"semantic_activities":                 true,
+		"semantic_flows_value":                true,
 	}
 
 	// Tables with non-standard watermark column
@@ -202,6 +204,8 @@ func (f *Flusher) deleteFlushedData(watermark int64) (int64, error) {
 		"token_transfers_raw":                 true,
 		"soroban_history_operations":          true,
 		"contract_invocations_raw":            true,
+		"semantic_activities":                 true,
+		"semantic_flows_value":                true,
 	}
 
 	// Tables with non-standard watermark column

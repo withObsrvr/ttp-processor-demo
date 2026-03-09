@@ -116,5 +116,9 @@ func GetTablesToFlush() []string {
 		// Contract tracking tables
 		"contract_invocations_raw",
 		"contract_metadata",
+
+		// Semantic layer tables (event/append tables only; entities_contracts is UPSERT-only, not flushed)
+		"semantic_activities",
+		"semantic_flows_value",
 	}
 }

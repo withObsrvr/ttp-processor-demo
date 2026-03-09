@@ -1122,7 +1122,7 @@ func (sw *SilverWriter) WriteTokenRegistry(ctx context.Context, tx *sql.Tx, row 
 		INSERT INTO token_registry (
 			contract_id, token_name, token_symbol, token_decimals,
 			asset_code, asset_issuer, token_type,
-			first_seen_ledger, last_modified_ledger
+			first_seen_ledger, last_updated_ledger
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9
 		)
@@ -1133,7 +1133,7 @@ func (sw *SilverWriter) WriteTokenRegistry(ctx context.Context, tx *sql.Tx, row 
 			asset_code = COALESCE(EXCLUDED.asset_code, token_registry.asset_code),
 			asset_issuer = COALESCE(EXCLUDED.asset_issuer, token_registry.asset_issuer),
 			token_type = EXCLUDED.token_type,
-			last_modified_ledger = EXCLUDED.last_modified_ledger,
+			last_updated_ledger = EXCLUDED.last_updated_ledger,
 			updated_at = NOW()
 	`
 

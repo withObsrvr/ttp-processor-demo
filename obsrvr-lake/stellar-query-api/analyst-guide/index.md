@@ -81,6 +81,27 @@ curl -H "Authorization: Api-Key YOUR_API_KEY" \
   "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/events/generic?limit=10"
 ```
 
+Get a unified feed of recent on-chain actions (payments, contract calls, etc.):
+
+```bash
+curl -H "Authorization: Api-Key YOUR_API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/semantic/activities?limit=10"
+```
+
+Get classified contracts with usage stats and observed functions:
+
+```bash
+curl -H "Authorization: Api-Key YOUR_API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/semantic/contracts?limit=10"
+```
+
+Get normalized value transfers (transfers, mints, burns):
+
+```bash
+curl -H "Authorization: Api-Key YOUR_API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/semantic/flows?limit=10"
+```
+
 Get a compliance archive with all XLM holders at a specific point in time:
 
 ```bash
@@ -107,12 +128,11 @@ curl -H "Authorization: Api-Key YOUR_API_KEY" \
 │   └─────────────────────────┘   └─────────────────────────┘       │
 │                                                                     │
 │   ┌─────────────────────────────────────────────────────────────┐ │
-│   │ BRONZE (Raw)          │ SILVER (Analytics)  │ GOLD (Audit)  │ │
-│   │ ledgers, transactions │ accounts, transfers │ snapshots,    │ │
-│   │ operations, effects   │ contracts, offers   │ compliance    │ │
-│   │ trades, accounts      │ liquidity_pools     │ archives,     │ │
-│   │ trustlines, offers    │ soroban tables      │ checksums     │ │
-│   │ contract_events       │ analytics...        │ methodology   │ │
+│   │ BRONZE (Raw)   │ SILVER (Analytics) │ SEMANTIC       │ GOLD    │ │
+│   │ ledgers, txs   │ accounts, xfers    │ activities     │ audit   │ │
+│   │ operations     │ contracts, offers  │ contracts      │ snaps   │ │
+│   │ effects, trades│ soroban tables     │ value flows    │ archive │ │
+│   │ contract_events│ token registry     │                │         │ │
 │   └─────────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -156,6 +176,11 @@ The API automatically queries both hot and cold storage, merging results seamles
 - [Trading Pairs](./common-queries.md#list-available-trading-pairs) - Available DEX markets
 - [Latest Prices](./common-queries.md#get-latest-price) - Current trade prices with 24h volume
 - [OHLC Candles](./common-queries.md#get-ohlc-candles) - Price charts and candlestick data
+
+**Semantic Layer (Human-Readable Analytics):**
+- [On-Chain Activities](./common-queries.md#get-on-chain-activities) - Unified feed of payments, contract calls, account creations
+- [Contract Registry](./common-queries.md#get-contract-registry) - Classified contracts with usage stats and observed functions
+- [Value Flows](./common-queries.md#get-value-flows) - Normalized transfers, mints, and burns across all asset types
 
 **Compliance & Auditing:**
 - [Gold Layer Endpoints](./common-queries.md#gold-layer-endpoints) - Point-in-time snapshots and compliance archives

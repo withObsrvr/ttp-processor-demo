@@ -3628,6 +3628,200 @@ fi
 
 ---
 
+## Semantic Layer Endpoints
+
+The semantic layer answers high-level questions about on-chain activity without requiring knowledge of Stellar internals.
+
+### Get On-Chain Activities
+
+Returns a unified feed of all on-chain actions with human-readable descriptions.
+
+```bash
+GET /api/v1/semantic/activities
+```
+
+**Parameters:**
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `account` | No | Filter by source or destination account (G...) |
+| `contract_id` | No | Filter by contract address (C...) |
+| `activity_type` | No | Filter by type: `payment`, `contract_call`, `account_created`, `path_payment`, `manage_offer`, `inflation` |
+| `before` | No | Only activities before this timestamp (ISO 8601) |
+| `after` | No | Only activities after this timestamp (ISO 8601) |
+| `limit` | No | Max results (default: 50, max: 200) |
+
+**Example:**
+```bash
+# Recent on-chain activity
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/semantic/activities?limit=10"
+
+# Payment activity for a specific account
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/semantic/activities?account=GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR&activity_type=payment"
+
+# Contract calls in the last hour
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/semantic/activities?activity_type=contract_call&after=2026-03-09T20:00:00Z"
+```
+
+**Response:**
+```json
+{
+  "activities": [
+    {
+      "id": "50f2db0f...9d38354:0",
+      "ledger_sequence": 1418215,
+      "timestamp": "2026-03-09T21:23:18Z",
+      "activity_type": "contract_call",
+      "description": "Called write_prices on CD4KFB23...",
+      "source_account": "GCCNXGA5...",
+      "contract_id": "CD4KFB23...",
+      "is_soroban": true,
+      "soroban_function_name": "write_prices",
+      "transaction_hash": "50f2db0f...",
+      "operation_index": 0,
+      "successful": true,
+      "fee_charged": 15834
+    },
+    {
+      "id": "75e6de42...a98ee8:0",
+      "ledger_sequence": 1418222,
+      "timestamp": "2026-03-09T21:23:53Z",
+      "activity_type": "payment",
+      "description": "Sent 29800000 XLM to GAUEGQOJ...",
+      "source_account": "GC6ICL6X...",
+      "destination_account": "GAUEGQOJ...",
+      "amount": "29800000",
+      "is_soroban": false,
+      "transaction_hash": "75e6de42...",
+      "operation_index": 0,
+      "successful": false,
+      "fee_charged": 400
+    }
+  ],
+  "count": 2,
+  "has_more": true
+}
+```
+
+---
+
+### Get Contract Registry
+
+Returns classified contracts with usage statistics and observed function signatures.
+
+```bash
+GET /api/v1/semantic/contracts
+```
+
+**Parameters:**
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `contract_type` | No | Filter by type: `sep41_token`, `unknown` |
+| `deployer` | No | Filter by deployer account (G...) |
+| `limit` | No | Max results (default: 50, max: 200) |
+
+**Example:**
+```bash
+# Most active contracts
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/semantic/contracts?limit=10"
+
+# SEP-41 token contracts only
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/semantic/contracts?contract_type=sep41_token"
+```
+
+**Response:**
+```json
+{
+  "contracts": [
+    {
+      "contract_id": "CAUGTIO44JFE3KV74OLJ...",
+      "contract_type": "unknown",
+      "total_invocations": 128,
+      "last_activity": "2026-03-09T21:23:33Z",
+      "unique_callers": 1,
+      "observed_functions": ["set_price"]
+    },
+    {
+      "contract_id": "CCZP7JXIY2V4UVYVTV3D...",
+      "contract_type": "unknown",
+      "total_invocations": 26,
+      "unique_callers": 12,
+      "observed_functions": ["transfer"]
+    }
+  ],
+  "count": 2,
+  "has_more": true
+}
+```
+
+> **Tip:** A contract with `observed_functions: ["transfer"]` and many unique callers is likely a token, even if `contract_type` is `unknown`. Type classification improves as the token registry is populated.
+
+---
+
+### Get Value Flows
+
+Returns normalized value transfers across all asset types (classic payments, Soroban token transfers).
+
+```bash
+GET /api/v1/semantic/flows
+```
+
+**Parameters:**
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `account` | No | Filter by sender or recipient (G...) |
+| `asset_code` | No | Filter by asset code (e.g., `XLM`, `USDC`) |
+| `flow_type` | No | Filter by type: `transfer`, `mint`, `burn` |
+| `before` | No | Only flows before this timestamp (ISO 8601) |
+| `after` | No | Only flows after this timestamp (ISO 8601) |
+| `limit` | No | Max results (default: 50, max: 200) |
+
+**Example:**
+```bash
+# Recent value transfers
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/semantic/flows?limit=10"
+
+# XLM transfers only
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/semantic/flows?asset_code=XLM"
+
+# Token mints
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/semantic/flows?flow_type=mint"
+```
+
+**Response:**
+```json
+{
+  "flows": [
+    {
+      "id": "2c72bdc1...2c6a41:1",
+      "ledger_sequence": 1418218,
+      "timestamp": "2026-03-09T21:23:33Z",
+      "flow_type": "transfer",
+      "from_account": "GAB62KEK...",
+      "to_account": "GABNZZLR...",
+      "asset_type": "native",
+      "amount": "210000000",
+      "transaction_hash": "2c72bdc1...",
+      "operation_type": 1,
+      "successful": false
+    }
+  ],
+  "count": 1,
+  "has_more": true
+}
+```
+
+> **Note:** `flow_type` is derived automatically: `mint` when `from_account` is null (new tokens created), `burn` when `to_account` is null (tokens destroyed), `transfer` for all other movements.
+
+---
+
 ## Horizon API Equivalents
 
 | What you want | Horizon Endpoint | Obsrvr Lake Equivalent |
@@ -3665,6 +3859,9 @@ fi
 | Contract interface | N/A | `/silver/contracts/{id}/interface` |
 | Soroban ops by function | N/A | `/silver/operations/soroban/by-function` |
 | Order book | `GET /order_book` | `/bronze/offers` (with filters) |
+| On-chain activity feed | N/A | `/semantic/activities` |
+| Contract registry | N/A | `/semantic/contracts` |
+| Value flow tracking | N/A | `/semantic/flows` |
 
 ---
 

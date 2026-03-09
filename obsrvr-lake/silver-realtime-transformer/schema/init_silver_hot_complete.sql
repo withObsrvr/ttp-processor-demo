@@ -638,7 +638,7 @@ CREATE TABLE IF NOT EXISTS token_registry (
     asset_issuer    TEXT,          -- from SAC AssetInfo (AssetFromContractData)
     token_type      TEXT NOT NULL, -- 'sac' or 'custom_soroban'
     first_seen_ledger BIGINT,
-    last_modified_ledger BIGINT,
+    last_updated_ledger BIGINT,
     created_at      TIMESTAMPTZ DEFAULT NOW(),
     updated_at      TIMESTAMPTZ DEFAULT NOW()
 );
@@ -724,6 +724,89 @@ CREATE TABLE IF NOT EXISTS contract_metadata (
 
 CREATE INDEX IF NOT EXISTS idx_contract_metadata_creator ON contract_metadata(creator_address);
 CREATE INDEX IF NOT EXISTS idx_contract_metadata_wasm ON contract_metadata(wasm_hash) WHERE wasm_hash IS NOT NULL;
+
+-- ============================================================================
+-- SEMANTIC LAYER TABLES
+-- ============================================================================
+
+-- Table: semantic_activities
+-- Unified feed of on-chain actions (payments, swaps, contract calls, etc.)
+CREATE TABLE IF NOT EXISTS semantic_activities (
+    id TEXT PRIMARY KEY,
+    ledger_sequence BIGINT NOT NULL,
+    timestamp TIMESTAMPTZ NOT NULL,
+    activity_type TEXT NOT NULL,
+    description TEXT,
+    source_account TEXT,
+    destination_account TEXT,
+    contract_id TEXT,
+    asset_code TEXT,
+    asset_issuer TEXT,
+    amount NUMERIC,
+    is_soroban BOOLEAN DEFAULT FALSE,
+    soroban_function_name TEXT,
+    transaction_hash TEXT NOT NULL,
+    operation_index INT,
+    successful BOOLEAN NOT NULL,
+    fee_charged BIGINT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_sem_activities_source ON semantic_activities(source_account, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_sem_activities_dest ON semantic_activities(destination_account, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_sem_activities_contract ON semantic_activities(contract_id, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_sem_activities_type ON semantic_activities(activity_type, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_sem_activities_ts ON semantic_activities(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_sem_activities_ledger ON semantic_activities(ledger_sequence);
+
+-- Table: semantic_entities_contracts
+-- Contract registry with type classification and activity stats
+CREATE TABLE IF NOT EXISTS semantic_entities_contracts (
+    contract_id TEXT PRIMARY KEY,
+    contract_type TEXT NOT NULL,
+    token_name TEXT,
+    token_symbol TEXT,
+    token_decimals INT,
+    deployer_account TEXT,
+    deployed_at TIMESTAMPTZ,
+    deployed_ledger BIGINT,
+    total_invocations BIGINT DEFAULT 0,
+    last_activity TIMESTAMPTZ,
+    unique_callers BIGINT DEFAULT 0,
+    observed_functions TEXT[],
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_sem_entities_type ON semantic_entities_contracts(contract_type);
+CREATE INDEX IF NOT EXISTS idx_sem_entities_deployer ON semantic_entities_contracts(deployer_account);
+
+-- Table: semantic_flows_value
+-- Normalized value transfers across all asset types
+CREATE TABLE IF NOT EXISTS semantic_flows_value (
+    id TEXT PRIMARY KEY,
+    ledger_sequence BIGINT NOT NULL,
+    timestamp TIMESTAMPTZ NOT NULL,
+    flow_type TEXT NOT NULL,
+    from_account TEXT,
+    to_account TEXT,
+    contract_id TEXT,
+    asset_code TEXT,
+    asset_issuer TEXT,
+    asset_type TEXT,
+    amount NUMERIC NOT NULL,
+    transaction_hash TEXT NOT NULL,
+    operation_type INT,
+    successful BOOLEAN NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_sem_flows_from ON semantic_flows_value(from_account, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_sem_flows_to ON semantic_flows_value(to_account, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_sem_flows_asset ON semantic_flows_value(asset_code, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_sem_flows_contract ON semantic_flows_value(contract_id, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_sem_flows_ts ON semantic_flows_value(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_sem_flows_ledger ON semantic_flows_value(ledger_sequence);
 
 -- ============================================================================
 -- GRANTS AND PERMISSIONS
