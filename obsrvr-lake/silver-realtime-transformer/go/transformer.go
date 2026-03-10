@@ -2052,7 +2052,7 @@ func (rt *RealtimeTransformer) transformSemanticContractFunctions(ctx context.Co
 			total_calls = semantic_contract_functions.total_calls + EXCLUDED.total_calls,
 			successful_calls = semantic_contract_functions.successful_calls + EXCLUDED.successful_calls,
 			failed_calls = semantic_contract_functions.failed_calls + EXCLUDED.failed_calls,
-			unique_callers = EXCLUDED.unique_callers,
+			unique_callers = GREATEST(semantic_contract_functions.unique_callers, EXCLUDED.unique_callers),
 			last_called = GREATEST(semantic_contract_functions.last_called, EXCLUDED.last_called),
 			first_called = LEAST(semantic_contract_functions.first_called, EXCLUDED.first_called),
 			updated_at = NOW()
@@ -2104,7 +2104,6 @@ func (rt *RealtimeTransformer) transformSemanticAssetStats(ctx context.Context, 
 		FROM token_transfers_raw t
 		LEFT JOIN token_registry tr ON tr.contract_id = t.token_contract_id
 		WHERE t.ledger_sequence BETWEEN $1 AND $2
-		  AND t.amount IS NOT NULL
 		GROUP BY
 			CASE
 				WHEN t.source_type = 'soroban' THEN t.token_contract_id
@@ -2162,6 +2161,8 @@ func (rt *RealtimeTransformer) transformSemanticDexPairs(ctx context.Context, tx
 			selling_volume = semantic_dex_pairs.selling_volume + EXCLUDED.selling_volume,
 			buying_volume = semantic_dex_pairs.buying_volume + EXCLUDED.buying_volume,
 			last_price = EXCLUDED.last_price,
+			unique_sellers = GREATEST(semantic_dex_pairs.unique_sellers, EXCLUDED.unique_sellers),
+			unique_buyers = GREATEST(semantic_dex_pairs.unique_buyers, EXCLUDED.unique_buyers),
 			last_trade = GREATEST(semantic_dex_pairs.last_trade, EXCLUDED.last_trade),
 			first_trade = LEAST(semantic_dex_pairs.first_trade, EXCLUDED.first_trade),
 			updated_at = NOW()
@@ -2191,8 +2192,8 @@ func (rt *RealtimeTransformer) transformSemanticAccountSummary(ctx context.Conte
 		SELECT
 			e.source_account,
 			COUNT(*),
-			COUNT(*) FILTER (WHERE e.is_payment_op AND e.source_account = e.source_account),
-			0,
+			COUNT(*) FILTER (WHERE e.is_payment_op),
+			COUNT(*) FILTER (WHERE e.is_payment_op AND e.destination IS NOT NULL AND e.destination = e.source_account),
 			COUNT(*) FILTER (WHERE e.type = 24),
 			COUNT(DISTINCT e.contract_id) FILTER (WHERE e.type = 24),
 			(ARRAY_AGG(e.contract_id ORDER BY e.ledger_sequence DESC) FILTER (WHERE e.type = 24))[1],
@@ -2209,8 +2210,9 @@ func (rt *RealtimeTransformer) transformSemanticAccountSummary(ctx context.Conte
 		ON CONFLICT (account_id) DO UPDATE SET
 			total_operations = semantic_account_summary.total_operations + EXCLUDED.total_operations,
 			total_payments_sent = semantic_account_summary.total_payments_sent + EXCLUDED.total_payments_sent,
+			total_payments_received = semantic_account_summary.total_payments_received + EXCLUDED.total_payments_received,
 			total_contract_calls = semantic_account_summary.total_contract_calls + EXCLUDED.total_contract_calls,
-			unique_contracts_called = EXCLUDED.unique_contracts_called,
+			unique_contracts_called = GREATEST(semantic_account_summary.unique_contracts_called, EXCLUDED.unique_contracts_called),
 			top_contract_id = COALESCE(EXCLUDED.top_contract_id, semantic_account_summary.top_contract_id),
 			top_contract_function = COALESCE(EXCLUDED.top_contract_function, semantic_account_summary.top_contract_function),
 			is_contract_deployer = semantic_account_summary.is_contract_deployer OR EXCLUDED.is_contract_deployer,

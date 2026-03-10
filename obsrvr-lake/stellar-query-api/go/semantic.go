@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/lib/pq"
@@ -523,7 +524,12 @@ func (h *SemanticHandlers) HandleSemanticDexPairs(w http.ResponseWriter, r *http
 	argIdx := 1
 
 	if assetCode != "" {
-		query += fmt.Sprintf(" AND (selling_asset_code = $%d OR buying_asset_code = $%d)", argIdx, argIdx)
+		if strings.EqualFold(assetCode, "XLM") {
+			// Native XLM pairs have NULL asset_code, so match both NULL and 'XLM'
+			query += fmt.Sprintf(" AND (selling_asset_code = $%d OR buying_asset_code = $%d OR selling_asset_code IS NULL OR buying_asset_code IS NULL)", argIdx, argIdx)
+		} else {
+			query += fmt.Sprintf(" AND (selling_asset_code = $%d OR buying_asset_code = $%d)", argIdx, argIdx)
+		}
 		args = append(args, assetCode)
 		argIdx++
 	}

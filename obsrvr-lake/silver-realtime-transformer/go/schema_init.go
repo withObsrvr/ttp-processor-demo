@@ -44,7 +44,7 @@ func EnsureSilverHotSchema(db *sql.DB) error {
 		}
 	}
 
-	log.Printf("✅ Silver hot schema verified (%d table stmts ok, %d other stmts ok, %d skipped)", created, skipped, failed)
+	log.Printf("✅ Silver hot schema verified (%d table stmts ok, %d other stmts ok, %d non-fatal errors)", created, skipped, failed)
 	return nil
 }
 
