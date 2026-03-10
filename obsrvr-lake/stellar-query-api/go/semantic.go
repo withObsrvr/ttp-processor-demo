@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/lib/pq"
@@ -75,6 +76,77 @@ type SemanticFlow struct {
 	TransactionHash string  `json:"transaction_hash"`
 	OperationType   *int    `json:"operation_type,omitempty"`
 	Successful      bool    `json:"successful"`
+}
+
+// SemanticContractFunction represents a single function's call stats
+type SemanticContractFunction struct {
+	ContractID      string  `json:"contract_id"`
+	FunctionName    string  `json:"function_name"`
+	TotalCalls      int64   `json:"total_calls"`
+	SuccessfulCalls int64   `json:"successful_calls"`
+	FailedCalls     int64   `json:"failed_calls"`
+	SuccessRate     float64 `json:"success_rate"`
+	UniqueCallers   int64   `json:"unique_callers"`
+	FirstCalled     *string `json:"first_called,omitempty"`
+	LastCalled      *string `json:"last_called,omitempty"`
+}
+
+// SemanticAssetStats represents asset directory stats
+type SemanticAssetStats struct {
+	AssetKey          string  `json:"asset_key"`
+	AssetCode         *string `json:"asset_code,omitempty"`
+	AssetIssuer       *string `json:"asset_issuer,omitempty"`
+	AssetType         string  `json:"asset_type"`
+	TokenName         *string `json:"token_name,omitempty"`
+	TokenSymbol       *string `json:"token_symbol,omitempty"`
+	TokenDecimals     *int    `json:"token_decimals,omitempty"`
+	ContractID        *string `json:"contract_id,omitempty"`
+	HolderCount       int64   `json:"holder_count"`
+	TransferCount24h  int64   `json:"transfer_count_24h"`
+	TransferVolume24h string  `json:"transfer_volume_24h"`
+	TransferCount7d   int64   `json:"transfer_count_7d"`
+	TransferVolume7d  string  `json:"transfer_volume_7d"`
+	MintCount24h      int64   `json:"mint_count_24h"`
+	BurnCount24h      int64   `json:"burn_count_24h"`
+	FirstSeen         *string `json:"first_seen,omitempty"`
+	LastTransfer      *string `json:"last_transfer,omitempty"`
+}
+
+// SemanticDexPair represents a DEX trading pair
+type SemanticDexPair struct {
+	PairKey            string  `json:"pair_key"`
+	SellingAssetCode   *string `json:"selling_asset_code,omitempty"`
+	SellingAssetIssuer *string `json:"selling_asset_issuer,omitempty"`
+	BuyingAssetCode    *string `json:"buying_asset_code,omitempty"`
+	BuyingAssetIssuer  *string `json:"buying_asset_issuer,omitempty"`
+	TradeCount         int64   `json:"trade_count"`
+	TradeCount24h      int64   `json:"trade_count_24h"`
+	TradeCount7d       int64   `json:"trade_count_7d"`
+	SellingVolume      string  `json:"selling_volume"`
+	BuyingVolume       string  `json:"buying_volume"`
+	SellingVolume24h   string  `json:"selling_volume_24h"`
+	BuyingVolume24h    string  `json:"buying_volume_24h"`
+	LastPrice          *string `json:"last_price,omitempty"`
+	UniqueSellers      int64   `json:"unique_sellers"`
+	UniqueBuyers       int64   `json:"unique_buyers"`
+	FirstTrade         *string `json:"first_trade,omitempty"`
+	LastTrade          *string `json:"last_trade,omitempty"`
+}
+
+// SemanticAccountSummary represents an account's activity summary
+type SemanticAccountSummary struct {
+	AccountID            string  `json:"account_id"`
+	TotalOperations      int64   `json:"total_operations"`
+	TotalPaymentsSent    int64   `json:"total_payments_sent"`
+	TotalPaymentsRecvd   int64   `json:"total_payments_received"`
+	TotalContractCalls   int64   `json:"total_contract_calls"`
+	UniqueContractsCalled int64  `json:"unique_contracts_called"`
+	TopContractID        *string `json:"top_contract_id,omitempty"`
+	TopContractFunction  *string `json:"top_contract_function,omitempty"`
+	IsContractDeployer   bool    `json:"is_contract_deployer"`
+	ContractsDeployed    int     `json:"contracts_deployed"`
+	FirstActivity        *string `json:"first_activity,omitempty"`
+	LastActivity         *string `json:"last_activity,omitempty"`
 }
 
 // SemanticActivityFilters holds filter params for activities queries
@@ -246,6 +318,357 @@ func (h *SemanticHandlers) HandleSemanticFlows(w http.ResponseWriter, r *http.Re
 		"flows":    flows,
 		"count":    len(flows),
 		"has_more": hasMore,
+	})
+}
+
+// ============================================
+// Contract Functions Endpoint
+// ============================================
+
+// HandleSemanticContractFunctions serves GET /api/v1/semantic/contracts/functions
+func (h *SemanticHandlers) HandleSemanticContractFunctions(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	contractID := r.URL.Query().Get("contract_id")
+	if contractID == "" {
+		respondSemanticError(w, "contract_id parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	limit := parseIntParam(r, "limit", 50, 1, 200)
+
+	query := `SELECT contract_id, function_name,
+		total_calls, successful_calls, failed_calls, unique_callers,
+		first_called, last_called
+		FROM semantic_contract_functions
+		WHERE contract_id = $1
+		ORDER BY total_calls DESC
+		LIMIT $2`
+
+	rows, err := h.unified.hot.db.QueryContext(ctx, query, contractID, limit+1)
+	if err != nil {
+		respondSemanticError(w, "query failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var results []SemanticContractFunction
+	for rows.Next() {
+		var f SemanticContractFunction
+		var fc, lc sql.NullString
+		err := rows.Scan(
+			&f.ContractID, &f.FunctionName,
+			&f.TotalCalls, &f.SuccessfulCalls, &f.FailedCalls, &f.UniqueCallers,
+			&fc, &lc,
+		)
+		if err != nil {
+			respondSemanticError(w, "scan failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if fc.Valid {
+			f.FirstCalled = &fc.String
+		}
+		if lc.Valid {
+			f.LastCalled = &lc.String
+		}
+		if f.TotalCalls > 0 {
+			f.SuccessRate = float64(f.SuccessfulCalls) / float64(f.TotalCalls)
+		}
+		results = append(results, f)
+	}
+	if err := rows.Err(); err != nil {
+		respondSemanticError(w, "rows error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	hasMore := len(results) > limit
+	if hasMore {
+		results = results[:limit]
+	}
+
+	respondSemanticJSON(w, map[string]any{
+		"functions": results,
+		"count":     len(results),
+		"has_more":  hasMore,
+	})
+}
+
+// ============================================
+// Asset Stats Endpoint
+// ============================================
+
+// HandleSemanticAssets serves GET /api/v1/semantic/assets
+func (h *SemanticHandlers) HandleSemanticAssets(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	limit := parseIntParam(r, "limit", 50, 1, 200)
+	assetType := r.URL.Query().Get("asset_type")
+	sort := r.URL.Query().Get("sort")
+
+	query := `SELECT asset_key, asset_code, asset_issuer, asset_type,
+		token_name, token_symbol, token_decimals, contract_id,
+		holder_count, transfer_count_24h, COALESCE(transfer_volume_24h, 0)::TEXT,
+		transfer_count_7d, COALESCE(transfer_volume_7d, 0)::TEXT,
+		mint_count_24h, burn_count_24h,
+		first_seen, last_transfer
+		FROM semantic_asset_stats WHERE 1=1`
+
+	args := []any{}
+	argIdx := 1
+
+	if assetType != "" {
+		query += fmt.Sprintf(" AND asset_type = $%d", argIdx)
+		args = append(args, assetType)
+		argIdx++
+	}
+
+	switch sort {
+	case "volume":
+		query += " ORDER BY transfer_volume_24h DESC NULLS LAST"
+	case "transfers":
+		query += " ORDER BY transfer_count_24h DESC"
+	default:
+		query += " ORDER BY holder_count DESC"
+	}
+
+	query += fmt.Sprintf(" LIMIT $%d", argIdx)
+	args = append(args, limit+1)
+
+	rows, err := h.unified.hot.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		respondSemanticError(w, "query failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var results []SemanticAssetStats
+	for rows.Next() {
+		var a SemanticAssetStats
+		var ac, ai, tn, ts, cid, fs, lt sql.NullString
+		var td sql.NullInt32
+		err := rows.Scan(
+			&a.AssetKey, &ac, &ai, &a.AssetType,
+			&tn, &ts, &td, &cid,
+			&a.HolderCount, &a.TransferCount24h, &a.TransferVolume24h,
+			&a.TransferCount7d, &a.TransferVolume7d,
+			&a.MintCount24h, &a.BurnCount24h,
+			&fs, &lt,
+		)
+		if err != nil {
+			respondSemanticError(w, "scan failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if ac.Valid {
+			a.AssetCode = &ac.String
+		}
+		if ai.Valid {
+			a.AssetIssuer = &ai.String
+		}
+		if tn.Valid {
+			a.TokenName = &tn.String
+		}
+		if ts.Valid {
+			a.TokenSymbol = &ts.String
+		}
+		if td.Valid {
+			v := int(td.Int32)
+			a.TokenDecimals = &v
+		}
+		if cid.Valid {
+			a.ContractID = &cid.String
+		}
+		if fs.Valid {
+			a.FirstSeen = &fs.String
+		}
+		if lt.Valid {
+			a.LastTransfer = &lt.String
+		}
+		results = append(results, a)
+	}
+	if err := rows.Err(); err != nil {
+		respondSemanticError(w, "rows error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	hasMore := len(results) > limit
+	if hasMore {
+		results = results[:limit]
+	}
+
+	respondSemanticJSON(w, map[string]any{
+		"assets":   results,
+		"count":    len(results),
+		"has_more": hasMore,
+	})
+}
+
+// ============================================
+// DEX Pairs Endpoint
+// ============================================
+
+// HandleSemanticDexPairs serves GET /api/v1/semantic/dex/pairs
+func (h *SemanticHandlers) HandleSemanticDexPairs(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	limit := parseIntParam(r, "limit", 50, 1, 200)
+	assetCode := r.URL.Query().Get("asset_code")
+	sort := r.URL.Query().Get("sort")
+
+	query := `SELECT pair_key, selling_asset_code, selling_asset_issuer,
+		buying_asset_code, buying_asset_issuer,
+		trade_count, trade_count_24h, trade_count_7d,
+		COALESCE(selling_volume, 0)::TEXT, COALESCE(buying_volume, 0)::TEXT,
+		COALESCE(selling_volume_24h, 0)::TEXT, COALESCE(buying_volume_24h, 0)::TEXT,
+		last_price::TEXT, unique_sellers, unique_buyers,
+		first_trade, last_trade
+		FROM semantic_dex_pairs WHERE 1=1`
+
+	args := []any{}
+	argIdx := 1
+
+	if assetCode != "" {
+		if strings.EqualFold(assetCode, "XLM") {
+			// Native XLM pairs have NULL asset_code, so match both NULL and 'XLM'
+			query += fmt.Sprintf(" AND (selling_asset_code = $%d OR buying_asset_code = $%d OR selling_asset_code IS NULL OR buying_asset_code IS NULL)", argIdx, argIdx)
+		} else {
+			query += fmt.Sprintf(" AND (selling_asset_code = $%d OR buying_asset_code = $%d)", argIdx, argIdx)
+		}
+		args = append(args, assetCode)
+		argIdx++
+	}
+
+	switch sort {
+	case "trades":
+		query += " ORDER BY trade_count_24h DESC"
+	default:
+		query += " ORDER BY selling_volume_24h DESC NULLS LAST"
+	}
+
+	query += fmt.Sprintf(" LIMIT $%d", argIdx)
+	args = append(args, limit+1)
+
+	rows, err := h.unified.hot.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		respondSemanticError(w, "query failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var results []SemanticDexPair
+	for rows.Next() {
+		var d SemanticDexPair
+		var sac, sai, bac, bai, lp, ft, lt sql.NullString
+		err := rows.Scan(
+			&d.PairKey, &sac, &sai, &bac, &bai,
+			&d.TradeCount, &d.TradeCount24h, &d.TradeCount7d,
+			&d.SellingVolume, &d.BuyingVolume,
+			&d.SellingVolume24h, &d.BuyingVolume24h,
+			&lp, &d.UniqueSellers, &d.UniqueBuyers,
+			&ft, &lt,
+		)
+		if err != nil {
+			respondSemanticError(w, "scan failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if sac.Valid {
+			d.SellingAssetCode = &sac.String
+		}
+		if sai.Valid {
+			d.SellingAssetIssuer = &sai.String
+		}
+		if bac.Valid {
+			d.BuyingAssetCode = &bac.String
+		}
+		if bai.Valid {
+			d.BuyingAssetIssuer = &bai.String
+		}
+		if lp.Valid {
+			d.LastPrice = &lp.String
+		}
+		if ft.Valid {
+			d.FirstTrade = &ft.String
+		}
+		if lt.Valid {
+			d.LastTrade = &lt.String
+		}
+		results = append(results, d)
+	}
+	if err := rows.Err(); err != nil {
+		respondSemanticError(w, "rows error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	hasMore := len(results) > limit
+	if hasMore {
+		results = results[:limit]
+	}
+
+	respondSemanticJSON(w, map[string]any{
+		"pairs":    results,
+		"count":    len(results),
+		"has_more": hasMore,
+	})
+}
+
+// ============================================
+// Account Summary Endpoint
+// ============================================
+
+// HandleSemanticAccountSummary serves GET /api/v1/semantic/accounts/summary
+func (h *SemanticHandlers) HandleSemanticAccountSummary(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	accountID := r.URL.Query().Get("account_id")
+	if accountID == "" {
+		respondSemanticError(w, "account_id parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	query := `SELECT account_id, total_operations,
+		total_payments_sent, total_payments_received,
+		total_contract_calls, unique_contracts_called,
+		top_contract_id, top_contract_function,
+		is_contract_deployer, contracts_deployed,
+		first_activity, last_activity
+		FROM semantic_account_summary
+		WHERE account_id = $1`
+
+	var s SemanticAccountSummary
+	var tcid, tcf, fa, la sql.NullString
+	var isDeployer sql.NullBool
+	err := h.unified.hot.db.QueryRowContext(ctx, query, accountID).Scan(
+		&s.AccountID, &s.TotalOperations,
+		&s.TotalPaymentsSent, &s.TotalPaymentsRecvd,
+		&s.TotalContractCalls, &s.UniqueContractsCalled,
+		&tcid, &tcf,
+		&isDeployer, &s.ContractsDeployed,
+		&fa, &la,
+	)
+	if err == sql.ErrNoRows {
+		respondSemanticJSON(w, map[string]any{
+			"account": nil,
+			"found":   false,
+		})
+		return
+	}
+	if err != nil {
+		respondSemanticError(w, "query failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	s.IsContractDeployer = isDeployer.Valid && isDeployer.Bool
+	if tcid.Valid {
+		s.TopContractID = &tcid.String
+	}
+	if tcf.Valid {
+		s.TopContractFunction = &tcf.String
+	}
+	if fa.Valid {
+		s.FirstActivity = &fa.String
+	}
+	if la.Valid {
+		s.LastActivity = &la.String
+	}
+
+	respondSemanticJSON(w, map[string]any{
+		"account": s,
+		"found":   true,
 	})
 }
 

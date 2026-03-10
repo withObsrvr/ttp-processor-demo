@@ -3820,6 +3820,188 @@ curl -H "Authorization: Api-Key $API_KEY" \
 
 > **Note:** `flow_type` is derived automatically: `mint` when `from_account` is null (new tokens created), `burn` when `to_account` is null (tokens destroyed), `transfer` for all other movements.
 
+### Get Contract Function Stats
+
+Per-function call statistics for a Soroban contract. Shows which functions are called most, success rates, and unique callers.
+
+```
+GET /api/v1/semantic/contracts/functions
+```
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `contract_id` | Yes | Contract address (C...) |
+| `limit` | No | Results per page (default 50, max 200) |
+
+```bash
+# Function stats for a specific contract
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/semantic/contracts/functions?contract_id=CAUGTIO44JFE3KV74OLJJHYLEGPFIZTZAXVF5BBY6WNUAUHHEO4JCGIH"
+```
+
+**Response:**
+```json
+{
+  "functions": [
+    {
+      "contract_id": "CAUGTIO44...",
+      "function_name": "transfer",
+      "total_calls": 1523,
+      "successful_calls": 1498,
+      "failed_calls": 25,
+      "success_rate": 0.9835,
+      "unique_callers": 87,
+      "first_called": "2025-12-18T10:30:00Z",
+      "last_called": "2026-03-10T19:00:00Z"
+    }
+  ],
+  "count": 1,
+  "has_more": false
+}
+```
+
+### Get Asset Stats
+
+Ranked asset directory with on-chain statistics including transfer counts, volume, and holder counts.
+
+```
+GET /api/v1/semantic/assets
+```
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `asset_type` | No | Filter by type: `native`, `credit_alphanum4`, `credit_alphanum12`, `soroban_token` |
+| `sort` | No | Sort by: `holders` (default), `volume`, `transfers` |
+| `limit` | No | Results per page (default 50, max 200) |
+
+```bash
+# Top assets by holder count
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/semantic/assets?sort=holders&limit=10"
+
+# Top assets by 24h volume
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/semantic/assets?sort=volume&limit=10"
+
+# Only Soroban tokens
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/semantic/assets?asset_type=soroban_token"
+```
+
+**Response:**
+```json
+{
+  "assets": [
+    {
+      "asset_key": "native",
+      "asset_type": "native",
+      "holder_count": 0,
+      "transfer_count_24h": 533,
+      "transfer_volume_24h": "32464019303206632858",
+      "transfer_count_7d": 0,
+      "transfer_volume_7d": "0",
+      "mint_count_24h": 0,
+      "burn_count_24h": 0,
+      "first_seen": "2025-12-17T17:33:02Z",
+      "last_transfer": "2025-12-17T21:46:41Z"
+    }
+  ],
+  "count": 1,
+  "has_more": false
+}
+```
+
+### Get DEX Pairs
+
+Trading pair statistics from the Stellar DEX, including volume, trade counts, and last price.
+
+```
+GET /api/v1/semantic/dex/pairs
+```
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `asset_code` | No | Filter by selling or buying asset code |
+| `sort` | No | Sort by: `volume` (default), `trades` |
+| `limit` | No | Results per page (default 50, max 200) |
+
+```bash
+# Top pairs by volume
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/semantic/dex/pairs?sort=volume&limit=10"
+
+# Pairs involving XLM
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/semantic/dex/pairs?asset_code=XLM"
+```
+
+**Response:**
+```json
+{
+  "pairs": [
+    {
+      "pair_key": "IOM:GAA3KAW.../XLM:native",
+      "selling_asset_code": "IOM",
+      "selling_asset_issuer": "GAA3KAW...",
+      "trade_count": 4,
+      "trade_count_24h": 0,
+      "trade_count_7d": 0,
+      "selling_volume": "2999999996",
+      "buying_volume": "616666666",
+      "selling_volume_24h": "0",
+      "buying_volume_24h": "0",
+      "last_price": "0.1666667",
+      "unique_sellers": 1,
+      "unique_buyers": 1,
+      "first_trade": "2025-12-17T18:51:57Z",
+      "last_trade": "2025-12-17T18:51:57Z"
+    }
+  ],
+  "count": 1,
+  "has_more": false
+}
+```
+
+### Get Account Summary
+
+Account activity profile with operation counts, contract interaction stats, and activity timeline.
+
+```
+GET /api/v1/semantic/accounts/summary
+```
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `account_id` | Yes | Stellar account address (G...) |
+
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/semantic/accounts/summary?account_id=GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR"
+```
+
+**Response:**
+```json
+{
+  "account": {
+    "account_id": "GAIH3ULL...",
+    "total_operations": 3860,
+    "total_payments_sent": 20,
+    "total_payments_received": 0,
+    "total_contract_calls": 1,
+    "unique_contracts_called": 0,
+    "top_contract_id": "CDLZFC3S...",
+    "top_contract_function": "transfer",
+    "is_contract_deployer": false,
+    "contracts_deployed": 0,
+    "first_activity": "2025-12-17T17:42:37Z",
+    "last_activity": "2025-12-18T01:06:06Z"
+  },
+  "found": true
+}
+```
+
+> **Note:** If the account has no activity in the semantic layer yet, the response returns `"found": false` with `"account": null`.
+
 ---
 
 ## Horizon API Equivalents
@@ -3862,6 +4044,10 @@ curl -H "Authorization: Api-Key $API_KEY" \
 | On-chain activity feed | N/A | `/semantic/activities` |
 | Contract registry | N/A | `/semantic/contracts` |
 | Value flow tracking | N/A | `/semantic/flows` |
+| Contract function stats | N/A | `/semantic/contracts/functions` |
+| Asset directory & stats | N/A | `/semantic/assets` |
+| DEX pair volume & pricing | N/A | `/semantic/dex/pairs` |
+| Account activity summary | N/A | `/semantic/accounts/summary` |
 
 ---
 

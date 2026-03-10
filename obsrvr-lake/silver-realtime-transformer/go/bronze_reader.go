@@ -58,6 +58,19 @@ func (br *BronzeReader) GetMinLedgerSequence(ctx context.Context) (int64, error)
 	return minSeq.Int64, nil
 }
 
+// CountLedgersInRange returns the number of ledger rows that exist in bronze hot for the given range.
+// This is used to distinguish "empty ledgers" (ledgers exist but have no operations) from
+// "source unavailable" (ledgers don't exist at all).
+func (br *BronzeReader) CountLedgersInRange(ctx context.Context, startLedger, endLedger int64) (int64, error) {
+	var count int64
+	query := `SELECT COUNT(*) FROM ledgers_row_v2 WHERE sequence BETWEEN $1 AND $2`
+	err := br.db.QueryRowContext(ctx, query, startLedger, endLedger).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count ledgers in range: %w", err)
+	}
+	return count, nil
+}
+
 // QueryEnrichedOperations reads enriched operations from bronze hot for a ledger range
 // Maps raw stellar_hot schema to enriched silver_hot schema
 func (br *BronzeReader) QueryEnrichedOperations(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {

@@ -163,6 +163,17 @@ func (r *BronzeColdReader) GetMinLedgerSequence(ctx context.Context) (int64, err
 	return minSeq.Int64, nil
 }
 
+// CountLedgersInRange returns the number of ledger rows that exist in cold storage for the given range.
+func (r *BronzeColdReader) CountLedgersInRange(ctx context.Context, startLedger, endLedger int64) (int64, error) {
+	var count int64
+	query := fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE sequence BETWEEN $1 AND $2`, r.tableName("ledgers_row_v2"))
+	err := r.db.QueryRowContext(ctx, query, startLedger, endLedger).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count ledgers in range from cold: %w", err)
+	}
+	return count, nil
+}
+
 // =============================================================================
 // Phase 1: Core Tables (Operations, Transactions, Token Transfers)
 // =============================================================================

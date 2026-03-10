@@ -40,6 +40,12 @@ var SilverTables = []string{
 	"semantic_activities",
 	"semantic_entities_contracts",
 	"semantic_flows_value",
+
+	// Semantic layer phase 2 tables (UPSERT, hot-only)
+	"semantic_contract_functions",
+	"semantic_asset_stats",
+	"semantic_dex_pairs",
+	"semantic_account_summary",
 }
 
 // RecreateAllSilverTables drops all Silver tables and recreates them with partitioning

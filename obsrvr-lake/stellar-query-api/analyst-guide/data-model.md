@@ -103,16 +103,17 @@ Silver tables are pre-processed for common analytics queries. Use Silver when yo
 │ SEMANTIC LAYER (Meaning-oriented, human-readable)               │
 │                                                                  │
 │ Activities:                                                      │
-│   semantic_activities         - Unified on-chain action feed    │
-│                                 (payments, swaps, contract calls)│
-│                                                                  │
+│   semantic_activities           - Unified on-chain action feed  │
+│                                   (payments, swaps, calls)      │
 │ Entities:                                                        │
-│   semantic_entities_contracts - Contract registry with types,   │
-│                                 usage stats, observed functions  │
+│   semantic_entities_contracts   - Contract registry with types  │
+│   semantic_contract_functions   - Per-function call stats       │
+│   semantic_account_summary      - Account activity profiles     │
 │                                                                  │
 │ Flows:                                                           │
-│   semantic_flows_value        - Normalized value transfers      │
-│                                 (transfers, mints, burns)       │
+│   semantic_flows_value          - Normalized value transfers    │
+│   semantic_asset_stats          - Asset directory with stats    │
+│   semantic_dex_pairs            - DEX pair volume & pricing     │
 │                                                                  │
 │ API: /api/v1/semantic/*                                         │
 └─────────────────────────────────────────────────────────────────┘
@@ -1159,6 +1160,97 @@ Normalized value transfers across all asset types.
 | `transaction_hash` | string | Parent transaction hash |
 | `operation_type` | int | Stellar operation type code (1=payment, 2=path_payment, 13=path_payment_strict_send, 24=invoke_host_function) |
 | `successful` | bool | Whether the transaction succeeded |
+
+### semantic_contract_functions
+
+Per-function call statistics for Soroban contracts. Answers: "What functions does this contract have, and how are they used?"
+
+**Endpoint:** `GET /api/v1/semantic/contracts/functions`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `contract_id` | string | Contract address (C...) |
+| `function_name` | string | Name of the contract function |
+| `total_calls` | int | Total number of invocations |
+| `successful_calls` | int | Successful invocations |
+| `failed_calls` | int | Failed invocations |
+| `success_rate` | float | Computed: `successful_calls / total_calls` |
+| `unique_callers` | int | Distinct accounts that called this function |
+| `first_called` | timestamp | First invocation time |
+| `last_called` | timestamp | Most recent invocation time |
+
+### semantic_asset_stats
+
+On-chain statistics for all asset types. Answers: "What assets exist, and what are their activity stats?"
+
+**Endpoint:** `GET /api/v1/semantic/assets`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `asset_key` | string | `"native"`, `"CODE:ISSUER"`, or contract ID |
+| `asset_code` | string | Asset code (e.g., `XLM`, `USDC`) |
+| `asset_issuer` | string | Issuer account |
+| `asset_type` | string | `native`, `credit_alphanum4`, `credit_alphanum12`, `soroban_token` |
+| `token_name` | string | Token name (from registry, if available) |
+| `token_symbol` | string | Token symbol (from registry) |
+| `token_decimals` | int | Token decimals (from registry) |
+| `contract_id` | string | Contract address (for Soroban tokens) |
+| `holder_count` | int | Number of holders (periodically refreshed) |
+| `transfer_count_24h` | int | Transfers in last 24h |
+| `transfer_volume_24h` | string | Volume in last 24h |
+| `transfer_count_7d` | int | Transfers in last 7 days |
+| `transfer_volume_7d` | string | Volume in last 7 days |
+| `mint_count_24h` | int | Mints in last 24h |
+| `burn_count_24h` | int | Burns in last 24h |
+| `first_seen` | timestamp | First transfer observed |
+| `last_transfer` | timestamp | Most recent transfer |
+
+### semantic_dex_pairs
+
+DEX trading pair statistics. Answers: "What are the active trading pairs, and what's their volume?"
+
+**Endpoint:** `GET /api/v1/semantic/dex/pairs`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `pair_key` | string | `"SELL_CODE:SELL_ISSUER/BUY_CODE:BUY_ISSUER"` |
+| `selling_asset_code` | string | Selling asset code |
+| `selling_asset_issuer` | string | Selling asset issuer |
+| `buying_asset_code` | string | Buying asset code |
+| `buying_asset_issuer` | string | Buying asset issuer |
+| `trade_count` | int | Total trades |
+| `trade_count_24h` | int | Trades in last 24h |
+| `trade_count_7d` | int | Trades in last 7 days |
+| `selling_volume` | string | Total selling volume |
+| `buying_volume` | string | Total buying volume |
+| `selling_volume_24h` | string | Selling volume in 24h |
+| `buying_volume_24h` | string | Buying volume in 24h |
+| `last_price` | string | Most recent trade price |
+| `unique_sellers` | int | Distinct seller accounts |
+| `unique_buyers` | int | Distinct buyer accounts |
+| `first_trade` | timestamp | First trade observed |
+| `last_trade` | timestamp | Most recent trade |
+
+### semantic_account_summary
+
+Account activity summary with contract interaction stats. Answers: "What kind of account is this, and what has it been doing?"
+
+**Endpoint:** `GET /api/v1/semantic/accounts/summary`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `account_id` | string | Stellar account address (G...) |
+| `total_operations` | int | Total operations performed |
+| `total_payments_sent` | int | Payments sent |
+| `total_payments_received` | int | Payments received |
+| `total_contract_calls` | int | Soroban contract invocations |
+| `unique_contracts_called` | int | Distinct contracts interacted with |
+| `top_contract_id` | string | Most frequently called contract |
+| `top_contract_function` | string | Most frequently called function |
+| `is_contract_deployer` | bool | Whether account has deployed contracts |
+| `contracts_deployed` | int | Number of contracts deployed |
+| `first_activity` | timestamp | First on-chain activity |
+| `last_activity` | timestamp | Most recent on-chain activity |
 
 ---
 
