@@ -520,3 +520,73 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.semantic_flows_value (
     created_at TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS testnet_catalog.silver.semantic_contract_functions (
+    contract_id VARCHAR,
+    function_name VARCHAR,
+    total_calls BIGINT,
+    successful_calls BIGINT,
+    failed_calls BIGINT,
+    unique_callers BIGINT,
+    first_called TIMESTAMP,
+    last_called TIMESTAMP,
+    updated_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS testnet_catalog.silver.semantic_asset_stats (
+    asset_key VARCHAR,
+    asset_code VARCHAR,
+    asset_issuer VARCHAR,
+    asset_type VARCHAR,
+    token_name VARCHAR,
+    token_symbol VARCHAR,
+    token_decimals INTEGER,
+    contract_id VARCHAR,
+    holder_count BIGINT,
+    transfer_count_24h BIGINT,
+    transfer_volume_24h DECIMAL,
+    transfer_count_7d BIGINT,
+    transfer_volume_7d DECIMAL,
+    mint_count_24h BIGINT,
+    burn_count_24h BIGINT,
+    first_seen TIMESTAMP,
+    last_transfer TIMESTAMP,
+    updated_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS testnet_catalog.silver.semantic_dex_pairs (
+    pair_key VARCHAR,
+    selling_asset_code VARCHAR,
+    selling_asset_issuer VARCHAR,
+    buying_asset_code VARCHAR,
+    buying_asset_issuer VARCHAR,
+    trade_count BIGINT,
+    trade_count_24h BIGINT,
+    trade_count_7d BIGINT,
+    selling_volume DECIMAL,
+    buying_volume DECIMAL,
+    selling_volume_24h DECIMAL,
+    buying_volume_24h DECIMAL,
+    last_price DECIMAL,
+    unique_sellers BIGINT,
+    unique_buyers BIGINT,
+    first_trade TIMESTAMP,
+    last_trade TIMESTAMP,
+    updated_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS testnet_catalog.silver.semantic_account_summary (
+    account_id VARCHAR,
+    total_operations BIGINT,
+    total_payments_sent BIGINT,
+    total_payments_received BIGINT,
+    total_contract_calls BIGINT,
+    unique_contracts_called BIGINT,
+    top_contract_id VARCHAR,
+    top_contract_function VARCHAR,
+    is_contract_deployer BOOLEAN,
+    contracts_deployed INTEGER,
+    first_activity TIMESTAMP,
+    last_activity TIMESTAMP,
+    updated_at TIMESTAMP
+);
+

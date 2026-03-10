@@ -809,6 +809,100 @@ CREATE INDEX IF NOT EXISTS idx_sem_flows_ts ON semantic_flows_value(timestamp DE
 CREATE INDEX IF NOT EXISTS idx_sem_flows_ledger ON semantic_flows_value(ledger_sequence);
 
 -- ============================================================================
+-- SEMANTIC LAYER PHASE 2 TABLES
+-- ============================================================================
+
+-- Table: semantic_contract_functions
+-- Per-function call stats for contracts (UPSERT, hot-only)
+CREATE TABLE IF NOT EXISTS semantic_contract_functions (
+    contract_id TEXT NOT NULL,
+    function_name TEXT NOT NULL,
+    total_calls BIGINT DEFAULT 0,
+    successful_calls BIGINT DEFAULT 0,
+    failed_calls BIGINT DEFAULT 0,
+    unique_callers BIGINT DEFAULT 0,
+    first_called TIMESTAMPTZ,
+    last_called TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (contract_id, function_name)
+);
+CREATE INDEX IF NOT EXISTS idx_sem_cf_contract ON semantic_contract_functions(contract_id);
+CREATE INDEX IF NOT EXISTS idx_sem_cf_calls ON semantic_contract_functions(total_calls DESC);
+
+-- Table: semantic_asset_stats
+-- Asset directory with on-chain stats (UPSERT, hot-only)
+CREATE TABLE IF NOT EXISTS semantic_asset_stats (
+    asset_key TEXT PRIMARY KEY,
+    asset_code TEXT,
+    asset_issuer TEXT,
+    asset_type TEXT NOT NULL,
+    token_name TEXT,
+    token_symbol TEXT,
+    token_decimals INTEGER,
+    contract_id TEXT,
+    holder_count BIGINT DEFAULT 0,
+    transfer_count_24h BIGINT DEFAULT 0,
+    transfer_volume_24h NUMERIC DEFAULT 0,
+    transfer_count_7d BIGINT DEFAULT 0,
+    transfer_volume_7d NUMERIC DEFAULT 0,
+    mint_count_24h BIGINT DEFAULT 0,
+    burn_count_24h BIGINT DEFAULT 0,
+    first_seen TIMESTAMPTZ,
+    last_transfer TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_sem_assets_type ON semantic_asset_stats(asset_type);
+CREATE INDEX IF NOT EXISTS idx_sem_assets_holders ON semantic_asset_stats(holder_count DESC);
+CREATE INDEX IF NOT EXISTS idx_sem_assets_volume ON semantic_asset_stats(transfer_volume_24h DESC);
+
+-- Table: semantic_dex_pairs
+-- DEX trading pair stats (UPSERT, hot-only)
+CREATE TABLE IF NOT EXISTS semantic_dex_pairs (
+    pair_key TEXT PRIMARY KEY,
+    selling_asset_code TEXT,
+    selling_asset_issuer TEXT,
+    buying_asset_code TEXT,
+    buying_asset_issuer TEXT,
+    trade_count BIGINT DEFAULT 0,
+    trade_count_24h BIGINT DEFAULT 0,
+    trade_count_7d BIGINT DEFAULT 0,
+    selling_volume NUMERIC DEFAULT 0,
+    buying_volume NUMERIC DEFAULT 0,
+    selling_volume_24h NUMERIC DEFAULT 0,
+    buying_volume_24h NUMERIC DEFAULT 0,
+    last_price NUMERIC,
+    unique_sellers BIGINT DEFAULT 0,
+    unique_buyers BIGINT DEFAULT 0,
+    first_trade TIMESTAMPTZ,
+    last_trade TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_sem_dex_volume ON semantic_dex_pairs(selling_volume_24h DESC);
+CREATE INDEX IF NOT EXISTS idx_sem_dex_trades ON semantic_dex_pairs(trade_count_24h DESC);
+CREATE INDEX IF NOT EXISTS idx_sem_dex_selling ON semantic_dex_pairs(selling_asset_code);
+CREATE INDEX IF NOT EXISTS idx_sem_dex_buying ON semantic_dex_pairs(buying_asset_code);
+
+-- Table: semantic_account_summary
+-- Account activity summary (UPSERT, hot-only)
+CREATE TABLE IF NOT EXISTS semantic_account_summary (
+    account_id TEXT PRIMARY KEY,
+    total_operations BIGINT DEFAULT 0,
+    total_payments_sent BIGINT DEFAULT 0,
+    total_payments_received BIGINT DEFAULT 0,
+    total_contract_calls BIGINT DEFAULT 0,
+    unique_contracts_called BIGINT DEFAULT 0,
+    top_contract_id TEXT,
+    top_contract_function TEXT,
+    is_contract_deployer BOOLEAN DEFAULT FALSE,
+    contracts_deployed INTEGER DEFAULT 0,
+    first_activity TIMESTAMPTZ,
+    last_activity TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_sem_acct_activity ON semantic_account_summary(last_activity DESC);
+CREATE INDEX IF NOT EXISTS idx_sem_acct_ops ON semantic_account_summary(total_operations DESC);
+
+-- ============================================================================
 -- GRANTS AND PERMISSIONS
 -- ============================================================================
 

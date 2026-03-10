@@ -58,6 +58,11 @@ func main() {
 	}
 	log.Println("✅ Connected to Silver Hot")
 
+	// Ensure silver_hot schema is up to date (CREATE IF NOT EXISTS)
+	if err := EnsureSilverHotSchema(silverDB); err != nil {
+		log.Fatalf("Failed to ensure silver_hot schema: %v", err)
+	}
+
 	// Initialize components
 	bronzeHotReader := NewBronzeReader(bronzeDB)
 	silverWriter := NewSilverWriter(silverDB)

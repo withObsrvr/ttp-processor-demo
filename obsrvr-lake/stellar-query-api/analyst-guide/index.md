@@ -181,6 +181,10 @@ The API automatically queries both hot and cold storage, merging results seamles
 - [On-Chain Activities](./common-queries.md#get-on-chain-activities) - Unified feed of payments, contract calls, account creations
 - [Contract Registry](./common-queries.md#get-contract-registry) - Classified contracts with usage stats and observed functions
 - [Value Flows](./common-queries.md#get-value-flows) - Normalized transfers, mints, and burns across all asset types
+- [Contract Function Stats](./common-queries.md#get-contract-function-stats) - Per-function call counts, success rates, unique callers
+- [Asset Stats](./common-queries.md#get-asset-stats) - Ranked asset directory with holder counts and transfer volume
+- [DEX Pairs](./common-queries.md#get-dex-pairs) - Trading pair volume, trade counts, and last price
+- [Account Summary](./common-queries.md#get-account-summary) - Account activity profile with contract interaction stats
 
 **Compliance & Auditing:**
 - [Gold Layer Endpoints](./common-queries.md#gold-layer-endpoints) - Point-in-time snapshots and compliance archives

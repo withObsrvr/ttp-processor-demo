@@ -11,7 +11,7 @@ WORKDIR /build
 COPY go/go.mod go/go.sum ./
 RUN go mod download
 
-# Copy source code
+# Copy source code (includes schema/ for go:embed)
 COPY go/ ./
 
 # Build binary (CGO required for DuckDB)

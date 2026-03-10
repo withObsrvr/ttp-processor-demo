@@ -248,6 +248,12 @@ func (sm *SourceManager) GetMinLedgerSequence(ctx context.Context) (int64, error
 	return 0, fmt.Errorf("unknown source mode: %s", mode)
 }
 
+// CountLedgersInRange checks how many ledger rows exist in hot storage for the range.
+// Used to distinguish empty ledgers (exist but no operations) from missing data.
+func (sm *SourceManager) CountLedgersInRange(ctx context.Context, startLedger, endLedger int64) (int64, error) {
+	return sm.hotReader.CountLedgersInRange(ctx, startLedger, endLedger)
+}
+
 // QueryEnrichedOperations delegates to the appropriate reader
 func (sm *SourceManager) QueryEnrichedOperations(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
 	sm.mu.RLock()

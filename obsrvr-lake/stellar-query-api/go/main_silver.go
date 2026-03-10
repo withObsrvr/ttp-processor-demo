@@ -537,6 +537,16 @@ func mainWithSilver() {
 		log.Println("  ✓ /api/v1/semantic/contracts (contract registry)")
 		log.Println("  ✓ /api/v1/semantic/flows (value transfer flows)")
 
+		// Semantic Layer Phase 2 endpoints
+		router.HandleFunc("/api/v1/semantic/contracts/functions", semanticHandlers.HandleSemanticContractFunctions).Methods("GET")
+		router.HandleFunc("/api/v1/semantic/assets", semanticHandlers.HandleSemanticAssets).Methods("GET")
+		router.HandleFunc("/api/v1/semantic/dex/pairs", semanticHandlers.HandleSemanticDexPairs).Methods("GET")
+		router.HandleFunc("/api/v1/semantic/accounts/summary", semanticHandlers.HandleSemanticAccountSummary).Methods("GET")
+		log.Println("  ✓ /api/v1/semantic/contracts/functions (per-function call stats)")
+		log.Println("  ✓ /api/v1/semantic/assets (asset directory with stats)")
+		log.Println("  ✓ /api/v1/semantic/dex/pairs (DEX trading pairs)")
+		log.Println("  ✓ /api/v1/semantic/accounts/summary (account activity summary)")
+
 	}
 
 	// Index Plane endpoints (if enabled)

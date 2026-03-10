@@ -346,10 +346,62 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 	}
 	totalRows += semanticFlowsCount
 
-	// Only advance checkpoint if actual data was transformed
-	// This prevents runaway cursor advancement when source is down
+	// Semantic Layer Phase 2 transforms
+	semanticContractFunctionsCount, err := rt.transformSemanticContractFunctions(ctx, tx, startLedger, endLedger)
+	if err != nil {
+		return fmt.Errorf("failed to transform semantic contract functions: %w", err)
+	}
+	totalRows += semanticContractFunctionsCount
+
+	semanticAssetStatsCount, err := rt.transformSemanticAssetStats(ctx, tx, startLedger, endLedger)
+	if err != nil {
+		return fmt.Errorf("failed to transform semantic asset stats: %w", err)
+	}
+	totalRows += semanticAssetStatsCount
+
+	semanticDexPairsCount, err := rt.transformSemanticDexPairs(ctx, tx, startLedger, endLedger)
+	if err != nil {
+		return fmt.Errorf("failed to transform semantic dex pairs: %w", err)
+	}
+	totalRows += semanticDexPairsCount
+
+	semanticAccountSummaryCount, err := rt.transformSemanticAccountSummary(ctx, tx, startLedger, endLedger)
+	if err != nil {
+		return fmt.Errorf("failed to transform semantic account summary: %w", err)
+	}
+	totalRows += semanticAccountSummaryCount
+
+	// If no rows were produced, check whether the ledgers actually exist in bronze.
+	// Early testnet ledgers (and genesis) have zero transactions/operations, so all
+	// transform queries legitimately return 0 rows.  We must still advance the
+	// checkpoint past them, otherwise the transformer loops forever.
 	if totalRows == 0 {
-		// No data found - don't advance checkpoint, rollback transaction
+		bronzeLedgerCount, countErr := rt.sourceManager.CountLedgersInRange(ctx, startLedger, endLedger)
+		if countErr != nil {
+			log.Printf("⚠️  Failed to count bronze ledgers: %v", countErr)
+			bronzeLedgerCount = 0
+		}
+
+		if bronzeLedgerCount > 0 {
+			// Ledgers exist but have no operations — advance checkpoint past them
+			log.Printf("⏭️  Ledgers %d-%d exist but have no operations (%d ledgers) — advancing checkpoint",
+				startLedger, endLedger, bronzeLedgerCount)
+
+			if err := rt.checkpoint.SaveWithTx(tx, endLedger); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("failed to save checkpoint for empty ledgers: %w", err)
+			}
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("failed to commit empty-ledger checkpoint: %w", err)
+			}
+			rt.mu.Lock()
+			rt.lastLedgerSequence = endLedger
+			rt.mu.Unlock()
+			rt.consecutiveEmptyPolls = 0
+			return nil
+		}
+
+		// Ledgers don't exist in bronze — source may be unavailable
 		tx.Rollback()
 		rt.consecutiveEmptyPolls++
 		log.Printf("⏸️  No data found for ledgers %d-%d in %v (source may be unavailable), not advancing checkpoint (empty polls: %d)",
@@ -1967,6 +2019,210 @@ func (rt *RealtimeTransformer) transformSemanticFlows(ctx context.Context, tx *s
 	result, err := tx.ExecContext(ctx, query, startLedger, endLedger)
 	if err != nil {
 		return 0, fmt.Errorf("failed to insert semantic flows: %w", err)
+	}
+
+	count, _ := result.RowsAffected()
+	return count, nil
+}
+
+// ============================================================================
+// SEMANTIC LAYER PHASE 2 TRANSFORMS
+// ============================================================================
+
+// transformSemanticContractFunctions upserts per-function call stats from contract_invocations_raw.
+func (rt *RealtimeTransformer) transformSemanticContractFunctions(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	query := `
+		INSERT INTO semantic_contract_functions (
+			contract_id, function_name,
+			total_calls, successful_calls, failed_calls, unique_callers,
+			first_called, last_called, updated_at
+		)
+		SELECT
+			contract_id, function_name,
+			COUNT(*),
+			COUNT(*) FILTER (WHERE successful),
+			COUNT(*) FILTER (WHERE NOT successful),
+			COUNT(DISTINCT source_account),
+			MIN(closed_at), MAX(closed_at), NOW()
+		FROM contract_invocations_raw
+		WHERE ledger_sequence BETWEEN $1 AND $2
+		  AND function_name IS NOT NULL AND function_name != ''
+		GROUP BY contract_id, function_name
+		ON CONFLICT (contract_id, function_name) DO UPDATE SET
+			total_calls = semantic_contract_functions.total_calls + EXCLUDED.total_calls,
+			successful_calls = semantic_contract_functions.successful_calls + EXCLUDED.successful_calls,
+			failed_calls = semantic_contract_functions.failed_calls + EXCLUDED.failed_calls,
+			unique_callers = EXCLUDED.unique_callers,
+			last_called = GREATEST(semantic_contract_functions.last_called, EXCLUDED.last_called),
+			first_called = LEAST(semantic_contract_functions.first_called, EXCLUDED.first_called),
+			updated_at = NOW()
+	`
+
+	result, err := tx.ExecContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return 0, fmt.Errorf("failed to upsert semantic contract functions: %w", err)
+	}
+
+	count, _ := result.RowsAffected()
+	return count, nil
+}
+
+// transformSemanticAssetStats upserts asset transfer stats from token_transfers_raw.
+// Per-batch: increments transfer counts and volumes for assets seen in the batch.
+// Time-windowed stats (24h/7d) and holder counts are handled by periodic refresh (not per-batch).
+func (rt *RealtimeTransformer) transformSemanticAssetStats(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	query := `
+		INSERT INTO semantic_asset_stats (
+			asset_key, asset_code, asset_issuer, asset_type,
+			token_name, token_symbol, token_decimals, contract_id,
+			transfer_count_24h, transfer_volume_24h,
+			first_seen, last_transfer, updated_at
+		)
+		SELECT
+			CASE
+				WHEN t.source_type = 'soroban' THEN t.token_contract_id
+				WHEN t.asset_code IS NULL OR t.asset_code = '' THEN 'native'
+				ELSE t.asset_code || ':' || COALESCE(t.asset_issuer, '')
+			END,
+			t.asset_code,
+			t.asset_issuer,
+			CASE
+				WHEN t.source_type = 'soroban' THEN 'soroban_token'
+				WHEN t.asset_code IS NULL OR t.asset_code = '' THEN 'native'
+				WHEN LENGTH(t.asset_code) <= 4 THEN 'credit_alphanum4'
+				ELSE 'credit_alphanum12'
+			END,
+			tr.token_name,
+			tr.token_symbol,
+			tr.token_decimals,
+			t.token_contract_id,
+			COUNT(*),
+			COALESCE(SUM(t.amount), 0),
+			MIN(t.timestamp),
+			MAX(t.timestamp),
+			NOW()
+		FROM token_transfers_raw t
+		LEFT JOIN token_registry tr ON tr.contract_id = t.token_contract_id
+		WHERE t.ledger_sequence BETWEEN $1 AND $2
+		  AND t.amount IS NOT NULL
+		GROUP BY
+			CASE
+				WHEN t.source_type = 'soroban' THEN t.token_contract_id
+				WHEN t.asset_code IS NULL OR t.asset_code = '' THEN 'native'
+				ELSE t.asset_code || ':' || COALESCE(t.asset_issuer, '')
+			END,
+			t.asset_code, t.asset_issuer, t.source_type, t.token_contract_id,
+			tr.token_name, tr.token_symbol, tr.token_decimals
+		ON CONFLICT (asset_key) DO UPDATE SET
+			token_name = COALESCE(EXCLUDED.token_name, semantic_asset_stats.token_name),
+			token_symbol = COALESCE(EXCLUDED.token_symbol, semantic_asset_stats.token_symbol),
+			token_decimals = COALESCE(EXCLUDED.token_decimals, semantic_asset_stats.token_decimals),
+			transfer_count_24h = semantic_asset_stats.transfer_count_24h + EXCLUDED.transfer_count_24h,
+			transfer_volume_24h = semantic_asset_stats.transfer_volume_24h + EXCLUDED.transfer_volume_24h,
+			last_transfer = GREATEST(semantic_asset_stats.last_transfer, EXCLUDED.last_transfer),
+			first_seen = LEAST(semantic_asset_stats.first_seen, EXCLUDED.first_seen),
+			updated_at = NOW()
+	`
+
+	result, err := tx.ExecContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return 0, fmt.Errorf("failed to upsert semantic asset stats: %w", err)
+	}
+
+	count, _ := result.RowsAffected()
+	return count, nil
+}
+
+// transformSemanticDexPairs upserts DEX trading pair stats from trades table.
+func (rt *RealtimeTransformer) transformSemanticDexPairs(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	query := `
+		INSERT INTO semantic_dex_pairs (
+			pair_key, selling_asset_code, selling_asset_issuer,
+			buying_asset_code, buying_asset_issuer,
+			trade_count, selling_volume, buying_volume,
+			last_price, unique_sellers, unique_buyers,
+			first_trade, last_trade, updated_at
+		)
+		SELECT
+			COALESCE(selling_asset_code, 'XLM') || ':' || COALESCE(selling_asset_issuer, 'native')
+			  || '/' || COALESCE(buying_asset_code, 'XLM') || ':' || COALESCE(buying_asset_issuer, 'native'),
+			selling_asset_code, selling_asset_issuer,
+			buying_asset_code, buying_asset_issuer,
+			COUNT(*),
+			SUM(selling_amount), SUM(buying_amount),
+			(ARRAY_AGG(price ORDER BY trade_timestamp DESC))[1],
+			COUNT(DISTINCT seller_account),
+			COUNT(DISTINCT buyer_account),
+			MIN(trade_timestamp), MAX(trade_timestamp), NOW()
+		FROM trades
+		WHERE ledger_sequence BETWEEN $1 AND $2
+		GROUP BY selling_asset_code, selling_asset_issuer, buying_asset_code, buying_asset_issuer
+		ON CONFLICT (pair_key) DO UPDATE SET
+			trade_count = semantic_dex_pairs.trade_count + EXCLUDED.trade_count,
+			selling_volume = semantic_dex_pairs.selling_volume + EXCLUDED.selling_volume,
+			buying_volume = semantic_dex_pairs.buying_volume + EXCLUDED.buying_volume,
+			last_price = EXCLUDED.last_price,
+			last_trade = GREATEST(semantic_dex_pairs.last_trade, EXCLUDED.last_trade),
+			first_trade = LEAST(semantic_dex_pairs.first_trade, EXCLUDED.first_trade),
+			updated_at = NOW()
+	`
+
+	result, err := tx.ExecContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return 0, fmt.Errorf("failed to upsert semantic dex pairs: %w", err)
+	}
+
+	count, _ := result.RowsAffected()
+	return count, nil
+}
+
+// transformSemanticAccountSummary upserts account activity stats from enriched_history_operations
+// and contract_invocations_raw for accounts active in the current batch.
+func (rt *RealtimeTransformer) transformSemanticAccountSummary(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	query := `
+		INSERT INTO semantic_account_summary (
+			account_id, total_operations,
+			total_payments_sent, total_payments_received,
+			total_contract_calls, unique_contracts_called,
+			top_contract_id, top_contract_function,
+			is_contract_deployer, contracts_deployed,
+			first_activity, last_activity, updated_at
+		)
+		SELECT
+			e.source_account,
+			COUNT(*),
+			COUNT(*) FILTER (WHERE e.is_payment_op AND e.source_account = e.source_account),
+			0,
+			COUNT(*) FILTER (WHERE e.type = 24),
+			COUNT(DISTINCT e.contract_id) FILTER (WHERE e.type = 24),
+			(ARRAY_AGG(e.contract_id ORDER BY e.ledger_sequence DESC) FILTER (WHERE e.type = 24))[1],
+			(ARRAY_AGG(e.function_name ORDER BY e.ledger_sequence DESC) FILTER (WHERE e.type = 24))[1],
+			BOOL_OR(e.host_function_type = 'CreateContract'),
+			COUNT(*) FILTER (WHERE e.host_function_type = 'CreateContract'),
+			MIN(COALESCE(e.ledger_closed_at, e.created_at)),
+			MAX(COALESCE(e.ledger_closed_at, e.created_at)),
+			NOW()
+		FROM enriched_history_operations e
+		WHERE e.ledger_sequence BETWEEN $1 AND $2
+		  AND e.source_account IS NOT NULL AND e.source_account != ''
+		GROUP BY e.source_account
+		ON CONFLICT (account_id) DO UPDATE SET
+			total_operations = semantic_account_summary.total_operations + EXCLUDED.total_operations,
+			total_payments_sent = semantic_account_summary.total_payments_sent + EXCLUDED.total_payments_sent,
+			total_contract_calls = semantic_account_summary.total_contract_calls + EXCLUDED.total_contract_calls,
+			unique_contracts_called = EXCLUDED.unique_contracts_called,
+			top_contract_id = COALESCE(EXCLUDED.top_contract_id, semantic_account_summary.top_contract_id),
+			top_contract_function = COALESCE(EXCLUDED.top_contract_function, semantic_account_summary.top_contract_function),
+			is_contract_deployer = semantic_account_summary.is_contract_deployer OR EXCLUDED.is_contract_deployer,
+			contracts_deployed = semantic_account_summary.contracts_deployed + EXCLUDED.contracts_deployed,
+			last_activity = GREATEST(semantic_account_summary.last_activity, EXCLUDED.last_activity),
+			first_activity = LEAST(semantic_account_summary.first_activity, EXCLUDED.first_activity),
+			updated_at = NOW()
+	`
+
+	result, err := tx.ExecContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return 0, fmt.Errorf("failed to upsert semantic account summary: %w", err)
 	}
 
 	count, _ := result.RowsAffected()
