@@ -787,7 +787,7 @@ The CAP-67 unified event stream provides a single view of all token events (tran
 | `ledger_sequence` | int | Block number |
 | `tx_hash` | string | Transaction hash |
 | `closed_at` | timestamp | Block close time |
-| `event_type` | string | `transfer`, `mint`, or `burn` |
+| `event_type` | string | `transfer`, `mint`, `burn`, or `clawback` |
 | `from` | string | Sender (null for mints) |
 | `to` | string | Receiver (null for burns) |
 | `amount` | string | Amount transferred |
@@ -800,7 +800,7 @@ The CAP-67 unified event stream provides a single view of all token events (tran
 | Condition | Event Type |
 |-----------|-----------|
 | `from` is null | `mint` |
-| `to` is null | `burn` |
+| `to` is null | `burn` (includes clawback) |
 | Both present | `transfer` |
 
 ```bash
@@ -876,6 +876,56 @@ curl -H "Authorization: Api-Key $API_KEY" \
 curl -H "Authorization: Api-Key $API_KEY" \
   "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/address/GAIH3.../token-balances"
 ```
+
+---
+
+### Soroban Event Coverage
+
+The Silver layer captures **SEP-41 value flow events** from Soroban contracts. These are the events that affect token balances and are used to compute holder counts, balances, and semantic flows.
+
+**Captured SEP-41 events:**
+
+| Event | Description | Flow Type |
+|-------|-------------|-----------|
+| `transfer` | Token transfer between accounts | `transfer` |
+| `mint` | New tokens created | `mint` |
+| `burn` | Tokens destroyed by holder | `burn` |
+| `clawback` | Tokens forcibly reclaimed by issuer | `burn` |
+
+**SEP-41 events NOT captured (non-value-flow):**
+
+| Event | Count (testnet) | Description | Notes |
+|-------|----------------|-------------|-------|
+| `set_authorized` | ~126 | Issuer grants/revokes trustline authorization | Affects who *can* hold tokens, not balances |
+| `approve` | ~5 | ERC-20 style allowance (account A allows contract B to spend N tokens) | Not a transfer itself |
+
+**DeFi protocol events NOT captured:**
+
+These are custom contract events (not SEP-41). The underlying token movements from these protocols are captured via the SEP-41 `transfer`/`mint`/`burn` events they emit internally, but the higher-level **protocol intent** (swap, lend, borrow) is not preserved in the semantic layer.
+
+| Event | Count (testnet) | Protocol | What's Lost |
+|-------|----------------|----------|-------------|
+| `SoroswapPair` swap/sync | ~22 | Soroswap AMM | Swap metadata: amounts in/out, reserves, price impact |
+| `SoroswapRouter` swap | ~11 | Soroswap AMM | Multi-hop swap path and intermediate amounts |
+| `deposit_event` | ~9 | Lending (Blend-like) | Collateral deposit context, j-tokens issued |
+| `withdraw_event` | ~13 | Lending | Collateral withdrawal context |
+| `borrow_event` | ~9 | Lending | Borrow amount, debt position, d-tokens issued |
+| `repay_event` | ~8 | Lending | Loan repayment context |
+| `NewSellOrder` / `NewBuyOrder` | ~13 | Order book DEX | Limit order placement |
+| `OrderReceived` / `CancelOrder` | ~16 | Order book DEX | Order fills and cancellations |
+| `TransferRequestCreated/Executed` | ~136 | Bridge/escrow (TimeLockStore) | Cross-chain or time-locked transfer context |
+
+**Infrastructure events NOT captured:**
+
+| Event | Count (testnet) | Description |
+|-------|----------------|-------------|
+| `storage` | ~2,681 | Contract storage changes (smart wallet account abstraction) |
+| `signer` | ~1,116 | Signer key management (smart wallet) |
+| `plugin` | ~347 | Plugin registration (smart wallet) |
+| `POL_AUTH` / `AUTH` | ~12 | Authorization events |
+| `proposal_created/executed` | ~4 | DAO governance |
+
+> **Future work:** A raw contract events endpoint could expose all non-value-flow events for protocol-specific analytics. DeFi protocol context (swap/lend/borrow intent) would require protocol-specific decoders.
 
 ---
 
@@ -1149,7 +1199,7 @@ Normalized value transfers across all asset types.
 | `id` | string | Unique ID (`{tx_hash}:{flow_index}`) |
 | `ledger_sequence` | int | Block number |
 | `timestamp` | timestamp | When the transfer occurred |
-| `flow_type` | string | `transfer`, `mint`, `burn` |
+| `flow_type` | string | `transfer`, `mint`, `burn` (clawback maps to burn) |
 | `from_account` | string | Sender (null for mints) |
 | `to_account` | string | Recipient (null for burns) |
 | `contract_id` | string | Contract address (for Soroban transfers) |
@@ -1251,6 +1301,25 @@ Account activity summary with contract interaction stats. Answers: "What kind of
 | `contracts_deployed` | int | Number of contracts deployed |
 | `first_activity` | timestamp | First on-chain activity |
 | `last_activity` | timestamp | Most recent on-chain activity |
+
+### Semantic Token Summary (read-only endpoint)
+
+Combined token metadata + optional balance in a single call. No backing table — reads from `token_registry` and `token_transfers_raw`. Replaces Freighter wallet's 4 sequential RPC simulation calls.
+
+**Endpoint:** `GET /api/v1/semantic/tokens/{contract_id}?address={address}`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `contract_id` | string | Token contract ID (C...) |
+| `token_name` | string | SEP-41 token name |
+| `token_symbol` | string | SEP-41 token symbol |
+| `token_decimals` | int | Token decimal places |
+| `token_type` | string | `sac` or `custom_soroban` |
+| `balance` | string | Formatted balance (only with `?address=`) |
+| `holder_count` | int | Number of unique holders |
+| `transfer_count` | int | Total transfer count |
+| `first_seen` | timestamp | First observed activity |
+| `last_activity` | timestamp | Most recent activity |
 
 ---
 

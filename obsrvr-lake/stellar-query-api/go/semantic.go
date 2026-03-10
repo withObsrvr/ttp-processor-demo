@@ -9,17 +9,24 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gorilla/mux"
 	"github.com/lib/pq"
 )
 
 // SemanticHandlers provides HTTP handlers for the semantic layer API
 type SemanticHandlers struct {
 	unified *UnifiedSilverReader
+	duckdb  *UnifiedDuckDBReader
 }
 
 // NewSemanticHandlers creates semantic handlers from a UnifiedSilverReader
 func NewSemanticHandlers(unified *UnifiedSilverReader) *SemanticHandlers {
 	return &SemanticHandlers{unified: unified}
+}
+
+// SetDuckDBReader adds the UnifiedDuckDBReader for endpoints that need it
+func (h *SemanticHandlers) SetDuckDBReader(reader *UnifiedDuckDBReader) {
+	h.duckdb = reader
 }
 
 // ============================================
@@ -669,6 +676,99 @@ func (h *SemanticHandlers) HandleSemanticAccountSummary(w http.ResponseWriter, r
 	respondSemanticJSON(w, map[string]any{
 		"account": s,
 		"found":   true,
+	})
+}
+
+// ============================================
+// Token Summary Endpoint
+// ============================================
+
+// SemanticTokenSummary represents a combined token metadata + optional balance response
+type SemanticTokenSummary struct {
+	ContractID    string  `json:"contract_id"`
+	TokenName     *string `json:"token_name,omitempty"`
+	TokenSymbol   *string `json:"token_symbol,omitempty"`
+	TokenDecimals *int    `json:"token_decimals,omitempty"`
+	TokenType     *string `json:"token_type,omitempty"`
+	Balance       *string `json:"balance,omitempty"`
+	HolderCount   *int64  `json:"holder_count,omitempty"`
+	TransferCount *int64  `json:"transfer_count,omitempty"`
+	FirstSeen     *string `json:"first_seen,omitempty"`
+	LastActivity  *string `json:"last_activity,omitempty"`
+}
+
+// HandleSemanticTokenSummary serves GET /api/v1/semantic/tokens/{contract_id}
+// Returns combined token metadata and optional balance in a single call.
+// Use ?address=G... to include balance for a specific address.
+func (h *SemanticHandlers) HandleSemanticTokenSummary(w http.ResponseWriter, r *http.Request) {
+	if h.duckdb == nil {
+		respondSemanticError(w, "token summary requires unified reader", http.StatusServiceUnavailable)
+		return
+	}
+
+	vars := mux.Vars(r)
+	contractID := vars["contract_id"]
+	if contractID == "" {
+		respondSemanticError(w, "contract_id required", http.StatusBadRequest)
+		return
+	}
+
+	address := r.URL.Query().Get("address")
+	ctx := r.Context()
+
+	// Get token metadata (reuses existing reader method)
+	meta, err := h.duckdb.GetSEP41TokenMetadata(ctx, contractID)
+	if err != nil {
+		respondSemanticError(w, "query failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Token is "found" if it has registry data (name/symbol) or transfer history
+	found := meta.Name != nil || meta.Symbol != nil || meta.TransferCount > 0
+	if !found {
+		respondSemanticJSON(w, map[string]any{
+			"token": nil,
+			"found": false,
+		})
+		return
+	}
+
+	// Build response from metadata
+	result := SemanticTokenSummary{
+		ContractID:    contractID,
+		TokenName:     meta.Name,
+		TokenSymbol:   meta.Symbol,
+		HolderCount:   &meta.HolderCount,
+		TransferCount: &meta.TransferCount,
+	}
+	if meta.Decimals >= 0 {
+		result.TokenDecimals = &meta.Decimals
+	}
+	if meta.TokenType != "" {
+		result.TokenType = &meta.TokenType
+	}
+	if meta.FirstSeen != "" {
+		result.FirstSeen = &meta.FirstSeen
+	}
+	if meta.LastActivity != "" {
+		result.LastActivity = &meta.LastActivity
+	}
+
+	// If address provided, get balance too
+	if address != "" {
+		balance, err := h.duckdb.GetSEP41SingleBalance(ctx, contractID, address)
+		if err != nil {
+			// NULL scan errors occur when address has no transfers — treat as zero balance
+			zero := "0.0000000"
+			result.Balance = &zero
+		} else {
+			result.Balance = &balance.Balance
+		}
+	}
+
+	respondSemanticJSON(w, map[string]any{
+		"token": result,
+		"found": true,
 	})
 }
 

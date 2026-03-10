@@ -147,10 +147,11 @@ type TokenTransferRow struct {
 	ToAccount             sql.NullString
 	AssetCode             sql.NullString
 	AssetIssuer           sql.NullString
-	Amount                sql.NullInt64
+	Amount                sql.NullString
 	TokenContractID       sql.NullString
 	OperationType         int
 	TransactionSuccessful bool
+	EventIndex            sql.NullInt32
 }
 
 // AccountCurrentRow represents a row in the accounts_current table
