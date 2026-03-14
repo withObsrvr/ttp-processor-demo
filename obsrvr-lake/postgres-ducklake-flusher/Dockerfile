@@ -14,6 +14,9 @@ RUN go mod download
 # Copy source code
 COPY go/ ./
 
+# Ensure dependencies are consistent
+RUN go mod tidy
+
 # Build binary (CGO required for DuckDB)
 RUN CGO_ENABLED=1 go build -o postgres-ducklake-flusher
 

@@ -58,6 +58,30 @@ func (br *BronzeReader) GetMinLedgerSequence(ctx context.Context) (int64, error)
 	return minSeq.Int64, nil
 }
 
+// GetNextAvailableLedger returns the minimum ledger sequence >= afterLedger.
+// Used for gap detection: finds where data actually resumes after a gap.
+// Returns 0 if no ledger exists at or after the given sequence.
+func (br *BronzeReader) GetNextAvailableLedger(ctx context.Context, afterLedger int64) (int64, error) {
+	var nextSeq sql.NullInt64
+
+	query := `
+		SELECT MIN(sequence)
+		FROM ledgers_row_v2
+		WHERE sequence >= $1
+	`
+
+	err := br.db.QueryRowContext(ctx, query, afterLedger).Scan(&nextSeq)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get next available ledger: %w", err)
+	}
+
+	if !nextSeq.Valid {
+		return 0, nil
+	}
+
+	return nextSeq.Int64, nil
+}
+
 // CountLedgersInRange returns the number of ledger rows that exist in bronze hot for the given range.
 // This is used to distinguish "empty ledgers" (ledgers exist but have no operations) from
 // "source unavailable" (ledgers don't exist at all).
