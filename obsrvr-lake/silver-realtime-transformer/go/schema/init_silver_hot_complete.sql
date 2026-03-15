@@ -242,7 +242,7 @@ CREATE TABLE IF NOT EXISTS accounts_current (
     last_modified_ledger BIGINT NOT NULL,
     ledger_sequence BIGINT NOT NULL,
     closed_at TIMESTAMP,
-    sponsor VARCHAR(56),
+    sponsor_account VARCHAR(56),
     num_sponsored INTEGER,
     num_sponsoring INTEGER,
     sequence_ledger BIGINT,
@@ -255,7 +255,7 @@ CREATE TABLE IF NOT EXISTS accounts_current (
 );
 
 CREATE INDEX IF NOT EXISTS idx_accounts_last_modified ON accounts_current(last_modified_ledger DESC);
-CREATE INDEX IF NOT EXISTS idx_accounts_sponsor ON accounts_current(sponsor);
+CREATE INDEX IF NOT EXISTS idx_accounts_sponsor ON accounts_current(sponsor_account);
 
 -- Table: trustlines_current
 -- Current state of all trustlines
