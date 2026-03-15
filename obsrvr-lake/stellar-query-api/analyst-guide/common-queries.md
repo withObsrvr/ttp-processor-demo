@@ -4088,14 +4088,14 @@ curl -H "Authorization: Api-Key $API_KEY" \
 | Contract interface | N/A | `/silver/contracts/{id}/interface` |
 | Soroban ops by function | N/A | `/silver/operations/soroban/by-function` |
 | Order book | `GET /order_book` | `/bronze/offers` (with filters) |
-| On-chain activity feed | N/A | `/semantic/activities` |
-| Contract registry | N/A | `/semantic/contracts` |
-| Value flow tracking | N/A | `/semantic/flows` |
-| Contract function stats | N/A | `/semantic/contracts/functions` |
-| Asset directory & stats | N/A | `/semantic/assets` |
-| DEX pair volume & pricing | N/A | `/semantic/dex/pairs` |
-| Account activity summary | N/A | `/semantic/accounts/summary` |
-| Token summary (metadata+balance) | N/A | `/semantic/tokens/{contract_id}` |
+| On-chain activity feed | N/A | `/api/v1/semantic/activities` |
+| Contract registry | N/A | `/api/v1/semantic/contracts` |
+| Value flow tracking | N/A | `/api/v1/semantic/flows` |
+| Contract function stats | N/A | `/api/v1/semantic/contracts/functions` |
+| Asset directory & stats | N/A | `/api/v1/semantic/assets` |
+| DEX pair volume & pricing | N/A | `/api/v1/semantic/dex/pairs` |
+| Account activity summary | N/A | `/api/v1/semantic/accounts/summary` |
+| Token summary (metadata+balance) | N/A | `/api/v1/semantic/tokens/{contract_id}` |
 
 ---
 

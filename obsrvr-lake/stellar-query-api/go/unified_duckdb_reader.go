@@ -3061,6 +3061,7 @@ func (r *UnifiedDuckDBReader) GetTTLExpiring(ctx context.Context, currentLedger 
 			return nil, "", false, err
 		}
 		e.LedgersRemaining = e.LiveUntilLedger - currentLedger
+		e.Expired = e.LedgersRemaining <= 0
 		entries = append(entries, e)
 	}
 
