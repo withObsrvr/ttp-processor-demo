@@ -84,6 +84,34 @@ func (f *Flusher) GetHighWatermark(ctx context.Context) (int64, error) {
 	return watermark, nil
 }
 
+// GetDownstreamCheckpoint connects to the downstream database and reads the checkpoint value.
+// Returns the ledger sequence up to which the downstream consumer has processed.
+func (f *Flusher) GetDownstreamCheckpoint(ctx context.Context) (int64, error) {
+	dsn := f.config.Downstream.GetDSN()
+
+	connCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	conn, err := pgxpool.New(connCtx, dsn)
+	if err != nil {
+		return 0, fmt.Errorf("failed to connect to downstream DB: %w", err)
+	}
+	defer conn.Close()
+
+	query := fmt.Sprintf("SELECT COALESCE(%s, 0) FROM %s LIMIT 1",
+		f.config.Downstream.Column, f.config.Downstream.Table)
+
+	var checkpoint int64
+	if err := conn.QueryRow(connCtx, query).Scan(&checkpoint); err != nil {
+		return 0, fmt.Errorf("failed to query downstream checkpoint: %w", err)
+	}
+
+	log.Printf("Downstream checkpoint: %d (from %s.%s)",
+		checkpoint, f.config.Downstream.Table, f.config.Downstream.Column)
+
+	return checkpoint, nil
+}
+
 // Flush performs the complete flush operation
 func (f *Flusher) Flush(ctx context.Context) (*FlushMetrics, error) {
 	// Acquire read lock - allows concurrent flushes but blocks maintenance
@@ -129,20 +157,43 @@ func (f *Flusher) Flush(ctx context.Context) (*FlushMetrics, error) {
 	metrics.RowsFlushed = totalRowsFlushed
 	log.Printf("Flushed %d rows from %d tables to DuckLake", totalRowsFlushed, metrics.TablesSuccess)
 
-	// 3. Delete flushed data from PostgreSQL - ONLY for successfully flushed tables
-	if len(successfullyFlushedTables) > 0 {
-		rowsDeleted, err := f.deleteFromPostgresSelective(ctx, watermark, successfullyFlushedTables)
+	// 3. Determine safe delete watermark (checkpoint-aware)
+	safeDeleteWatermark := watermark
+	if f.config.Downstream.IsConfigured() {
+		downstreamCP, err := f.GetDownstreamCheckpoint(ctx)
+		if err != nil {
+			log.Printf("WARNING: Cannot read downstream checkpoint, skipping deletion: %v", err)
+			safeDeleteWatermark = 0
+		} else if downstreamCP <= 0 {
+			log.Printf("WARNING: Downstream checkpoint is %d, skipping deletion", downstreamCP)
+			safeDeleteWatermark = 0
+		} else {
+			safeDeleteWatermark = watermark
+			if downstreamCP < safeDeleteWatermark {
+				safeDeleteWatermark = downstreamCP
+			}
+			retained := watermark - safeDeleteWatermark
+			log.Printf("Flushed to ledger %d, safe delete watermark: %d (retained %d ledgers for downstream)",
+				watermark, safeDeleteWatermark, retained)
+		}
+	}
+
+	// 4. Delete flushed data from PostgreSQL - ONLY for successfully flushed tables
+	if safeDeleteWatermark > 0 && len(successfullyFlushedTables) > 0 {
+		rowsDeleted, err := f.deleteFromPostgresSelective(ctx, safeDeleteWatermark, successfullyFlushedTables)
 		if err != nil {
 			return nil, fmt.Errorf("failed to delete from PostgreSQL: %w", err)
 		}
 		metrics.RowsDeleted = rowsDeleted
-		log.Printf("Deleted %d rows from PostgreSQL", rowsDeleted)
+		log.Printf("Deleted %d rows from PostgreSQL (up to ledger %d)", rowsDeleted, safeDeleteWatermark)
+	} else if safeDeleteWatermark == 0 && len(successfullyFlushedTables) > 0 {
+		log.Printf("Skipped deletion — data flushed to cold but retained in hot for downstream consumers")
 	}
 
-	// 4. Increment flush count
+	// 5. Increment flush count
 	flushCount := f.flushCount.Add(1)
 
-	// 5. Optional: VACUUM (every Nth flush)
+	// 6. Optional: VACUUM (every Nth flush)
 	if f.config.Vacuum.Enabled && flushCount%int64(f.config.Vacuum.EveryNFlushes) == 0 {
 		log.Printf("Running VACUUM ANALYZE (flush #%d)...", flushCount)
 		if err := f.vacuum(ctx); err != nil {
@@ -153,7 +204,7 @@ func (f *Flusher) Flush(ctx context.Context) (*FlushMetrics, error) {
 		}
 	}
 
-	// 6. Update metrics
+	// 7. Update metrics
 	metrics.Duration = time.Since(startTime)
 	f.lastFlush.Store(time.Now().Unix())
 	f.lastWater.Store(watermark)
