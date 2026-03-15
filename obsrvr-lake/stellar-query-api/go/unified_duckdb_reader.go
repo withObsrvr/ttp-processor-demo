@@ -4328,17 +4328,17 @@ func (r *UnifiedDuckDBReader) GetSEP41TokenMetadata(ctx context.Context, contrac
 	query := fmt.Sprintf(`
 		WITH raw AS (
 			SELECT source_type, asset_code, asset_issuer, timestamp, from_account, to_account,
-				transaction_hash, ledger_sequence, amount, COALESCE(event_index, -1) as event_index
+				transaction_hash, ledger_sequence, amount, COALESCE(event_index, -1) as evt_idx
 			FROM %s.token_transfers_raw
 			WHERE token_contract_id = $1 AND transaction_successful = true
 			UNION ALL
 			SELECT source_type, asset_code, asset_issuer, timestamp, from_account, to_account,
-				transaction_hash, ledger_sequence, amount, COALESCE(event_index, -1) as event_index
+				transaction_hash, ledger_sequence, amount, -1 as evt_idx
 			FROM %s.token_transfers_raw
 			WHERE token_contract_id = $1 AND transaction_successful = true
 		),
 		combined AS (
-			SELECT DISTINCT ON (transaction_hash, ledger_sequence, from_account, to_account, amount, event_index)
+			SELECT DISTINCT ON (transaction_hash, ledger_sequence, from_account, to_account, amount, evt_idx)
 				source_type, asset_code, asset_issuer, timestamp, from_account, to_account
 			FROM raw
 		),
@@ -4442,16 +4442,16 @@ func (r *UnifiedDuckDBReader) GetSEP41Balances(ctx context.Context, filters SEP4
 
 	query := fmt.Sprintf(`
 		WITH raw_transfers AS (
-			SELECT from_account, to_account, amount, ledger_sequence, timestamp, transaction_hash, COALESCE(event_index, -1) as event_index
+			SELECT from_account, to_account, amount, ledger_sequence, timestamp, transaction_hash, COALESCE(event_index, -1) as evt_idx
 			FROM %s.token_transfers_raw
 			WHERE token_contract_id = $1 AND transaction_successful = true
 			UNION ALL
-			SELECT from_account, to_account, amount, ledger_sequence, timestamp, transaction_hash, COALESCE(event_index, -1) as event_index
+			SELECT from_account, to_account, amount, ledger_sequence, timestamp, transaction_hash, -1 as evt_idx
 			FROM %s.token_transfers_raw
 			WHERE token_contract_id = $1 AND transaction_successful = true
 		),
 		transfers AS (
-			SELECT DISTINCT ON (transaction_hash, ledger_sequence, from_account, to_account, amount, event_index)
+			SELECT DISTINCT ON (transaction_hash, ledger_sequence, from_account, to_account, amount, evt_idx)
 				from_account, to_account, amount, ledger_sequence, timestamp
 			FROM raw_transfers
 		),
@@ -4561,27 +4561,27 @@ func (r *UnifiedDuckDBReader) GetSEP41Balances(ctx context.Context, filters SEP4
 func (r *UnifiedDuckDBReader) GetSEP41SingleBalance(ctx context.Context, contractID, address string) (*SEP41Balance, error) {
 	query := fmt.Sprintf(`
 		WITH raw_transfers AS (
-			SELECT from_account, to_account, amount, ledger_sequence, timestamp, transaction_hash, COALESCE(event_index, -1) as event_index
+			SELECT from_account, to_account, amount, ledger_sequence, timestamp, transaction_hash, COALESCE(event_index, -1) as evt_idx
 			FROM %s.token_transfers_raw
 			WHERE token_contract_id = $1 AND transaction_successful = true
 				AND (from_account = $2 OR to_account = $2)
 			UNION ALL
-			SELECT from_account, to_account, amount, ledger_sequence, timestamp, transaction_hash, COALESCE(event_index, -1) as event_index
+			SELECT from_account, to_account, amount, ledger_sequence, timestamp, transaction_hash, -1 as evt_idx
 			FROM %s.token_transfers_raw
 			WHERE token_contract_id = $1 AND transaction_successful = true
 				AND (from_account = $2 OR to_account = $2)
 		),
 		transfers AS (
-			SELECT DISTINCT ON (transaction_hash, ledger_sequence, from_account, to_account, amount, event_index)
+			SELECT DISTINCT ON (transaction_hash, ledger_sequence, from_account, to_account, amount, evt_idx)
 				from_account, to_account, amount, ledger_sequence, timestamp
 			FROM raw_transfers
 		)
 		SELECT
-			SUM(CASE WHEN to_account = $2 THEN amount ELSE 0 END) as total_received,
-			SUM(CASE WHEN from_account = $2 THEN amount ELSE 0 END) as total_sent,
+			COALESCE(SUM(CASE WHEN to_account = $2 THEN amount ELSE 0 END), 0) as total_received,
+			COALESCE(SUM(CASE WHEN from_account = $2 THEN amount ELSE 0 END), 0) as total_sent,
 			COUNT(*) as tx_count,
-			MAX(ledger_sequence) as last_ledger,
-			MAX(timestamp) as last_seen
+			COALESCE(MAX(ledger_sequence), 0) as last_ledger,
+			COALESCE(MAX(timestamp), '1970-01-01'::timestamp) as last_seen
 		FROM transfers
 	`, r.hotSchema, r.coldSchema)
 
@@ -4609,16 +4609,16 @@ func (r *UnifiedDuckDBReader) GetSEP41Transfers(ctx context.Context, contractID 
 func (r *UnifiedDuckDBReader) GetSEP41TokenStats(ctx context.Context, contractID string) (*SEP41TokenStats, error) {
 	query := fmt.Sprintf(`
 		WITH raw_transfers AS (
-			SELECT from_account, to_account, amount, timestamp, asset_code, transaction_hash, ledger_sequence, COALESCE(event_index, -1) as event_index
+			SELECT from_account, to_account, amount, timestamp, asset_code, transaction_hash, ledger_sequence, COALESCE(event_index, -1) as evt_idx
 			FROM %s.token_transfers_raw
 			WHERE token_contract_id = $1 AND transaction_successful = true
 			UNION ALL
-			SELECT from_account, to_account, amount, timestamp, asset_code, transaction_hash, ledger_sequence, COALESCE(event_index, -1) as event_index
+			SELECT from_account, to_account, amount, timestamp, asset_code, transaction_hash, ledger_sequence, -1 as evt_idx
 			FROM %s.token_transfers_raw
 			WHERE token_contract_id = $1 AND transaction_successful = true
 		),
 		transfers AS (
-			SELECT DISTINCT ON (transaction_hash, ledger_sequence, from_account, to_account, amount, event_index)
+			SELECT DISTINCT ON (transaction_hash, ledger_sequence, from_account, to_account, amount, evt_idx)
 				from_account, to_account, amount, timestamp, asset_code
 			FROM raw_transfers
 		),
@@ -4694,17 +4694,17 @@ func (r *UnifiedDuckDBReader) GetAddressTokenPortfolio(ctx context.Context, addr
 	query := fmt.Sprintf(`
 		WITH raw_transfers AS (
 			SELECT from_account, to_account, amount, token_contract_id, asset_code, asset_issuer, source_type, timestamp,
-				transaction_hash, ledger_sequence, COALESCE(event_index, -1) as event_index
+				transaction_hash, ledger_sequence, COALESCE(event_index, -1) as evt_idx
 			FROM %s.token_transfers_raw
 			WHERE (from_account = $1 OR to_account = $1) AND transaction_successful = true
 			UNION ALL
 			SELECT from_account, to_account, amount, token_contract_id, asset_code, asset_issuer, source_type, timestamp,
-				transaction_hash, ledger_sequence, COALESCE(event_index, -1) as event_index
+				transaction_hash, ledger_sequence, -1 as evt_idx
 			FROM %s.token_transfers_raw
 			WHERE (from_account = $1 OR to_account = $1) AND transaction_successful = true
 		),
 		transfers AS (
-			SELECT DISTINCT ON (transaction_hash, ledger_sequence, from_account, to_account, amount, token_contract_id, event_index)
+			SELECT DISTINCT ON (transaction_hash, ledger_sequence, from_account, to_account, amount, token_contract_id, evt_idx)
 				from_account, to_account, amount, token_contract_id, asset_code, asset_issuer, source_type, timestamp
 			FROM raw_transfers
 		)
