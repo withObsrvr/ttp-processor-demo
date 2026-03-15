@@ -191,9 +191,11 @@ func (sw *SilverWriter) WriteEnrichedOperationSoroban(ctx context.Context, tx *s
 func (sw *SilverWriter) WriteTokenTransfer(ctx context.Context, tx *sql.Tx, row *TokenTransferRow) error {
 	// Convert hex contract ID to C-encoded strkey for consistency with other silver tables
 	if row.TokenContractID.Valid && row.TokenContractID.String != "" {
-		if encoded, err := hexToStrKey(row.TokenContractID.String); err == nil {
-			row.TokenContractID.String = encoded
+		encoded, err := hexToStrKey(row.TokenContractID.String)
+		if err != nil {
+			return fmt.Errorf("failed to convert token contract ID to strkey: %w", err)
 		}
+		row.TokenContractID.String = encoded
 	}
 
 	query := `

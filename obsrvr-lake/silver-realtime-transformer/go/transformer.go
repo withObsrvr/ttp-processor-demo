@@ -122,8 +122,8 @@ func (rt *RealtimeTransformer) migrateHexContractIDs() {
 
 	for _, t := range tables {
 		query := fmt.Sprintf(
-			"SELECT DISTINCT %s FROM %s WHERE LENGTH(%s) = 64 AND %s !~ '^[A-Z]'",
-			t.column, t.name, t.column, t.column,
+			"SELECT DISTINCT %s FROM %s WHERE %s ~ '^[0-9a-fA-F]{64}$'",
+			t.column, t.name, t.column,
 		)
 		rows, err := rt.silverDB.QueryContext(ctx, query)
 		if err != nil {
@@ -236,7 +236,7 @@ func (rt *RealtimeTransformer) migrateSorobanTransfers() {
 		return
 	}
 
-	// Step 4: Delete stale soroban rows (they have NULL from/to/amount)
+	// Step 4: Delete all soroban rows so they can be re-parsed with proper SEP-41 extraction
 	result, err := rt.silverDB.ExecContext(ctx, `
 		DELETE FROM token_transfers_raw WHERE source_type = 'soroban'
 	`)
@@ -366,6 +366,7 @@ func (rt *RealtimeTransformer) migrateSorobanTransfers() {
 		}
 
 		batchCount := int64(0)
+		batchFailed := false
 		for rows.Next() {
 			row := &TokenTransferRow{}
 			if err := rows.Scan(
@@ -375,7 +376,8 @@ func (rt *RealtimeTransformer) migrateSorobanTransfers() {
 				&row.EventIndex,
 			); err != nil {
 				log.Printf("⚠️  Soroban migration: scan error in batch %d-%d: %v", batchStart, batchEnd, err)
-				continue
+				batchFailed = true
+				break
 			}
 
 			// Only backfill soroban rows
@@ -385,11 +387,24 @@ func (rt *RealtimeTransformer) migrateSorobanTransfers() {
 
 			if err := rt.silverWriter.WriteTokenTransfer(ctx, silverTx, row); err != nil {
 				log.Printf("⚠️  Soroban migration: write error in batch %d-%d: %v", batchStart, batchEnd, err)
-				continue
+				batchFailed = true
+				break
 			}
 			batchCount++
 		}
 		rows.Close()
+
+		if err := rows.Err(); err != nil {
+			log.Printf("⚠️  Soroban migration: rows iteration error in batch %d-%d: %v", batchStart, batchEnd, err)
+			batchFailed = true
+		}
+
+		if batchFailed {
+			if rbErr := silverTx.Rollback(); rbErr != nil {
+				log.Printf("⚠️  Soroban migration: rollback error for batch %d-%d: %v", batchStart, batchEnd, rbErr)
+			}
+			continue
+		}
 
 		if err := silverTx.Commit(); err != nil {
 			log.Printf("⚠️  Soroban migration: commit error for batch %d-%d: %v", batchStart, batchEnd, err)
@@ -399,6 +414,27 @@ func (rt *RealtimeTransformer) migrateSorobanTransfers() {
 	}
 
 	log.Printf("✅ Soroban migration: backfilled %d SEP-41 token transfer events from bronze hot", totalInserted)
+
+	// Step 7: Rebuild semantic_flows_value for the backfilled ledger range
+	if totalInserted > 0 {
+		log.Printf("🔄 Soroban migration: rebuilding semantic flows for ledgers %d to %d", minLedger, maxLedger)
+		flowTx, err := rt.silverDB.BeginTx(ctx, nil)
+		if err != nil {
+			log.Printf("⚠️  Soroban migration: failed to begin tx for semantic flows rebuild: %v", err)
+			return
+		}
+		flowCount, err := rt.transformSemanticFlows(ctx, flowTx, minLedger, maxLedger)
+		if err != nil {
+			log.Printf("⚠️  Soroban migration: failed to rebuild semantic flows: %v", err)
+			flowTx.Rollback()
+			return
+		}
+		if err := flowTx.Commit(); err != nil {
+			log.Printf("⚠️  Soroban migration: failed to commit semantic flows rebuild: %v", err)
+			return
+		}
+		log.Printf("✅ Soroban migration: rebuilt %d semantic flow rows", flowCount)
+	}
 }
 
 // runTransformationCycle executes a single transformation cycle

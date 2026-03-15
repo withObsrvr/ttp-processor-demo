@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -702,7 +703,7 @@ type SemanticTokenSummary struct {
 // Use ?address=G... to include balance for a specific address.
 func (h *SemanticHandlers) HandleSemanticTokenSummary(w http.ResponseWriter, r *http.Request) {
 	if h.duckdb == nil {
-		respondSemanticError(w, "token summary requires unified reader", http.StatusServiceUnavailable)
+		respondSemanticError(w, "token summary requires DuckDB unified reader (unified-duckdb) to be configured", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -757,12 +758,14 @@ func (h *SemanticHandlers) HandleSemanticTokenSummary(w http.ResponseWriter, r *
 	// If address provided, get balance too
 	if address != "" {
 		balance, err := h.duckdb.GetSEP41SingleBalance(ctx, contractID, address)
-		if err != nil {
-			// NULL scan errors occur when address has no transfers — treat as zero balance
+		if err == nil {
+			result.Balance = &balance.Balance
+		} else if errors.Is(err, sql.ErrNoRows) {
 			zero := "0.0000000"
 			result.Balance = &zero
 		} else {
-			result.Balance = &balance.Balance
+			respondSemanticError(w, "balance query failed: "+err.Error(), http.StatusInternalServerError)
+			return
 		}
 	}
 
