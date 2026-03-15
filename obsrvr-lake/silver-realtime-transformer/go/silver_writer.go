@@ -189,13 +189,22 @@ func (sw *SilverWriter) WriteEnrichedOperationSoroban(ctx context.Context, tx *s
 
 // WriteTokenTransfer inserts a token transfer row
 func (sw *SilverWriter) WriteTokenTransfer(ctx context.Context, tx *sql.Tx, row *TokenTransferRow) error {
+	// Convert hex contract ID to C-encoded strkey for consistency with other silver tables
+	if row.TokenContractID.Valid && row.TokenContractID.String != "" {
+		encoded, err := hexToStrKey(row.TokenContractID.String)
+		if err != nil {
+			return fmt.Errorf("failed to convert token contract ID to strkey: %w", err)
+		}
+		row.TokenContractID.String = encoded
+	}
+
 	query := `
 		INSERT INTO token_transfers_raw (
 			timestamp, transaction_hash, ledger_sequence, source_type,
 			from_account, to_account, asset_code, asset_issuer, amount,
-			token_contract_id, operation_type, transaction_successful
+			token_contract_id, operation_type, transaction_successful, event_index
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
 		)
 		ON CONFLICT DO NOTHING
 	`
@@ -203,7 +212,7 @@ func (sw *SilverWriter) WriteTokenTransfer(ctx context.Context, tx *sql.Tx, row 
 	_, err := tx.ExecContext(ctx, query,
 		row.Timestamp, row.TransactionHash, row.LedgerSequence, row.SourceType,
 		row.FromAccount, row.ToAccount, row.AssetCode, row.AssetIssuer, row.Amount,
-		row.TokenContractID, row.OperationType, row.TransactionSuccessful,
+		row.TokenContractID, row.OperationType, row.TransactionSuccessful, row.EventIndex,
 	)
 
 	if err != nil {
@@ -1070,6 +1079,13 @@ func (sw *SilverWriter) WriteTTLCurrent(ctx context.Context, tx *sql.Tx, row *TT
 
 // WriteEvictedKey inserts an evicted key event row (append-only event stream)
 func (sw *SilverWriter) WriteEvictedKey(ctx context.Context, tx *sql.Tx, row *EvictedKeyRow) error {
+	// Convert hex contract ID to C-encoded strkey
+	if row.ContractID != "" {
+		if encoded, err := hexToStrKey(row.ContractID); err == nil {
+			row.ContractID = encoded
+		}
+	}
+
 	query := `
 		INSERT INTO evicted_keys (
 			contract_id, key_hash, ledger_sequence, closed_at, created_at, ledger_range
@@ -1092,6 +1108,13 @@ func (sw *SilverWriter) WriteEvictedKey(ctx context.Context, tx *sql.Tx, row *Ev
 
 // WriteRestoredKey inserts a restored key event row (append-only event stream)
 func (sw *SilverWriter) WriteRestoredKey(ctx context.Context, tx *sql.Tx, row *RestoredKeyRow) error {
+	// Convert hex contract ID to C-encoded strkey
+	if row.ContractID != "" {
+		if encoded, err := hexToStrKey(row.ContractID); err == nil {
+			row.ContractID = encoded
+		}
+	}
+
 	query := `
 		INSERT INTO restored_keys (
 			contract_id, key_hash, ledger_sequence, closed_at, created_at, ledger_range

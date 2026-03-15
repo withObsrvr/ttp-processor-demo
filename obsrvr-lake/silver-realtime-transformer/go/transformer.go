@@ -68,6 +68,12 @@ func (rt *RealtimeTransformer) Start() error {
 		log.Printf("📍 Resuming from ledger sequence: %d", lastLedger)
 	}
 
+	// One-time migration: convert hex contract IDs to C-encoded strkey
+	rt.migrateHexContractIDs()
+
+	// One-time migration: parse SEP-41 Soroban events into token_transfers_raw
+	rt.migrateSorobanTransfers()
+
 	// Run immediate transformation check
 	log.Println("🔍 Running initial transformation check...")
 	if err := rt.runTransformationCycle(); err != nil {
@@ -98,6 +104,337 @@ func (rt *RealtimeTransformer) Start() error {
 // Stop gracefully stops the transformer
 func (rt *RealtimeTransformer) Stop() {
 	close(rt.stopChan)
+}
+
+// migrateHexContractIDs converts existing 64-char hex contract IDs to 56-char C-encoded strkey
+// in token_transfers_raw, evicted_keys, and restored_keys tables. Runs once on startup.
+func (rt *RealtimeTransformer) migrateHexContractIDs() {
+	ctx := context.Background()
+
+	tables := []struct {
+		name   string
+		column string
+	}{
+		{"token_transfers_raw", "token_contract_id"},
+		{"evicted_keys", "contract_id"},
+		{"restored_keys", "contract_id"},
+	}
+
+	for _, t := range tables {
+		query := fmt.Sprintf(
+			"SELECT DISTINCT %s FROM %s WHERE %s ~ '^[0-9a-fA-F]{64}$'",
+			t.column, t.name, t.column,
+		)
+		rows, err := rt.silverDB.QueryContext(ctx, query)
+		if err != nil {
+			log.Printf("⚠️  Migration: failed to query %s for hex IDs: %v", t.name, err)
+			continue
+		}
+
+		var converted int
+		for rows.Next() {
+			var hexID string
+			if err := rows.Scan(&hexID); err != nil {
+				continue
+			}
+			encoded, err := hexToStrKey(hexID)
+			if err != nil {
+				log.Printf("⚠️  Migration: failed to encode %s: %v", hexID, err)
+				continue
+			}
+			updateQuery := fmt.Sprintf("UPDATE %s SET %s = $1 WHERE %s = $2", t.name, t.column, t.column)
+			if _, err := rt.silverDB.ExecContext(ctx, updateQuery, encoded, hexID); err != nil {
+				log.Printf("⚠️  Migration: failed to update %s in %s: %v", hexID, t.name, err)
+				continue
+			}
+			converted++
+		}
+		rows.Close()
+
+		if converted > 0 {
+			log.Printf("✅ Migration: converted %d hex contract IDs to strkey in %s", converted, t.name)
+		} else {
+			log.Printf("ℹ️  Migration: no hex contract IDs found in %s", t.name)
+		}
+	}
+}
+
+// migrateSorobanTransfers performs a one-time migration to:
+// 1. Change amount column from BIGINT to NUMERIC (i128 safety)
+// 2. Add event_index column
+// 3. Update unique index to include event_index
+// 4. Backfill soroban rows with parsed SEP-41 event data from bronze
+func (rt *RealtimeTransformer) migrateSorobanTransfers() {
+	ctx := context.Background()
+
+	// Check if migration is needed: event_index column must exist AND no soroban rows with NULL from_account
+	var colExists bool
+	err := rt.silverDB.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_name = 'token_transfers_raw' AND column_name = 'event_index'
+		)
+	`).Scan(&colExists)
+	if err != nil {
+		log.Printf("⚠️  Soroban migration: failed to check column existence: %v", err)
+		return
+	}
+
+	if colExists {
+		// Check if there are stale soroban rows (NULL from_account indicates unparsed)
+		var staleCount int64
+		err := rt.silverDB.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM token_transfers_raw
+			WHERE source_type = 'soroban' AND from_account IS NULL AND to_account IS NULL AND amount IS NULL
+		`).Scan(&staleCount)
+		if err != nil {
+			log.Printf("⚠️  Soroban migration: failed to check stale rows: %v", err)
+			return
+		}
+		if staleCount == 0 {
+			log.Println("ℹ️  Soroban migration: already complete, skipping")
+			return
+		}
+		log.Printf("🔄 Soroban migration: found %d stale soroban rows, re-running backfill", staleCount)
+	} else {
+		log.Println("🔄 Soroban migration: starting schema changes...")
+	}
+
+	// Step 1: ALTER amount column to NUMERIC
+	if _, err := rt.silverDB.ExecContext(ctx, `
+		ALTER TABLE token_transfers_raw ALTER COLUMN amount TYPE NUMERIC USING amount::NUMERIC
+	`); err != nil {
+		log.Printf("⚠️  Soroban migration: failed to alter amount type (may already be NUMERIC): %v", err)
+	}
+
+	// Step 2: Add event_index column
+	if _, err := rt.silverDB.ExecContext(ctx, `
+		ALTER TABLE token_transfers_raw ADD COLUMN IF NOT EXISTS event_index INTEGER
+	`); err != nil {
+		log.Printf("⚠️  Soroban migration: failed to add event_index column: %v", err)
+		return
+	}
+
+	// Step 3: Drop old unique index and create new one with event_index
+	if _, err := rt.silverDB.ExecContext(ctx, `
+		DROP INDEX IF EXISTS idx_token_transfers_unique
+	`); err != nil {
+		log.Printf("⚠️  Soroban migration: failed to drop old index: %v", err)
+	}
+	if _, err := rt.silverDB.ExecContext(ctx, `
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_token_transfers_unique
+		ON token_transfers_raw(
+			transaction_hash,
+			ledger_sequence,
+			source_type,
+			COALESCE(from_account, ''),
+			COALESCE(token_contract_id, ''),
+			COALESCE(event_index, -1)
+		)
+	`); err != nil {
+		log.Printf("⚠️  Soroban migration: failed to create new unique index: %v", err)
+		return
+	}
+
+	// Step 4: Delete all soroban rows so they can be re-parsed with proper SEP-41 extraction
+	result, err := rt.silverDB.ExecContext(ctx, `
+		DELETE FROM token_transfers_raw WHERE source_type = 'soroban'
+	`)
+	if err != nil {
+		log.Printf("⚠️  Soroban migration: failed to delete stale soroban rows: %v", err)
+		return
+	}
+	deletedTransfers, _ := result.RowsAffected()
+
+	// Step 5: Delete stale semantic flows for soroban tokens
+	result, err = rt.silverDB.ExecContext(ctx, `
+		DELETE FROM semantic_flows_value WHERE asset_type = 'soroban_token'
+	`)
+	if err != nil {
+		log.Printf("⚠️  Soroban migration: failed to delete stale semantic flows: %v", err)
+	}
+	deletedFlows, _ := result.RowsAffected()
+
+	log.Printf("🗑️  Soroban migration: deleted %d stale transfers, %d stale semantic flows", deletedTransfers, deletedFlows)
+
+	// Step 6: Backfill from bronze hot using JSON extraction
+	// Get the current ledger range in bronze hot
+	bronzeHotReader := rt.sourceManager.hotReader
+	if bronzeHotReader == nil {
+		log.Println("⚠️  Soroban migration: no bronze hot reader available, skipping backfill")
+		return
+	}
+
+	minLedger, err := bronzeHotReader.GetMinLedgerSequence(ctx)
+	if err != nil || minLedger == 0 {
+		log.Printf("⚠️  Soroban migration: failed to get min ledger from bronze hot: %v", err)
+		return
+	}
+	maxLedger, err := bronzeHotReader.GetMaxLedgerSequence(ctx)
+	if err != nil || maxLedger == 0 {
+		log.Printf("⚠️  Soroban migration: failed to get max ledger from bronze hot: %v", err)
+		return
+	}
+
+	log.Printf("🔄 Soroban migration: backfilling from bronze hot ledgers %d to %d", minLedger, maxLedger)
+
+	// Direct INSERT-SELECT from bronze hot into silver hot
+	backfillQuery := `
+		INSERT INTO token_transfers_raw (
+			timestamp, transaction_hash, ledger_sequence, source_type,
+			from_account, to_account, asset_code, asset_issuer, amount,
+			token_contract_id, operation_type, transaction_successful, event_index
+		)
+		SELECT
+			l.closed_at AS timestamp,
+			e.transaction_hash,
+			e.ledger_sequence,
+			'soroban' AS source_type,
+			CASE
+				WHEN topics_decoded::jsonb->>0 = 'transfer' THEN topics_decoded::jsonb->1->>'address'
+				WHEN topics_decoded::jsonb->>0 = 'burn' THEN topics_decoded::jsonb->1->>'address'
+				WHEN topics_decoded::jsonb->>0 = 'clawback' THEN topics_decoded::jsonb->1->>'address'
+			END AS from_account,
+			CASE
+				WHEN topics_decoded::jsonb->>0 = 'transfer' THEN topics_decoded::jsonb->2->>'address'
+				WHEN topics_decoded::jsonb->>0 = 'mint' AND jsonb_typeof(topics_decoded::jsonb->2) = 'object'
+					THEN topics_decoded::jsonb->2->>'address'
+				WHEN topics_decoded::jsonb->>0 = 'mint' AND jsonb_typeof(topics_decoded::jsonb->1) = 'object'
+					AND (topics_decoded::jsonb->1->>'type') = 'account'
+					THEN topics_decoded::jsonb->1->>'address'
+			END AS to_account,
+			NULL AS asset_code,
+			NULL AS asset_issuer,
+			COALESCE(
+				data_decoded::jsonb->>'value',
+				data_decoded::jsonb->'entries'->'amount'->>'value'
+			)::NUMERIC AS amount,
+			e.contract_id AS token_contract_id,
+			24 AS operation_type,
+			t.successful AS transaction_successful,
+			e.event_index
+		FROM dblink('bronze_hot',
+			'SELECT transaction_hash, ledger_sequence, contract_id, topics_decoded, data_decoded, event_type, topic_count, event_index
+			 FROM contract_events_stream_v1
+			 WHERE ledger_sequence BETWEEN ' || $1 || ' AND ' || $2
+		) AS e(transaction_hash TEXT, ledger_sequence BIGINT, contract_id TEXT, topics_decoded TEXT, data_decoded TEXT, event_type TEXT, topic_count INT, event_index INT)
+		INNER JOIN dblink('bronze_hot',
+			'SELECT transaction_hash, ledger_sequence, successful
+			 FROM transactions_row_v2
+			 WHERE ledger_sequence BETWEEN ' || $1 || ' AND ' || $2
+		) AS t(transaction_hash TEXT, ledger_sequence BIGINT, successful BOOLEAN)
+			ON e.transaction_hash = t.transaction_hash
+			AND e.ledger_sequence = t.ledger_sequence
+		INNER JOIN dblink('bronze_hot',
+			'SELECT sequence, closed_at
+			 FROM ledgers_row_v2
+			 WHERE sequence BETWEEN ' || $1 || ' AND ' || $2
+		) AS l(sequence BIGINT, closed_at TIMESTAMP)
+			ON e.ledger_sequence = l.sequence
+		WHERE e.event_type = 'contract'
+		  AND e.topic_count >= 2
+		  AND topics_decoded::jsonb->>0 IN ('transfer', 'mint', 'burn', 'clawback')
+		ON CONFLICT DO NOTHING
+	`
+
+	// The backfill query uses dblink which requires the bronze_hot connection.
+	// Since we have direct access to bronze hot DB, use a simpler cross-DB approach:
+	// Query from bronze hot, insert into silver hot in batches.
+	_ = backfillQuery // Not using dblink approach
+
+	// Use direct query approach: read from bronze hot, write to silver hot
+	const batchSize int64 = 5000
+	var totalInserted int64
+
+	for batchStart := minLedger; batchStart <= maxLedger; batchStart += batchSize {
+		batchEnd := batchStart + batchSize - 1
+		if batchEnd > maxLedger {
+			batchEnd = maxLedger
+		}
+
+		rows, err := bronzeHotReader.QueryTokenTransfers(ctx, batchStart, batchEnd)
+		if err != nil {
+			log.Printf("⚠️  Soroban migration: failed to query bronze hot batch %d-%d: %v", batchStart, batchEnd, err)
+			continue
+		}
+
+		silverTx, err := rt.silverDB.BeginTx(ctx, nil)
+		if err != nil {
+			rows.Close()
+			log.Printf("⚠️  Soroban migration: failed to begin tx for batch %d-%d: %v", batchStart, batchEnd, err)
+			continue
+		}
+
+		batchCount := int64(0)
+		batchFailed := false
+		for rows.Next() {
+			row := &TokenTransferRow{}
+			if err := rows.Scan(
+				&row.Timestamp, &row.TransactionHash, &row.LedgerSequence, &row.SourceType,
+				&row.FromAccount, &row.ToAccount, &row.AssetCode, &row.AssetIssuer, &row.Amount,
+				&row.TokenContractID, &row.OperationType, &row.TransactionSuccessful,
+				&row.EventIndex,
+			); err != nil {
+				log.Printf("⚠️  Soroban migration: scan error in batch %d-%d: %v", batchStart, batchEnd, err)
+				batchFailed = true
+				break
+			}
+
+			// Only backfill soroban rows
+			if row.SourceType != "soroban" {
+				continue
+			}
+
+			if err := rt.silverWriter.WriteTokenTransfer(ctx, silverTx, row); err != nil {
+				log.Printf("⚠️  Soroban migration: write error in batch %d-%d: %v", batchStart, batchEnd, err)
+				batchFailed = true
+				break
+			}
+			batchCount++
+		}
+		rows.Close()
+
+		if err := rows.Err(); err != nil {
+			log.Printf("⚠️  Soroban migration: rows iteration error in batch %d-%d: %v", batchStart, batchEnd, err)
+			batchFailed = true
+		}
+
+		if batchFailed {
+			if rbErr := silverTx.Rollback(); rbErr != nil {
+				log.Printf("⚠️  Soroban migration: rollback error for batch %d-%d: %v", batchStart, batchEnd, rbErr)
+			}
+			continue
+		}
+
+		if err := silverTx.Commit(); err != nil {
+			log.Printf("⚠️  Soroban migration: commit error for batch %d-%d: %v", batchStart, batchEnd, err)
+			continue
+		}
+		totalInserted += batchCount
+	}
+
+	log.Printf("✅ Soroban migration: backfilled %d SEP-41 token transfer events from bronze hot", totalInserted)
+
+	// Step 7: Rebuild semantic_flows_value for the backfilled ledger range
+	if totalInserted > 0 {
+		log.Printf("🔄 Soroban migration: rebuilding semantic flows for ledgers %d to %d", minLedger, maxLedger)
+		flowTx, err := rt.silverDB.BeginTx(ctx, nil)
+		if err != nil {
+			log.Printf("⚠️  Soroban migration: failed to begin tx for semantic flows rebuild: %v", err)
+			return
+		}
+		flowCount, err := rt.transformSemanticFlows(ctx, flowTx, minLedger, maxLedger)
+		if err != nil {
+			log.Printf("⚠️  Soroban migration: failed to rebuild semantic flows: %v", err)
+			flowTx.Rollback()
+			return
+		}
+		if err := flowTx.Commit(); err != nil {
+			log.Printf("⚠️  Soroban migration: failed to commit semantic flows rebuild: %v", err)
+			return
+		}
+		log.Printf("✅ Soroban migration: rebuilt %d semantic flow rows", flowCount)
+	}
 }
 
 // runTransformationCycle executes a single transformation cycle
@@ -617,6 +954,7 @@ func (rt *RealtimeTransformer) transformTokenTransfers(ctx context.Context, tx *
 			&row.Timestamp, &row.TransactionHash, &row.LedgerSequence, &row.SourceType,
 			&row.FromAccount, &row.ToAccount, &row.AssetCode, &row.AssetIssuer, &row.Amount,
 			&row.TokenContractID, &row.OperationType, &row.TransactionSuccessful,
+			&row.EventIndex,
 		)
 
 		if err != nil {
@@ -2104,6 +2442,7 @@ func (rt *RealtimeTransformer) transformSemanticAssetStats(ctx context.Context, 
 		FROM token_transfers_raw t
 		LEFT JOIN token_registry tr ON tr.contract_id = t.token_contract_id
 		WHERE t.ledger_sequence BETWEEN $1 AND $2
+		  AND NOT (t.source_type = 'soroban' AND t.token_contract_id IS NULL)
 		GROUP BY
 			CASE
 				WHEN t.source_type = 'soroban' THEN t.token_contract_id

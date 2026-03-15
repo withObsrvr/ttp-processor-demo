@@ -126,7 +126,7 @@ func (c *ColdReader) QueryLedgers(ctx context.Context, start, end int64, limit i
 			soroban_op_count,
 			total_fee_charged,
 			contract_events_count,
-			ingestion_timestamp as created_at
+			COALESCE(ingestion_timestamp, closed_at) as created_at
 		FROM %s.%s.ledgers_row_v2
 		WHERE sequence >= ? AND sequence <= ?
 		ORDER BY %s

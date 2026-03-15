@@ -1,3 +1,5 @@
+-- DEPRECATED: Use v3_bronze_schema.sql for new deployments
+--
 -- DuckLake Bronze Schema for Stellar Data
 -- This schema defines the Bronze layer tables in the DuckLake catalog
 -- Tables are partitioned by ledger_range for efficient querying

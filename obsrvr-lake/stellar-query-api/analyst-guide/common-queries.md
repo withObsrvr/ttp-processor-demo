@@ -4002,6 +4002,53 @@ curl -H "Authorization: Api-Key $API_KEY" \
 
 > **Note:** If the account has no activity in the semantic layer yet, the response returns `"found": false` with `"account": null`.
 
+### Token Summary
+
+Returns combined token metadata (name, symbol, decimals) and optional balance in a single call. Designed to replace Freighter wallet's 4 sequential RPC simulation calls (`balance()`, `decimals()`, `name()`, `symbol()`).
+
+```bash
+GET /api/v1/semantic/tokens/{contract_id}
+GET /api/v1/semantic/tokens/{contract_id}?address={address}
+```
+
+**Parameters:**
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `contract_id` | Yes | Token contract ID (C...) |
+| `address` | No | Holder address (G... or C...) to include balance |
+
+**Examples:**
+```bash
+# Token metadata only (replaces 3 RPC calls: name, symbol, decimals)
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/semantic/tokens/CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC"
+
+# Token metadata + balance (replaces all 4 RPC calls)
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/semantic/tokens/CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC?address=GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR"
+```
+
+**Response:**
+```json
+{
+  "token": {
+    "contract_id": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+    "token_name": "Example Token",
+    "token_symbol": "EXT",
+    "token_decimals": 7,
+    "token_type": "sac",
+    "balance": "100.0000000",
+    "holder_count": 42,
+    "transfer_count": 1234,
+    "first_seen": "2026-01-15T10:30:00Z",
+    "last_activity": "2026-03-10T08:15:00Z"
+  },
+  "found": true
+}
+```
+
+> **Note:** `balance` is only included when `address` query parameter is provided. If the token is unknown, the response returns `"found": false` with `"token": null`.
+
 ---
 
 ## Horizon API Equivalents
@@ -4048,6 +4095,7 @@ curl -H "Authorization: Api-Key $API_KEY" \
 | Asset directory & stats | N/A | `/semantic/assets` |
 | DEX pair volume & pricing | N/A | `/semantic/dex/pairs` |
 | Account activity summary | N/A | `/semantic/accounts/summary` |
+| Token summary (metadata+balance) | N/A | `/semantic/tokens/{contract_id}` |
 
 ---
 

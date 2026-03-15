@@ -145,22 +145,34 @@ func (sm *SourceManager) CheckAndSwitchMode(ctx context.Context, currentCheckpoi
 			return false, nil
 		}
 
-		// Refresh hot min to see if there's actually a gap
-		hotMin, err := sm.hotReader.GetMinLedgerSequence(ctx)
+		// Find the next available ledger at or after our checkpoint.
+		// This handles sparse hot buffers where MIN(sequence) may be far below
+		// the checkpoint but the actual data near the checkpoint has been flushed.
+		nextAvailable, err := sm.hotReader.GetNextAvailableLedger(ctx, nextLedger)
 		if err != nil {
-			return false, fmt.Errorf("failed to check hot min: %w", err)
+			return false, fmt.Errorf("failed to find next available ledger: %w", err)
 		}
-		sm.hotMinLedger = hotMin
 
-		// Gap detected: Hot MIN > next expected ledger
-		if hotMin > nextLedger {
+		// Also refresh the global hot min for other callers
+		hotMin, err := sm.hotReader.GetMinLedgerSequence(ctx)
+		if err == nil {
+			sm.hotMinLedger = hotMin
+		}
+
+		// Gap detected: next available ledger in hot is beyond what we need
+		if nextAvailable == 0 || nextAvailable > nextLedger {
 			// We have a gap - need to backfill from cold
-			// Set backfill target to one less than hot min
-			sm.backfillTarget = hotMin - 1
+			if nextAvailable > 0 {
+				// Set backfill target to one less than next available
+				sm.backfillTarget = nextAvailable - 1
+			} else {
+				// No data at all in hot after our checkpoint — backfill everything cold has
+				sm.backfillTarget = 0 // will be set from cold max below
+			}
 
 			// Verify cold storage has the data we need
 			if sm.coldReader == nil {
-				log.Printf("🔴 GAP DETECTED but cold reader not available. Hot MIN: %d, Checkpoint: %d", hotMin, currentCheckpoint)
+				log.Printf("🔴 GAP DETECTED but cold reader not available. Next available in hot: %d, Checkpoint: %d", nextAvailable, currentCheckpoint)
 				return false, nil
 			}
 
@@ -176,10 +188,15 @@ func (sm *SourceManager) CheckAndSwitchMode(ctx context.Context, currentCheckpoi
 				return false, nil
 			}
 
+			// If no hot data exists after checkpoint, backfill up to cold max
+			if sm.backfillTarget == 0 {
+				sm.backfillTarget = coldMax
+			}
+
 			// Switch to backfill mode
 			sm.mode = SourceModeBackfill
 			log.Printf("🔄 MODE SWITCH: HOT → BACKFILL")
-			log.Printf("   Gap detected: Hot MIN (%d) > Checkpoint+1 (%d)", hotMin, nextLedger)
+			log.Printf("   Gap detected: next available hot ledger (%d) > needed ledger (%d)", nextAvailable, nextLedger)
 			log.Printf("   Backfill target: %d (will process ledgers %d-%d from cold storage)", sm.backfillTarget, nextLedger, sm.backfillTarget)
 			log.Printf("   Cold MAX: %d", coldMax)
 			return true, nil

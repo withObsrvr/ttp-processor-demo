@@ -388,10 +388,11 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.token_transfers_raw (
     to_account VARCHAR,
     asset_code VARCHAR,
     asset_issuer VARCHAR,
-    amount BIGINT,
+    amount NUMERIC,
     token_contract_id VARCHAR,
     operation_type INTEGER,
     transaction_successful BOOLEAN,
+    event_index INTEGER,
     inserted_at TIMESTAMP,
     ledger_range BIGINT
 );

@@ -183,7 +183,7 @@ CREATE TABLE IF NOT EXISTS token_transfers_raw (
     to_account VARCHAR(56),
     asset_code VARCHAR(12),
     asset_issuer VARCHAR(56),
-    amount BIGINT,
+    amount NUMERIC,
 
     -- Soroban token fields
     token_contract_id VARCHAR(100),
@@ -191,6 +191,7 @@ CREATE TABLE IF NOT EXISTS token_transfers_raw (
     -- Transaction context
     operation_type INTEGER,
     transaction_successful BOOLEAN,
+    event_index INTEGER,
 
     -- Metadata
     inserted_at TIMESTAMP DEFAULT NOW()
@@ -206,7 +207,8 @@ ON token_transfers_raw(
     ledger_sequence,
     source_type,
     COALESCE(from_account, ''),
-    COALESCE(token_contract_id, '')
+    COALESCE(token_contract_id, ''),
+    COALESCE(event_index, -1)
 );
 
 -- Indexes for token transfer queries

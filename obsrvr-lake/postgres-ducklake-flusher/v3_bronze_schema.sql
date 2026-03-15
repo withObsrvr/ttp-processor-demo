@@ -481,7 +481,7 @@ CREATE TABLE IF NOT EXISTS bronze.restored_keys_state_v1 (
 );
 
 CREATE TABLE IF NOT EXISTS bronze.contract_creations_v1 (
-    contract_id TEXT PRIMARY KEY,
+    contract_id TEXT,
     creator_address TEXT,
     wasm_hash TEXT,
     created_ledger BIGINT,

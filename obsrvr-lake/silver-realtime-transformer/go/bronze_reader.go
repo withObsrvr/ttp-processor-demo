@@ -58,6 +58,30 @@ func (br *BronzeReader) GetMinLedgerSequence(ctx context.Context) (int64, error)
 	return minSeq.Int64, nil
 }
 
+// GetNextAvailableLedger returns the minimum ledger sequence >= afterLedger.
+// Used for gap detection: finds where data actually resumes after a gap.
+// Returns 0 if no ledger exists at or after the given sequence.
+func (br *BronzeReader) GetNextAvailableLedger(ctx context.Context, afterLedger int64) (int64, error) {
+	var nextSeq sql.NullInt64
+
+	query := `
+		SELECT MIN(sequence)
+		FROM ledgers_row_v2
+		WHERE sequence >= $1
+	`
+
+	err := br.db.QueryRowContext(ctx, query, afterLedger).Scan(&nextSeq)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get next available ledger: %w", err)
+	}
+
+	if !nextSeq.Valid {
+		return 0, nil
+	}
+
+	return nextSeq.Int64, nil
+}
+
 // CountLedgersInRange returns the number of ledger rows that exist in bronze hot for the given range.
 // This is used to distinguish "empty ledgers" (ledgers exist but have no operations) from
 // "source unavailable" (ledgers don't exist at all).
@@ -257,10 +281,11 @@ func (br *BronzeReader) QueryTokenTransfers(ctx context.Context, startLedger, en
 				WHEN o.type = 1 THEN o.amount
 				WHEN o.type = 2 THEN o.amount
 				WHEN o.type = 13 THEN o.source_amount
-			END AS amount,
+			END::TEXT AS amount,
 			NULL AS token_contract_id,
 			o.type AS operation_type,
-			t.successful AS transaction_successful
+			t.successful AS transaction_successful,
+			NULL::INTEGER AS event_index
 		FROM operations_row_v2 o
 		INNER JOIN transactions_row_v2 t
 			ON o.transaction_hash = t.transaction_hash
@@ -272,20 +297,35 @@ func (br *BronzeReader) QueryTokenTransfers(ctx context.Context, startLedger, en
 
 		UNION ALL
 
-		-- Soroban Token Transfers
+		-- Soroban SEP-41 Token Transfers (transfer/mint/burn/clawback)
 		SELECT
 			l.closed_at AS timestamp,
 			e.transaction_hash,
 			e.ledger_sequence,
 			'soroban' AS source_type,
-			NULL AS from_account,
-			NULL AS to_account,
+			CASE
+				WHEN topics_decoded::jsonb->>0 = 'transfer' THEN topics_decoded::jsonb->1->>'address'
+				WHEN topics_decoded::jsonb->>0 = 'burn' THEN topics_decoded::jsonb->1->>'address'
+				WHEN topics_decoded::jsonb->>0 = 'clawback' THEN topics_decoded::jsonb->1->>'address'
+			END AS from_account,
+			CASE
+				WHEN topics_decoded::jsonb->>0 = 'transfer' THEN topics_decoded::jsonb->2->>'address'
+				WHEN topics_decoded::jsonb->>0 = 'mint' AND jsonb_typeof(topics_decoded::jsonb->2) = 'object'
+					THEN topics_decoded::jsonb->2->>'address'
+				WHEN topics_decoded::jsonb->>0 = 'mint' AND jsonb_typeof(topics_decoded::jsonb->1) = 'object'
+					AND (topics_decoded::jsonb->1->>'type') = 'account'
+					THEN topics_decoded::jsonb->1->>'address'
+			END AS to_account,
 			NULL AS asset_code,
 			NULL AS asset_issuer,
-			NULL AS amount,
+			COALESCE(
+				data_decoded::jsonb->>'value',
+				data_decoded::jsonb->'entries'->'amount'->>'value'
+			) AS amount,
 			e.contract_id AS token_contract_id,
 			24 AS operation_type,
-			t.successful AS transaction_successful
+			t.successful AS transaction_successful,
+			e.event_index
 		FROM contract_events_stream_v1 e
 		INNER JOIN transactions_row_v2 t
 			ON e.transaction_hash = t.transaction_hash
@@ -293,6 +333,9 @@ func (br *BronzeReader) QueryTokenTransfers(ctx context.Context, startLedger, en
 		INNER JOIN ledgers_row_v2 l
 			ON e.ledger_sequence = l.sequence
 		WHERE e.ledger_sequence BETWEEN $1 AND $2
+		  AND e.event_type = 'contract'
+		  AND e.topic_count >= 2
+		  AND topics_decoded::jsonb->>0 IN ('transfer', 'mint', 'burn', 'clawback')
 
 		ORDER BY ledger_sequence, transaction_hash
 	`

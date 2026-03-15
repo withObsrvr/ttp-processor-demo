@@ -359,14 +359,15 @@ func (r *BronzeColdReader) QueryTokenTransfers(ctx context.Context, startLedger,
 				WHEN o.asset_type = 'native' THEN NULL
 				ELSE o.asset_issuer
 			END AS asset_issuer,
-			CASE
+			CAST(CASE
 				WHEN o.type = 1 THEN o.amount
 				WHEN o.type = 2 THEN o.amount
 				WHEN o.type = 13 THEN o.source_amount
-			END AS amount,
+			END AS VARCHAR) AS amount,
 			NULL AS token_contract_id,
 			o.type AS operation_type,
-			t.successful AS transaction_successful
+			t.successful AS transaction_successful,
+			NULL AS event_index
 		FROM %s o
 		INNER JOIN %s t
 			ON o.transaction_hash = t.transaction_hash
@@ -378,20 +379,35 @@ func (r *BronzeColdReader) QueryTokenTransfers(ctx context.Context, startLedger,
 
 		UNION ALL
 
-		-- Soroban Token Transfers
+		-- Soroban SEP-41 Token Transfers (transfer/mint/burn/clawback)
 		SELECT
 			l.closed_at AS timestamp,
 			e.transaction_hash,
 			e.ledger_sequence,
 			'soroban' AS source_type,
-			NULL AS from_account,
-			NULL AS to_account,
+			CASE
+				WHEN json_extract_string(e.topics_decoded, '$[0]') = 'transfer' THEN json_extract_string(e.topics_decoded, '$[1].address')
+				WHEN json_extract_string(e.topics_decoded, '$[0]') = 'burn' THEN json_extract_string(e.topics_decoded, '$[1].address')
+				WHEN json_extract_string(e.topics_decoded, '$[0]') = 'clawback' THEN json_extract_string(e.topics_decoded, '$[1].address')
+			END AS from_account,
+			CASE
+				WHEN json_extract_string(e.topics_decoded, '$[0]') = 'transfer' THEN json_extract_string(e.topics_decoded, '$[2].address')
+				WHEN json_extract_string(e.topics_decoded, '$[0]') = 'mint' AND json_type(e.topics_decoded, '$[2]') = 'OBJECT'
+					THEN json_extract_string(e.topics_decoded, '$[2].address')
+				WHEN json_extract_string(e.topics_decoded, '$[0]') = 'mint' AND json_type(e.topics_decoded, '$[1]') = 'OBJECT'
+					AND json_extract_string(e.topics_decoded, '$[1].type') = 'account'
+					THEN json_extract_string(e.topics_decoded, '$[1].address')
+			END AS to_account,
 			NULL AS asset_code,
 			NULL AS asset_issuer,
-			NULL AS amount,
+			COALESCE(
+				json_extract_string(e.data_decoded, '$.value'),
+				json_extract_string(e.data_decoded, '$.entries.amount.value')
+			) AS amount,
 			e.contract_id AS token_contract_id,
 			24 AS operation_type,
-			t.successful AS transaction_successful
+			t.successful AS transaction_successful,
+			e.event_index
 		FROM %s e
 		INNER JOIN %s t
 			ON e.transaction_hash = t.transaction_hash
@@ -399,6 +415,9 @@ func (r *BronzeColdReader) QueryTokenTransfers(ctx context.Context, startLedger,
 		INNER JOIN %s l
 			ON e.ledger_sequence = l.sequence
 		WHERE e.ledger_sequence BETWEEN $1 AND $2
+		  AND e.event_type = 'contract'
+		  AND e.topic_count >= 2
+		  AND json_extract_string(e.topics_decoded, '$[0]') IN ('transfer', 'mint', 'burn', 'clawback')
 
 		ORDER BY ledger_sequence, transaction_hash
 	`, r.tableName("operations_row_v2"), r.tableName("transactions_row_v2"), r.tableName("ledgers_row_v2"),

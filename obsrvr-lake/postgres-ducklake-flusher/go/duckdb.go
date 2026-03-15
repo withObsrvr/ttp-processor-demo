@@ -146,12 +146,42 @@ func (c *DuckDBClient) FlushTableFromPostgres(ctx context.Context, postgresDSN, 
 		sequenceColumn = "created_ledger"
 	}
 
-	insertSQL := fmt.Sprintf(`
-		INSERT INTO %s.%s.%s
-		SELECT * FROM postgres_scan('%s', 'public', '%s')
-		WHERE %s <= %d;
-	`, c.config.CatalogName, c.config.SchemaName, tableName,
-		postgresDSN, tableName, sequenceColumn, watermark)
+	var insertSQL string
+	if tableName == "ledgers_row_v2" {
+		// Use explicit column list for ledgers_row_v2 to avoid positional mismatch
+		// between PostgreSQL and DuckLake after schema migrations
+		insertSQL = fmt.Sprintf(`
+			INSERT INTO %s.%s.%s (
+				sequence, ledger_hash, previous_ledger_hash, closed_at, protocol_version,
+				total_coins, fee_pool, base_fee, base_reserve, max_tx_set_size,
+				successful_tx_count, failed_tx_count, ingestion_timestamp, ledger_range,
+				transaction_count, operation_count, tx_set_operation_count,
+				soroban_fee_write1kb, node_id, signature, ledger_header,
+				bucket_list_size, live_soroban_state_size, evicted_keys_count,
+				soroban_op_count, total_fee_charged, contract_events_count,
+				era_id, version_label
+			)
+			SELECT
+				sequence, ledger_hash, previous_ledger_hash, closed_at, protocol_version,
+				total_coins, fee_pool, base_fee, base_reserve, max_tx_set_size,
+				successful_tx_count, failed_tx_count, ingestion_timestamp, ledger_range,
+				transaction_count, operation_count, tx_set_operation_count,
+				soroban_fee_write1kb, node_id, signature, ledger_header,
+				bucket_list_size, live_soroban_state_size, evicted_keys_count,
+				soroban_op_count, total_fee_charged, contract_events_count,
+				era_id, version_label
+			FROM postgres_scan('%s', 'public', '%s')
+			WHERE %s <= %d;
+		`, c.config.CatalogName, c.config.SchemaName, tableName,
+			postgresDSN, tableName, sequenceColumn, watermark)
+	} else {
+		insertSQL = fmt.Sprintf(`
+			INSERT INTO %s.%s.%s
+			SELECT * FROM postgres_scan('%s', 'public', '%s')
+			WHERE %s <= %d;
+		`, c.config.CatalogName, c.config.SchemaName, tableName,
+			postgresDSN, tableName, sequenceColumn, watermark)
+	}
 
 	log.Printf("Flushing %s (watermark=%d)...", tableName, watermark)
 

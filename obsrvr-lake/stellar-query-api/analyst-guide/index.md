@@ -185,6 +185,7 @@ The API automatically queries both hot and cold storage, merging results seamles
 - [Asset Stats](./common-queries.md#get-asset-stats) - Ranked asset directory with holder counts and transfer volume
 - [DEX Pairs](./common-queries.md#get-dex-pairs) - Trading pair volume, trade counts, and last price
 - [Account Summary](./common-queries.md#get-account-summary) - Account activity profile with contract interaction stats
+- [Token Summary](./common-queries.md#token-summary) - Combined token metadata + balance in one call (replaces 4 RPC calls)
 
 **Compliance & Auditing:**
 - [Gold Layer Endpoints](./common-queries.md#gold-layer-endpoints) - Point-in-time snapshots and compliance archives

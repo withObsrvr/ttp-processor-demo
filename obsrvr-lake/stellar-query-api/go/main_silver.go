@@ -528,6 +528,9 @@ func mainWithSilver() {
 
 		// Semantic layer endpoints
 		semanticHandlers := NewSemanticHandlers(unifiedSilverReader)
+		if unifiedDuckDBReader != nil {
+			semanticHandlers.SetDuckDBReader(unifiedDuckDBReader)
+		}
 		log.Println("Registering Semantic Layer API endpoints:")
 
 		router.HandleFunc("/api/v1/semantic/activities", semanticHandlers.HandleSemanticActivities).Methods("GET")
@@ -542,10 +545,12 @@ func mainWithSilver() {
 		router.HandleFunc("/api/v1/semantic/assets", semanticHandlers.HandleSemanticAssets).Methods("GET")
 		router.HandleFunc("/api/v1/semantic/dex/pairs", semanticHandlers.HandleSemanticDexPairs).Methods("GET")
 		router.HandleFunc("/api/v1/semantic/accounts/summary", semanticHandlers.HandleSemanticAccountSummary).Methods("GET")
+		router.HandleFunc("/api/v1/semantic/tokens/{contract_id}", semanticHandlers.HandleSemanticTokenSummary).Methods("GET")
 		log.Println("  ✓ /api/v1/semantic/contracts/functions (per-function call stats)")
 		log.Println("  ✓ /api/v1/semantic/assets (asset directory with stats)")
 		log.Println("  ✓ /api/v1/semantic/dex/pairs (DEX trading pairs)")
 		log.Println("  ✓ /api/v1/semantic/accounts/summary (account activity summary)")
+		log.Println("  ✓ /api/v1/semantic/tokens/{contract_id} (token summary, ?address= for balance)")
 
 	}
 
