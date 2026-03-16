@@ -9,10 +9,11 @@ import (
 
 // Config represents the full configuration for the flusher service
 type Config struct {
-	Service  ServiceConfig  `yaml:"service"`
-	Postgres PostgresConfig `yaml:"postgres"`
-	DuckLake DuckLakeConfig `yaml:"ducklake"`
-	Vacuum   VacuumConfig   `yaml:"vacuum"`
+	Service    ServiceConfig    `yaml:"service"`
+	Postgres   PostgresConfig   `yaml:"postgres"`
+	DuckLake   DuckLakeConfig   `yaml:"ducklake"`
+	Vacuum     VacuumConfig     `yaml:"vacuum"`
+	Downstream DownstreamConfig `yaml:"downstream"`
 }
 
 // ServiceConfig contains service-level settings
@@ -51,6 +52,29 @@ type VacuumConfig struct {
 	EveryNFlushes int  `yaml:"every_n_flushes"`
 }
 
+// DownstreamConfig contains connection settings for a downstream checkpoint database
+type DownstreamConfig struct {
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"`
+	Database string `yaml:"database"`
+	User     string `yaml:"user"`
+	Password string `yaml:"password"`
+	SSLMode  string `yaml:"sslmode"`
+	Table    string `yaml:"table"`
+	Column   string `yaml:"column"`
+}
+
+// GetDSN returns the PostgreSQL connection string for the downstream database
+func (c *DownstreamConfig) GetDSN() string {
+	return fmt.Sprintf("host=%s port=%d dbname=%s user=%s password=%s sslmode=%s",
+		c.Host, c.Port, c.Database, c.User, c.Password, c.SSLMode)
+}
+
+// IsConfigured returns true if the downstream checkpoint is configured
+func (c *DownstreamConfig) IsConfigured() bool {
+	return c.Host != "" && c.Table != "" && c.Column != ""
+}
+
 // LoadConfig loads configuration from a YAML file
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
@@ -75,6 +99,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.Vacuum.EveryNFlushes == 0 {
 		config.Vacuum.EveryNFlushes = 10
+	}
+	if config.Downstream.SSLMode == "" {
+		config.Downstream.SSLMode = "require"
 	}
 
 	return &config, nil

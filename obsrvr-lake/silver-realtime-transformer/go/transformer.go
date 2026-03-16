@@ -291,23 +291,23 @@ func (rt *RealtimeTransformer) migrateSorobanTransfers() {
 			e.ledger_sequence,
 			'soroban' AS source_type,
 			CASE
-				WHEN topics_decoded::jsonb->>0 = 'transfer' THEN topics_decoded::jsonb->1->>'address'
-				WHEN topics_decoded::jsonb->>0 = 'burn' THEN topics_decoded::jsonb->1->>'address'
-				WHEN topics_decoded::jsonb->>0 = 'clawback' THEN topics_decoded::jsonb->1->>'address'
+				WHEN replace(topics_decoded, '\u0000', '')::jsonb->>0 = 'transfer' THEN replace(topics_decoded, '\u0000', '')::jsonb->1->>'address'
+				WHEN replace(topics_decoded, '\u0000', '')::jsonb->>0 = 'burn' THEN replace(topics_decoded, '\u0000', '')::jsonb->1->>'address'
+				WHEN replace(topics_decoded, '\u0000', '')::jsonb->>0 = 'clawback' THEN replace(topics_decoded, '\u0000', '')::jsonb->1->>'address'
 			END AS from_account,
 			CASE
-				WHEN topics_decoded::jsonb->>0 = 'transfer' THEN topics_decoded::jsonb->2->>'address'
-				WHEN topics_decoded::jsonb->>0 = 'mint' AND jsonb_typeof(topics_decoded::jsonb->2) = 'object'
-					THEN topics_decoded::jsonb->2->>'address'
-				WHEN topics_decoded::jsonb->>0 = 'mint' AND jsonb_typeof(topics_decoded::jsonb->1) = 'object'
-					AND (topics_decoded::jsonb->1->>'type') = 'account'
-					THEN topics_decoded::jsonb->1->>'address'
+				WHEN replace(topics_decoded, '\u0000', '')::jsonb->>0 = 'transfer' THEN replace(topics_decoded, '\u0000', '')::jsonb->2->>'address'
+				WHEN replace(topics_decoded, '\u0000', '')::jsonb->>0 = 'mint' AND jsonb_typeof(replace(topics_decoded, '\u0000', '')::jsonb->2) = 'object'
+					THEN replace(topics_decoded, '\u0000', '')::jsonb->2->>'address'
+				WHEN replace(topics_decoded, '\u0000', '')::jsonb->>0 = 'mint' AND jsonb_typeof(replace(topics_decoded, '\u0000', '')::jsonb->1) = 'object'
+					AND (replace(topics_decoded, '\u0000', '')::jsonb->1->>'type') = 'account'
+					THEN replace(topics_decoded, '\u0000', '')::jsonb->1->>'address'
 			END AS to_account,
 			NULL AS asset_code,
 			NULL AS asset_issuer,
 			COALESCE(
-				data_decoded::jsonb->>'value',
-				data_decoded::jsonb->'entries'->'amount'->>'value'
+				replace(data_decoded, '\u0000', '')::jsonb->>'value',
+				replace(data_decoded, '\u0000', '')::jsonb->'entries'->'amount'->>'value'
 			)::NUMERIC AS amount,
 			e.contract_id AS token_contract_id,
 			24 AS operation_type,
@@ -333,7 +333,7 @@ func (rt *RealtimeTransformer) migrateSorobanTransfers() {
 			ON e.ledger_sequence = l.sequence
 		WHERE e.event_type = 'contract'
 		  AND e.topic_count >= 2
-		  AND topics_decoded::jsonb->>0 IN ('transfer', 'mint', 'burn', 'clawback')
+		  AND replace(topics_decoded, '\u0000', '')::jsonb->>0 IN ('transfer', 'mint', 'burn', 'clawback')
 		ON CONFLICT DO NOTHING
 	`
 

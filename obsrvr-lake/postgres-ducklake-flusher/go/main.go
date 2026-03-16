@@ -27,6 +27,13 @@ func main() {
 	log.Printf("Flush interval: %d minutes", config.Service.FlushIntervalMinutes)
 	log.Printf("PostgreSQL: %s:%d/%s", config.Postgres.Host, config.Postgres.Port, config.Postgres.Database)
 	log.Printf("DuckLake catalog: %s", config.DuckLake.CatalogName)
+	if config.Downstream.IsConfigured() {
+		log.Printf("Downstream checkpoint: %s:%d/%s (table=%s, column=%s)",
+			config.Downstream.Host, config.Downstream.Port, config.Downstream.Database,
+			config.Downstream.Table, config.Downstream.Column)
+	} else {
+		log.Println("WARNING: No downstream checkpoint configured — deletion will not be checkpoint-aware")
+	}
 
 	// Create flusher
 	flusher, err := NewFlusher(config)
