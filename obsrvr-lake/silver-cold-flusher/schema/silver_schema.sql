@@ -132,7 +132,7 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.token_registry (
     asset_issuer VARCHAR,
     token_type VARCHAR,
     first_seen_ledger BIGINT,
-    last_modified_ledger BIGINT,
+    last_updated_ledger BIGINT,
     created_at TIMESTAMP,
     updated_at TIMESTAMP
 );
@@ -388,7 +388,7 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.token_transfers_raw (
     to_account VARCHAR,
     asset_code VARCHAR,
     asset_issuer VARCHAR,
-    amount NUMERIC,
+    amount DOUBLE,
     token_contract_id VARCHAR,
     operation_type INTEGER,
     transaction_successful BOOLEAN,

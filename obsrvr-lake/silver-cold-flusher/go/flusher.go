@@ -76,17 +76,22 @@ func (f *Flusher) ExecuteFlush() error {
 	log.Printf("📍 Watermark: ledger sequence = %d", watermark)
 
 	// Step 2: FLUSH - Flush all tables to DuckLake
-	rowsFlushed, err := f.flushAllTables(watermark)
+	rowsFlushed, successfullyFlushedTables, err := f.flushAllTables(watermark)
 	if err != nil {
 		return fmt.Errorf("flush failed: %w", err)
 	}
 
 	log.Printf("✅ Flushed %d rows to DuckLake", rowsFlushed)
 
-	// Step 3: DELETE - Remove flushed data from PostgreSQL
-	rowsDeleted, err := f.deleteFlushedData(watermark)
-	if err != nil {
-		return fmt.Errorf("failed to delete flushed data: %w", err)
+	// Step 3: DELETE - Remove flushed data from PostgreSQL (ONLY for successfully flushed tables)
+	var rowsDeleted int64
+	if len(successfullyFlushedTables) > 0 {
+		rowsDeleted, err = f.deleteFlushedData(watermark, successfullyFlushedTables)
+		if err != nil {
+			return fmt.Errorf("failed to delete flushed data: %w", err)
+		}
+	} else {
+		log.Println("⚠️  No tables flushed successfully, skipping deletion")
 	}
 
 	log.Printf("🗑️  Deleted %d rows from PostgreSQL", rowsDeleted)
@@ -123,9 +128,10 @@ func (f *Flusher) getWatermark() (int64, error) {
 }
 
 // flushAllTables flushes all silver tables to DuckLake
-func (f *Flusher) flushAllTables(watermark int64) (int64, error) {
+func (f *Flusher) flushAllTables(watermark int64) (int64, []string, error) {
 	tables := GetTablesToFlush()
 	totalRows := int64(0)
+	successfullyFlushed := make([]string, 0, len(tables))
 
 	pgConnStr := f.config.Postgres.ConnectionString()
 
@@ -152,6 +158,7 @@ func (f *Flusher) flushAllTables(watermark int64) (int64, error) {
 	// Tables with non-standard watermark column
 	customWatermarkCol := map[string]string{
 		"contract_metadata": "created_ledger",
+		"token_registry":    "last_updated_ledger",
 	}
 
 	for _, tableName := range tables {
@@ -178,14 +185,14 @@ func (f *Flusher) flushAllTables(watermark int64) (int64, error) {
 
 		log.Printf("   ✓ Flushed %d rows from %s", rowsFlushed, tableName)
 		totalRows += rowsFlushed
+		successfullyFlushed = append(successfullyFlushed, tableName)
 	}
 
-	return totalRows, nil
+	return totalRows, successfullyFlushed, nil
 }
 
-// deleteFlushedData removes flushed data from PostgreSQL
-func (f *Flusher) deleteFlushedData(watermark int64) (int64, error) {
-	tables := GetTablesToFlush()
+// deleteFlushedData removes flushed data from PostgreSQL — ONLY for successfully flushed tables
+func (f *Flusher) deleteFlushedData(watermark int64, tables []string) (int64, error) {
 	totalDeleted := int64(0)
 
 	// Snapshot tables (use ledger_sequence)
@@ -211,6 +218,7 @@ func (f *Flusher) deleteFlushedData(watermark int64) (int64, error) {
 	// Tables with non-standard watermark column
 	customWatermarkCol := map[string]string{
 		"contract_metadata": "created_ledger",
+		"token_registry":    "last_updated_ledger",
 	}
 
 	for _, tableName := range tables {
