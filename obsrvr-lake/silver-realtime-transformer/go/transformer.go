@@ -573,6 +573,13 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 	}
 	totalRows += invocationsCount
 
+	// Transform contract metadata (from bronze contract_creations_v1)
+	contractMetadataCount, err := rt.transformContractMetadata(ctx, tx, startLedger, endLedger)
+	if err != nil {
+		return fmt.Errorf("failed to transform contract metadata: %w", err)
+	}
+	totalRows += contractMetadataCount
+
 	// Transform contract calls (Cycle 6 - Cross-Contract Call Tracking for Freighter)
 	callsCount, err := rt.transformContractCalls(ctx, tx, startLedger, endLedger)
 	if err != nil {
@@ -1420,6 +1427,48 @@ func (rt *RealtimeTransformer) transformContractInvocations(ctx context.Context,
 
 	if err := rows.Err(); err != nil {
 		return count, fmt.Errorf("error iterating contract invocations: %w", err)
+	}
+
+	return count, nil
+}
+
+// transformContractMetadata reads contract creation records from bronze and upserts into silver contract_metadata
+func (rt *RealtimeTransformer) transformContractMetadata(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	rows, err := rt.sourceManager.QueryContractCreations(ctx, startLedger, endLedger)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	count := int64(0)
+
+	for rows.Next() {
+		var (
+			contractID     string
+			creatorAddress string
+			wasmHash       sql.NullString
+			createdLedger  int64
+			createdAt      time.Time
+		)
+
+		if err := rows.Scan(&contractID, &creatorAddress, &wasmHash, &createdLedger, &createdAt); err != nil {
+			return count, fmt.Errorf("failed to scan contract creation row: %w", err)
+		}
+
+		var wasmHashPtr *string
+		if wasmHash.Valid {
+			wasmHashPtr = &wasmHash.String
+		}
+
+		if err := rt.silverWriter.WriteContractMetadata(ctx, tx, contractID, creatorAddress, wasmHashPtr, createdLedger, createdAt); err != nil {
+			return count, fmt.Errorf("failed to write contract metadata: %w", err)
+		}
+
+		count++
+	}
+
+	if err := rows.Err(); err != nil {
+		return count, fmt.Errorf("error iterating contract creations: %w", err)
 	}
 
 	return count, nil

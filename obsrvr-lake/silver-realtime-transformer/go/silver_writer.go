@@ -659,6 +659,27 @@ func (sw *SilverWriter) UpdateAccountSignerSnapshotValidTo(ctx context.Context, 
 	return nil
 }
 
+// WriteContractMetadata upserts a contract metadata row
+func (sw *SilverWriter) WriteContractMetadata(ctx context.Context, tx *sql.Tx, contractID, creatorAddress string, wasmHash *string, createdLedger int64, createdAt interface{}) error {
+	query := `
+		INSERT INTO contract_metadata (
+			contract_id, creator_address, wasm_hash, created_ledger, created_at
+		) VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (contract_id) DO UPDATE SET
+			creator_address = EXCLUDED.creator_address,
+			wasm_hash = COALESCE(EXCLUDED.wasm_hash, contract_metadata.wasm_hash),
+			created_ledger = EXCLUDED.created_ledger,
+			created_at = EXCLUDED.created_at
+	`
+
+	_, err := tx.ExecContext(ctx, query, contractID, creatorAddress, wasmHash, createdLedger, createdAt)
+	if err != nil {
+		return fmt.Errorf("failed to write contract metadata: %w", err)
+	}
+
+	return nil
+}
+
 // WriteContractInvocation inserts a contract invocation row
 func (sw *SilverWriter) WriteContractInvocation(ctx context.Context, tx *sql.Tx, row *ContractInvocationRow) error {
 	query := `

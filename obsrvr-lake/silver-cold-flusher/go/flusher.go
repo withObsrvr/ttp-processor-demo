@@ -41,6 +41,25 @@ func NewFlusher(config *Config) (*Flusher, error) {
 		return nil, fmt.Errorf("failed to connect to DuckDB: %w", err)
 	}
 
+	// Create checkpoint table for tracking last-flushed watermark
+	_, err = pgDB.Exec(`CREATE TABLE IF NOT EXISTS cold_flusher_checkpoint (
+		id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+		last_flushed_watermark BIGINT NOT NULL DEFAULT 0,
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	)`)
+	if err != nil {
+		pgDB.Close()
+		duckDB.Close()
+		return nil, fmt.Errorf("failed to create checkpoint table: %w", err)
+	}
+	_, err = pgDB.Exec(`INSERT INTO cold_flusher_checkpoint (id, last_flushed_watermark)
+		VALUES (1, 0) ON CONFLICT (id) DO NOTHING`)
+	if err != nil {
+		pgDB.Close()
+		duckDB.Close()
+		return nil, fmt.Errorf("failed to initialize checkpoint row: %w", err)
+	}
+
 	flusher := &Flusher{
 		pgDB:   pgDB,
 		duckDB: duckDB,
@@ -51,6 +70,21 @@ func NewFlusher(config *Config) (*Flusher, error) {
 	duckDB.SetFlusher(flusher)
 
 	return flusher, nil
+}
+
+// getLastFlushedWatermark retrieves the last successfully flushed watermark
+func (f *Flusher) getLastFlushedWatermark() (int64, error) {
+	var wm int64
+	err := f.pgDB.QueryRow("SELECT last_flushed_watermark FROM cold_flusher_checkpoint WHERE id = 1").Scan(&wm)
+	return wm, err
+}
+
+// updateLastFlushedWatermark persists the watermark after a successful flush
+func (f *Flusher) updateLastFlushedWatermark(watermark int64) error {
+	_, err := f.pgDB.Exec(
+		"UPDATE cold_flusher_checkpoint SET last_flushed_watermark = $1, updated_at = NOW() WHERE id = 1",
+		watermark)
+	return err
 }
 
 // ExecuteFlush performs a single flush cycle
@@ -73,15 +107,29 @@ func (f *Flusher) ExecuteFlush() error {
 		return nil
 	}
 
-	log.Printf("📍 Watermark: ledger sequence = %d", watermark)
+	// Step 1b: Get last flushed watermark for incremental flush
+	lastFlushed, err := f.getLastFlushedWatermark()
+	if err != nil {
+		return fmt.Errorf("failed to get last flushed watermark: %w", err)
+	}
+	if lastFlushed >= watermark {
+		log.Printf("Nothing new to flush (lastFlushed=%d >= watermark=%d)", lastFlushed, watermark)
+		return nil
+	}
+	log.Printf("📍 Incremental flush: ledgers %d..%d", lastFlushed+1, watermark)
 
 	// Step 2: FLUSH - Flush all tables to DuckLake
-	rowsFlushed, successfullyFlushedTables, err := f.flushAllTables(watermark)
+	rowsFlushed, successfullyFlushedTables, err := f.flushAllTables(watermark, lastFlushed)
 	if err != nil {
 		return fmt.Errorf("flush failed: %w", err)
 	}
 
 	log.Printf("✅ Flushed %d rows to DuckLake", rowsFlushed)
+
+	// Step 2b: Update checkpoint after successful flush
+	if err := f.updateLastFlushedWatermark(watermark); err != nil {
+		return fmt.Errorf("failed to update flush checkpoint: %w", err)
+	}
 
 	// Step 3: DELETE - Remove flushed data from PostgreSQL (ONLY for successfully flushed tables)
 	var rowsDeleted int64
@@ -128,7 +176,7 @@ func (f *Flusher) getWatermark() (int64, error) {
 }
 
 // flushAllTables flushes all silver tables to DuckLake
-func (f *Flusher) flushAllTables(watermark int64) (int64, []string, error) {
+func (f *Flusher) flushAllTables(watermark, lastFlushed int64) (int64, []string, error) {
 	tables := GetTablesToFlush()
 	totalRows := int64(0)
 	successfullyFlushed := make([]string, 0, len(tables))
@@ -169,13 +217,13 @@ func (f *Flusher) flushAllTables(watermark int64) (int64, []string, error) {
 
 		if col, ok := customWatermarkCol[tableName]; ok {
 			// Use custom watermark column
-			rowsFlushed, err = f.duckDB.FlushTableWithColumn(tableName, watermark, pgConnStr, col)
+			rowsFlushed, err = f.duckDB.FlushTableWithColumn(tableName, watermark, pgConnStr, col, lastFlushed)
 		} else if snapshotTables[tableName] || eventTables[tableName] {
 			// Use ledger_sequence for snapshot and event tables
-			rowsFlushed, err = f.duckDB.FlushSnapshotTable(tableName, watermark, pgConnStr)
+			rowsFlushed, err = f.duckDB.FlushSnapshotTable(tableName, watermark, pgConnStr, lastFlushed)
 		} else {
 			// Use last_modified_ledger for current state tables
-			rowsFlushed, err = f.duckDB.FlushTable(tableName, watermark, pgConnStr)
+			rowsFlushed, err = f.duckDB.FlushTable(tableName, watermark, pgConnStr, lastFlushed)
 		}
 
 		if err != nil {

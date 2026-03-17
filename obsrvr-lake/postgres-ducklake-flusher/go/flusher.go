@@ -62,6 +62,27 @@ func NewFlusher(config *Config) (*Flusher, error) {
 		return nil, fmt.Errorf("failed to create DuckDB client: %w", err)
 	}
 
+	// Create checkpoint table for tracking last-flushed watermark
+	_, err = pgPool.Exec(context.Background(),
+		`CREATE TABLE IF NOT EXISTS cold_flusher_checkpoint (
+			id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+			last_flushed_watermark BIGINT NOT NULL DEFAULT 0,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`)
+	if err != nil {
+		pgPool.Close()
+		duckdb.Close()
+		return nil, fmt.Errorf("failed to create checkpoint table: %w", err)
+	}
+	_, err = pgPool.Exec(context.Background(),
+		`INSERT INTO cold_flusher_checkpoint (id, last_flushed_watermark)
+		 VALUES (1, 0) ON CONFLICT (id) DO NOTHING`)
+	if err != nil {
+		pgPool.Close()
+		duckdb.Close()
+		return nil, fmt.Errorf("failed to initialize checkpoint row: %w", err)
+	}
+
 	flusher := &Flusher{
 		pgPool: pgPool,
 		duckdb: duckdb,
@@ -72,6 +93,22 @@ func NewFlusher(config *Config) (*Flusher, error) {
 	duckdb.SetFlusher(flusher)
 
 	return flusher, nil
+}
+
+// GetLastFlushedWatermark retrieves the last successfully flushed watermark
+func (f *Flusher) GetLastFlushedWatermark(ctx context.Context) (int64, error) {
+	var wm int64
+	err := f.pgPool.QueryRow(ctx,
+		"SELECT last_flushed_watermark FROM cold_flusher_checkpoint WHERE id = 1").Scan(&wm)
+	return wm, err
+}
+
+// UpdateLastFlushedWatermark persists the watermark after a successful flush
+func (f *Flusher) UpdateLastFlushedWatermark(ctx context.Context, watermark int64) error {
+	_, err := f.pgPool.Exec(ctx,
+		"UPDATE cold_flusher_checkpoint SET last_flushed_watermark = $1, updated_at = NOW() WHERE id = 1",
+		watermark)
+	return err
 }
 
 // GetHighWatermark retrieves the maximum ledger sequence from PostgreSQL
@@ -132,7 +169,17 @@ func (f *Flusher) Flush(ctx context.Context) (*FlushMetrics, error) {
 	}
 
 	metrics.Watermark = watermark
-	log.Printf("Starting flush with watermark=%d", watermark)
+
+	// 1b. Get last flushed watermark for incremental flush
+	lastFlushed, err := f.GetLastFlushedWatermark(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get last flushed watermark: %w", err)
+	}
+	if lastFlushed >= watermark {
+		log.Printf("Nothing new to flush (lastFlushed=%d >= watermark=%d)", lastFlushed, watermark)
+		return metrics, nil
+	}
+	log.Printf("Incremental flush: ledgers %d..%d", lastFlushed+1, watermark)
 
 	// 2. Flush all tables to DuckLake
 	tables := GetTablesToFlush()
@@ -141,7 +188,7 @@ func (f *Flusher) Flush(ctx context.Context) (*FlushMetrics, error) {
 	var totalRowsFlushed int64
 	successfullyFlushedTables := make([]string, 0, len(tables))
 	for _, tableName := range tables {
-		rowsFlushed, err := f.duckdb.FlushTableFromPostgres(ctx, postgresDSN, tableName, watermark)
+		rowsFlushed, err := f.duckdb.FlushTableFromPostgres(ctx, postgresDSN, tableName, watermark, lastFlushed)
 		if err != nil {
 			log.Printf("Warning: Failed to flush table %s: %v", tableName, err)
 			metrics.TablesFailed++
@@ -155,6 +202,11 @@ func (f *Flusher) Flush(ctx context.Context) (*FlushMetrics, error) {
 
 	metrics.RowsFlushed = totalRowsFlushed
 	log.Printf("Flushed %d rows from %d tables to DuckLake", totalRowsFlushed, metrics.TablesSuccess)
+
+	// 2b. Update checkpoint after successful flush
+	if err := f.UpdateLastFlushedWatermark(ctx, watermark); err != nil {
+		return nil, fmt.Errorf("failed to update flush checkpoint: %w", err)
+	}
 
 	// 3. Determine safe delete watermark (checkpoint-aware)
 	safeDeleteWatermark := watermark

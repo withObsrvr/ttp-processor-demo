@@ -121,12 +121,12 @@ func (c *DuckDBClient) initialize() error {
 }
 
 // FlushTable flushes a table from PostgreSQL to DuckLake using postgres_scan
-func (c *DuckDBClient) FlushTable(tableName string, watermark int64, pgConnStr string) (int64, error) {
+func (c *DuckDBClient) FlushTable(tableName string, watermark int64, pgConnStr string, lastFlushed int64) (int64, error) {
 	query := fmt.Sprintf(`
 		INSERT INTO %s.%s.%s
 		SELECT * FROM postgres_scan('%s', 'public', '%s')
-		WHERE last_modified_ledger <= %d
-	`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, watermark)
+		WHERE last_modified_ledger > %d AND last_modified_ledger <= %d
+	`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, lastFlushed, watermark)
 
 	result, err := c.db.Exec(query)
 	if err != nil {
@@ -142,7 +142,7 @@ func (c *DuckDBClient) FlushTable(tableName string, watermark int64, pgConnStr s
 }
 
 // FlushSnapshotTable flushes a snapshot table (uses ledger_sequence instead of last_modified_ledger)
-func (c *DuckDBClient) FlushSnapshotTable(tableName string, watermark int64, pgConnStr string) (int64, error) {
+func (c *DuckDBClient) FlushSnapshotTable(tableName string, watermark int64, pgConnStr string, lastFlushed int64) (int64, error) {
 	var query string
 
 	// token_transfers_raw needs ledger_range computed, explicit column ordering
@@ -157,8 +157,8 @@ func (c *DuckDBClient) FlushSnapshotTable(tableName string, watermark int64, pgC
 			       token_contract_id, operation_type, transaction_successful,
 			       event_index, inserted_at, FLOOR(ledger_sequence / 100000) AS ledger_range
 			FROM postgres_scan('%s', 'public', '%s')
-			WHERE ledger_sequence <= %d
-		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, watermark)
+			WHERE ledger_sequence > %d AND ledger_sequence <= %d
+		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, lastFlushed, watermark)
 	} else if tableName == "contract_invocations_raw" {
 		// PG has 12 columns, DuckLake has 14 (extra: era_id, version_label)
 		query = fmt.Sprintf(`
@@ -168,15 +168,15 @@ func (c *DuckDBClient) FlushSnapshotTable(tableName string, watermark int64, pgC
 			       successful, closed_at, ledger_range, inserted_at,
 			       NULL AS era_id, NULL AS version_label
 			FROM postgres_scan('%s', 'public', '%s')
-			WHERE ledger_sequence <= %d
-		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, watermark)
+			WHERE ledger_sequence > %d AND ledger_sequence <= %d
+		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, lastFlushed, watermark)
 	} else {
 		// Other snapshot tables use SELECT * (columns match)
 		query = fmt.Sprintf(`
 			INSERT INTO %s.%s.%s
 			SELECT * FROM postgres_scan('%s', 'public', '%s')
-			WHERE ledger_sequence <= %d
-		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, watermark)
+			WHERE ledger_sequence > %d AND ledger_sequence <= %d
+		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, lastFlushed, watermark)
 	}
 
 	result, err := c.db.Exec(query)
@@ -193,7 +193,7 @@ func (c *DuckDBClient) FlushSnapshotTable(tableName string, watermark int64, pgC
 }
 
 // FlushTableWithColumn flushes a table using a custom watermark column
-func (c *DuckDBClient) FlushTableWithColumn(tableName string, watermark int64, pgConnStr string, column string) (int64, error) {
+func (c *DuckDBClient) FlushTableWithColumn(tableName string, watermark int64, pgConnStr string, column string, lastFlushed int64) (int64, error) {
 	var query string
 
 	if tableName == "contract_metadata" {
@@ -203,14 +203,14 @@ func (c *DuckDBClient) FlushTableWithColumn(tableName string, watermark int64, p
 			SELECT contract_id, creator_address, wasm_hash, created_ledger,
 			       created_at, inserted_at, NULL AS era_id, NULL AS version_label
 			FROM postgres_scan('%s', 'public', '%s')
-			WHERE %s <= %d
-		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, column, watermark)
+			WHERE %s > %d AND %s <= %d
+		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, column, lastFlushed, column, watermark)
 	} else {
 		query = fmt.Sprintf(`
 			INSERT INTO %s.%s.%s
 			SELECT * FROM postgres_scan('%s', 'public', '%s')
-			WHERE %s <= %d
-		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, column, watermark)
+			WHERE %s > %d AND %s <= %d
+		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, column, lastFlushed, column, watermark)
 	}
 
 	result, err := c.db.Exec(query)

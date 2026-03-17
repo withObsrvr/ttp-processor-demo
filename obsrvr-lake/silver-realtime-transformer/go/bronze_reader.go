@@ -1052,3 +1052,25 @@ func (br *BronzeReader) QueryConfigSettingsSnapshot(ctx context.Context, startLe
 
 	return rows, nil
 }
+
+// QueryContractCreations reads contract creation records from Bronze for a ledger range
+func (br *BronzeReader) QueryContractCreations(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
+	query := `
+		SELECT
+			contract_id,
+			creator_address,
+			wasm_hash,
+			created_ledger,
+			created_at
+		FROM contract_creations_v1
+		WHERE created_ledger BETWEEN $1 AND $2
+		ORDER BY created_ledger
+	`
+
+	rows, err := br.db.QueryContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query contract creations: %w", err)
+	}
+
+	return rows, nil
+}
