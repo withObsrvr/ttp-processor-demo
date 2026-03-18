@@ -68,8 +68,9 @@ type CheckpointConfig struct {
 
 // PerformanceConfig holds performance tuning settings
 type PerformanceConfig struct {
-	BatchSize  int `yaml:"batch_size"`
-	MaxWorkers int `yaml:"max_workers"`
+	BatchSize       int `yaml:"batch_size"`
+	MaxWorkers      int `yaml:"max_workers"`
+	InsertBatchSize int `yaml:"insert_batch_size"` // Max rows per multi-row INSERT (default: 500)
 }
 
 // GapDetectionConfig holds gap detection and recovery settings

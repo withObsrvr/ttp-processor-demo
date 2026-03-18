@@ -27,8 +27,9 @@ checkpoint:
 
 # Performance tuning
 performance:
-  batch_size: 100  # Max ledgers to process per cycle
-  max_workers: 4   # Parallel transformation workers
+  batch_size: 500            # Max ledgers to process per cycle
+  max_workers: 4             # Parallel transformation workers
+  insert_batch_size: 500     # Max rows per multi-row INSERT
 
 # Gap detection settings
 gap_detection:
