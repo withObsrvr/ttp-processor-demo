@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
 	"math"
 	"strconv"
 	"time"
@@ -714,22 +715,38 @@ func (row *TrustlineSnapshotRow) Values() []interface{} {
 // TrustlineCurrentValues returns the ordered column values for batch insertion into trustlines_current.
 // Converts string balance/limit/liabilities to stroops (int64) in Go since the original SQL
 // used ROUND($N::NUMERIC * 10000000)::BIGINT.
-func (row *TrustlineCurrentRow) TrustlineCurrentValues() []interface{} {
+func (row *TrustlineCurrentRow) TrustlineCurrentValues() ([]interface{}, error) {
+	balance, err := parseStroops(row.Balance)
+	if err != nil {
+		return nil, fmt.Errorf("trustline %s balance: %w", row.AccountID, err)
+	}
+	limit, err := parseStroops(row.TrustLineLimit)
+	if err != nil {
+		return nil, fmt.Errorf("trustline %s limit: %w", row.AccountID, err)
+	}
+	buyLiab, err := parseStroops(row.BuyingLiabilities)
+	if err != nil {
+		return nil, fmt.Errorf("trustline %s buying_liabilities: %w", row.AccountID, err)
+	}
+	sellLiab, err := parseStroops(row.SellingLiabilities)
+	if err != nil {
+		return nil, fmt.Errorf("trustline %s selling_liabilities: %w", row.AccountID, err)
+	}
 	return []interface{}{
 		row.AccountID, row.AssetType, row.AssetIssuer, row.AssetCode, row.LiquidityPoolID,
-		parseStroops(row.Balance), parseStroops(row.TrustLineLimit),
-		parseStroops(row.BuyingLiabilities), parseStroops(row.SellingLiabilities),
+		balance, limit, buyLiab, sellLiab,
 		row.Flags, row.LastModifiedLedger, row.LedgerSequence, row.CreatedAt, row.Sponsor, row.LedgerRange,
-	}
+	}, nil
 }
 
 // parseStroops converts a decimal string to stroops (multiply by 10^7 and round to int64).
-func parseStroops(s string) int64 {
+// Returns an error on malformed input instead of silently returning 0.
+func parseStroops(s string) (int64, error) {
 	f, err := strconv.ParseFloat(s, 64)
 	if err != nil {
-		return 0
+		return 0, fmt.Errorf("parseStroops(%q): %w", s, err)
 	}
-	return int64(math.Round(f * 10000000))
+	return int64(math.Round(f * 10000000)), nil
 }
 
 // Values returns the ordered column values for batch insertion into offers_snapshot.
@@ -745,15 +762,17 @@ func (row *OfferSnapshotRow) Values() []interface{} {
 
 // OfferCurrentValues returns the ordered column values for batch insertion into offers_current.
 // Amount is passed as int64 (parsed from string), price as string (already formatted).
-func (row *OfferCurrentRow) OfferCurrentValues() []interface{} {
-	// Parse amount string to int64
-	amount, _ := strconv.ParseInt(row.Amount, 10, 64)
+func (row *OfferCurrentRow) OfferCurrentValues() ([]interface{}, error) {
+	amount, err := strconv.ParseInt(row.Amount, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("offer %d amount %q: %w", row.OfferID, row.Amount, err)
+	}
 	return []interface{}{
 		row.OfferID, row.SellerID, row.SellingAssetType, row.SellingAssetCode, row.SellingAssetIssuer,
 		row.BuyingAssetType, row.BuyingAssetCode, row.BuyingAssetIssuer,
 		amount, row.PriceN, row.PriceD, row.Price, row.Flags,
 		row.LastModifiedLedger, row.LedgerSequence, row.CreatedAt, row.Sponsor, row.LedgerRange,
-	}
+	}, nil
 }
 
 // Values returns the ordered column values for batch insertion into account_signers_snapshot.
@@ -822,16 +841,22 @@ func (row *NativeBalanceCurrentRow) Values() []interface{} {
 
 // TradeValues returns the ordered column values for batch insertion into trades.
 // Converts selling_amount and buying_amount from strings to int64.
-func (row *TradeRow) TradeValues() []interface{} {
-	sellingAmount, _ := strconv.ParseInt(row.SellingAmount, 10, 64)
-	buyingAmount, _ := strconv.ParseInt(row.BuyingAmount, 10, 64)
+func (row *TradeRow) TradeValues() ([]interface{}, error) {
+	sellingAmount, err := strconv.ParseInt(row.SellingAmount, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("trade selling_amount %q: %w", row.SellingAmount, err)
+	}
+	buyingAmount, err := strconv.ParseInt(row.BuyingAmount, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("trade buying_amount %q: %w", row.BuyingAmount, err)
+	}
 	return []interface{}{
 		row.LedgerSequence, row.TransactionHash, row.OperationIndex, row.TradeIndex,
 		row.TradeType, row.TradeTimestamp, row.SellerAccount,
 		row.SellingAssetCode, row.SellingAssetIssuer, sellingAmount,
 		row.BuyerAccount, row.BuyingAssetCode, row.BuyingAssetIssuer, buyingAmount,
 		row.Price, row.CreatedAt, row.LedgerRange,
-	}
+	}, nil
 }
 
 // Values returns the ordered column values for batch insertion into effects.

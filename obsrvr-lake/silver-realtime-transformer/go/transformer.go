@@ -847,14 +847,18 @@ func (rt *RealtimeTransformer) transformEnrichedOperations(ctx context.Context, 
 			return count, fmt.Errorf("failed to scan enriched operation row: %w", err)
 		}
 
-		batch.Add(row.Values()...)
+		if err := batch.Add(row.Values()...); err != nil {
+			return count, fmt.Errorf("failed to add row to %s batch: %w", batch.table, err)
+		}
 		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
 			return count, fmt.Errorf("failed to flush enriched operations batch: %w", err)
 		}
 
 		// Also batch to Soroban table if it's a Soroban operation
 		if row.IsSorobanOp != nil && *row.IsSorobanOp {
-			sorobanBatch.Add(row.Values()...)
+			if err := sorobanBatch.Add(row.Values()...); err != nil {
+				return count, fmt.Errorf("failed to add row to soroban batch: %w", err)
+			}
 			if err := sorobanBatch.FlushIfNeeded(ctx, tx); err != nil {
 				return count, fmt.Errorf("failed to flush soroban operations batch: %w", err)
 			}
@@ -905,12 +909,16 @@ func (rt *RealtimeTransformer) transformTokenTransfers(ctx context.Context, tx *
 
 		// Convert hex contract ID to C-encoded strkey (moved from WriteTokenTransfer)
 		if row.TokenContractID.Valid && row.TokenContractID.String != "" {
-			if encoded, err := hexToStrKey(row.TokenContractID.String); err == nil {
-				row.TokenContractID.String = encoded
+			encoded, err := hexToStrKey(row.TokenContractID.String)
+			if err != nil {
+				return count, fmt.Errorf("failed to convert token contract ID to strkey: %w", err)
 			}
+			row.TokenContractID.String = encoded
 		}
 
-		batch.Add(row.Values()...)
+		if err := batch.Add(row.Values()...); err != nil {
+			return count, fmt.Errorf("failed to add token transfer to batch: %w", err)
+		}
 		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
 			return count, fmt.Errorf("failed to flush token transfers batch: %w", err)
 		}
@@ -956,7 +964,9 @@ func (rt *RealtimeTransformer) transformAccountsCurrent(ctx context.Context, tx 
 			return count, fmt.Errorf("failed to scan account row: %w", err)
 		}
 
-		batch.Add(row.Values()...)
+		if err := batch.Add(row.Values()...); err != nil {
+			return count, fmt.Errorf("failed to add row to %s batch: %w", batch.table, err)
+		}
 		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
 			return count, fmt.Errorf("failed to flush accounts current batch: %w", err)
 		}
@@ -1016,7 +1026,13 @@ func (rt *RealtimeTransformer) transformTrustlinesCurrent(ctx context.Context, t
 		}
 
 		// TrustlineCurrentValues() converts balance/limit/liabilities to stroops in Go
-		batch.Add(row.TrustlineCurrentValues()...)
+		vals, err := row.TrustlineCurrentValues()
+		if err != nil {
+			return count, fmt.Errorf("failed to convert trustline values: %w", err)
+		}
+		if err := batch.Add(vals...); err != nil {
+			return count, fmt.Errorf("failed to add trustline to batch: %w", err)
+		}
 		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
 			return count, fmt.Errorf("failed to flush trustlines current batch: %w", err)
 		}
@@ -1080,7 +1096,13 @@ func (rt *RealtimeTransformer) transformOffersCurrent(ctx context.Context, tx *s
 		}
 
 		// OfferCurrentValues() converts amount from string to int64
-		batch.Add(row.OfferCurrentValues()...)
+		vals, err := row.OfferCurrentValues()
+		if err != nil {
+			return count, fmt.Errorf("failed to convert offer values: %w", err)
+		}
+		if err := batch.Add(vals...); err != nil {
+			return count, fmt.Errorf("failed to add offer to batch: %w", err)
+		}
 		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
 			return count, fmt.Errorf("failed to flush offers current batch: %w", err)
 		}
@@ -1122,7 +1144,9 @@ func (rt *RealtimeTransformer) transformAccountsSnapshot(ctx context.Context, tx
 		if err != nil {
 			return count, fmt.Errorf("failed to scan account snapshot row: %w", err)
 		}
-		batch.Add(row.Values()...)
+		if err := batch.Add(row.Values()...); err != nil {
+			return count, fmt.Errorf("failed to add row to %s batch: %w", batch.table, err)
+		}
 		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
 			return count, fmt.Errorf("failed to flush account snapshots batch: %w", err)
 		}
@@ -1164,7 +1188,9 @@ func (rt *RealtimeTransformer) transformTrustlinesSnapshot(ctx context.Context, 
 		if err != nil {
 			return count, fmt.Errorf("failed to scan trustline snapshot row: %w", err)
 		}
-		batch.Add(row.Values()...)
+		if err := batch.Add(row.Values()...); err != nil {
+			return count, fmt.Errorf("failed to add row to %s batch: %w", batch.table, err)
+		}
 		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
 			return count, fmt.Errorf("failed to flush trustline snapshots batch: %w", err)
 		}
@@ -1206,7 +1232,9 @@ func (rt *RealtimeTransformer) transformOffersSnapshot(ctx context.Context, tx *
 		if err != nil {
 			return count, fmt.Errorf("failed to scan offer snapshot row: %w", err)
 		}
-		batch.Add(row.Values()...)
+		if err := batch.Add(row.Values()...); err != nil {
+			return count, fmt.Errorf("failed to add row to %s batch: %w", batch.table, err)
+		}
 		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
 			return count, fmt.Errorf("failed to flush offer snapshots batch: %w", err)
 		}
@@ -1245,7 +1273,9 @@ func (rt *RealtimeTransformer) transformAccountSignersSnapshot(ctx context.Conte
 		if err != nil {
 			return count, fmt.Errorf("failed to scan account signer snapshot row: %w", err)
 		}
-		batch.Add(row.Values()...)
+		if err := batch.Add(row.Values()...); err != nil {
+			return count, fmt.Errorf("failed to add row to %s batch: %w", batch.table, err)
+		}
 		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
 			return count, fmt.Errorf("failed to flush account signer snapshots batch: %w", err)
 		}
@@ -1366,7 +1396,9 @@ func (rt *RealtimeTransformer) transformContractInvocations(ctx context.Context,
 		if err != nil {
 			return count, fmt.Errorf("failed to scan contract invocation row: %w", err)
 		}
-		batch.Add(row.Values()...)
+		if err := batch.Add(row.Values()...); err != nil {
+			return count, fmt.Errorf("failed to add row to %s batch: %w", batch.table, err)
+		}
 		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
 			return count, fmt.Errorf("failed to flush contract invocations batch: %w", err)
 		}
@@ -1409,7 +1441,9 @@ func (rt *RealtimeTransformer) transformContractMetadata(ctx context.Context, tx
 			wasmHashPtr = &wasmHash.String
 		}
 
-		batch.Add(contractID, creatorAddress, wasmHashPtr, createdLedger, createdAt)
+		if err := batch.Add(contractID, creatorAddress, wasmHashPtr, createdLedger, createdAt); err != nil {
+			return count, fmt.Errorf("failed to add contract metadata to batch: %w", err)
+		}
 		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
 			return count, fmt.Errorf("failed to flush contract metadata batch: %w", err)
 		}
@@ -1559,7 +1593,9 @@ func (rt *RealtimeTransformer) transformLiquidityPoolsCurrent(ctx context.Contex
 			return count, fmt.Errorf("failed to scan liquidity pool row: %w", err)
 		}
 		row.LastModifiedLedger = row.LedgerSequence
-		batch.Add(row.Values()...)
+		if err := batch.Add(row.Values()...); err != nil {
+			return count, fmt.Errorf("failed to add row to %s batch: %w", batch.table, err)
+		}
 		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
 			return count, fmt.Errorf("failed to flush liquidity pools batch: %w", err)
 		}
@@ -1596,7 +1632,9 @@ func (rt *RealtimeTransformer) transformClaimableBalancesCurrent(ctx context.Con
 			return count, fmt.Errorf("failed to scan claimable balance row: %w", err)
 		}
 		row.LastModifiedLedger = row.LedgerSequence
-		batch.Add(row.Values()...)
+		if err := batch.Add(row.Values()...); err != nil {
+			return count, fmt.Errorf("failed to add row to %s batch: %w", batch.table, err)
+		}
 		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
 			return count, fmt.Errorf("failed to flush claimable balances batch: %w", err)
 		}
@@ -1632,7 +1670,9 @@ func (rt *RealtimeTransformer) transformNativeBalancesCurrent(ctx context.Contex
 		if err != nil {
 			return count, fmt.Errorf("failed to scan native balance row: %w", err)
 		}
-		batch.Add(row.Values()...)
+		if err := batch.Add(row.Values()...); err != nil {
+			return count, fmt.Errorf("failed to add row to %s batch: %w", batch.table, err)
+		}
 		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
 			return count, fmt.Errorf("failed to flush native balances batch: %w", err)
 		}
@@ -1786,7 +1826,13 @@ func (rt *RealtimeTransformer) transformTrades(ctx context.Context, tx *sql.Tx, 
 			}
 		}
 
-		batch.Add(row.TradeValues()...)
+		vals, err := row.TradeValues()
+		if err != nil {
+			return count, fmt.Errorf("failed to convert trade values: %w", err)
+		}
+		if err := batch.Add(vals...); err != nil {
+			return count, fmt.Errorf("failed to add trade to batch: %w", err)
+		}
 		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
 			return count, fmt.Errorf("failed to flush trades batch: %w", err)
 		}
@@ -1832,7 +1878,9 @@ func (rt *RealtimeTransformer) transformEffects(ctx context.Context, tx *sql.Tx,
 			return count, fmt.Errorf("failed to scan effect row: %w", err)
 		}
 
-		batch.Add(row.Values()...)
+		if err := batch.Add(row.Values()...); err != nil {
+			return count, fmt.Errorf("failed to add row to %s batch: %w", batch.table, err)
+		}
 		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
 			return count, fmt.Errorf("failed to flush effects batch: %w", err)
 		}
@@ -1880,7 +1928,9 @@ func (rt *RealtimeTransformer) transformContractDataCurrent(ctx context.Context,
 			return count, fmt.Errorf("failed to scan contract data row: %w", err)
 		}
 
-		batch.Add(row.Values()...)
+		if err := batch.Add(row.Values()...); err != nil {
+			return count, fmt.Errorf("failed to add row to %s batch: %w", batch.table, err)
+		}
 		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
 			return count, fmt.Errorf("failed to flush contract data batch: %w", err)
 		}
@@ -1924,7 +1974,9 @@ func (rt *RealtimeTransformer) transformContractCodeCurrent(ctx context.Context,
 			return count, fmt.Errorf("failed to scan contract code row: %w", err)
 		}
 
-		batch.Add(row.Values()...)
+		if err := batch.Add(row.Values()...); err != nil {
+			return count, fmt.Errorf("failed to add row to %s batch: %w", batch.table, err)
+		}
 		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
 			return count, fmt.Errorf("failed to flush contract code batch: %w", err)
 		}
@@ -1966,7 +2018,9 @@ func (rt *RealtimeTransformer) transformTTLCurrent(ctx context.Context, tx *sql.
 			return count, fmt.Errorf("failed to scan TTL row: %w", err)
 		}
 
-		batch.Add(row.Values()...)
+		if err := batch.Add(row.Values()...); err != nil {
+			return count, fmt.Errorf("failed to add row to %s batch: %w", batch.table, err)
+		}
 		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
 			return count, fmt.Errorf("failed to flush TTL batch: %w", err)
 		}
@@ -2009,13 +2063,19 @@ func (rt *RealtimeTransformer) transformEvictedKeys(ctx context.Context, tx *sql
 		}
 
 		// Convert hex contract ID to C-encoded strkey
+		// Note: bronze data may have empty contract_id for some evicted keys
 		if row.ContractID != "" {
-			if encoded, err := hexToStrKey(row.ContractID); err == nil {
+			encoded, err := hexToStrKey(row.ContractID)
+			if err != nil {
+				log.Printf("warning: evicted key hexToStrKey(%q): %v, keeping raw value", row.ContractID, err)
+			} else {
 				row.ContractID = encoded
 			}
 		}
 
-		batch.Add(row.Values()...)
+		if err := batch.Add(row.Values()...); err != nil {
+			return count, fmt.Errorf("failed to add evicted key to batch: %w", err)
+		}
 		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
 			return count, fmt.Errorf("failed to flush evicted keys batch: %w", err)
 		}
@@ -2058,13 +2118,19 @@ func (rt *RealtimeTransformer) transformRestoredKeys(ctx context.Context, tx *sq
 		}
 
 		// Convert hex contract ID to C-encoded strkey
+		// Note: bronze data may have empty contract_id for some restored keys
 		if row.ContractID != "" {
-			if encoded, err := hexToStrKey(row.ContractID); err == nil {
+			encoded, err := hexToStrKey(row.ContractID)
+			if err != nil {
+				log.Printf("warning: restored key hexToStrKey(%q): %v, keeping raw value", row.ContractID, err)
+			} else {
 				row.ContractID = encoded
 			}
 		}
 
-		batch.Add(row.Values()...)
+		if err := batch.Add(row.Values()...); err != nil {
+			return count, fmt.Errorf("failed to add restored key to batch: %w", err)
+		}
 		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
 			return count, fmt.Errorf("failed to flush restored keys batch: %w", err)
 		}
@@ -2117,7 +2183,9 @@ func (rt *RealtimeTransformer) transformConfigSettingsCurrent(ctx context.Contex
 			return count, fmt.Errorf("failed to scan config settings row: %w", err)
 		}
 
-		batch.Add(row.Values()...)
+		if err := batch.Add(row.Values()...); err != nil {
+			return count, fmt.Errorf("failed to add row to %s batch: %w", batch.table, err)
+		}
 		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
 			return count, fmt.Errorf("failed to flush config settings batch: %w", err)
 		}
@@ -2189,7 +2257,9 @@ func (rt *RealtimeTransformer) transformTokenRegistry(ctx context.Context, tx *s
 			LastModifiedLedger: ledgerSequence,
 		}
 
-		batch.Add(row.Values()...)
+		if err := batch.Add(row.Values()...); err != nil {
+			return count, fmt.Errorf("failed to add row to %s batch: %w", batch.table, err)
+		}
 		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
 			return count, fmt.Errorf("failed to flush token registry batch: %w", err)
 		}
@@ -2328,8 +2398,8 @@ func (rt *RealtimeTransformer) transformSemanticEntities(ctx context.Context, tx
 			unique_callers = GREATEST(semantic_entities_contracts.unique_callers, EXCLUDED.unique_callers),
 			observed_functions = (
 				SELECT ARRAY(SELECT DISTINCT unnest(
-					semantic_entities_contracts.observed_functions || EXCLUDED.observed_functions
-				))
+					COALESCE(semantic_entities_contracts.observed_functions, ARRAY[]::text[]) || COALESCE(EXCLUDED.observed_functions, ARRAY[]::text[])
+				) WHERE unnest IS NOT NULL)
 			),
 			updated_at = NOW()
 	`

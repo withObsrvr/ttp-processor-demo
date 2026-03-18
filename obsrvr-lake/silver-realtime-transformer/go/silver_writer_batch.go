@@ -33,9 +33,14 @@ func NewBatchInserter(table string, columns []string, conflictSQL string, maxRow
 	}
 }
 
-// Add appends a row to the batch. The number of values must match the number of columns.
-func (bi *BatchInserter) Add(values ...interface{}) {
+// Add appends a row to the batch. Returns an error if the number of values
+// does not match the number of columns.
+func (bi *BatchInserter) Add(values ...interface{}) error {
+	if len(values) != len(bi.columns) {
+		return fmt.Errorf("batch %s: got %d values, expected %d columns", bi.table, len(values), len(bi.columns))
+	}
 	bi.rows = append(bi.rows, values)
+	return nil
 }
 
 // Len returns the number of pending rows.
