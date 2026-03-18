@@ -10,7 +10,7 @@ require (
 	github.com/withObsrvr/flow-proto v0.0.0-00010101000000-000000000000
 	github.com/withObsrvr/flowctl-sdk v0.0.0-00010101000000-000000000000
 	go.uber.org/zap v1.27.1
-	google.golang.org/grpc v1.76.0
+	google.golang.org/grpc v1.79.3
 	google.golang.org/protobuf v1.36.8
 	gopkg.in/yaml.v3 v3.0.1
 )

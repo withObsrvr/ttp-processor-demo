@@ -12,7 +12,7 @@ require (
 	github.com/stellar/go v0.0.0-20250716214416-01d16bf8185f
 	github.com/withObsrvr/flowctl v0.0.0-00010101000000-000000000000
 	github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake v0.0.0-00010101000000-000000000000
-	google.golang.org/grpc v1.72.0
+	google.golang.org/grpc v1.79.3
 	google.golang.org/protobuf v1.36.6
 )
 
