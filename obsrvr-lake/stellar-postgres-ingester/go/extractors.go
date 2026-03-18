@@ -280,6 +280,10 @@ func (w *Writer) extractOperations(rawLedger *pb.RawLedger) ([]OperationData, er
 
 			// Extract contract invocation details for InvokeHostFunction operations (type 24)
 			if op.Body.Type == xdr.OperationTypeInvokeHostFunction {
+				if invokeOp, ok := op.Body.GetInvokeHostFunctionOp(); ok {
+					fnType := invokeOp.HostFunction.Type.String()
+					opData.SorobanOperation = &fnType
+				}
 				contractID, functionName, argsJSON, err := extractContractInvocationDetails(op)
 				if err != nil {
 					log.Printf("Warning: Failed to extract contract invocation details for op %s:%d: %v", txHash, i, err)

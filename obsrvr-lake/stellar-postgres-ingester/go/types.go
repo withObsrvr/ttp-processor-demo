@@ -45,6 +45,7 @@ type OperationData struct {
 	Asset                 *string
 	Destination           *string
 	// Soroban contract invocation fields
+	SorobanOperation     *string // Host function type: InvokeContract, CreateContract, UploadWasm, etc.
 	SorobanContractID    *string
 	SorobanFunction      *string
 	SorobanArgumentsJSON *string

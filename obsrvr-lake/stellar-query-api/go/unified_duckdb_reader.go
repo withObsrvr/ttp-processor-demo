@@ -3651,7 +3651,7 @@ func (r *UnifiedDuckDBReader) GetAssetList(ctx context.Context, filters AssetLis
 			COALESCE(a.asset_issuer, '') as asset_issuer,
 			COALESCE(a.asset_type, 'credit_alphanum4') as asset_type,
 			a.holder_count,
-			a.circulating_supply,
+			COALESCE(a.circulating_supply::text, '0') as circulating_supply,
 			COALESCE(t.transfers_24h, 0) as transfers_24h,
 			COALESCE(t.volume_24h, 0) as volume_24h,
 			a.first_seen,
@@ -3758,7 +3758,7 @@ func (r *UnifiedDuckDBReader) GetAssetList(ctx context.Context, filters AssetLis
 	var assets []AssetSummary
 	for rows.Next() {
 		var a AssetSummary
-		var circulatingSupply int64
+		var circulatingSupplyStr sql.NullString
 		var volume24h int64
 		var firstSeen, lastActivity sql.NullTime
 
@@ -3767,7 +3767,7 @@ func (r *UnifiedDuckDBReader) GetAssetList(ctx context.Context, filters AssetLis
 			&a.AssetIssuer,
 			&a.AssetType,
 			&a.HolderCount,
-			&circulatingSupply,
+			&circulatingSupplyStr,
 			&a.Transfers24h,
 			&volume24h,
 			&firstSeen,
@@ -3777,8 +3777,8 @@ func (r *UnifiedDuckDBReader) GetAssetList(ctx context.Context, filters AssetLis
 			return nil, fmt.Errorf("failed to scan asset row: %w", err)
 		}
 
-		// Convert stroops to formatted string (7 decimal places)
-		a.CirculatingSupply = formatStroopsLocal(circulatingSupply)
+		// Handle large circulating supply values that overflow int64
+		a.CirculatingSupply = formatBigNumericStroops(circulatingSupplyStr.String)
 		a.Volume24h = formatStroopsLocal(volume24h)
 
 		if firstSeen.Valid {

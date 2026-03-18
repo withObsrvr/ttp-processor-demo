@@ -82,19 +82,46 @@ func (c *DuckDBClient) createSilverTables() error {
 	return nil
 }
 
-// partitionSilverTables adds DuckLake partitioning to all Silver tables by ledger_range
+// tablesWithLedgerRange lists tables that have a ledger_range column and can be partitioned.
+// Tables without ledger_range (token_registry, contract_metadata, semantic_* tables)
+// must NOT be partitioned — attempting it triggers a DuckDB FATAL error that invalidates
+// the entire connection.
+var tablesWithLedgerRange = map[string]bool{
+	"accounts_snapshot":                   true,
+	"accounts_current":                    true,
+	"trustlines_snapshot":                 true,
+	"trustlines_current":                  true,
+	"offers_snapshot":                     true,
+	"offers_current":                      true,
+	"account_signers_snapshot":            true,
+	"claimable_balances_current":          true,
+	"claimable_balances_snapshot":         true,
+	"contract_data_current":               true,
+	"enriched_history_operations":         true,
+	"enriched_history_operations_soroban": true,
+	"token_transfers_raw":                 true,
+	"contract_invocations_raw":            true,
+}
+
+// partitionSilverTables adds DuckLake partitioning to Silver tables that have ledger_range
 // This organizes Parquet files into partition folders for efficient queries
 func (c *DuckDBClient) partitionSilverTables() error {
 	log.Println("Adding DuckLake partitioning to Silver tables...")
 
 	successCount := 0
+	skippedCount := 0
 	for _, table := range SilverTables {
+		if !tablesWithLedgerRange[table] {
+			log.Printf("   Skipping partition for %s (no ledger_range column)", table)
+			skippedCount++
+			continue
+		}
+
 		fullTableName := fmt.Sprintf("%s.%s.%s", c.config.CatalogName, c.config.SchemaName, table)
 		partitionSQL := fmt.Sprintf(`ALTER TABLE %s SET PARTITIONED BY (ledger_range)`, fullTableName)
 
 		if _, err := c.db.Exec(partitionSQL); err != nil {
 			log.Printf("⚠️  Failed to partition %s: %v", table, err)
-			// Don't fail - some tables might not exist or not have ledger_range
 			continue
 		}
 
@@ -102,15 +129,12 @@ func (c *DuckDBClient) partitionSilverTables() error {
 		successCount++
 	}
 
-	if successCount == 0 {
-		return fmt.Errorf("failed to partition all %d Silver tables", len(SilverTables))
+	partitionable := len(SilverTables) - skippedCount
+	if partitionable > 0 && successCount == 0 {
+		return fmt.Errorf("failed to partition all %d partitionable Silver tables", partitionable)
 	}
 
-	if successCount < len(SilverTables) {
-		log.Printf("⚠️  Partitioned %d/%d Silver tables successfully (some failures)", successCount, len(SilverTables))
-	} else {
-		log.Printf("✅ Partitioned %d/%d Silver tables successfully", successCount, len(SilverTables))
-	}
+	log.Printf("✅ Partitioned %d/%d tables (%d skipped, no ledger_range)", successCount, partitionable, skippedCount)
 
 	return nil
 }

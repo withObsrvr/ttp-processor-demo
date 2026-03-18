@@ -70,6 +70,14 @@ func (c *DuckDBClient) initialize() error {
 		return fmt.Errorf("failed to load httpfs extension: %w", err)
 	}
 
+	// Tune DuckDB for low-memory flushing
+	if _, err := c.db.ExecContext(ctx, "SET threads=1"); err != nil {
+		return fmt.Errorf("failed to set threads: %w", err)
+	}
+	if _, err := c.db.ExecContext(ctx, "SET preserve_insertion_order=false"); err != nil {
+		return fmt.Errorf("failed to set preserve_insertion_order: %w", err)
+	}
+
 	// Configure S3 credentials
 	if err := c.configureS3(ctx); err != nil {
 		return fmt.Errorf("failed to configure S3: %w", err)
@@ -131,7 +139,7 @@ func (c *DuckDBClient) initialize() error {
 }
 
 // FlushTableFromPostgres flushes data from PostgreSQL to DuckLake using postgres_scan
-func (c *DuckDBClient) FlushTableFromPostgres(ctx context.Context, postgresDSN, tableName string, watermark int64) (int64, error) {
+func (c *DuckDBClient) FlushTableFromPostgres(ctx context.Context, postgresDSN, tableName string, watermark, lastFlushed int64) (int64, error) {
 	// Build the INSERT query using postgres_scan
 	// INSERT INTO catalog.schema.table
 	// SELECT * FROM postgres_scan('dsn', 'public', 'table')
@@ -171,16 +179,16 @@ func (c *DuckDBClient) FlushTableFromPostgres(ctx context.Context, postgresDSN, 
 				soroban_op_count, total_fee_charged, contract_events_count,
 				era_id, version_label
 			FROM postgres_scan('%s', 'public', '%s')
-			WHERE %s <= %d;
+			WHERE %s > %d AND %s <= %d;
 		`, c.config.CatalogName, c.config.SchemaName, tableName,
-			postgresDSN, tableName, sequenceColumn, watermark)
+			postgresDSN, tableName, sequenceColumn, lastFlushed, sequenceColumn, watermark)
 	} else {
 		insertSQL = fmt.Sprintf(`
 			INSERT INTO %s.%s.%s
 			SELECT * FROM postgres_scan('%s', 'public', '%s')
-			WHERE %s <= %d;
+			WHERE %s > %d AND %s <= %d;
 		`, c.config.CatalogName, c.config.SchemaName, tableName,
-			postgresDSN, tableName, sequenceColumn, watermark)
+			postgresDSN, tableName, sequenceColumn, lastFlushed, sequenceColumn, watermark)
 	}
 
 	log.Printf("Flushing %s (watermark=%d)...", tableName, watermark)

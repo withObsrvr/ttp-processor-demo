@@ -449,6 +449,22 @@ func (sm *SourceManager) QueryContractCallGraphs(ctx context.Context, startLedge
 	return nil, fmt.Errorf("unknown source mode: %s", mode)
 }
 
+// QueryContractCreations delegates to the appropriate reader
+func (sm *SourceManager) QueryContractCreations(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
+	sm.mu.RLock()
+	mode := sm.mode
+	sm.mu.RUnlock()
+
+	switch mode {
+	case SourceModeHot:
+		return sm.hotReader.QueryContractCreations(ctx, startLedger, endLedger)
+	case SourceModeBackfill:
+		// contract_creations_v1 doesn't exist in cold storage yet, return empty result
+		return sm.hotReader.QueryContractCreations(ctx, startLedger, endLedger)
+	}
+	return nil, fmt.Errorf("unknown source mode: %s", mode)
+}
+
 // QueryLiquidityPoolsSnapshot delegates to the appropriate reader
 func (sm *SourceManager) QueryLiquidityPoolsSnapshot(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
 	sm.mu.RLock()

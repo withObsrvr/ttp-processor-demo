@@ -291,23 +291,23 @@ func (rt *RealtimeTransformer) migrateSorobanTransfers() {
 			e.ledger_sequence,
 			'soroban' AS source_type,
 			CASE
-				WHEN topics_decoded::jsonb->>0 = 'transfer' THEN topics_decoded::jsonb->1->>'address'
-				WHEN topics_decoded::jsonb->>0 = 'burn' THEN topics_decoded::jsonb->1->>'address'
-				WHEN topics_decoded::jsonb->>0 = 'clawback' THEN topics_decoded::jsonb->1->>'address'
+				WHEN replace(topics_decoded, '\u0000', '')::jsonb->>0 = 'transfer' THEN replace(topics_decoded, '\u0000', '')::jsonb->1->>'address'
+				WHEN replace(topics_decoded, '\u0000', '')::jsonb->>0 = 'burn' THEN replace(topics_decoded, '\u0000', '')::jsonb->1->>'address'
+				WHEN replace(topics_decoded, '\u0000', '')::jsonb->>0 = 'clawback' THEN replace(topics_decoded, '\u0000', '')::jsonb->1->>'address'
 			END AS from_account,
 			CASE
-				WHEN topics_decoded::jsonb->>0 = 'transfer' THEN topics_decoded::jsonb->2->>'address'
-				WHEN topics_decoded::jsonb->>0 = 'mint' AND jsonb_typeof(topics_decoded::jsonb->2) = 'object'
-					THEN topics_decoded::jsonb->2->>'address'
-				WHEN topics_decoded::jsonb->>0 = 'mint' AND jsonb_typeof(topics_decoded::jsonb->1) = 'object'
-					AND (topics_decoded::jsonb->1->>'type') = 'account'
-					THEN topics_decoded::jsonb->1->>'address'
+				WHEN replace(topics_decoded, '\u0000', '')::jsonb->>0 = 'transfer' THEN replace(topics_decoded, '\u0000', '')::jsonb->2->>'address'
+				WHEN replace(topics_decoded, '\u0000', '')::jsonb->>0 = 'mint' AND jsonb_typeof(replace(topics_decoded, '\u0000', '')::jsonb->2) = 'object'
+					THEN replace(topics_decoded, '\u0000', '')::jsonb->2->>'address'
+				WHEN replace(topics_decoded, '\u0000', '')::jsonb->>0 = 'mint' AND jsonb_typeof(replace(topics_decoded, '\u0000', '')::jsonb->1) = 'object'
+					AND (replace(topics_decoded, '\u0000', '')::jsonb->1->>'type') = 'account'
+					THEN replace(topics_decoded, '\u0000', '')::jsonb->1->>'address'
 			END AS to_account,
 			NULL AS asset_code,
 			NULL AS asset_issuer,
 			COALESCE(
-				data_decoded::jsonb->>'value',
-				data_decoded::jsonb->'entries'->'amount'->>'value'
+				replace(data_decoded, '\u0000', '')::jsonb->>'value',
+				replace(data_decoded, '\u0000', '')::jsonb->'entries'->'amount'->>'value'
 			)::NUMERIC AS amount,
 			e.contract_id AS token_contract_id,
 			24 AS operation_type,
@@ -333,7 +333,7 @@ func (rt *RealtimeTransformer) migrateSorobanTransfers() {
 			ON e.ledger_sequence = l.sequence
 		WHERE e.event_type = 'contract'
 		  AND e.topic_count >= 2
-		  AND topics_decoded::jsonb->>0 IN ('transfer', 'mint', 'burn', 'clawback')
+		  AND replace(topics_decoded, '\u0000', '')::jsonb->>0 IN ('transfer', 'mint', 'burn', 'clawback')
 		ON CONFLICT DO NOTHING
 	`
 
@@ -572,6 +572,13 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 		return fmt.Errorf("failed to transform contract invocations: %w", err)
 	}
 	totalRows += invocationsCount
+
+	// Transform contract metadata (from bronze contract_creations_v1)
+	contractMetadataCount, err := rt.transformContractMetadata(ctx, tx, startLedger, endLedger)
+	if err != nil {
+		return fmt.Errorf("failed to transform contract metadata: %w", err)
+	}
+	totalRows += contractMetadataCount
 
 	// Transform contract calls (Cycle 6 - Cross-Contract Call Tracking for Freighter)
 	callsCount, err := rt.transformContractCalls(ctx, tx, startLedger, endLedger)
@@ -1420,6 +1427,48 @@ func (rt *RealtimeTransformer) transformContractInvocations(ctx context.Context,
 
 	if err := rows.Err(); err != nil {
 		return count, fmt.Errorf("error iterating contract invocations: %w", err)
+	}
+
+	return count, nil
+}
+
+// transformContractMetadata reads contract creation records from bronze and upserts into silver contract_metadata
+func (rt *RealtimeTransformer) transformContractMetadata(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	rows, err := rt.sourceManager.QueryContractCreations(ctx, startLedger, endLedger)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	count := int64(0)
+
+	for rows.Next() {
+		var (
+			contractID     string
+			creatorAddress string
+			wasmHash       sql.NullString
+			createdLedger  int64
+			createdAt      time.Time
+		)
+
+		if err := rows.Scan(&contractID, &creatorAddress, &wasmHash, &createdLedger, &createdAt); err != nil {
+			return count, fmt.Errorf("failed to scan contract creation row: %w", err)
+		}
+
+		var wasmHashPtr *string
+		if wasmHash.Valid {
+			wasmHashPtr = &wasmHash.String
+		}
+
+		if err := rt.silverWriter.WriteContractMetadata(ctx, tx, contractID, creatorAddress, wasmHashPtr, createdLedger, createdAt); err != nil {
+			return count, fmt.Errorf("failed to write contract metadata: %w", err)
+		}
+
+		count++
+	}
+
+	if err := rows.Err(); err != nil {
+		return count, fmt.Errorf("error iterating contract creations: %w", err)
 	}
 
 	return count, nil

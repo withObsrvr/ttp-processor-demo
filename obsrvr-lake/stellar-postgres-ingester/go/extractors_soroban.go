@@ -416,49 +416,66 @@ func (w *Writer) extractContractCreations(rawLedger *pb.RawLedger) ([]ContractCr
 
 			// Get the created contract ID from the transaction meta
 			// The contract ID is in the ledger entry changes for the current operation
-			if tx.UnsafeMeta.V == 3 {
+			var changes xdr.LedgerEntryChanges
+			switch tx.UnsafeMeta.V {
+			case 3:
 				v3 := tx.UnsafeMeta.MustV3()
 				if v3.SorobanMeta != nil && opIdx < len(v3.Operations) {
-					// Look for new contract entries in the changes for THIS operation
-					for _, change := range v3.Operations[opIdx].Changes {
-						created, ok := change.GetCreated()
-						if !ok {
-							continue
-						}
-						contractData, ok := created.Data.GetContractData()
-						if !ok {
-							continue
-						}
+					changes = v3.Operations[opIdx].Changes
+				}
+			case 4:
+				v4 := tx.UnsafeMeta.MustV4()
+				if v4.SorobanMeta != nil && opIdx < len(v4.Operations) {
+					changes = v4.Operations[opIdx].Changes
+				}
+			}
 
-						// Instance storage entry indicates contract creation
-						if contractData.Durability == xdr.ContractDataDurabilityPersistent {
-							if scAddr, ok := contractData.Contract.GetContractId(); ok {
-								contractIDStr, err := strkey.Encode(strkey.VersionByteContract, scAddr[:])
-								if err != nil {
-									continue
-								}
+			if len(changes) > 0 {
+				for _, change := range changes {
+					created, ok := change.GetCreated()
+					if !ok {
+						continue
+					}
+					contractData, ok := created.Data.GetContractData()
+					if !ok {
+						continue
+					}
 
-								creation := ContractCreationData{
-									ContractID:     contractIDStr,
-									CreatorAddress: creatorAddress,
-									CreatedLedger:  ledgerSeq,
-									CreatedAt:      closedAt,
-									LedgerRange:    (ledgerSeq / 10000) * 10000,
-								}
+					// Instance storage entry indicates contract creation
+					if contractData.Durability == xdr.ContractDataDurabilityPersistent {
+						if scAddr, ok := contractData.Contract.GetContractId(); ok {
+							contractIDStr, err := strkey.Encode(strkey.VersionByteContract, scAddr[:])
+							if err != nil {
+								continue
+							}
 
-								// Try to extract WASM hash
-								if fnType == xdr.HostFunctionTypeHostFunctionTypeCreateContract {
-									if args, ok := invokeHostFn.HostFunction.GetCreateContract(); ok {
-										if wasmHash, ok := args.Executable.GetWasmHash(); ok {
-											wasmHashStr := hex.EncodeToString(wasmHash[:])
-											creation.WasmHash = &wasmHashStr
-										}
+							creation := ContractCreationData{
+								ContractID:     contractIDStr,
+								CreatorAddress: creatorAddress,
+								CreatedLedger:  ledgerSeq,
+								CreatedAt:      closedAt,
+								LedgerRange:    (ledgerSeq / 10000) * 10000,
+							}
+
+							// Try to extract WASM hash
+							if fnType == xdr.HostFunctionTypeHostFunctionTypeCreateContract {
+								if args, ok := invokeHostFn.HostFunction.GetCreateContract(); ok {
+									if wasmHash, ok := args.Executable.GetWasmHash(); ok {
+										wasmHashStr := hex.EncodeToString(wasmHash[:])
+										creation.WasmHash = &wasmHashStr
 									}
 								}
-
-								creations = append(creations, creation)
-								break // One contract per op
+							} else if fnType == xdr.HostFunctionTypeHostFunctionTypeCreateContractV2 {
+								if args, ok := invokeHostFn.HostFunction.GetCreateContractV2(); ok {
+									if wasmHash, ok := args.Executable.GetWasmHash(); ok {
+										wasmHashStr := hex.EncodeToString(wasmHash[:])
+										creation.WasmHash = &wasmHashStr
+									}
+								}
 							}
+
+							creations = append(creations, creation)
+							break // One contract per op
 						}
 					}
 				}
