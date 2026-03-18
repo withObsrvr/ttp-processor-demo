@@ -494,231 +494,146 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 	}
 	log.Printf("%s New data available (ledgers %d to %d) [mode: %s]", modeIndicator, startLedger, endLedger, rt.sourceManager.GetMode())
 
-	// Start transaction for atomic writes + checkpoint
-	tx, err := rt.silverDB.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
+	// ==========================================================================
+	// Phase A: Bronze → Silver row-level transforms (parallel with worker pool)
+	// ==========================================================================
+	// Each transform reads from bronze and writes to its own silver table(s).
+	// We run them in parallel with bounded concurrency, each getting its own
+	// transaction since they write to non-overlapping tables.
+
+	type transformResult struct {
+		name  string
+		count int64
+		err   error
 	}
-	defer tx.Rollback()
+
+	type transformJob struct {
+		name string
+		fn   func(ctx context.Context, tx *sql.Tx, start, end int64) (int64, error)
+	}
+
+	bronzeTransforms := []transformJob{
+		{"enriched_operations", rt.transformEnrichedOperations},
+		{"token_transfers", rt.transformTokenTransfers},
+		{"accounts_current", rt.transformAccountsCurrent},
+		{"trustlines_current", rt.transformTrustlinesCurrent},
+		{"offers_current", rt.transformOffersCurrent},
+		{"accounts_snapshot", rt.transformAccountsSnapshot},
+		{"trustlines_snapshot", rt.transformTrustlinesSnapshot},
+		{"offers_snapshot", rt.transformOffersSnapshot},
+		{"account_signers_snapshot", rt.transformAccountSignersSnapshot},
+		{"contract_invocations", rt.transformContractInvocations},
+		{"contract_metadata", rt.transformContractMetadata},
+		{"contract_calls", rt.transformContractCalls},
+		{"liquidity_pools_current", rt.transformLiquidityPoolsCurrent},
+		{"claimable_balances_current", rt.transformClaimableBalancesCurrent},
+		{"native_balances_current", rt.transformNativeBalancesCurrent},
+		{"trades", rt.transformTrades},
+		{"effects", rt.transformEffects},
+		{"contract_data_current", rt.transformContractDataCurrent},
+		{"token_registry", rt.transformTokenRegistry},
+		{"contract_code_current", rt.transformContractCodeCurrent},
+		{"ttl_current", rt.transformTTLCurrent},
+		{"evicted_keys", rt.transformEvictedKeys},
+		{"restored_keys", rt.transformRestoredKeys},
+		{"config_settings_current", rt.transformConfigSettingsCurrent},
+	}
+
+	maxWorkers := rt.config.Performance.MaxWorkers
+	if maxWorkers < 1 {
+		maxWorkers = 4
+	}
+
+	results := make(chan transformResult, len(bronzeTransforms))
+	semaphore := make(chan struct{}, maxWorkers)
+	var wg sync.WaitGroup
+
+	for _, job := range bronzeTransforms {
+		wg.Add(1)
+		go func(j transformJob) {
+			defer wg.Done()
+			semaphore <- struct{}{}        // acquire
+			defer func() { <-semaphore }() // release
+
+			tx, txErr := rt.silverDB.BeginTx(ctx, nil)
+			if txErr != nil {
+				results <- transformResult{j.name, 0, fmt.Errorf("begin tx for %s: %w", j.name, txErr)}
+				return
+			}
+
+			count, fnErr := j.fn(ctx, tx, startLedger, endLedger)
+			if fnErr != nil {
+				tx.Rollback()
+				results <- transformResult{j.name, 0, fmt.Errorf("transform %s: %w", j.name, fnErr)}
+				return
+			}
+
+			if commitErr := tx.Commit(); commitErr != nil {
+				results <- transformResult{j.name, 0, fmt.Errorf("commit %s: %w", j.name, commitErr)}
+				return
+			}
+
+			results <- transformResult{j.name, count, nil}
+		}(job)
+	}
+
+	// Close results channel when all goroutines complete
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
 
 	totalRows := int64(0)
-
-	// Transform enriched operations
-	opsCount, err := rt.transformEnrichedOperations(ctx, tx, startLedger, endLedger)
-	if err != nil {
-		return fmt.Errorf("failed to transform enriched operations: %w", err)
+	var firstErr error
+	for r := range results {
+		if r.err != nil {
+			if firstErr == nil {
+				firstErr = r.err
+			}
+			log.Printf("failed to %s: %v", r.name, r.err)
+			continue
+		}
+		totalRows += r.count
 	}
-	totalRows += opsCount
 
-	// Transform token transfers
-	transfersCount, err := rt.transformTokenTransfers(ctx, tx, startLedger, endLedger)
-	if err != nil {
-		return fmt.Errorf("failed to transform token transfers: %w", err)
+	if firstErr != nil {
+		return fmt.Errorf("phase A (bronze→silver) failed: %w", firstErr)
 	}
-	totalRows += transfersCount
 
-	// Transform accounts current (UPSERT pattern - Cycle 2)
-	accountsCount, err := rt.transformAccountsCurrent(ctx, tx, startLedger, endLedger)
+	// ==========================================================================
+	// Phase B: Silver → Silver semantic transforms + checkpoint
+	// ==========================================================================
+	// Semantic transforms read from silver tables committed in Phase A.
+	// They run sequentially in one transaction along with the checkpoint update.
+
+	semanticTx, err := rt.silverDB.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("failed to transform accounts current: %w", err)
+		return fmt.Errorf("failed to begin semantic transaction: %w", err)
 	}
-	totalRows += accountsCount
+	defer semanticTx.Rollback()
 
-	// Transform trustlines current (UPSERT pattern)
-	trustlinesCurrentCount, err := rt.transformTrustlinesCurrent(ctx, tx, startLedger, endLedger)
-	if err != nil {
-		return fmt.Errorf("failed to transform trustlines current: %w", err)
+	semanticTransforms := []transformJob{
+		{"semantic_activities", rt.transformSemanticActivities},
+		{"semantic_entities", rt.transformSemanticEntities},
+		{"semantic_flows", rt.transformSemanticFlows},
+		{"semantic_contract_functions", rt.transformSemanticContractFunctions},
+		{"semantic_asset_stats", rt.transformSemanticAssetStats},
+		{"semantic_dex_pairs", rt.transformSemanticDexPairs},
+		{"semantic_account_summary", rt.transformSemanticAccountSummary},
 	}
-	totalRows += trustlinesCurrentCount
 
-	// Transform offers current (UPSERT pattern)
-	offersCurrentCount, err := rt.transformOffersCurrent(ctx, tx, startLedger, endLedger)
-	if err != nil {
-		return fmt.Errorf("failed to transform offers current: %w", err)
+	for _, j := range semanticTransforms {
+		count, err := j.fn(ctx, semanticTx, startLedger, endLedger)
+		if err != nil {
+			return fmt.Errorf("failed to transform %s: %w", j.name, err)
+		}
+		totalRows += count
 	}
-	totalRows += offersCurrentCount
 
-	// Transform accounts snapshot (SCD Type 2 - Cycle 3)
-	snapshotCount, err := rt.transformAccountsSnapshot(ctx, tx, startLedger, endLedger)
-	if err != nil {
-		return fmt.Errorf("failed to transform accounts snapshot: %w", err)
-	}
-	totalRows += snapshotCount
-
-	// Transform trustlines snapshot (SCD Type 2 - Cycle 3)
-	trustlinesCount, err := rt.transformTrustlinesSnapshot(ctx, tx, startLedger, endLedger)
-	if err != nil {
-		return fmt.Errorf("failed to transform trustlines snapshot: %w", err)
-	}
-	totalRows += trustlinesCount
-
-	// Transform offers snapshot (SCD Type 2 - Cycle 3)
-	offersCount, err := rt.transformOffersSnapshot(ctx, tx, startLedger, endLedger)
-	if err != nil {
-		return fmt.Errorf("failed to transform offers snapshot: %w", err)
-	}
-	totalRows += offersCount
-
-	// Transform account signers snapshot (SCD Type 2 - Cycle 3)
-	signersCount, err := rt.transformAccountSignersSnapshot(ctx, tx, startLedger, endLedger)
-	if err != nil {
-		return fmt.Errorf("failed to transform account signers snapshot: %w", err)
-	}
-	totalRows += signersCount
-
-	// Transform contract invocations (Cycle 5 - Contract Invocations)
-	invocationsCount, err := rt.transformContractInvocations(ctx, tx, startLedger, endLedger)
-	if err != nil {
-		return fmt.Errorf("failed to transform contract invocations: %w", err)
-	}
-	totalRows += invocationsCount
-
-	// Transform contract metadata (from bronze contract_creations_v1)
-	contractMetadataCount, err := rt.transformContractMetadata(ctx, tx, startLedger, endLedger)
-	if err != nil {
-		return fmt.Errorf("failed to transform contract metadata: %w", err)
-	}
-	totalRows += contractMetadataCount
-
-	// Transform contract calls (Cycle 6 - Cross-Contract Call Tracking for Freighter)
-	callsCount, err := rt.transformContractCalls(ctx, tx, startLedger, endLedger)
-	if err != nil {
-		return fmt.Errorf("failed to transform contract calls: %w", err)
-	}
-	totalRows += callsCount
-
-	// Transform liquidity pools current (Phase 1 - Core State Tables)
-	liquidityPoolsCount, err := rt.transformLiquidityPoolsCurrent(ctx, tx, startLedger, endLedger)
-	if err != nil {
-		return fmt.Errorf("failed to transform liquidity pools current: %w", err)
-	}
-	totalRows += liquidityPoolsCount
-
-	// Transform claimable balances current (Phase 1 - Core State Tables)
-	claimableBalancesCount, err := rt.transformClaimableBalancesCurrent(ctx, tx, startLedger, endLedger)
-	if err != nil {
-		return fmt.Errorf("failed to transform claimable balances current: %w", err)
-	}
-	totalRows += claimableBalancesCount
-
-	// Transform native balances current (Phase 1 - Core State Tables)
-	nativeBalancesCount, err := rt.transformNativeBalancesCurrent(ctx, tx, startLedger, endLedger)
-	if err != nil {
-		return fmt.Errorf("failed to transform native balances current: %w", err)
-	}
-	totalRows += nativeBalancesCount
-
-	// Transform trades (Phase 2 - Event Tables)
-	tradesCount, err := rt.transformTrades(ctx, tx, startLedger, endLedger)
-	if err != nil {
-		return fmt.Errorf("failed to transform trades: %w", err)
-	}
-	totalRows += tradesCount
-
-	// Transform effects (Phase 2 - Event Tables)
-	effectsCount, err := rt.transformEffects(ctx, tx, startLedger, endLedger)
-	if err != nil {
-		return fmt.Errorf("failed to transform effects: %w", err)
-	}
-	totalRows += effectsCount
-
-	// Transform contract data current (Phase 3 - Soroban Tables)
-	contractDataCount, err := rt.transformContractDataCurrent(ctx, tx, startLedger, endLedger)
-	if err != nil {
-		return fmt.Errorf("failed to transform contract data current: %w", err)
-	}
-	totalRows += contractDataCount
-
-	// Materialize token registry from contract instance entries with token metadata
-	tokenRegistryCount, err := rt.transformTokenRegistry(ctx, tx, startLedger, endLedger)
-	if err != nil {
-		return fmt.Errorf("failed to transform token registry: %w", err)
-	}
-	totalRows += tokenRegistryCount
-
-	// Transform contract code current (Phase 3 - Soroban Tables)
-	contractCodeCount, err := rt.transformContractCodeCurrent(ctx, tx, startLedger, endLedger)
-	if err != nil {
-		return fmt.Errorf("failed to transform contract code current: %w", err)
-	}
-	totalRows += contractCodeCount
-
-	// Transform TTL current (Phase 3 - Soroban Tables)
-	ttlCount, err := rt.transformTTLCurrent(ctx, tx, startLedger, endLedger)
-	if err != nil {
-		return fmt.Errorf("failed to transform TTL current: %w", err)
-	}
-	totalRows += ttlCount
-
-	// Transform evicted keys (Phase 3 - Soroban Tables)
-	evictedKeysCount, err := rt.transformEvictedKeys(ctx, tx, startLedger, endLedger)
-	if err != nil {
-		return fmt.Errorf("failed to transform evicted keys: %w", err)
-	}
-	totalRows += evictedKeysCount
-
-	// Transform restored keys (Phase 3 - Soroban Tables)
-	restoredKeysCount, err := rt.transformRestoredKeys(ctx, tx, startLedger, endLedger)
-	if err != nil {
-		return fmt.Errorf("failed to transform restored keys: %w", err)
-	}
-	totalRows += restoredKeysCount
-
-	// Transform config settings current (Phase 4 - Config Settings)
-	configSettingsCount, err := rt.transformConfigSettingsCurrent(ctx, tx, startLedger, endLedger)
-	if err != nil {
-		return fmt.Errorf("failed to transform config settings current: %w", err)
-	}
-	totalRows += configSettingsCount
-
-	// Semantic layer transforms (Silver-to-Silver, INSERT-from-SELECT)
-	semanticActivitiesCount, err := rt.transformSemanticActivities(ctx, tx, startLedger, endLedger)
-	if err != nil {
-		return fmt.Errorf("failed to transform semantic activities: %w", err)
-	}
-	totalRows += semanticActivitiesCount
-
-	semanticEntitiesCount, err := rt.transformSemanticEntities(ctx, tx, startLedger, endLedger)
-	if err != nil {
-		return fmt.Errorf("failed to transform semantic entities: %w", err)
-	}
-	totalRows += semanticEntitiesCount
-
-	semanticFlowsCount, err := rt.transformSemanticFlows(ctx, tx, startLedger, endLedger)
-	if err != nil {
-		return fmt.Errorf("failed to transform semantic flows: %w", err)
-	}
-	totalRows += semanticFlowsCount
-
-	// Semantic Layer Phase 2 transforms
-	semanticContractFunctionsCount, err := rt.transformSemanticContractFunctions(ctx, tx, startLedger, endLedger)
-	if err != nil {
-		return fmt.Errorf("failed to transform semantic contract functions: %w", err)
-	}
-	totalRows += semanticContractFunctionsCount
-
-	semanticAssetStatsCount, err := rt.transformSemanticAssetStats(ctx, tx, startLedger, endLedger)
-	if err != nil {
-		return fmt.Errorf("failed to transform semantic asset stats: %w", err)
-	}
-	totalRows += semanticAssetStatsCount
-
-	semanticDexPairsCount, err := rt.transformSemanticDexPairs(ctx, tx, startLedger, endLedger)
-	if err != nil {
-		return fmt.Errorf("failed to transform semantic dex pairs: %w", err)
-	}
-	totalRows += semanticDexPairsCount
-
-	semanticAccountSummaryCount, err := rt.transformSemanticAccountSummary(ctx, tx, startLedger, endLedger)
-	if err != nil {
-		return fmt.Errorf("failed to transform semantic account summary: %w", err)
-	}
-	totalRows += semanticAccountSummaryCount
-
-	// If no rows were produced, check whether the ledgers actually exist in bronze.
-	// Early testnet ledgers (and genesis) have zero transactions/operations, so all
-	// transform queries legitimately return 0 rows.  We must still advance the
-	// checkpoint past them, otherwise the transformer loops forever.
+	// If no rows were produced across both phases, check whether the ledgers
+	// actually exist in bronze. Early testnet ledgers (and genesis) have zero
+	// transactions/operations, so all transform queries legitimately return 0 rows.
+	// We must still advance the checkpoint past them to avoid looping forever.
 	if totalRows == 0 {
 		bronzeLedgerCount, countErr := rt.sourceManager.CountLedgersInRange(ctx, startLedger, endLedger)
 		if countErr != nil {
@@ -731,11 +646,10 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 			log.Printf("⏭️  Ledgers %d-%d exist but have no operations (%d ledgers) — advancing checkpoint",
 				startLedger, endLedger, bronzeLedgerCount)
 
-			if err := rt.checkpoint.SaveWithTx(tx, endLedger); err != nil {
-				tx.Rollback()
+			if err := rt.checkpoint.SaveWithTx(semanticTx, endLedger); err != nil {
 				return fmt.Errorf("failed to save checkpoint for empty ledgers: %w", err)
 			}
-			if err := tx.Commit(); err != nil {
+			if err := semanticTx.Commit(); err != nil {
 				return fmt.Errorf("failed to commit empty-ledger checkpoint: %w", err)
 			}
 			rt.mu.Lock()
@@ -746,7 +660,7 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 		}
 
 		// Ledgers don't exist in bronze — source may be unavailable
-		tx.Rollback()
+		semanticTx.Rollback()
 		rt.consecutiveEmptyPolls++
 		log.Printf("⏸️  No data found for ledgers %d-%d in %v (source may be unavailable), not advancing checkpoint (empty polls: %d)",
 			startLedger, endLedger, time.Since(startTime), rt.consecutiveEmptyPolls)
@@ -842,14 +756,14 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 	// Reset empty poll counter on successful transformation
 	rt.consecutiveEmptyPolls = 0
 
-	// Update checkpoint
-	if err := rt.checkpoint.SaveWithTx(tx, endLedger); err != nil {
+	// Update checkpoint in the semantic transaction
+	if err := rt.checkpoint.SaveWithTx(semanticTx, endLedger); err != nil {
 		return fmt.Errorf("failed to save checkpoint: %w", err)
 	}
 
-	// Commit transaction
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
+	// Commit semantic transaction + checkpoint
+	if err := semanticTx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit semantic transaction: %w", err)
 	}
 
 	// Update stats
@@ -882,6 +796,9 @@ func (rt *RealtimeTransformer) transformEnrichedOperations(ctx context.Context, 
 	}
 	defer rows.Close()
 
+	batchSize := rt.insertBatchSize()
+	batch := NewBatchInserter("enriched_history_operations", enrichedOpColumns, enrichedOpConflict, batchSize)
+	sorobanBatch := NewBatchInserter("enriched_history_operations_soroban", enrichedOpColumns, enrichedOpSorobanConflict, batchSize)
 	count := int64(0)
 
 	for rows.Next() {
@@ -930,8 +847,17 @@ func (rt *RealtimeTransformer) transformEnrichedOperations(ctx context.Context, 
 			return count, fmt.Errorf("failed to scan enriched operation row: %w", err)
 		}
 
-		if err := rt.silverWriter.WriteEnrichedOperation(ctx, tx, row); err != nil {
-			return count, fmt.Errorf("failed to write enriched operation: %w", err)
+		batch.Add(row.Values()...)
+		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
+			return count, fmt.Errorf("failed to flush enriched operations batch: %w", err)
+		}
+
+		// Also batch to Soroban table if it's a Soroban operation
+		if row.IsSorobanOp != nil && *row.IsSorobanOp {
+			sorobanBatch.Add(row.Values()...)
+			if err := sorobanBatch.FlushIfNeeded(ctx, tx); err != nil {
+				return count, fmt.Errorf("failed to flush soroban operations batch: %w", err)
+			}
 		}
 
 		count++
@@ -939,6 +865,14 @@ func (rt *RealtimeTransformer) transformEnrichedOperations(ctx context.Context, 
 
 	if err := rows.Err(); err != nil {
 		return count, fmt.Errorf("error iterating enriched operations: %w", err)
+	}
+
+	// Flush remaining rows
+	if err := batch.Flush(ctx, tx); err != nil {
+		return count, fmt.Errorf("failed to flush enriched operations remainder: %w", err)
+	}
+	if err := sorobanBatch.Flush(ctx, tx); err != nil {
+		return count, fmt.Errorf("failed to flush soroban operations remainder: %w", err)
 	}
 
 	return count, nil
@@ -952,6 +886,7 @@ func (rt *RealtimeTransformer) transformTokenTransfers(ctx context.Context, tx *
 	}
 	defer rows.Close()
 
+	batch := NewBatchInserter("token_transfers_raw", tokenTransferColumns, tokenTransferConflict, rt.insertBatchSize())
 	count := int64(0)
 
 	for rows.Next() {
@@ -968,8 +903,16 @@ func (rt *RealtimeTransformer) transformTokenTransfers(ctx context.Context, tx *
 			return count, fmt.Errorf("failed to scan token transfer row: %w", err)
 		}
 
-		if err := rt.silverWriter.WriteTokenTransfer(ctx, tx, row); err != nil {
-			return count, fmt.Errorf("failed to write token transfer: %w", err)
+		// Convert hex contract ID to C-encoded strkey (moved from WriteTokenTransfer)
+		if row.TokenContractID.Valid && row.TokenContractID.String != "" {
+			if encoded, err := hexToStrKey(row.TokenContractID.String); err == nil {
+				row.TokenContractID.String = encoded
+			}
+		}
+
+		batch.Add(row.Values()...)
+		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
+			return count, fmt.Errorf("failed to flush token transfers batch: %w", err)
 		}
 
 		count++
@@ -977,6 +920,10 @@ func (rt *RealtimeTransformer) transformTokenTransfers(ctx context.Context, tx *
 
 	if err := rows.Err(); err != nil {
 		return count, fmt.Errorf("error iterating token transfers: %w", err)
+	}
+
+	if err := batch.Flush(ctx, tx); err != nil {
+		return count, fmt.Errorf("failed to flush token transfers remainder: %w", err)
 	}
 
 	return count, nil
@@ -990,6 +937,7 @@ func (rt *RealtimeTransformer) transformAccountsCurrent(ctx context.Context, tx 
 	}
 	defer rows.Close()
 
+	batch := NewBatchInserter("accounts_current", accountCurrentColumns, accountCurrentConflict, rt.insertBatchSize())
 	count := int64(0)
 
 	for rows.Next() {
@@ -1008,15 +956,19 @@ func (rt *RealtimeTransformer) transformAccountsCurrent(ctx context.Context, tx 
 			return count, fmt.Errorf("failed to scan account row: %w", err)
 		}
 
-		if err := rt.silverWriter.WriteAccountCurrent(ctx, tx, row); err != nil {
-			return count, fmt.Errorf("failed to write account current: %w", err)
+		batch.Add(row.Values()...)
+		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
+			return count, fmt.Errorf("failed to flush accounts current batch: %w", err)
 		}
-
 		count++
 	}
 
 	if err := rows.Err(); err != nil {
 		return count, fmt.Errorf("error iterating accounts: %w", err)
+	}
+
+	if err := batch.Flush(ctx, tx); err != nil {
+		return count, fmt.Errorf("failed to flush accounts current remainder: %w", err)
 	}
 
 	return count, nil
@@ -1030,6 +982,7 @@ func (rt *RealtimeTransformer) transformTrustlinesCurrent(ctx context.Context, t
 	}
 	defer rows.Close()
 
+	batch := NewBatchInserter("trustlines_current", trustlineCurrentColumns, trustlineCurrentConflict, rt.insertBatchSize())
 	count := int64(0)
 
 	for rows.Next() {
@@ -1062,18 +1015,20 @@ func (rt *RealtimeTransformer) transformTrustlinesCurrent(ctx context.Context, t
 			row.Flags |= 4
 		}
 
-		// LiquidityPoolID and Sponsor are NULL for classic trustlines from bronze
-		// They remain as sql.NullString with Valid=false
-
-		if err := rt.silverWriter.WriteTrustlineCurrent(ctx, tx, row); err != nil {
-			return count, fmt.Errorf("failed to write trustline current: %w", err)
+		// TrustlineCurrentValues() converts balance/limit/liabilities to stroops in Go
+		batch.Add(row.TrustlineCurrentValues()...)
+		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
+			return count, fmt.Errorf("failed to flush trustlines current batch: %w", err)
 		}
-
 		count++
 	}
 
 	if err := rows.Err(); err != nil {
 		return count, fmt.Errorf("error iterating trustlines: %w", err)
+	}
+
+	if err := batch.Flush(ctx, tx); err != nil {
+		return count, fmt.Errorf("failed to flush trustlines current remainder: %w", err)
 	}
 
 	return count, nil
@@ -1087,6 +1042,7 @@ func (rt *RealtimeTransformer) transformOffersCurrent(ctx context.Context, tx *s
 	}
 	defer rows.Close()
 
+	batch := NewBatchInserter("offers_current", offerCurrentColumns, offerCurrentConflict, rt.insertBatchSize())
 	count := int64(0)
 
 	for rows.Next() {
@@ -1107,7 +1063,6 @@ func (rt *RealtimeTransformer) transformOffersCurrent(ctx context.Context, tx *s
 		row.LastModifiedLedger = row.LedgerSequence
 
 		// Parse price string to price_n/price_d and computed decimal
-		// Bronze stores price as fractional string like "10/1" or "1/2"
 		row.PriceN = 0
 		row.PriceD = 1
 		if parts := strings.Split(row.Price, "/"); len(parts) == 2 {
@@ -1118,20 +1073,17 @@ func (rt *RealtimeTransformer) transformOffersCurrent(ctx context.Context, tx *s
 				row.PriceD = d
 			}
 		}
-		// Compute decimal price from fraction
 		if row.PriceD > 0 {
 			row.Price = fmt.Sprintf("%.7f", float64(row.PriceN)/float64(row.PriceD))
 		} else {
 			row.Price = "0"
 		}
 
-		// Sponsor is NULL from bronze
-		// It remains as sql.NullString with Valid=false
-
-		if err := rt.silverWriter.WriteOfferCurrent(ctx, tx, row); err != nil {
-			return count, fmt.Errorf("failed to write offer current: %w", err)
+		// OfferCurrentValues() converts amount from string to int64
+		batch.Add(row.OfferCurrentValues()...)
+		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
+			return count, fmt.Errorf("failed to flush offers current batch: %w", err)
 		}
-
 		count++
 	}
 
@@ -1139,23 +1091,26 @@ func (rt *RealtimeTransformer) transformOffersCurrent(ctx context.Context, tx *s
 		return count, fmt.Errorf("error iterating offers: %w", err)
 	}
 
+	if err := batch.Flush(ctx, tx); err != nil {
+		return count, fmt.Errorf("failed to flush offers current remainder: %w", err)
+	}
+
 	return count, nil
 }
 
 // transformAccountsSnapshot appends account snapshot history (SCD Type 2 - Cycle 3)
 func (rt *RealtimeTransformer) transformAccountsSnapshot(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
-	// Step 1: INSERT all new snapshots with valid_to = NULL
 	rows, err := rt.sourceManager.QueryAccountsSnapshotAll(ctx, startLedger, endLedger)
 	if err != nil {
 		return 0, err
 	}
 	defer rows.Close()
 
+	batch := NewBatchInserter("accounts_snapshot", accountSnapshotColumns, accountSnapshotConflict, rt.insertBatchSize())
 	count := int64(0)
 
 	for rows.Next() {
 		row := &AccountSnapshotRow{}
-
 		err := rows.Scan(
 			&row.AccountID, &row.LedgerSequence, &row.ClosedAt, &row.Balance, &row.SequenceNumber,
 			&row.NumSubentries, &row.NumSponsoring, &row.NumSponsored, &row.HomeDomain,
@@ -1164,27 +1119,25 @@ func (rt *RealtimeTransformer) transformAccountsSnapshot(ctx context.Context, tx
 			&row.Signers, &row.SponsorAccount, &row.CreatedAt, &row.UpdatedAt,
 			&row.LedgerRange, &row.EraID, &row.VersionLabel,
 		)
-
 		if err != nil {
 			return count, fmt.Errorf("failed to scan account snapshot row: %w", err)
 		}
-
-		if err := rt.silverWriter.WriteAccountSnapshot(ctx, tx, row); err != nil {
-			return count, fmt.Errorf("failed to write account snapshot: %w", err)
+		batch.Add(row.Values()...)
+		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
+			return count, fmt.Errorf("failed to flush account snapshots batch: %w", err)
 		}
-
 		count++
 	}
-
 	if err := rows.Err(); err != nil {
 		return count, fmt.Errorf("error iterating account snapshots: %w", err)
 	}
+	if err := batch.Flush(ctx, tx); err != nil {
+		return count, fmt.Errorf("failed to flush account snapshots remainder: %w", err)
+	}
 
-	// Step 2: UPDATE valid_to for previous versions (incremental LEAD())
 	if err := rt.silverWriter.UpdateAccountSnapshotValidTo(ctx, tx, startLedger, endLedger); err != nil {
 		return count, fmt.Errorf("failed to update valid_to: %w", err)
 	}
-
 	return count, nil
 }
 
@@ -1196,11 +1149,11 @@ func (rt *RealtimeTransformer) transformTrustlinesSnapshot(ctx context.Context, 
 	}
 	defer rows.Close()
 
+	batch := NewBatchInserter("trustlines_snapshot", trustlineSnapshotColumns, trustlineSnapshotConflict, rt.insertBatchSize())
 	count := int64(0)
 
 	for rows.Next() {
 		row := &TrustlineSnapshotRow{}
-
 		err := rows.Scan(
 			&row.AccountID, &row.AssetCode, &row.AssetIssuer, &row.AssetType,
 			&row.Balance, &row.TrustLimit, &row.BuyingLiabilities, &row.SellingLiabilities,
@@ -1208,26 +1161,25 @@ func (rt *RealtimeTransformer) transformTrustlinesSnapshot(ctx context.Context, 
 			&row.LedgerSequence, &row.ClosedAt, &row.CreatedAt,
 			&row.LedgerRange, &row.EraID, &row.VersionLabel,
 		)
-
 		if err != nil {
 			return count, fmt.Errorf("failed to scan trustline snapshot row: %w", err)
 		}
-
-		if err := rt.silverWriter.WriteTrustlineSnapshot(ctx, tx, row); err != nil {
-			return count, fmt.Errorf("failed to write trustline snapshot: %w", err)
+		batch.Add(row.Values()...)
+		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
+			return count, fmt.Errorf("failed to flush trustline snapshots batch: %w", err)
 		}
-
 		count++
 	}
-
 	if err := rows.Err(); err != nil {
 		return count, fmt.Errorf("error iterating trustline snapshots: %w", err)
+	}
+	if err := batch.Flush(ctx, tx); err != nil {
+		return count, fmt.Errorf("failed to flush trustline snapshots remainder: %w", err)
 	}
 
 	if err := rt.silverWriter.UpdateTrustlineSnapshotValidTo(ctx, tx, startLedger, endLedger); err != nil {
 		return count, fmt.Errorf("failed to update trustline valid_to: %w", err)
 	}
-
 	return count, nil
 }
 
@@ -1239,11 +1191,11 @@ func (rt *RealtimeTransformer) transformOffersSnapshot(ctx context.Context, tx *
 	}
 	defer rows.Close()
 
+	batch := NewBatchInserter("offers_snapshot", offerSnapshotColumns, offerSnapshotConflict, rt.insertBatchSize())
 	count := int64(0)
 
 	for rows.Next() {
 		row := &OfferSnapshotRow{}
-
 		err := rows.Scan(
 			&row.OfferID, &row.SellerAccount, &row.LedgerSequence, &row.ClosedAt,
 			&row.SellingAssetType, &row.SellingAssetCode, &row.SellingAssetIssuer,
@@ -1251,26 +1203,25 @@ func (rt *RealtimeTransformer) transformOffersSnapshot(ctx context.Context, tx *
 			&row.Amount, &row.Price, &row.Flags, &row.CreatedAt,
 			&row.LedgerRange, &row.EraID, &row.VersionLabel,
 		)
-
 		if err != nil {
 			return count, fmt.Errorf("failed to scan offer snapshot row: %w", err)
 		}
-
-		if err := rt.silverWriter.WriteOfferSnapshot(ctx, tx, row); err != nil {
-			return count, fmt.Errorf("failed to write offer snapshot: %w", err)
+		batch.Add(row.Values()...)
+		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
+			return count, fmt.Errorf("failed to flush offer snapshots batch: %w", err)
 		}
-
 		count++
 	}
-
 	if err := rows.Err(); err != nil {
 		return count, fmt.Errorf("error iterating offer snapshots: %w", err)
+	}
+	if err := batch.Flush(ctx, tx); err != nil {
+		return count, fmt.Errorf("failed to flush offer snapshots remainder: %w", err)
 	}
 
 	if err := rt.silverWriter.UpdateOfferSnapshotValidTo(ctx, tx, startLedger, endLedger); err != nil {
 		return count, fmt.Errorf("failed to update offer valid_to: %w", err)
 	}
-
 	return count, nil
 }
 
@@ -1282,35 +1233,34 @@ func (rt *RealtimeTransformer) transformAccountSignersSnapshot(ctx context.Conte
 	}
 	defer rows.Close()
 
+	batch := NewBatchInserter("account_signers_snapshot", accountSignerSnapshotColumns, accountSignerSnapshotConflict, rt.insertBatchSize())
 	count := int64(0)
 
 	for rows.Next() {
 		row := &AccountSignerSnapshotRow{}
-
 		err := rows.Scan(
 			&row.AccountID, &row.Signer, &row.LedgerSequence, &row.ClosedAt,
 			&row.Weight, &row.Sponsor, &row.LedgerRange, &row.EraID, &row.VersionLabel,
 		)
-
 		if err != nil {
 			return count, fmt.Errorf("failed to scan account signer snapshot row: %w", err)
 		}
-
-		if err := rt.silverWriter.WriteAccountSignerSnapshot(ctx, tx, row); err != nil {
-			return count, fmt.Errorf("failed to write account signer snapshot: %w", err)
+		batch.Add(row.Values()...)
+		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
+			return count, fmt.Errorf("failed to flush account signer snapshots batch: %w", err)
 		}
-
 		count++
 	}
-
 	if err := rows.Err(); err != nil {
 		return count, fmt.Errorf("error iterating account signer snapshots: %w", err)
+	}
+	if err := batch.Flush(ctx, tx); err != nil {
+		return count, fmt.Errorf("failed to flush account signer snapshots remainder: %w", err)
 	}
 
 	if err := rt.silverWriter.UpdateAccountSignerSnapshotValidTo(ctx, tx, startLedger, endLedger); err != nil {
 		return count, fmt.Errorf("failed to update account signer valid_to: %w", err)
 	}
-
 	return count, nil
 }
 
@@ -1387,6 +1337,14 @@ func (rt *RealtimeTransformer) getLastLedger() int64 {
 	return rt.lastLedgerSequence
 }
 
+// insertBatchSize returns the configured insert batch size or the default.
+func (rt *RealtimeTransformer) insertBatchSize() int {
+	if rt.config.Performance.InsertBatchSize > 0 {
+		return rt.config.Performance.InsertBatchSize
+	}
+	return defaultInsertBatchSize
+}
+
 // transformContractInvocations transforms contract invocations for the ledger range
 func (rt *RealtimeTransformer) transformContractInvocations(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
 	rows, err := rt.sourceManager.QueryContractInvocations(ctx, startLedger, endLedger)
@@ -1395,40 +1353,31 @@ func (rt *RealtimeTransformer) transformContractInvocations(ctx context.Context,
 	}
 	defer rows.Close()
 
+	batch := NewBatchInserter("contract_invocations_raw", contractInvocationColumns, contractInvocationConflict, rt.insertBatchSize())
 	count := int64(0)
 
 	for rows.Next() {
 		row := &ContractInvocationRow{}
-
 		err := rows.Scan(
-			&row.LedgerSequence,
-			&row.TransactionIndex,
-			&row.OperationIndex,
-			&row.TransactionHash,
-			&row.SourceAccount,
-			&row.ContractID,
-			&row.FunctionName,
-			&row.ArgumentsJSON,
-			&row.Successful,
-			&row.ClosedAt,
-			&row.LedgerRange,
+			&row.LedgerSequence, &row.TransactionIndex, &row.OperationIndex,
+			&row.TransactionHash, &row.SourceAccount, &row.ContractID, &row.FunctionName,
+			&row.ArgumentsJSON, &row.Successful, &row.ClosedAt, &row.LedgerRange,
 		)
-
 		if err != nil {
 			return count, fmt.Errorf("failed to scan contract invocation row: %w", err)
 		}
-
-		if err := rt.silverWriter.WriteContractInvocation(ctx, tx, row); err != nil {
-			return count, fmt.Errorf("failed to write contract invocation: %w", err)
+		batch.Add(row.Values()...)
+		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
+			return count, fmt.Errorf("failed to flush contract invocations batch: %w", err)
 		}
-
 		count++
 	}
-
 	if err := rows.Err(); err != nil {
 		return count, fmt.Errorf("error iterating contract invocations: %w", err)
 	}
-
+	if err := batch.Flush(ctx, tx); err != nil {
+		return count, fmt.Errorf("failed to flush contract invocations remainder: %w", err)
+	}
 	return count, nil
 }
 
@@ -1440,6 +1389,7 @@ func (rt *RealtimeTransformer) transformContractMetadata(ctx context.Context, tx
 	}
 	defer rows.Close()
 
+	batch := NewBatchInserter("contract_metadata", contractMetadataColumns, contractMetadataConflict, rt.insertBatchSize())
 	count := int64(0)
 
 	for rows.Next() {
@@ -1450,7 +1400,6 @@ func (rt *RealtimeTransformer) transformContractMetadata(ctx context.Context, tx
 			createdLedger  int64
 			createdAt      time.Time
 		)
-
 		if err := rows.Scan(&contractID, &creatorAddress, &wasmHash, &createdLedger, &createdAt); err != nil {
 			return count, fmt.Errorf("failed to scan contract creation row: %w", err)
 		}
@@ -1460,17 +1409,18 @@ func (rt *RealtimeTransformer) transformContractMetadata(ctx context.Context, tx
 			wasmHashPtr = &wasmHash.String
 		}
 
-		if err := rt.silverWriter.WriteContractMetadata(ctx, tx, contractID, creatorAddress, wasmHashPtr, createdLedger, createdAt); err != nil {
-			return count, fmt.Errorf("failed to write contract metadata: %w", err)
+		batch.Add(contractID, creatorAddress, wasmHashPtr, createdLedger, createdAt)
+		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
+			return count, fmt.Errorf("failed to flush contract metadata batch: %w", err)
 		}
-
 		count++
 	}
-
 	if err := rows.Err(); err != nil {
 		return count, fmt.Errorf("error iterating contract creations: %w", err)
 	}
-
+	if err := batch.Flush(ctx, tx); err != nil {
+		return count, fmt.Errorf("failed to flush contract metadata remainder: %w", err)
+	}
 	return count, nil
 }
 
@@ -1483,132 +1433,106 @@ func (rt *RealtimeTransformer) transformContractCalls(ctx context.Context, tx *s
 	}
 	defer rows.Close()
 
+	batchSize := rt.insertBatchSize()
+	callBatch := NewBatchInserter("contract_invocation_calls", contractCallColumns, contractCallConflict, batchSize)
+	hierarchyBatch := NewBatchInserter("contract_invocation_hierarchy", contractHierarchyColumns, contractHierarchyConflict, batchSize)
 	count := int64(0)
 
 	for rows.Next() {
 		var (
-			ledgerSequence      int64
-			transactionIndex    int
-			operationIndex      int
-			transactionHash     string
-			sourceAccount       string
-			contractID          sql.NullString
-			functionName        sql.NullString
-			argumentsJSON       sql.NullString
-			contractCallsJSON   sql.NullString
-			contractsInvolvedRaw sql.NullString // Scan as string to handle both PG array and DuckLake text
-			contractsInvolved   []string
-			maxCallDepth        sql.NullInt32
-			successful          bool
-			closedAt            time.Time
-			ledgerRange         int64
+			ledgerSequence       int64
+			transactionIndex     int
+			operationIndex       int
+			transactionHash      string
+			sourceAccount        string
+			contractID           sql.NullString
+			functionName         sql.NullString
+			argumentsJSON        sql.NullString
+			contractCallsJSON    sql.NullString
+			contractsInvolvedRaw sql.NullString
+			contractsInvolved    []string
+			maxCallDepth         sql.NullInt32
+			successful           bool
+			closedAt             time.Time
+			ledgerRange          int64
 		)
 
 		err := rows.Scan(
-			&ledgerSequence,
-			&transactionIndex,
-			&operationIndex,
-			&transactionHash,
-			&sourceAccount,
-			&contractID,
-			&functionName,
-			&argumentsJSON,
-			&contractCallsJSON,
-			&contractsInvolvedRaw,
-			&maxCallDepth,
-			&successful,
-			&closedAt,
-			&ledgerRange,
+			&ledgerSequence, &transactionIndex, &operationIndex, &transactionHash,
+			&sourceAccount, &contractID, &functionName, &argumentsJSON,
+			&contractCallsJSON, &contractsInvolvedRaw, &maxCallDepth,
+			&successful, &closedAt, &ledgerRange,
 		)
-
 		if err != nil {
 			return count, fmt.Errorf("failed to scan contract call graph row: %w", err)
 		}
 
-		// Parse contracts_involved from string (handles both PostgreSQL array format and DuckLake text)
 		if contractsInvolvedRaw.Valid && contractsInvolvedRaw.String != "" {
 			contractsInvolved = parseContractsInvolvedArray(contractsInvolvedRaw.String)
 		}
 
-		// Parse call graph JSON and write individual calls
 		if contractCallsJSON.Valid && contractCallsJSON.String != "" {
 			callRows, hierarchyRows, err := parseContractCallGraph(
-				contractCallsJSON.String,
-				transactionHash,
-				ledgerSequence,
-				transactionIndex,
-				operationIndex,
-				closedAt,
-				ledgerRange,
-				contractsInvolved,
+				contractCallsJSON.String, transactionHash, ledgerSequence,
+				transactionIndex, operationIndex, closedAt, ledgerRange, contractsInvolved,
 			)
 			if err != nil {
 				log.Printf("Warning: Failed to parse call graph for tx %s: %v", transactionHash, err)
 				continue
 			}
 
-			// Write call rows
 			for _, callRow := range callRows {
-				if err := rt.silverWriter.WriteContractCall(ctx, tx, callRow); err != nil {
-					return count, fmt.Errorf("failed to write contract call: %w", err)
+				callBatch.Add(callRow.Values()...)
+				if err := callBatch.FlushIfNeeded(ctx, tx); err != nil {
+					return count, fmt.Errorf("failed to flush contract calls batch: %w", err)
 				}
 				count++
 			}
-
-			// Write hierarchy rows
 			for _, hierarchyRow := range hierarchyRows {
-				if err := rt.silverWriter.WriteContractHierarchy(ctx, tx, hierarchyRow); err != nil {
-					return count, fmt.Errorf("failed to write contract hierarchy: %w", err)
+				hierarchyBatch.Add(hierarchyRow.Values()...)
+				if err := hierarchyBatch.FlushIfNeeded(ctx, tx); err != nil {
+					return count, fmt.Errorf("failed to flush contract hierarchy batch: %w", err)
 				}
 			}
 		} else if contractID.Valid && contractID.String != "" {
-			// Single contract invocation with no cross-contract calls
-			// Still create a root call row so it appears in call-related queries
 			funcName := ""
 			if functionName.Valid {
 				funcName = functionName.String
 			}
 
 			rootCall := &ContractCallRow{
-				LedgerSequence:   ledgerSequence,
-				TransactionIndex: transactionIndex,
-				OperationIndex:   operationIndex,
-				TransactionHash:  transactionHash,
-				FromContract:     sourceAccount, // External caller (the account)
-				ToContract:       contractID.String,
-				FunctionName:     funcName,
-				CallDepth:        0,
-				ExecutionOrder:   0,
-				Successful:       successful,
-				ClosedAt:         closedAt,
-				LedgerRange:      ledgerRange,
+				LedgerSequence: ledgerSequence, TransactionIndex: transactionIndex,
+				OperationIndex: operationIndex, TransactionHash: transactionHash,
+				FromContract: sourceAccount, ToContract: contractID.String,
+				FunctionName: funcName, CallDepth: 0, ExecutionOrder: 0,
+				Successful: successful, ClosedAt: closedAt, LedgerRange: ledgerRange,
 			}
-
-			if err := rt.silverWriter.WriteContractCall(ctx, tx, rootCall); err != nil {
-				return count, fmt.Errorf("failed to write root contract call: %w", err)
+			callBatch.Add(rootCall.Values()...)
+			if err := callBatch.FlushIfNeeded(ctx, tx); err != nil {
+				return count, fmt.Errorf("failed to flush contract calls batch: %w", err)
 			}
 			count++
 
-			// Also write a simple hierarchy entry for the root contract
 			rootHierarchy := &ContractHierarchyRow{
-				TransactionHash: transactionHash,
-				RootContract:    contractID.String,
-				ChildContract:   contractID.String, // Self-reference for root
-				PathDepth:       0,
-				FullPath:        []string{contractID.String},
-				LedgerRange:     ledgerRange,
+				TransactionHash: transactionHash, RootContract: contractID.String,
+				ChildContract: contractID.String, PathDepth: 0,
+				FullPath: []string{contractID.String}, LedgerRange: ledgerRange,
 			}
-
-			if err := rt.silverWriter.WriteContractHierarchy(ctx, tx, rootHierarchy); err != nil {
-				return count, fmt.Errorf("failed to write root contract hierarchy: %w", err)
+			hierarchyBatch.Add(rootHierarchy.Values()...)
+			if err := hierarchyBatch.FlushIfNeeded(ctx, tx); err != nil {
+				return count, fmt.Errorf("failed to flush contract hierarchy batch: %w", err)
 			}
 		}
 	}
-
 	if err := rows.Err(); err != nil {
 		return count, fmt.Errorf("error iterating contract call graphs: %w", err)
 	}
-
+	if err := callBatch.Flush(ctx, tx); err != nil {
+		return count, fmt.Errorf("failed to flush contract calls remainder: %w", err)
+	}
+	if err := hierarchyBatch.Flush(ctx, tx); err != nil {
+		return count, fmt.Errorf("failed to flush contract hierarchy remainder: %w", err)
+	}
 	return count, nil
 }
 
@@ -1620,36 +1544,33 @@ func (rt *RealtimeTransformer) transformLiquidityPoolsCurrent(ctx context.Contex
 	}
 	defer rows.Close()
 
+	batch := NewBatchInserter("liquidity_pools_current", liquidityPoolCurrentColumns, liquidityPoolCurrentConflict, rt.insertBatchSize())
 	count := int64(0)
 
 	for rows.Next() {
 		row := &LiquidityPoolCurrentRow{}
-
 		err := rows.Scan(
 			&row.LiquidityPoolID, &row.PoolType, &row.Fee, &row.TrustlineCount, &row.TotalPoolShares,
 			&row.AssetAType, &row.AssetACode, &row.AssetAIssuer, &row.AssetAAmount,
 			&row.AssetBType, &row.AssetBCode, &row.AssetBIssuer, &row.AssetBAmount,
 			&row.LedgerSequence, &row.ClosedAt, &row.CreatedAt, &row.LedgerRange,
 		)
-
 		if err != nil {
 			return count, fmt.Errorf("failed to scan liquidity pool row: %w", err)
 		}
-
-		// Set last_modified_ledger to the ledger_sequence
 		row.LastModifiedLedger = row.LedgerSequence
-
-		if err := rt.silverWriter.WriteLiquidityPoolCurrent(ctx, tx, row); err != nil {
-			return count, fmt.Errorf("failed to write liquidity pool current: %w", err)
+		batch.Add(row.Values()...)
+		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
+			return count, fmt.Errorf("failed to flush liquidity pools batch: %w", err)
 		}
-
 		count++
 	}
-
 	if err := rows.Err(); err != nil {
 		return count, fmt.Errorf("error iterating liquidity pools: %w", err)
 	}
-
+	if err := batch.Flush(ctx, tx); err != nil {
+		return count, fmt.Errorf("failed to flush liquidity pools remainder: %w", err)
+	}
 	return count, nil
 }
 
@@ -1661,35 +1582,32 @@ func (rt *RealtimeTransformer) transformClaimableBalancesCurrent(ctx context.Con
 	}
 	defer rows.Close()
 
+	batch := NewBatchInserter("claimable_balances_current", claimableBalanceCurrentColumns, claimableBalanceCurrentConflict, rt.insertBatchSize())
 	count := int64(0)
 
 	for rows.Next() {
 		row := &ClaimableBalanceCurrentRow{}
-
 		err := rows.Scan(
 			&row.BalanceID, &row.Sponsor, &row.AssetType, &row.AssetCode, &row.AssetIssuer,
 			&row.Amount, &row.ClaimantsCount, &row.Flags,
 			&row.LedgerSequence, &row.ClosedAt, &row.CreatedAt, &row.LedgerRange,
 		)
-
 		if err != nil {
 			return count, fmt.Errorf("failed to scan claimable balance row: %w", err)
 		}
-
-		// Set last_modified_ledger to the ledger_sequence
 		row.LastModifiedLedger = row.LedgerSequence
-
-		if err := rt.silverWriter.WriteClaimableBalanceCurrent(ctx, tx, row); err != nil {
-			return count, fmt.Errorf("failed to write claimable balance current: %w", err)
+		batch.Add(row.Values()...)
+		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
+			return count, fmt.Errorf("failed to flush claimable balances batch: %w", err)
 		}
-
 		count++
 	}
-
 	if err := rows.Err(); err != nil {
 		return count, fmt.Errorf("error iterating claimable balances: %w", err)
 	}
-
+	if err := batch.Flush(ctx, tx); err != nil {
+		return count, fmt.Errorf("failed to flush claimable balances remainder: %w", err)
+	}
 	return count, nil
 }
 
@@ -1701,32 +1619,31 @@ func (rt *RealtimeTransformer) transformNativeBalancesCurrent(ctx context.Contex
 	}
 	defer rows.Close()
 
+	batch := NewBatchInserter("native_balances_current", nativeBalanceCurrentColumns, nativeBalanceCurrentConflict, rt.insertBatchSize())
 	count := int64(0)
 
 	for rows.Next() {
 		row := &NativeBalanceCurrentRow{}
-
 		err := rows.Scan(
 			&row.AccountID, &row.Balance, &row.BuyingLiabilities, &row.SellingLiabilities,
 			&row.NumSubentries, &row.NumSponsoring, &row.NumSponsored, &row.SequenceNumber,
 			&row.LastModifiedLedger, &row.LedgerSequence, &row.LedgerRange,
 		)
-
 		if err != nil {
 			return count, fmt.Errorf("failed to scan native balance row: %w", err)
 		}
-
-		if err := rt.silverWriter.WriteNativeBalanceCurrent(ctx, tx, row); err != nil {
-			return count, fmt.Errorf("failed to write native balance current: %w", err)
+		batch.Add(row.Values()...)
+		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
+			return count, fmt.Errorf("failed to flush native balances batch: %w", err)
 		}
-
 		count++
 	}
-
 	if err := rows.Err(); err != nil {
 		return count, fmt.Errorf("error iterating native balances: %w", err)
 	}
-
+	if err := batch.Flush(ctx, tx); err != nil {
+		return count, fmt.Errorf("failed to flush native balances remainder: %w", err)
+	}
 	return count, nil
 }
 
@@ -1840,6 +1757,7 @@ func (rt *RealtimeTransformer) transformTrades(ctx context.Context, tx *sql.Tx, 
 	}
 	defer rows.Close()
 
+	batch := NewBatchInserter("trades", tradeColumns, tradeConflict, rt.insertBatchSize())
 	count := int64(0)
 
 	for rows.Next() {
@@ -1867,10 +1785,10 @@ func (rt *RealtimeTransformer) transformTrades(ctx context.Context, tx *sql.Tx, 
 				row.Price = "0"
 			}
 		}
-		// If price is not a fraction, assume it's already a decimal and leave as-is
 
-		if err := rt.silverWriter.WriteTrade(ctx, tx, row); err != nil {
-			return count, fmt.Errorf("failed to write trade: %w", err)
+		batch.Add(row.TradeValues()...)
+		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
+			return count, fmt.Errorf("failed to flush trades batch: %w", err)
 		}
 
 		count++
@@ -1878,6 +1796,10 @@ func (rt *RealtimeTransformer) transformTrades(ctx context.Context, tx *sql.Tx, 
 
 	if err := rows.Err(); err != nil {
 		return count, fmt.Errorf("error iterating trades: %w", err)
+	}
+
+	if err := batch.Flush(ctx, tx); err != nil {
+		return count, fmt.Errorf("failed to flush remaining trades: %w", err)
 	}
 
 	return count, nil
@@ -1891,6 +1813,7 @@ func (rt *RealtimeTransformer) transformEffects(ctx context.Context, tx *sql.Tx,
 	}
 	defer rows.Close()
 
+	batch := NewBatchInserter("effects", effectColumns, effectConflict, rt.insertBatchSize())
 	count := int64(0)
 
 	for rows.Next() {
@@ -1909,8 +1832,9 @@ func (rt *RealtimeTransformer) transformEffects(ctx context.Context, tx *sql.Tx,
 			return count, fmt.Errorf("failed to scan effect row: %w", err)
 		}
 
-		if err := rt.silverWriter.WriteEffect(ctx, tx, row); err != nil {
-			return count, fmt.Errorf("failed to write effect: %w", err)
+		batch.Add(row.Values()...)
+		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
+			return count, fmt.Errorf("failed to flush effects batch: %w", err)
 		}
 
 		count++
@@ -1918,6 +1842,10 @@ func (rt *RealtimeTransformer) transformEffects(ctx context.Context, tx *sql.Tx,
 
 	if err := rows.Err(); err != nil {
 		return count, fmt.Errorf("error iterating effects: %w", err)
+	}
+
+	if err := batch.Flush(ctx, tx); err != nil {
+		return count, fmt.Errorf("failed to flush remaining effects: %w", err)
 	}
 
 	return count, nil
@@ -1935,6 +1863,7 @@ func (rt *RealtimeTransformer) transformContractDataCurrent(ctx context.Context,
 	}
 	defer rows.Close()
 
+	batch := NewBatchInserter("contract_data_current", contractDataCurrentColumns, contractDataCurrentConflict, rt.insertBatchSize())
 	count := int64(0)
 
 	for rows.Next() {
@@ -1951,8 +1880,9 @@ func (rt *RealtimeTransformer) transformContractDataCurrent(ctx context.Context,
 			return count, fmt.Errorf("failed to scan contract data row: %w", err)
 		}
 
-		if err := rt.silverWriter.WriteContractDataCurrent(ctx, tx, row); err != nil {
-			return count, fmt.Errorf("failed to write contract data current: %w", err)
+		batch.Add(row.Values()...)
+		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
+			return count, fmt.Errorf("failed to flush contract data batch: %w", err)
 		}
 
 		count++
@@ -1960,6 +1890,10 @@ func (rt *RealtimeTransformer) transformContractDataCurrent(ctx context.Context,
 
 	if err := rows.Err(); err != nil {
 		return count, fmt.Errorf("error iterating contract data: %w", err)
+	}
+
+	if err := batch.Flush(ctx, tx); err != nil {
+		return count, fmt.Errorf("failed to flush remaining contract data: %w", err)
 	}
 
 	return count, nil
@@ -1973,6 +1907,7 @@ func (rt *RealtimeTransformer) transformContractCodeCurrent(ctx context.Context,
 	}
 	defer rows.Close()
 
+	batch := NewBatchInserter("contract_code_current", contractCodeCurrentColumns, contractCodeCurrentConflict, rt.insertBatchSize())
 	count := int64(0)
 
 	for rows.Next() {
@@ -1989,8 +1924,9 @@ func (rt *RealtimeTransformer) transformContractCodeCurrent(ctx context.Context,
 			return count, fmt.Errorf("failed to scan contract code row: %w", err)
 		}
 
-		if err := rt.silverWriter.WriteContractCodeCurrent(ctx, tx, row); err != nil {
-			return count, fmt.Errorf("failed to write contract code current: %w", err)
+		batch.Add(row.Values()...)
+		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
+			return count, fmt.Errorf("failed to flush contract code batch: %w", err)
 		}
 
 		count++
@@ -1998,6 +1934,10 @@ func (rt *RealtimeTransformer) transformContractCodeCurrent(ctx context.Context,
 
 	if err := rows.Err(); err != nil {
 		return count, fmt.Errorf("error iterating contract code: %w", err)
+	}
+
+	if err := batch.Flush(ctx, tx); err != nil {
+		return count, fmt.Errorf("failed to flush remaining contract code: %w", err)
 	}
 
 	return count, nil
@@ -2011,6 +1951,7 @@ func (rt *RealtimeTransformer) transformTTLCurrent(ctx context.Context, tx *sql.
 	}
 	defer rows.Close()
 
+	batch := NewBatchInserter("ttl_current", ttlCurrentColumns, ttlCurrentConflict, rt.insertBatchSize())
 	count := int64(0)
 
 	for rows.Next() {
@@ -2025,8 +1966,9 @@ func (rt *RealtimeTransformer) transformTTLCurrent(ctx context.Context, tx *sql.
 			return count, fmt.Errorf("failed to scan TTL row: %w", err)
 		}
 
-		if err := rt.silverWriter.WriteTTLCurrent(ctx, tx, row); err != nil {
-			return count, fmt.Errorf("failed to write TTL current: %w", err)
+		batch.Add(row.Values()...)
+		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
+			return count, fmt.Errorf("failed to flush TTL batch: %w", err)
 		}
 
 		count++
@@ -2034,6 +1976,10 @@ func (rt *RealtimeTransformer) transformTTLCurrent(ctx context.Context, tx *sql.
 
 	if err := rows.Err(); err != nil {
 		return count, fmt.Errorf("error iterating TTL entries: %w", err)
+	}
+
+	if err := batch.Flush(ctx, tx); err != nil {
+		return count, fmt.Errorf("failed to flush remaining TTL entries: %w", err)
 	}
 
 	return count, nil
@@ -2047,6 +1993,7 @@ func (rt *RealtimeTransformer) transformEvictedKeys(ctx context.Context, tx *sql
 	}
 	defer rows.Close()
 
+	batch := NewBatchInserter("evicted_keys", evictedKeyColumns, evictedKeyConflict, rt.insertBatchSize())
 	count := int64(0)
 
 	for rows.Next() {
@@ -2061,8 +2008,16 @@ func (rt *RealtimeTransformer) transformEvictedKeys(ctx context.Context, tx *sql
 			return count, fmt.Errorf("failed to scan evicted key row: %w", err)
 		}
 
-		if err := rt.silverWriter.WriteEvictedKey(ctx, tx, row); err != nil {
-			return count, fmt.Errorf("failed to write evicted key: %w", err)
+		// Convert hex contract ID to C-encoded strkey
+		if row.ContractID != "" {
+			if encoded, err := hexToStrKey(row.ContractID); err == nil {
+				row.ContractID = encoded
+			}
+		}
+
+		batch.Add(row.Values()...)
+		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
+			return count, fmt.Errorf("failed to flush evicted keys batch: %w", err)
 		}
 
 		count++
@@ -2070,6 +2025,10 @@ func (rt *RealtimeTransformer) transformEvictedKeys(ctx context.Context, tx *sql
 
 	if err := rows.Err(); err != nil {
 		return count, fmt.Errorf("error iterating evicted keys: %w", err)
+	}
+
+	if err := batch.Flush(ctx, tx); err != nil {
+		return count, fmt.Errorf("failed to flush remaining evicted keys: %w", err)
 	}
 
 	return count, nil
@@ -2083,6 +2042,7 @@ func (rt *RealtimeTransformer) transformRestoredKeys(ctx context.Context, tx *sq
 	}
 	defer rows.Close()
 
+	batch := NewBatchInserter("restored_keys", restoredKeyColumns, restoredKeyConflict, rt.insertBatchSize())
 	count := int64(0)
 
 	for rows.Next() {
@@ -2097,8 +2057,16 @@ func (rt *RealtimeTransformer) transformRestoredKeys(ctx context.Context, tx *sq
 			return count, fmt.Errorf("failed to scan restored key row: %w", err)
 		}
 
-		if err := rt.silverWriter.WriteRestoredKey(ctx, tx, row); err != nil {
-			return count, fmt.Errorf("failed to write restored key: %w", err)
+		// Convert hex contract ID to C-encoded strkey
+		if row.ContractID != "" {
+			if encoded, err := hexToStrKey(row.ContractID); err == nil {
+				row.ContractID = encoded
+			}
+		}
+
+		batch.Add(row.Values()...)
+		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
+			return count, fmt.Errorf("failed to flush restored keys batch: %w", err)
 		}
 
 		count++
@@ -2106,6 +2074,10 @@ func (rt *RealtimeTransformer) transformRestoredKeys(ctx context.Context, tx *sq
 
 	if err := rows.Err(); err != nil {
 		return count, fmt.Errorf("error iterating restored keys: %w", err)
+	}
+
+	if err := batch.Flush(ctx, tx); err != nil {
+		return count, fmt.Errorf("failed to flush remaining restored keys: %w", err)
 	}
 
 	return count, nil
@@ -2123,6 +2095,7 @@ func (rt *RealtimeTransformer) transformConfigSettingsCurrent(ctx context.Contex
 	}
 	defer rows.Close()
 
+	batch := NewBatchInserter("config_settings_current", configSettingsCurrentColumns, configSettingsCurrentConflict, rt.insertBatchSize())
 	count := int64(0)
 
 	for rows.Next() {
@@ -2144,8 +2117,9 @@ func (rt *RealtimeTransformer) transformConfigSettingsCurrent(ctx context.Contex
 			return count, fmt.Errorf("failed to scan config settings row: %w", err)
 		}
 
-		if err := rt.silverWriter.WriteConfigSettingsCurrent(ctx, tx, row); err != nil {
-			return count, fmt.Errorf("failed to write config settings current: %w", err)
+		batch.Add(row.Values()...)
+		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
+			return count, fmt.Errorf("failed to flush config settings batch: %w", err)
 		}
 
 		count++
@@ -2153,6 +2127,10 @@ func (rt *RealtimeTransformer) transformConfigSettingsCurrent(ctx context.Contex
 
 	if err := rows.Err(); err != nil {
 		return count, fmt.Errorf("error iterating config settings: %w", err)
+	}
+
+	if err := batch.Flush(ctx, tx); err != nil {
+		return count, fmt.Errorf("failed to flush remaining config settings: %w", err)
 	}
 
 	return count, nil
@@ -2170,6 +2148,7 @@ func (rt *RealtimeTransformer) transformTokenRegistry(ctx context.Context, tx *s
 	}
 	defer rows.Close()
 
+	batch := NewBatchInserter("token_registry", tokenRegistryColumns, tokenRegistryConflict, rt.insertBatchSize())
 	count := int64(0)
 
 	for rows.Next() {
@@ -2199,19 +2178,20 @@ func (rt *RealtimeTransformer) transformTokenRegistry(ctx context.Context, tx *s
 		}
 
 		row := &TokenRegistryRow{
-			ContractID:        contractID,
-			TokenName:         tokenName,
-			TokenSymbol:       tokenSymbol,
-			TokenDecimals:     decimals,
-			AssetCode:         assetCode,
-			AssetIssuer:       assetIssuer,
-			TokenType:         tokenType,
-			FirstSeenLedger:   ledgerSequence,
+			ContractID:         contractID,
+			TokenName:          tokenName,
+			TokenSymbol:        tokenSymbol,
+			TokenDecimals:      decimals,
+			AssetCode:          assetCode,
+			AssetIssuer:        assetIssuer,
+			TokenType:          tokenType,
+			FirstSeenLedger:    ledgerSequence,
 			LastModifiedLedger: ledgerSequence,
 		}
 
-		if err := rt.silverWriter.WriteTokenRegistry(ctx, tx, row); err != nil {
-			return count, fmt.Errorf("failed to write token registry: %w", err)
+		batch.Add(row.Values()...)
+		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
+			return count, fmt.Errorf("failed to flush token registry batch: %w", err)
 		}
 
 		count++
@@ -2219,6 +2199,10 @@ func (rt *RealtimeTransformer) transformTokenRegistry(ctx context.Context, tx *s
 
 	if err := rows.Err(); err != nil {
 		return count, fmt.Errorf("error iterating token metadata: %w", err)
+	}
+
+	if err := batch.Flush(ctx, tx); err != nil {
+		return count, fmt.Errorf("failed to flush remaining token registry: %w", err)
 	}
 
 	return count, nil
@@ -2341,15 +2325,11 @@ func (rt *RealtimeTransformer) transformSemanticEntities(ctx context.Context, tx
 			deployed_ledger = COALESCE(EXCLUDED.deployed_ledger, semantic_entities_contracts.deployed_ledger),
 			total_invocations = semantic_entities_contracts.total_invocations + EXCLUDED.total_invocations,
 			last_activity = GREATEST(semantic_entities_contracts.last_activity, EXCLUDED.last_activity),
-			unique_callers = (
-				SELECT COUNT(DISTINCT source_account)
-				FROM contract_invocations_raw
-				WHERE contract_id = EXCLUDED.contract_id
-			),
+			unique_callers = GREATEST(semantic_entities_contracts.unique_callers, EXCLUDED.unique_callers),
 			observed_functions = (
-				SELECT ARRAY_AGG(DISTINCT function_name)
-				FROM contract_invocations_raw
-				WHERE contract_id = EXCLUDED.contract_id
+				SELECT ARRAY(SELECT DISTINCT unnest(
+					semantic_entities_contracts.observed_functions || EXCLUDED.observed_functions
+				))
 			),
 			updated_at = NOW()
 	`

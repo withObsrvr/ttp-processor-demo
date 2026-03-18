@@ -2,7 +2,11 @@ package main
 
 import (
 	"database/sql"
+	"math"
+	"strconv"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 // EnrichedOperationRow represents a row in the enriched_history_operations table
@@ -620,4 +624,288 @@ type ConfigSettingsCurrentRow struct {
 	ClosedAt           time.Time
 	CreatedAt          time.Time
 	LedgerRange        int64
+}
+
+// =============================================================================
+// Values() methods for batch inserting
+// =============================================================================
+
+// Values returns the ordered column values for batch insertion into enriched_history_operations
+// (also used for enriched_history_operations_soroban since columns are identical).
+func (row *EnrichedOperationRow) Values() []interface{} {
+	return []interface{}{
+		row.TransactionHash, row.OperationIndex, row.LedgerSequence, row.SourceAccount,
+		row.Type, row.TypeString, row.CreatedAt, row.TransactionSuccessful,
+		row.OperationResultCode, row.OperationTraceCode, row.LedgerRange,
+		row.SourceAccountMuxed, row.Asset, row.AssetType, row.AssetCode, row.AssetIssuer,
+		row.SourceAsset, row.SourceAssetType, row.SourceAssetCode, row.SourceAssetIssuer,
+		row.Destination, row.DestinationMuxed, row.Amount, row.SourceAmount,
+		row.FromAccount, row.FromMuxed, row.To, row.ToMuxed,
+		row.LimitAmount, row.OfferID,
+		row.SellingAsset, row.SellingAssetType, row.SellingAssetCode, row.SellingAssetIssuer,
+		row.BuyingAsset, row.BuyingAssetType, row.BuyingAssetCode, row.BuyingAssetIssuer,
+		row.PriceN, row.PriceD, row.Price,
+		row.StartingBalance, row.HomeDomain, row.InflationDest,
+		row.SetFlags, row.SetFlagsS, row.ClearFlags, row.ClearFlagsS,
+		row.MasterKeyWeight, row.LowThreshold, row.MedThreshold, row.HighThreshold,
+		row.SignerAccountID, row.SignerKey, row.SignerWeight,
+		row.DataName, row.DataValue,
+		row.HostFunctionType, row.Parameters, row.Address, row.ContractID, row.FunctionName,
+		row.BalanceID, row.Claimant, row.ClaimantMuxed, row.Predicate,
+		row.LiquidityPoolID, row.ReserveAAsset, row.ReserveAAmount,
+		row.ReserveBAsset, row.ReserveBAmount, row.Shares, row.SharesReceived,
+		row.Into, row.IntoMuxed,
+		row.Sponsor, row.SponsoredID, row.BeginSponsor,
+		row.TxSuccessful, row.TxFeeCharged, row.TxMaxFee, row.TxOperationCount,
+		row.TxMemoType, row.TxMemo,
+		row.LedgerClosedAt, row.LedgerTotalCoins, row.LedgerFeePool,
+		row.LedgerBaseFee, row.LedgerBaseReserve,
+		row.LedgerTransactionCount, row.LedgerOperationCount,
+		row.LedgerSuccessfulTxCount, row.LedgerFailedTxCount,
+		row.IsPaymentOp, row.IsSorobanOp,
+	}
+}
+
+// Values returns the ordered column values for batch insertion into token_transfers_raw.
+func (row *TokenTransferRow) Values() []interface{} {
+	return []interface{}{
+		row.Timestamp, row.TransactionHash, row.LedgerSequence, row.SourceType,
+		row.FromAccount, row.ToAccount, row.AssetCode, row.AssetIssuer, row.Amount,
+		row.TokenContractID, row.OperationType, row.TransactionSuccessful, row.EventIndex,
+	}
+}
+
+// Values returns the ordered column values for batch insertion into accounts_current.
+func (row *AccountCurrentRow) Values() []interface{} {
+	return []interface{}{
+		row.AccountID, row.Balance, row.SequenceNumber, row.NumSubentries,
+		row.NumSponsoring, row.NumSponsored, row.HomeDomain,
+		row.MasterWeight, row.LowThreshold, row.MedThreshold, row.HighThreshold,
+		row.Flags, row.AuthRequired, row.AuthRevocable, row.AuthImmutable, row.AuthClawbackEnabled,
+		row.Signers, row.SponsorAccount, row.CreatedAt, row.UpdatedAt,
+		row.LastModifiedLedger, row.LedgerRange, row.EraID, row.VersionLabel,
+	}
+}
+
+// Values returns the ordered column values for batch insertion into accounts_snapshot.
+// Includes valid_to = nil (NULL) as the last column.
+func (row *AccountSnapshotRow) Values() []interface{} {
+	return []interface{}{
+		row.AccountID, row.LedgerSequence, row.ClosedAt, row.Balance, row.SequenceNumber,
+		row.NumSubentries, row.NumSponsoring, row.NumSponsored, row.HomeDomain,
+		row.MasterWeight, row.LowThreshold, row.MedThreshold, row.HighThreshold,
+		row.Flags, row.AuthRequired, row.AuthRevocable, row.AuthImmutable, row.AuthClawbackEnabled,
+		row.Signers, row.SponsorAccount, row.CreatedAt, row.UpdatedAt,
+		row.LedgerRange, row.EraID, row.VersionLabel, nil, // valid_to = NULL
+	}
+}
+
+// Values returns the ordered column values for batch insertion into trustlines_snapshot.
+// Includes valid_to = nil (NULL) as the last column.
+func (row *TrustlineSnapshotRow) Values() []interface{} {
+	return []interface{}{
+		row.AccountID, row.AssetCode, row.AssetIssuer, row.AssetType, row.Balance, row.TrustLimit,
+		row.BuyingLiabilities, row.SellingLiabilities, row.Authorized,
+		row.AuthorizedToMaintainLiabilities, row.ClawbackEnabled,
+		row.LedgerSequence, row.CreatedAt, row.LedgerRange, row.EraID, row.VersionLabel, nil, // valid_to
+	}
+}
+
+// TrustlineCurrentValues returns the ordered column values for batch insertion into trustlines_current.
+// Converts string balance/limit/liabilities to stroops (int64) in Go since the original SQL
+// used ROUND($N::NUMERIC * 10000000)::BIGINT.
+func (row *TrustlineCurrentRow) TrustlineCurrentValues() []interface{} {
+	return []interface{}{
+		row.AccountID, row.AssetType, row.AssetIssuer, row.AssetCode, row.LiquidityPoolID,
+		parseStroops(row.Balance), parseStroops(row.TrustLineLimit),
+		parseStroops(row.BuyingLiabilities), parseStroops(row.SellingLiabilities),
+		row.Flags, row.LastModifiedLedger, row.LedgerSequence, row.CreatedAt, row.Sponsor, row.LedgerRange,
+	}
+}
+
+// parseStroops converts a decimal string to stroops (multiply by 10^7 and round to int64).
+func parseStroops(s string) int64 {
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0
+	}
+	return int64(math.Round(f * 10000000))
+}
+
+// Values returns the ordered column values for batch insertion into offers_snapshot.
+// Includes valid_to = nil (NULL) as the last column.
+func (row *OfferSnapshotRow) Values() []interface{} {
+	return []interface{}{
+		row.OfferID, row.SellerAccount, row.LedgerSequence, row.ClosedAt,
+		row.SellingAssetType, row.SellingAssetCode, row.SellingAssetIssuer,
+		row.BuyingAssetType, row.BuyingAssetCode, row.BuyingAssetIssuer,
+		row.Amount, row.Price, row.Flags, row.CreatedAt, row.LedgerRange, row.EraID, row.VersionLabel, nil, // valid_to
+	}
+}
+
+// OfferCurrentValues returns the ordered column values for batch insertion into offers_current.
+// Amount is passed as int64 (parsed from string), price as string (already formatted).
+func (row *OfferCurrentRow) OfferCurrentValues() []interface{} {
+	// Parse amount string to int64
+	amount, _ := strconv.ParseInt(row.Amount, 10, 64)
+	return []interface{}{
+		row.OfferID, row.SellerID, row.SellingAssetType, row.SellingAssetCode, row.SellingAssetIssuer,
+		row.BuyingAssetType, row.BuyingAssetCode, row.BuyingAssetIssuer,
+		amount, row.PriceN, row.PriceD, row.Price, row.Flags,
+		row.LastModifiedLedger, row.LedgerSequence, row.CreatedAt, row.Sponsor, row.LedgerRange,
+	}
+}
+
+// Values returns the ordered column values for batch insertion into account_signers_snapshot.
+// Includes valid_to = nil (NULL) as the last column.
+func (row *AccountSignerSnapshotRow) Values() []interface{} {
+	return []interface{}{
+		row.AccountID, row.Signer, row.LedgerSequence, row.ClosedAt, row.Weight, row.Sponsor,
+		row.LedgerRange, row.EraID, row.VersionLabel, nil, // valid_to
+	}
+}
+
+// Values returns the ordered column values for batch insertion into contract_invocations_raw.
+func (row *ContractInvocationRow) Values() []interface{} {
+	return []interface{}{
+		row.LedgerSequence, row.TransactionIndex, row.OperationIndex,
+		row.TransactionHash, row.SourceAccount, row.ContractID, row.FunctionName,
+		row.ArgumentsJSON, row.Successful, row.ClosedAt, row.LedgerRange,
+	}
+}
+
+// Values returns the ordered column values for batch insertion into contract_invocation_calls.
+func (row *ContractCallRow) Values() []interface{} {
+	return []interface{}{
+		row.LedgerSequence, row.TransactionIndex, row.OperationIndex, row.TransactionHash,
+		row.FromContract, row.ToContract, row.FunctionName, row.CallDepth, row.ExecutionOrder,
+		row.Successful, row.ClosedAt, row.LedgerRange,
+	}
+}
+
+// Values returns the ordered column values for batch insertion into contract_invocation_hierarchy.
+// Uses pq.Array for the full_path column.
+func (row *ContractHierarchyRow) Values() []interface{} {
+	return []interface{}{
+		row.TransactionHash, row.RootContract, row.ChildContract, row.PathDepth,
+		pq.Array(row.FullPath), row.LedgerRange,
+	}
+}
+
+// Values returns the ordered column values for batch insertion into liquidity_pools_current.
+func (row *LiquidityPoolCurrentRow) Values() []interface{} {
+	return []interface{}{
+		row.LiquidityPoolID, row.PoolType, row.Fee, row.TrustlineCount, row.TotalPoolShares,
+		row.AssetAType, row.AssetACode, row.AssetAIssuer, row.AssetAAmount,
+		row.AssetBType, row.AssetBCode, row.AssetBIssuer, row.AssetBAmount,
+		row.LastModifiedLedger, row.LedgerSequence, row.ClosedAt, row.CreatedAt, row.LedgerRange,
+	}
+}
+
+// Values returns the ordered column values for batch insertion into claimable_balances_current.
+func (row *ClaimableBalanceCurrentRow) Values() []interface{} {
+	return []interface{}{
+		row.BalanceID, row.Sponsor, row.AssetType, row.AssetCode, row.AssetIssuer, row.Amount,
+		row.ClaimantsCount, row.Flags, row.LastModifiedLedger, row.LedgerSequence,
+		row.ClosedAt, row.CreatedAt, row.LedgerRange,
+	}
+}
+
+// Values returns the ordered column values for batch insertion into native_balances_current.
+func (row *NativeBalanceCurrentRow) Values() []interface{} {
+	return []interface{}{
+		row.AccountID, row.Balance, row.BuyingLiabilities, row.SellingLiabilities,
+		row.NumSubentries, row.NumSponsoring, row.NumSponsored, row.SequenceNumber,
+		row.LastModifiedLedger, row.LedgerSequence, row.LedgerRange,
+	}
+}
+
+// TradeValues returns the ordered column values for batch insertion into trades.
+// Converts selling_amount and buying_amount from strings to int64.
+func (row *TradeRow) TradeValues() []interface{} {
+	sellingAmount, _ := strconv.ParseInt(row.SellingAmount, 10, 64)
+	buyingAmount, _ := strconv.ParseInt(row.BuyingAmount, 10, 64)
+	return []interface{}{
+		row.LedgerSequence, row.TransactionHash, row.OperationIndex, row.TradeIndex,
+		row.TradeType, row.TradeTimestamp, row.SellerAccount,
+		row.SellingAssetCode, row.SellingAssetIssuer, sellingAmount,
+		row.BuyerAccount, row.BuyingAssetCode, row.BuyingAssetIssuer, buyingAmount,
+		row.Price, row.CreatedAt, row.LedgerRange,
+	}
+}
+
+// Values returns the ordered column values for batch insertion into effects.
+func (row *EffectRow) Values() []interface{} {
+	return []interface{}{
+		row.LedgerSequence, row.TransactionHash, row.OperationIndex, row.EffectIndex,
+		row.EffectType, row.EffectTypeString, row.AccountID,
+		row.Amount, row.AssetCode, row.AssetIssuer, row.AssetType,
+		row.TrustlineLimit, row.AuthorizeFlag, row.ClawbackFlag,
+		row.SignerAccount, row.SignerWeight, row.OfferID, row.SellerAccount,
+		row.CreatedAt, row.LedgerRange,
+	}
+}
+
+// Values returns the ordered column values for batch insertion into contract_data_current.
+func (row *ContractDataCurrentRow) Values() []interface{} {
+	return []interface{}{
+		row.ContractID, row.KeyHash, row.Durability, row.AssetType, row.AssetCode, row.AssetIssuer,
+		row.DataValue, row.LastModifiedLedger, row.LedgerSequence, row.ClosedAt, row.CreatedAt, row.LedgerRange,
+	}
+}
+
+// Values returns the ordered column values for batch insertion into contract_code_current.
+func (row *ContractCodeCurrentRow) Values() []interface{} {
+	return []interface{}{
+		row.ContractCodeHash, row.ContractCodeExtV,
+		row.NDataSegmentBytes, row.NDataSegments, row.NElemSegments, row.NExports,
+		row.NFunctions, row.NGlobals, row.NImports, row.NInstructions, row.NTableEntries, row.NTypes,
+		row.LastModifiedLedger, row.LedgerSequence, row.ClosedAt, row.CreatedAt, row.LedgerRange,
+	}
+}
+
+// Values returns the ordered column values for batch insertion into ttl_current.
+func (row *TTLCurrentRow) Values() []interface{} {
+	return []interface{}{
+		row.KeyHash, row.LiveUntilLedgerSeq, row.TTLRemaining, row.Expired,
+		row.LastModifiedLedger, row.LedgerSequence, row.ClosedAt, row.CreatedAt, row.LedgerRange,
+	}
+}
+
+// Values returns the ordered column values for batch insertion into evicted_keys.
+func (row *EvictedKeyRow) Values() []interface{} {
+	return []interface{}{
+		row.ContractID, row.KeyHash, row.LedgerSequence, row.ClosedAt, row.CreatedAt, row.LedgerRange,
+	}
+}
+
+// Values returns the ordered column values for batch insertion into restored_keys.
+func (row *RestoredKeyRow) Values() []interface{} {
+	return []interface{}{
+		row.ContractID, row.KeyHash, row.LedgerSequence, row.ClosedAt, row.CreatedAt, row.LedgerRange,
+	}
+}
+
+// Values returns the ordered column values for batch insertion into token_registry.
+func (row *TokenRegistryRow) Values() []interface{} {
+	return []interface{}{
+		row.ContractID, row.TokenName, row.TokenSymbol, row.TokenDecimals,
+		row.AssetCode, row.AssetIssuer, row.TokenType,
+		row.FirstSeenLedger, row.LastModifiedLedger,
+	}
+}
+
+// Values returns the ordered column values for batch insertion into config_settings_current.
+func (row *ConfigSettingsCurrentRow) Values() []interface{} {
+	return []interface{}{
+		row.ConfigSettingID,
+		row.LedgerMaxInstructions, row.TxMaxInstructions,
+		row.FeeRatePerInstructionsIncrement, row.TxMemoryLimit,
+		row.LedgerMaxReadLedgerEntries, row.LedgerMaxReadBytes,
+		row.LedgerMaxWriteLedgerEntries, row.LedgerMaxWriteBytes,
+		row.TxMaxReadLedgerEntries, row.TxMaxReadBytes,
+		row.TxMaxWriteLedgerEntries, row.TxMaxWriteBytes,
+		row.ContractMaxSizeBytes, row.ConfigSettingXDR,
+		row.LastModifiedLedger, row.LedgerSequence, row.ClosedAt, row.CreatedAt, row.LedgerRange,
+	}
 }
