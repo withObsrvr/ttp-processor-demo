@@ -6,14 +6,14 @@ toolchain go1.24.8
 
 require (
 	github.com/apache/arrow/go/v17 v17.0.0
-	github.com/klauspost/compress v1.18.0
+	github.com/klauspost/compress v1.18.2
 	github.com/pierrec/lz4/v4 v4.1.22
 	github.com/prometheus/client_golang v1.20.5
 	github.com/rs/zerolog v1.33.0
 	github.com/stellar/go v0.0.0-20251126222017-0fb88165e991
 	github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake v0.0.0-00010101000000-000000000000
-	google.golang.org/grpc v1.76.0
-	google.golang.org/protobuf v1.36.8
+	google.golang.org/grpc v1.79.3
+	google.golang.org/protobuf v1.36.10
 )
 
 require (
@@ -38,17 +38,17 @@ require (
 	github.com/prometheus/common v0.55.0 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect
 	github.com/stellar/go-xdr v0.0.0-20231122183749-b53fb00bcac2 // indirect
-	github.com/stretchr/testify v1.11.0 // indirect
+	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/zeebo/xxh3 v1.0.2 // indirect
-	golang.org/x/exp v0.0.0-20250408133849-7e4ce0ab07d0 // indirect
-	golang.org/x/mod v0.27.0 // indirect
-	golang.org/x/net v0.43.0 // indirect
-	golang.org/x/sync v0.16.0 // indirect
-	golang.org/x/sys v0.35.0 // indirect
-	golang.org/x/text v0.28.0 // indirect
-	golang.org/x/tools v0.36.0 // indirect
+	golang.org/x/exp v0.0.0-20251209150349-8475f28825e9 // indirect
+	golang.org/x/mod v0.31.0 // indirect
+	golang.org/x/net v0.48.0 // indirect
+	golang.org/x/sync v0.19.0 // indirect
+	golang.org/x/sys v0.39.0 // indirect
+	golang.org/x/text v0.32.0 // indirect
+	golang.org/x/tools v0.40.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20250804133106-a7a43d27e69b // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20251202230838-ff82c1b0f217 // indirect
 )
 
 // Local package references

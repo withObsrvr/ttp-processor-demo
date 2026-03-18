@@ -5,7 +5,7 @@ go 1.24.0
 require (
 	github.com/apache/arrow/go/v17 v17.0.0
 	github.com/rs/zerolog v1.33.0
-	google.golang.org/grpc v1.76.0
+	google.golang.org/grpc v1.79.3
 )
 
 require (
@@ -29,6 +29,6 @@ require (
 	golang.org/x/text v0.32.0 // indirect
 	golang.org/x/tools v0.40.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20250804133106-a7a43d27e69b // indirect
-	google.golang.org/protobuf v1.36.8 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20251202230838-ff82c1b0f217 // indirect
+	google.golang.org/protobuf v1.36.10 // indirect
 )
