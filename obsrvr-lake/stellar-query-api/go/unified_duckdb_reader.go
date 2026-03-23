@@ -5143,6 +5143,26 @@ func (r *UnifiedDuckDBReader) GetGenericEvents(ctx context.Context, filters Gene
 		args = append(args, *filters.TopicMatch)
 		argIdx++
 	}
+	if filters.Topic0 != nil && *filters.Topic0 != "" {
+		conditions = append(conditions, fmt.Sprintf("topic0_decoded = $%d", argIdx))
+		args = append(args, *filters.Topic0)
+		argIdx++
+	}
+	if filters.Topic1 != nil && *filters.Topic1 != "" {
+		conditions = append(conditions, fmt.Sprintf("topic1_decoded = $%d", argIdx))
+		args = append(args, *filters.Topic1)
+		argIdx++
+	}
+	if filters.Topic2 != nil && *filters.Topic2 != "" {
+		conditions = append(conditions, fmt.Sprintf("topic2_decoded = $%d", argIdx))
+		args = append(args, *filters.Topic2)
+		argIdx++
+	}
+	if filters.Topic3 != nil && *filters.Topic3 != "" {
+		conditions = append(conditions, fmt.Sprintf("topic3_decoded = $%d", argIdx))
+		args = append(args, *filters.Topic3)
+		argIdx++
+	}
 	if filters.StartLedger != nil {
 		conditions = append(conditions, fmt.Sprintf("ledger_sequence >= $%d", argIdx))
 		args = append(args, *filters.StartLedger)
@@ -5182,14 +5202,16 @@ func (r *UnifiedDuckDBReader) GetGenericEvents(ctx context.Context, filters Gene
 
 	selectCols := `event_id, contract_id, ledger_sequence, transaction_hash, closed_at,
 		event_type, in_successful_contract_call, topics_json, topics_decoded, data_decoded,
-		topic_count, operation_index, event_index`
+		topic_count, operation_index, event_index,
+		topic0_decoded, topic1_decoded, topic2_decoded, topic3_decoded`
 
 	innerQuery := r.bronzeUnionQuery(selectCols, "contract_events_stream_v1", whereClause)
 
 	query := fmt.Sprintf(`
 		SELECT event_id, contract_id, ledger_sequence, transaction_hash, closed_at,
 		       event_type, in_successful_contract_call, topics_json, topics_decoded, data_decoded,
-		       topic_count, operation_index, event_index
+		       topic_count, operation_index, event_index,
+		       topic0_decoded, topic1_decoded, topic2_decoded, topic3_decoded
 		FROM (%s) combined
 		ORDER BY ledger_sequence %s, event_index %s
 		LIMIT $%d
@@ -5207,7 +5229,8 @@ func (r *UnifiedDuckDBReader) GetGenericEvents(ctx context.Context, filters Gene
 		var e GenericEvent
 		if err := rows.Scan(&e.EventID, &e.ContractID, &e.LedgerSeq, &e.TxHash, &e.ClosedAt,
 			&e.EventType, &e.Successful, &e.TopicsJSON, &e.TopicsDecoded, &e.DataDecoded,
-			&e.TopicCount, &e.OpIndex, &e.EventIndex); err != nil {
+			&e.TopicCount, &e.OpIndex, &e.EventIndex,
+			&e.Topic0Decoded, &e.Topic1Decoded, &e.Topic2Decoded, &e.Topic3Decoded); err != nil {
 			return nil, "", false, err
 		}
 		events = append(events, e)

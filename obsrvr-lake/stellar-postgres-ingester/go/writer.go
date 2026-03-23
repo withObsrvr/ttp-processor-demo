@@ -1436,9 +1436,10 @@ func (w *Writer) insertContractEvents(ctx context.Context, tx pgx.Tx, events []C
 			event_id, contract_id, ledger_sequence, transaction_hash, closed_at,
 			event_type, in_successful_contract_call,
 			topics_json, topics_decoded, data_xdr, data_decoded, topic_count,
+			topic0_decoded, topic1_decoded, topic2_decoded, topic3_decoded,
 			operation_index, event_index, created_at, ledger_range
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
 		)
 		ON CONFLICT (ledger_sequence, transaction_hash, event_index) DO UPDATE SET
 			contract_id = EXCLUDED.contract_id,
@@ -1448,7 +1449,11 @@ func (w *Writer) insertContractEvents(ctx context.Context, tx pgx.Tx, events []C
 			topics_decoded = EXCLUDED.topics_decoded,
 			data_xdr = EXCLUDED.data_xdr,
 			data_decoded = EXCLUDED.data_decoded,
-			topic_count = EXCLUDED.topic_count
+			topic_count = EXCLUDED.topic_count,
+			topic0_decoded = EXCLUDED.topic0_decoded,
+			topic1_decoded = EXCLUDED.topic1_decoded,
+			topic2_decoded = EXCLUDED.topic2_decoded,
+			topic3_decoded = EXCLUDED.topic3_decoded
 	`
 
 	for _, event := range events {
@@ -1465,6 +1470,10 @@ func (w *Writer) insertContractEvents(ctx context.Context, tx pgx.Tx, events []C
 			event.DataXDR,
 			event.DataDecoded,
 			event.TopicCount,
+			event.Topic0Decoded,
+			event.Topic1Decoded,
+			event.Topic2Decoded,
+			event.Topic3Decoded,
 			event.OperationIndex,
 			event.EventIndex,
 			event.CreatedAt,

@@ -408,6 +408,12 @@ type ContractEventData struct {
 	DataDecoded   string
 	TopicCount    int32
 
+	// Positional topic values (flattened for indexed querying)
+	Topic0Decoded *string
+	Topic1Decoded *string
+	Topic2Decoded *string
+	Topic3Decoded *string
+
 	// Context (2 fields)
 	OperationIndex uint32
 	EventIndex     uint32

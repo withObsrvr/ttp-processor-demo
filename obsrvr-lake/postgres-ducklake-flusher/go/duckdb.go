@@ -154,42 +154,10 @@ func (c *DuckDBClient) FlushTableFromPostgres(ctx context.Context, postgresDSN, 
 		sequenceColumn = "created_ledger"
 	}
 
-	var insertSQL string
-	if tableName == "ledgers_row_v2" {
-		// Use explicit column list for ledgers_row_v2 to avoid positional mismatch
-		// between PostgreSQL and DuckLake after schema migrations
-		insertSQL = fmt.Sprintf(`
-			INSERT INTO %s.%s.%s (
-				sequence, ledger_hash, previous_ledger_hash, closed_at, protocol_version,
-				total_coins, fee_pool, base_fee, base_reserve, max_tx_set_size,
-				successful_tx_count, failed_tx_count, ingestion_timestamp, ledger_range,
-				transaction_count, operation_count, tx_set_operation_count,
-				soroban_fee_write1kb, node_id, signature, ledger_header,
-				bucket_list_size, live_soroban_state_size, evicted_keys_count,
-				soroban_op_count, total_fee_charged, contract_events_count,
-				era_id, version_label
-			)
-			SELECT
-				sequence, ledger_hash, previous_ledger_hash, closed_at, protocol_version,
-				total_coins, fee_pool, base_fee, base_reserve, max_tx_set_size,
-				successful_tx_count, failed_tx_count, ingestion_timestamp, ledger_range,
-				transaction_count, operation_count, tx_set_operation_count,
-				soroban_fee_write1kb, node_id, signature, ledger_header,
-				bucket_list_size, live_soroban_state_size, evicted_keys_count,
-				soroban_op_count, total_fee_charged, contract_events_count,
-				era_id, version_label
-			FROM postgres_scan('%s', 'public', '%s')
-			WHERE %s > %d AND %s <= %d;
-		`, c.config.CatalogName, c.config.SchemaName, tableName,
-			postgresDSN, tableName, sequenceColumn, lastFlushed, sequenceColumn, watermark)
-	} else {
-		insertSQL = fmt.Sprintf(`
-			INSERT INTO %s.%s.%s
-			SELECT * FROM postgres_scan('%s', 'public', '%s')
-			WHERE %s > %d AND %s <= %d;
-		`, c.config.CatalogName, c.config.SchemaName, tableName,
-			postgresDSN, tableName, sequenceColumn, lastFlushed, sequenceColumn, watermark)
-	}
+	// Build INSERT query - use explicit column lists for tables where PostgreSQL
+	// column order differs from DuckLake schema (due to ALTER TABLE ADD COLUMN
+	// appending columns at the end vs schema.sql defining them in logical order)
+	insertSQL := c.buildFlushSQL(tableName, postgresDSN, sequenceColumn, lastFlushed, watermark)
 
 	log.Printf("Flushing %s (watermark=%d)...", tableName, watermark)
 
@@ -205,6 +173,57 @@ func (c *DuckDBClient) FlushTableFromPostgres(ctx context.Context, postgresDSN, 
 
 	log.Printf("Flushed %d rows from %s to DuckLake", rowsAffected, tableName)
 	return rowsAffected, nil
+}
+
+// explicitColumnTables maps table names to their column lists for explicit INSERT/SELECT.
+// Required when PostgreSQL column order (from ALTER TABLE ADD COLUMN) differs from
+// the DuckLake schema order defined in v3_bronze_schema.sql.
+var explicitColumnTables = map[string]string{
+	"ledgers_row_v2": `
+		sequence, ledger_hash, previous_ledger_hash, closed_at, protocol_version,
+		total_coins, fee_pool, base_fee, base_reserve, max_tx_set_size,
+		successful_tx_count, failed_tx_count, ingestion_timestamp, ledger_range,
+		transaction_count, operation_count, tx_set_operation_count,
+		soroban_fee_write1kb, node_id, signature, ledger_header,
+		bucket_list_size, live_soroban_state_size, evicted_keys_count,
+		soroban_op_count, total_fee_charged, contract_events_count,
+		era_id, version_label`,
+	"contract_data_snapshot_v1": `
+		contract_id, ledger_sequence, ledger_key_hash, contract_key_type, contract_durability,
+		asset_code, asset_issuer, asset_type, balance_holder, balance,
+		last_modified_ledger, ledger_entry_change, deleted, closed_at,
+		contract_data_xdr, created_at, ledger_range,
+		token_name, token_symbol, token_decimals,
+		era_id, version_label`,
+	"contract_events_stream_v1": `
+		event_id, contract_id, ledger_sequence, transaction_hash, closed_at,
+		event_type, in_successful_contract_call,
+		topics_json, topics_decoded, data_xdr, data_decoded, topic_count,
+		operation_index, event_index,
+		topic0_decoded, topic1_decoded, topic2_decoded, topic3_decoded,
+		created_at, ledger_range, era_id, version_label`,
+}
+
+// buildFlushSQL constructs the INSERT...SELECT SQL for flushing a table.
+// Tables in explicitColumnTables get named columns to avoid positional mismatches;
+// all other tables use SELECT *.
+func (c *DuckDBClient) buildFlushSQL(tableName, postgresDSN, sequenceColumn string, lastFlushed, watermark int64) string {
+	if cols, ok := explicitColumnTables[tableName]; ok {
+		return fmt.Sprintf(`
+			INSERT INTO %s.%s.%s (%s)
+			SELECT %s
+			FROM postgres_scan('%s', 'public', '%s')
+			WHERE %s > %d AND %s <= %d;
+		`, c.config.CatalogName, c.config.SchemaName, tableName, cols,
+			cols,
+			postgresDSN, tableName, sequenceColumn, lastFlushed, sequenceColumn, watermark)
+	}
+	return fmt.Sprintf(`
+		INSERT INTO %s.%s.%s
+		SELECT * FROM postgres_scan('%s', 'public', '%s')
+		WHERE %s > %d AND %s <= %d;
+	`, c.config.CatalogName, c.config.SchemaName, tableName,
+		postgresDSN, tableName, sequenceColumn, lastFlushed, sequenceColumn, watermark)
 }
 
 // VerifyTableExists checks if a table exists in the DuckLake catalog
