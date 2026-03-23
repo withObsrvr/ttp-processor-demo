@@ -22,7 +22,7 @@ func NewGenericEventHandlers(reader *UnifiedDuckDBReader) *GenericEventHandlers 
 // @Description Returns raw contract events from bronze layer with optional filters
 // @Tags Events
 // @Produce json
-// @Param contract_id query string false "Filter by contract ID (C...)"
+// @Param contract_id query string false "Filter by contract ID (64-character hex contract hash)"
 // @Param event_type query string false "Filter by event type: contract, system, diagnostic"
 // @Param topic_match query string false "Search within topics_decoded (ILIKE substring match)"
 // @Param topic0 query string false "Exact match on topic position 0 (e.g. transfer)"
