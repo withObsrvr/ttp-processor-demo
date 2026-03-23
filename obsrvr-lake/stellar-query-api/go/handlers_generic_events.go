@@ -24,7 +24,11 @@ func NewGenericEventHandlers(reader *UnifiedDuckDBReader) *GenericEventHandlers 
 // @Produce json
 // @Param contract_id query string false "Filter by contract ID (C...)"
 // @Param event_type query string false "Filter by event type: contract, system, diagnostic"
-// @Param topic_match query string false "Search within topics_decoded"
+// @Param topic_match query string false "Search within topics_decoded (ILIKE substring match)"
+// @Param topic0 query string false "Exact match on topic position 0 (e.g. transfer)"
+// @Param topic1 query string false "Exact match on topic position 1 (e.g. sender address)"
+// @Param topic2 query string false "Exact match on topic position 2 (e.g. receiver address)"
+// @Param topic3 query string false "Exact match on topic position 3"
 // @Param start_ledger query int false "Start of ledger range"
 // @Param end_ledger query int false "End of ledger range"
 // @Param limit query int false "Max results (default: 20, max: 200)" default(20)
@@ -107,6 +111,18 @@ func parseGenericEventFilters(r *http.Request) GenericEventFilters {
 	}
 	if v := r.URL.Query().Get("topic_match"); v != "" {
 		filters.TopicMatch = &v
+	}
+	if v := r.URL.Query().Get("topic0"); v != "" {
+		filters.Topic0 = &v
+	}
+	if v := r.URL.Query().Get("topic1"); v != "" {
+		filters.Topic1 = &v
+	}
+	if v := r.URL.Query().Get("topic2"); v != "" {
+		filters.Topic2 = &v
+	}
+	if v := r.URL.Query().Get("topic3"); v != "" {
+		filters.Topic3 = &v
 	}
 	if v := r.URL.Query().Get("start_ledger"); v != "" {
 		if val, err := strconv.ParseInt(v, 10, 64); err == nil {

@@ -407,6 +407,27 @@ curl -H "Authorization: Api-Key $API_KEY" \
 
 ---
 
+### 14. Positional Topic Filtering
+
+**Question:** Find all transfer events where a specific address is the receiver.
+
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/events/generic?topic0=transfer&topic2=GD2J267ZY26K3LZWA3OXOAU4IWN6AHOZVYTRUFHVRRJQDKRDQM3AK7II&limit=10"
+```
+
+The `topic0`–`topic3` parameters use positional semantics matching the Stellar RPC v2 convention:
+- `topic0`: Event type (`transfer`, `mint`, `burn`, etc.)
+- `topic1`: From address
+- `topic2`: To address
+- `topic3`: Asset identifier (`native`, `USDC:GBBD...`)
+
+Values are flattened for easy querying — addresses are stored as `GABC...XYZ` (not JSON objects), symbols as plain strings.
+
+**When to use:** Wallet activity feeds, tracking transfers to/from specific addresses, monitoring specific event types across all contracts.
+
+---
+
 ## What's Next?
 
 Now that you've run these queries, explore:
@@ -437,6 +458,7 @@ Now that you've run these queries, explore:
 | Latest price | `/silver/prices/{base}/{counter}/latest` | Price lookup |
 | OHLC candles | `/silver/prices/{base}/{counter}/ohlc` | Price charts |
 | Generic events | `/silver/events/generic` | Raw contract events |
+| Positional topic filter | `/silver/events/generic?topic0=transfer&topic2=G...` | Filter by topic position |
 | Contract events | `/silver/events/contract/{id}` | Per-contract events |
 | Tx diffs | `/silver/tx/{hash}/diffs` | Balance changes |
 | Smart wallet | `/silver/smart-wallet/{id}` | SEP-50 detection |

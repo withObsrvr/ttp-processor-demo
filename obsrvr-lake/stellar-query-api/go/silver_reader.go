@@ -908,6 +908,10 @@ type GenericEvent struct {
 	OpIndex       int     `json:"operation_index"`
 	EventIndex    int     `json:"event_index"`
 	Successful    bool    `json:"in_successful_contract_call"`
+	Topic0Decoded *string `json:"topic0_decoded,omitempty"`
+	Topic1Decoded *string `json:"topic1_decoded,omitempty"`
+	Topic2Decoded *string `json:"topic2_decoded,omitempty"`
+	Topic3Decoded *string `json:"topic3_decoded,omitempty"`
 }
 
 // GenericEventFilters contains filters for querying generic contract events
@@ -915,6 +919,10 @@ type GenericEventFilters struct {
 	ContractID  *string
 	EventType   *string // contract, system, diagnostic
 	TopicMatch  *string // match against topics_decoded
+	Topic0      *string // positional filter: exact match on topic0_decoded
+	Topic1      *string // positional filter: exact match on topic1_decoded
+	Topic2      *string // positional filter: exact match on topic2_decoded
+	Topic3      *string // positional filter: exact match on topic3_decoded
 	StartLedger *int64
 	EndLedger   *int64
 	Limit       int

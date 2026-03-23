@@ -141,7 +141,7 @@ func extractContractEvent(
 	eventType := eventTypeString(event.Type)
 
 	// Extract topics and data from event body (with Hubble-compatible decoding)
-	topicsJSON, topicsDecoded, topicCount, dataXDR, dataDecoded := extractEventBody(event.Body)
+	topicsJSON, topicsDecoded, topicCount, dataXDR, dataDecoded, positionalTopics := extractEventBody(event.Body)
 
 	// Metadata
 	now := time.Now().UTC()
@@ -166,6 +166,12 @@ func extractContractEvent(
 		DataDecoded:   dataDecoded,
 		TopicCount:    topicCount,
 
+		// Positional topic values (flattened for indexed querying)
+		Topic0Decoded: positionalTopics[0],
+		Topic1Decoded: positionalTopics[1],
+		Topic2Decoded: positionalTopics[2],
+		Topic3Decoded: positionalTopics[3],
+
 		// Context
 		OperationIndex: opIndex,
 		EventIndex:     eventIndex,
@@ -176,14 +182,41 @@ func extractContractEvent(
 	}
 }
 
+// flattenTopicValue extracts a query-friendly string from a decoded topic value.
+// Symbols/strings → raw string, addresses → address string, numbers → value string.
+func flattenTopicValue(decoded interface{}) *string {
+	switch v := decoded.(type) {
+	case string:
+		return &v
+	case map[string]interface{}:
+		if addr, ok := v["address"].(string); ok {
+			return &addr
+		}
+		if val, ok := v["value"].(string); ok {
+			return &val
+		}
+		b, err := json.Marshal(v)
+		if err != nil {
+			return nil
+		}
+		s := string(b)
+		return &s
+	default:
+		s := fmt.Sprintf("%v", v)
+		return &s
+	}
+}
+
 // extractEventBody extracts topics and data from ContractEventBody
-// Returns: (topicsJSON, topicsDecoded, topicCount, dataXDR, dataDecoded)
+// Returns: (topicsJSON, topicsDecoded, topicCount, dataXDR, dataDecoded, positionalTopics)
 // Reference: ducklake-ingestion-obsrvr-v3/go/contract_events.go lines 165-246
-func extractEventBody(body xdr.ContractEventBody) (string, string, int32, string, string) {
+func extractEventBody(body xdr.ContractEventBody) (string, string, int32, string, string, [4]*string) {
+	var positionalTopics [4]*string
+
 	// ContractEventBody is a union, currently only V0 exists
 	if body.V != 0 {
 		log.Printf("Unknown ContractEventBody version: %d", body.V)
-		return "[]", "[]", 0, "", "{}"
+		return "[]", "[]", 0, "", "{}", positionalTopics
 	}
 
 	v0 := body.MustV0()
@@ -191,7 +224,7 @@ func extractEventBody(body xdr.ContractEventBody) (string, string, int32, string
 	// Extract topics as JSON array of base64 XDR strings
 	topicsXDR := []string{}
 	topicsDecodedArray := []interface{}{}
-	for _, topic := range v0.Topics {
+	for i, topic := range v0.Topics {
 		// Store base64 XDR
 		topicBytes, err := topic.MarshalBinary()
 		if err != nil {
@@ -210,6 +243,9 @@ func extractEventBody(body xdr.ContractEventBody) (string, string, int32, string
 			})
 		} else {
 			topicsDecodedArray = append(topicsDecodedArray, decodedTopic)
+			if i < 4 {
+				positionalTopics[i] = flattenTopicValue(decodedTopic)
+			}
 		}
 	}
 
@@ -217,7 +253,7 @@ func extractEventBody(body xdr.ContractEventBody) (string, string, int32, string
 	topicsJSON, err := json.Marshal(topicsXDR)
 	if err != nil {
 		log.Printf("Failed to marshal topics JSON: %v", err)
-		return "[]", "[]", 0, "", "{}"
+		return "[]", "[]", 0, "", "{}", positionalTopics
 	}
 
 	// Marshal decoded topics
@@ -233,7 +269,7 @@ func extractEventBody(body xdr.ContractEventBody) (string, string, int32, string
 	dataBytes, err := v0.Data.MarshalBinary()
 	if err != nil {
 		log.Printf("Failed to marshal data: %v", err)
-		return string(topicsJSON), string(topicsDecodedJSON), topicCount, "", "{}"
+		return string(topicsJSON), string(topicsDecodedJSON), topicCount, "", "{}", positionalTopics
 	}
 
 	dataXDR := base64.StdEncoding.EncodeToString(dataBytes)
@@ -255,7 +291,7 @@ func extractEventBody(body xdr.ContractEventBody) (string, string, int32, string
 		dataDecodedJSON = []byte("{}")
 	}
 
-	return string(topicsJSON), string(topicsDecodedJSON), topicCount, dataXDR, string(dataDecodedJSON)
+	return string(topicsJSON), string(topicsDecodedJSON), topicCount, dataXDR, string(dataDecodedJSON), positionalTopics
 }
 
 // eventTypeString converts ContractEventType to string

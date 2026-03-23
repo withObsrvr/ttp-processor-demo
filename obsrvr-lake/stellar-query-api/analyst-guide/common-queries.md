@@ -1328,16 +1328,62 @@ GET /api/v1/silver/events/generic
 |-----------|----------|-------------|
 | `contract_id` | No | Filter by contract ID (hex format) |
 | `event_type` | No | Filter by type: `contract`, `system`, `diagnostic` |
+| `topic_match` | No | Substring search across all decoded topics (case-insensitive ILIKE) |
+| `topic0` | No | Exact match on topic position 0 (e.g., `transfer`, `mint`, `burn`) |
+| `topic1` | No | Exact match on topic position 1 (e.g., sender address) |
+| `topic2` | No | Exact match on topic position 2 (e.g., receiver address) |
+| `topic3` | No | Exact match on topic position 3 (e.g., asset identifier) |
 | `start_ledger` | No | Start of ledger range |
 | `end_ledger` | No | End of ledger range |
 | `limit` | No | Max results (default: 20, max: 200) |
 | `cursor` | No | Pagination cursor |
 | `order` | No | Sort order: `asc` or `desc` (default: desc) |
 
-**Example:**
+**Topic Filtering:**
+
+There are two ways to filter by topics:
+
+1. **Positional filters** (`topic0`–`topic3`): Exact match on a specific topic position. Uses indexed columns for fast lookups. Matches the Stellar RPC v2 positional semantics.
+2. **Substring search** (`topic_match`): Case-insensitive search across all decoded topics. Useful for discovery when you don't know the exact position.
+
+Both can be combined. Positional filters use `=` (exact match), while `topic_match` uses `ILIKE` (substring).
+
+For a typical SEP-41 transfer event, the topic positions are:
+- `topic0`: Event type (e.g., `transfer`, `mint`, `burn`)
+- `topic1`: From address (e.g., `GABC...XYZ`)
+- `topic2`: To address (e.g., `GDEF...ABC`)
+- `topic3`: Asset identifier (e.g., `native`, `USDC:GBBD...`)
+
+**Examples:**
+
+All transfer events:
 ```bash
 curl -H "Authorization: Api-Key $API_KEY" \
-  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/events/generic?event_type=contract&limit=5"
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/events/generic?topic0=transfer&limit=5"
+```
+
+Transfers sent by a specific address:
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/events/generic?topic0=transfer&topic1=GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR&limit=10"
+```
+
+Transfers received by a specific address:
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/events/generic?topic0=transfer&topic2=GD2J267ZY26K3LZWA3OXOAU4IWN6AHOZVYTRUFHVRRJQDKRDQM3AK7II&limit=10"
+```
+
+All native XLM transfer events:
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/events/generic?topic0=transfer&topic3=native&limit=10"
+```
+
+Discovery search (find any event mentioning "mint"):
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/events/generic?topic_match=mint&limit=5"
 ```
 
 **Response:**
@@ -1346,11 +1392,11 @@ curl -H "Authorization: Api-Key $API_KEY" \
   "count": 5,
   "events": [
     {
-      "event_id": "c0ef7d6a...:0:0",
+      "event_id": "73f134a7...:0:0",
       "contract_id": "d7928b72c2703ccfeaf7eb9ff4ef4d504a55a8b979fc9b450ea2c842b4d1ce61",
-      "ledger_sequence": 1349194,
-      "transaction_hash": "c0ef7d6a7d4d9683b152fe86af4359be608098ebb5b8f1f22c99ccdd1bde4b33",
-      "closed_at": "2026-03-05T21:24:47Z",
+      "ledger_sequence": 1656900,
+      "transaction_hash": "73f134a70edc8962e9dbcb0efbf8fa9cc16f172c8dd2c4f7a528e353f683daf8",
+      "closed_at": "2026-03-23T17:16:25Z",
       "event_type": "contract",
       "topics_json": "[\"AAAADwAAAAh0cmFuc2Zlcg==\", ...]",
       "topics_decoded": "[\"transfer\", {\"address\":\"GAIH3...\", \"type\":\"account\"}, ...]",
@@ -1358,11 +1404,22 @@ curl -H "Authorization: Api-Key $API_KEY" \
       "topic_count": 4,
       "operation_index": 0,
       "event_index": 0,
-      "in_successful_contract_call": false
+      "in_successful_contract_call": false,
+      "topic0_decoded": "transfer",
+      "topic1_decoded": "GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR",
+      "topic2_decoded": "GC57J5QVPLGW727G3P27WWSYLCA2Q6AQ4CYVSIZV6VQGB3G3A6MG46KA",
+      "topic3_decoded": "native"
     }
-  ]
+  ],
+  "has_more": true,
+  "next_cursor": "1656900:0"
 }
 ```
+
+The `topic0_decoded`–`topic3_decoded` fields contain flattened, query-friendly values:
+- Symbol values (e.g., `transfer`) are stored as plain strings
+- Address values are stored as the Stellar address (e.g., `GABC...XYZ`), not the full JSON object
+- Asset identifiers are stored as-is (e.g., `native`, `USDC:GBBD...`)
 
 > **Note:** `contract_id` in responses is in hex format. Use the hex contract hash, not the C... Stellar address.
 
@@ -1379,6 +1436,8 @@ GET /api/v1/silver/events/contract/{contract_id}
 |-----------|----------|-------------|
 | `contract_id` | Yes | Contract ID in hex format (path parameter) |
 | `event_type` | No | Filter by type: `contract`, `system`, `diagnostic` |
+| `topic0`–`topic3` | No | Positional topic filters (exact match) |
+| `topic_match` | No | Substring search across decoded topics |
 | `limit` | No | Max results (default: 20, max: 200) |
 | `cursor` | No | Pagination cursor |
 | `order` | No | Sort order: `asc` or `desc` (default: desc) |
@@ -1386,7 +1445,7 @@ GET /api/v1/silver/events/contract/{contract_id}
 **Example:**
 ```bash
 curl -H "Authorization: Api-Key $API_KEY" \
-  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/events/contract/d7928b72c2703ccfeaf7eb9ff4ef4d504a55a8b979fc9b450ea2c842b4d1ce61?limit=10"
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/events/contract/d7928b72c2703ccfeaf7eb9ff4ef4d504a55a8b979fc9b450ea2c842b4d1ce61?topic0=transfer&limit=10"
 ```
 
 **When to use:** Monitoring specific contract activity, building event-driven dashboards, debugging contract behavior, firehose views.

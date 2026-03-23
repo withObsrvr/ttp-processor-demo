@@ -108,7 +108,7 @@ This is where Obsrvr Lake significantly differs:
 
 | Feature | Hubble | Obsrvr Lake |
 |---------|--------|-------------|
-| Contract events | Basic | Full |
+| Contract events | Basic | Full (with positional topic filtering) |
 | Contract-to-contract calls | No | Yes |
 | Call graphs | No | Yes |
 | Function-level analytics | No | Yes |

@@ -925,7 +925,7 @@ These are custom contract events (not SEP-41). The underlying token movements fr
 | `POL_AUTH` / `AUTH` | ~12 | Authorization events |
 | `proposal_created/executed` | ~4 | DAO governance |
 
-> **Future work:** A raw contract events endpoint could expose all non-value-flow events for protocol-specific analytics. DeFi protocol context (swap/lend/borrow intent) would require protocol-specific decoders.
+> **Raw contract events:** The `/silver/events/generic` endpoint exposes all contract events (including non-value-flow events like `storage`, `signer`, `plugin`, etc.) from the bronze layer. It supports positional topic filtering (`topic0=transfer&topic2=GABC...`) matching the Stellar RPC v2 convention, plus substring search (`topic_match=mint`) for discovery. Each event includes both raw XDR topics and decoded positional values (`topic0_decoded` through `topic3_decoded`) for easy querying without XDR decoding. See the [API Reference](./common-queries.md#generic-contract-events-bronze) for examples.
 
 ---
 

@@ -74,6 +74,20 @@ curl -H "Authorization: Api-Key YOUR_API_KEY" \
   "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/prices/pairs"
 ```
 
+Get all transfer events using positional topic filtering:
+
+```bash
+curl -H "Authorization: Api-Key YOUR_API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/events/generic?topic0=transfer&limit=10"
+```
+
+Get transfers received by a specific address:
+
+```bash
+curl -H "Authorization: Api-Key YOUR_API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/events/generic?topic0=transfer&topic2=GD2J267ZY26K3LZWA3OXOAU4IWN6AHOZVYTRUFHVRRJQDKRDQM3AK7II&limit=10"
+```
+
 Get raw contract events (all event types including diagnostic):
 
 ```bash
@@ -157,7 +171,7 @@ The API automatically queries both hot and cold storage, merging results seamles
 - [Contract Storage](./common-queries.md#get-contract-storage) - Contract data entries with TTL information
 - [Soroban Stats](./common-queries.md#get-soroban-network-statistics) - Network-wide Soroban runtime statistics
 - [CAP-67 Unified Events](./common-queries.md#cap-67-unified-event-stream) - Unified event stream (transfers, mints, burns)
-- [Generic Contract Events](./common-queries.md#generic-contract-events-bronze) - Raw Soroban events (contract, system, diagnostic)
+- [Generic Contract Events](./common-queries.md#generic-contract-events-bronze) - Raw Soroban events with positional topic filtering (`topic0=transfer&topic2=GABC...`)
 - [SEP-41 Token API](./common-queries.md#sep-41-token-api) - Token metadata, balances, transfers, and portfolios
 - [Smart Wallet Detection](./common-queries.md#smart-wallet-detection-sep-50) - Detect SEP-50 smart wallets
 - [Transaction Decoding](./common-queries.md#transaction-decoding) - Human-readable transaction summaries
