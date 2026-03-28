@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -75,7 +76,10 @@ func NewXDRStreamSource(filePath string) (*XDRStreamSource, error) {
 		var lcm xdr.LedgerCloseMeta
 		_, err := xdr.Unmarshal(f, &lcm)
 		if err != nil {
-			break // EOF or read error — done
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
+				break // clean end of stream
+			}
+			return nil, fmt.Errorf("XDR stream decode error: %w", err)
 		}
 
 		seq := uint32(lcm.LedgerSequence())
@@ -328,7 +332,9 @@ func (w *Worker) Run(ctx context.Context) error {
 			w.recordLineage(batch, batchStartSeq, lastSeq, time.Since(batchStartTime))
 			if w.checkpoint != nil {
 				w.checkpoint.UpdateShard(w.id, lastSeq)
-				w.checkpoint.Save()
+				if err := w.checkpoint.Save(); err != nil {
+					log.Printf("[Worker %d] WARNING: checkpoint save failed: %v", w.id, err)
+				}
 			}
 			batch = &BatchData{}
 			batchCount = 0
@@ -369,9 +375,9 @@ func (w *Worker) recordLineage(batch *BatchData, startSeq, endSeq uint32, durati
 		"offers_snapshot":           len(batch.Offers),
 		"trustlines_snapshot":       len(batch.Trustlines),
 		"account_signers_snapshot":  len(batch.AccountSigners),
-		"claimable_balances":        len(batch.ClaimableBalances),
-		"liquidity_pools":           len(batch.LiquidityPools),
-		"config_settings":           len(batch.ConfigSettings),
+		"claimable_balances_snapshot": len(batch.ClaimableBalances),
+		"liquidity_pools_snapshot":   len(batch.LiquidityPools),
+		"config_settings":            len(batch.ConfigSettings),
 		"ttl_snapshot":              len(batch.TTLEntries),
 		"evicted_keys":              len(batch.EvictedKeys),
 		"contract_events":           len(batch.ContractEvents),

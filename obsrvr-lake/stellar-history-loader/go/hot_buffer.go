@@ -71,8 +71,8 @@ func (h *HotBufferLoader) Close() error {
 // LoadTail loads the most recent N ledgers from Parquet into PostgreSQL hot buffer.
 func (h *HotBufferLoader) LoadTail(ctx context.Context, tailLedgers uint32, endLedger uint32) error {
 	startLedger := uint32(0)
-	if endLedger > tailLedgers {
-		startLedger = endLedger - tailLedgers
+	if endLedger >= tailLedgers {
+		startLedger = endLedger - tailLedgers + 1 // +1 for exclusive start, inclusive end
 	}
 
 	log.Printf("[HotBuffer] Loading tail: ledgers %d-%d into PostgreSQL", startLedger, endLedger)

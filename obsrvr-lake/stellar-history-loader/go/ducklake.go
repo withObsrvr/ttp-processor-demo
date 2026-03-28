@@ -78,7 +78,8 @@ func (p *DuckLakePusher) Push(ctx context.Context, outputDir string) error {
 			SECRET '%s',
 			REGION '%s',
 			ENDPOINT '%s',
-			URL_STYLE 'path'
+			URL_STYLE 'path',
+			URL_COMPATIBILITY_MODE true
 		)
 	`, p.config.S3KeyID, p.config.S3KeySecret, p.config.S3Region, endpoint)
 
@@ -92,12 +93,12 @@ func (p *DuckLakePusher) Push(ctx context.Context, outputDir string) error {
 
 	// Try attaching existing catalog first, then create if needed
 	attachSQL := fmt.Sprintf(
-		"ATTACH '%s' AS %s (DATA_PATH '%s', METADATA_SCHEMA '%s');",
+		"ATTACH '%s' AS %s (DATA_PATH '%s', METADATA_SCHEMA '%s', AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE);",
 		catalogPath, p.config.CatalogName, p.config.DataPath, p.config.MetadataSchema)
 
 	if _, err := p.db.ExecContext(ctx, attachSQL); err != nil {
 		createAttachSQL := fmt.Sprintf(
-			"ATTACH '%s' AS %s (TYPE ducklake, DATA_PATH '%s', METADATA_SCHEMA '%s');",
+			"ATTACH '%s' AS %s (TYPE ducklake, DATA_PATH '%s', METADATA_SCHEMA '%s', AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE);",
 			catalogPath, p.config.CatalogName, p.config.DataPath, p.config.MetadataSchema)
 		if _, err := p.db.ExecContext(ctx, createAttachSQL); err != nil {
 			return fmt.Errorf("attach catalog: %w", err)

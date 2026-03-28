@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/parquet-go/parquet-go"
 )
@@ -42,7 +43,10 @@ func (w *ParquetTableWriter[T]) getWriter(ledgerRange uint32) (*parquet.GenericW
 		return nil, fmt.Errorf("create dir %s: %w", dir, err)
 	}
 
-	path := filepath.Join(dir, fmt.Sprintf("shard_%04d.parquet", w.workerID))
+	// Use a unique filename per run to avoid truncating existing files on resume.
+	// The checkpoint tracks which ledgers have been processed, so duplicate files
+	// for the same range are acceptable (DuckLake deduplicates on INSERT).
+	path := filepath.Join(dir, fmt.Sprintf("shard_%04d_%d.parquet", w.workerID, time.Now().UnixNano()))
 	f, err := os.Create(path)
 	if err != nil {
 		return nil, fmt.Errorf("create file %s: %w", path, err)
