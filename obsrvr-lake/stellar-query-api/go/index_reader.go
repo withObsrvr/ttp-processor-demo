@@ -57,7 +57,8 @@ func NewIndexReader(config IndexConfig) (*IndexReader, error) {
 		SECRET '%s',
 		REGION '%s',
 		ENDPOINT '%s',
-		URL_STYLE 'path'
+		URL_STYLE 'path',
+		URL_COMPATIBILITY_MODE true
 	)`, config.S3AccessKeyID, config.S3SecretAccessKey, config.S3Region, config.S3Endpoint)
 
 	if _, err := db.Exec(secretSQL); err != nil {
@@ -74,7 +75,7 @@ func NewIndexReader(config IndexConfig) (*IndexReader, error) {
 
 	// Attach DuckLake catalog - use same metadata schema as index-plane-transformer
 	// IMPORTANT: Must match METADATA_SCHEMA in index-plane-transformer (use 'index' not 'index_meta')
-	attachSQL := fmt.Sprintf(`ATTACH '%s' AS testnet_catalog (DATA_PATH '%s', METADATA_SCHEMA 'index')`,
+	attachSQL := fmt.Sprintf(`ATTACH '%s' AS testnet_catalog (DATA_PATH '%s', METADATA_SCHEMA 'index', AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE)`,
 		catalogPath, dataPath)
 
 	if _, err := db.Exec(attachSQL); err != nil {

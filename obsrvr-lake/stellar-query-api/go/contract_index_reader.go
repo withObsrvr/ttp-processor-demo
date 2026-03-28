@@ -55,7 +55,8 @@ func NewContractIndexReader(config ContractIndexConfig) (*ContractIndexReader, e
 		SECRET '%s',
 		REGION '%s',
 		ENDPOINT '%s',
-		URL_STYLE 'path'
+		URL_STYLE 'path',
+		URL_COMPATIBILITY_MODE true
 	)`, config.S3AccessKeyID, config.S3SecretAccessKey, config.S3Region, config.S3Endpoint)
 
 	if _, err := db.Exec(secretSQL); err != nil {
@@ -71,7 +72,7 @@ func NewContractIndexReader(config ContractIndexConfig) (*ContractIndexReader, e
 	dataPath := fmt.Sprintf("s3://%s/", config.S3Bucket)
 
 	// Attach DuckLake catalog - use same metadata schema as contract-event-index-transformer
-	attachSQL := fmt.Sprintf(`ATTACH '%s' AS testnet_catalog (DATA_PATH '%s', METADATA_SCHEMA 'index')`,
+	attachSQL := fmt.Sprintf(`ATTACH '%s' AS testnet_catalog (DATA_PATH '%s', METADATA_SCHEMA 'index', AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE)`,
 		catalogPath, dataPath)
 
 	if _, err := db.Exec(attachSQL); err != nil {

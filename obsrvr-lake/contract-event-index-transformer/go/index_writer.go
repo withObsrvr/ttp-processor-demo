@@ -90,7 +90,7 @@ func (iw *IndexWriter) initialize() error {
 	dataPath := iw.config.DataPath()
 
 	// Use 'index' schema for both data and metadata
-	attachSQL := fmt.Sprintf(`ATTACH '%s' AS testnet_catalog (DATA_PATH '%s', METADATA_SCHEMA 'index')`,
+	attachSQL := fmt.Sprintf(`ATTACH '%s' AS testnet_catalog (DATA_PATH '%s', METADATA_SCHEMA 'index', AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE)`,
 		catalogPath, dataPath)
 
 	if _, err := iw.db.Exec(attachSQL); err != nil {

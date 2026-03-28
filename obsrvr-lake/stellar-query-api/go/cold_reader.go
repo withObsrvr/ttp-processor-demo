@@ -63,7 +63,8 @@ func (c *ColdReader) initialize(ctx context.Context) error {
 			SECRET '%s',
 			REGION '%s',
 			ENDPOINT '%s',
-			URL_STYLE 'path'
+			URL_STYLE 'path',
+		URL_COMPATIBILITY_MODE true
 		);
 	`, c.config.AWSAccessKeyID, c.config.AWSSecretAccessKey, c.config.AWSRegion, endpoint)
 
@@ -75,7 +76,7 @@ func (c *ColdReader) initialize(ctx context.Context) error {
 	attachSQL := fmt.Sprintf(`
 		ATTACH '%s'
 		AS %s
-		(DATA_PATH '%s', METADATA_SCHEMA '%s');
+		(DATA_PATH '%s', METADATA_SCHEMA '%s', AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE);
 	`, c.config.CatalogPath, c.config.CatalogName, c.config.DataPath, c.config.MetadataSchema)
 
 	if _, err := c.db.ExecContext(ctx, attachSQL); err != nil {

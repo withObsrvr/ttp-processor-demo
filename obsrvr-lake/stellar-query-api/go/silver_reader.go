@@ -22,6 +22,9 @@ func NewSilverColdReader(config DuckLakeConfig) (*SilverColdReader, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open duckdb: %w", err)
 	}
+	// Limit to single connection — DuckDB secrets and extensions are per-connection
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 
 	// Install extensions
 	if _, err := db.Exec("INSTALL ducklake"); err != nil {
@@ -44,7 +47,8 @@ func NewSilverColdReader(config DuckLakeConfig) (*SilverColdReader, error) {
 		SECRET '%s',
 		REGION '%s',
 		ENDPOINT '%s',
-		URL_STYLE 'path'
+		URL_STYLE 'path',
+		URL_COMPATIBILITY_MODE true
 	)`, config.AWSAccessKeyID, config.AWSSecretAccessKey, config.AWSRegion, config.AWSEndpoint)
 
 	if _, err := db.Exec(secretSQL); err != nil {
@@ -52,7 +56,7 @@ func NewSilverColdReader(config DuckLakeConfig) (*SilverColdReader, error) {
 	}
 
 	// Attach DuckLake catalog
-	attachSQL := fmt.Sprintf(`ATTACH '%s' AS %s (DATA_PATH '%s', METADATA_SCHEMA '%s')`,
+	attachSQL := fmt.Sprintf(`ATTACH '%s' AS %s (DATA_PATH '%s', METADATA_SCHEMA '%s', AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE)`,
 		config.CatalogPath, config.CatalogName, config.DataPath, config.MetadataSchema)
 
 	if _, err := db.Exec(attachSQL); err != nil {
