@@ -69,7 +69,8 @@ func NewUnifiedDuckDBReader(config UnifiedReaderConfig) (*UnifiedDuckDBReader, e
 		SECRET '%s',
 		REGION '%s',
 		ENDPOINT '%s',
-		URL_STYLE 'path'
+		URL_STYLE 'path',
+		URL_COMPATIBILITY_MODE true
 	)`, config.S3.KeyID, config.S3.Secret, config.S3.Region, config.S3.Endpoint)
 
 	if _, err := db.Exec(s3Secret); err != nil {
@@ -96,7 +97,7 @@ func NewUnifiedDuckDBReader(config UnifiedReaderConfig) (*UnifiedDuckDBReader, e
 	log.Println("✅ Attached PostgreSQL as hot_db")
 
 	// ATTACH DuckLake (cold storage)
-	dlAttach := fmt.Sprintf(`ATTACH '%s' AS cold_db (DATA_PATH '%s', METADATA_SCHEMA '%s')`,
+	dlAttach := fmt.Sprintf(`ATTACH '%s' AS cold_db (DATA_PATH '%s', METADATA_SCHEMA '%s', AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE)`,
 		config.DuckLake.CatalogPath, config.DuckLake.DataPath, config.DuckLake.MetadataSchema)
 
 	if _, err := db.Exec(dlAttach); err != nil {
@@ -138,7 +139,7 @@ func NewUnifiedDuckDBReader(config UnifiedReaderConfig) (*UnifiedDuckDBReader, e
 	// ATTACH Bronze DuckLake (cold storage) if configured
 	bronzeColdSchema := ""
 	if config.BronzeDuckLake != nil {
-		bronzeDlAttach := fmt.Sprintf(`ATTACH '%s' AS bronze_cold_db (DATA_PATH '%s', METADATA_SCHEMA '%s')`,
+		bronzeDlAttach := fmt.Sprintf(`ATTACH '%s' AS bronze_cold_db (DATA_PATH '%s', METADATA_SCHEMA '%s', AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE)`,
 			config.BronzeDuckLake.CatalogPath, config.BronzeDuckLake.DataPath, config.BronzeDuckLake.MetadataSchema)
 		if _, err := db.Exec(bronzeDlAttach); err != nil {
 			log.Printf("⚠️  Failed to attach Bronze DuckLake (connection error redacted to protect credentials)")

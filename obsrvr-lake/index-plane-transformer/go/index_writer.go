@@ -85,7 +85,7 @@ func (iw *IndexWriter) initialize() error {
 
 	// Use same schema for both data and metadata (index)
 	// This ensures queries looking for metadata in 'index' schema will find it
-	attachSQL := fmt.Sprintf(`ATTACH '%s' AS %s (DATA_PATH '%s', METADATA_SCHEMA '%s')`,
+	attachSQL := fmt.Sprintf(`ATTACH '%s' AS %s (DATA_PATH '%s', METADATA_SCHEMA '%s', AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE)`,
 		catalogPath, iw.config.CatalogName, dataPath, iw.config.SchemaName)
 
 	if _, err := iw.db.Exec(attachSQL); err != nil {

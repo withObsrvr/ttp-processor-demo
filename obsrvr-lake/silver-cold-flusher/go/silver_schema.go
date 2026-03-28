@@ -121,11 +121,11 @@ func (c *DuckDBClient) partitionSilverTables() error {
 		partitionSQL := fmt.Sprintf(`ALTER TABLE %s SET PARTITIONED BY (ledger_range)`, fullTableName)
 
 		if _, err := c.db.Exec(partitionSQL); err != nil {
-			log.Printf("⚠️  Failed to partition %s: %v", table, err)
+			log.Printf("   Failed to partition %s: %v", table, err)
 			continue
 		}
 
-		log.Printf("✅ Partitioned: %s by ledger_range", table)
+		log.Printf("   Partitioned: %s by ledger_range", table)
 		successCount++
 	}
 
@@ -133,8 +133,7 @@ func (c *DuckDBClient) partitionSilverTables() error {
 	if partitionable > 0 && successCount == 0 {
 		return fmt.Errorf("failed to partition all %d partitionable Silver tables", partitionable)
 	}
-
-	log.Printf("✅ Partitioned %d/%d tables (%d skipped, no ledger_range)", successCount, partitionable, skippedCount)
+	log.Printf("   Partitioned %d/%d tables (%d skipped, no ledger_range)", successCount, partitionable, skippedCount)
 
 	return nil
 }
