@@ -783,6 +783,11 @@ CREATE TABLE IF NOT EXISTS semantic_entities_contracts (
 CREATE INDEX IF NOT EXISTS idx_sem_entities_type ON semantic_entities_contracts(contract_type);
 CREATE INDEX IF NOT EXISTS idx_sem_entities_deployer ON semantic_entities_contracts(deployer_account);
 
+-- Smart wallet detection columns (extensible framework)
+ALTER TABLE semantic_entities_contracts ADD COLUMN IF NOT EXISTS wallet_type TEXT;
+ALTER TABLE semantic_entities_contracts ADD COLUMN IF NOT EXISTS wallet_signers JSONB;
+CREATE INDEX IF NOT EXISTS idx_sem_entities_wallet ON semantic_entities_contracts(wallet_type) WHERE wallet_type IS NOT NULL;
+
 -- Table: semantic_flows_value
 -- Normalized value transfers across all asset types
 CREATE TABLE IF NOT EXISTS semantic_flows_value (

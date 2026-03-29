@@ -67,6 +67,7 @@ type SemanticContract struct {
 	LastActivity      *string  `json:"last_activity,omitempty"`
 	UniqueCallers     int64    `json:"unique_callers"`
 	ObservedFunctions []string `json:"observed_functions,omitempty"`
+	WalletType        *string  `json:"wallet_type,omitempty"`
 }
 
 type SemanticFlow struct {
@@ -239,7 +240,7 @@ func (h *SemanticHandlers) HandleSemanticContracts(w http.ResponseWriter, r *htt
 		token_name, token_symbol, token_decimals,
 		deployer_account, deployed_at, deployed_ledger,
 		total_invocations, last_activity, unique_callers,
-		observed_functions
+		observed_functions, wallet_type
 		FROM semantic_entities_contracts WHERE 1=1`
 
 	args := []any{}
@@ -908,12 +909,13 @@ func scanContracts(rows *sql.Rows) ([]SemanticContract, error) {
 		var la sql.NullString
 		var funcs []string
 
+		var wt sql.NullString
 		err := rows.Scan(
 			&c.ContractID, &c.ContractType,
 			&tn, &ts, &td,
 			&da, &dat, &dl,
 			&c.TotalInvocations, &la, &c.UniqueCallers,
-			pq.Array(&funcs),
+			pq.Array(&funcs), &wt,
 		)
 		if err != nil {
 			return nil, err
@@ -929,6 +931,7 @@ func scanContracts(rows *sql.Rows) ([]SemanticContract, error) {
 		if len(funcs) > 0 {
 			c.ObservedFunctions = funcs
 		}
+		if wt.Valid { c.WalletType = &wt.String }
 
 		results = append(results, c)
 	}

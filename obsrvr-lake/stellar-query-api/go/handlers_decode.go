@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -213,6 +216,9 @@ func (h *DecodeHandlers) HandleFullTransaction(w http.ResponseWriter, r *http.Re
 	if decoded.AccountSequence != nil {
 		txMap["account_sequence"] = *decoded.AccountSequence
 	}
+	if decoded.MaxFee != nil {
+		txMap["max_fee"] = *decoded.MaxFee
+	}
 
 	response := map[string]interface{}{
 		"transaction":        txMap,
@@ -240,3 +246,212 @@ func (h *DecodeHandlers) HandleFullTransaction(w http.ResponseWriter, r *http.Re
 
 	respondJSON(w, response)
 }
+
+// HandleBatchDecodedTransactions returns decoded transactions for multiple hashes or a ledger.
+// Supports GET with ?hashes=a,b,c or ?ledger=123, and POST with {"hashes":["a","b","c"]}.
+// Each transaction is fully decoded with summary, operations, events, and Soroban resources —
+// identical to /tx/{hash}/decoded but batched.
+// @Summary Batch decoded transactions
+// @Description Returns fully decoded transactions (summary, operations, events) for up to 25 hashes or all transactions in a ledger. Same response shape as /tx/{hash}/decoded per item.
+// @Tags Transactions
+// @Accept json
+// @Produce json
+// @Param hashes query string false "Comma-separated transaction hashes (max 25)"
+// @Param ledger query int false "Ledger sequence — returns all transactions in that ledger"
+// @Param limit query int false "Max transactions when using ledger (default: 25, max: 100)"
+// @Success 200 {object} map[string]interface{} "Batch decoded transactions"
+// @Failure 400 {object} map[string]interface{} "Invalid parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/tx/batch/decoded [get]
+// @Router /api/v1/silver/tx/batch/decoded [post]
+func (h *DecodeHandlers) HandleBatchDecodedTransactions(w http.ResponseWriter, r *http.Request) {
+	if h.reader == nil {
+		respondError(w, "batch decoded requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	ctx := r.Context()
+	var hashes []string
+
+	// Determine hashes from GET params or POST body
+	if r.Method == "POST" {
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if err != nil {
+			respondError(w, "failed to read request body", http.StatusBadRequest)
+			return
+		}
+		defer r.Body.Close()
+
+		var req struct {
+			Hashes []string `json:"hashes"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			respondError(w, "invalid JSON body", http.StatusBadRequest)
+			return
+		}
+		hashes = req.Hashes
+	}
+
+	hashesParam := r.URL.Query().Get("hashes")
+	ledgerParam := r.URL.Query().Get("ledger")
+
+	if len(hashes) == 0 && hashesParam != "" {
+		for _, h := range strings.Split(hashesParam, ",") {
+			if trimmed := strings.TrimSpace(h); trimmed != "" {
+				hashes = append(hashes, trimmed)
+			}
+		}
+	}
+
+	// If ledger param, resolve hashes from that ledger
+	fromLedger := false
+	if len(hashes) == 0 && ledgerParam != "" {
+		seq, err := strconv.ParseInt(ledgerParam, 10, 64)
+		if err != nil {
+			respondError(w, "invalid ledger sequence", http.StatusBadRequest)
+			return
+		}
+
+		limit := 25
+		limitStr := r.URL.Query().Get("limit")
+		if limitStr != "" {
+			if parsed, err := strconv.Atoi(limitStr); err == nil {
+				if parsed < 1 {
+					limit = 1
+				} else if parsed > 100 {
+					limit = 100
+				} else {
+					limit = parsed
+				}
+			}
+		}
+
+		resolved, err := h.resolveHashesFromLedger(ctx, seq, limit)
+		if err != nil {
+			respondError(w, "failed to resolve ledger transactions: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		hashes = resolved
+		fromLedger = true
+	}
+
+	if len(hashes) == 0 {
+		respondError(w, "provide 'hashes' (query or body) or 'ledger' parameter", http.StatusBadRequest)
+		return
+	}
+	// Hashes mode capped at 25; ledger mode respects its own limit (up to 100)
+	if !fromLedger && len(hashes) > 25 {
+		respondError(w, "maximum 25 transactions per batch", http.StatusBadRequest)
+		return
+	}
+
+	// Decode each transaction
+	var results []interface{}
+	var errors []map[string]string
+	for _, txHash := range hashes {
+		decoded, err := h.reader.GetTransactionForDecode(ctx, txHash)
+		if err != nil {
+			errors = append(errors, map[string]string{"tx_hash": txHash, "error": err.Error()})
+			continue
+		}
+		if decoded.OpCount == 0 && len(decoded.Events) == 0 {
+			errors = append(errors, map[string]string{"tx_hash": txHash, "error": "transaction not found"})
+			continue
+		}
+		results = append(results, decoded)
+	}
+
+	resp := map[string]interface{}{
+		"transactions": results,
+		"count":        len(results),
+	}
+	if len(errors) > 0 {
+		resp["errors"] = errors
+	}
+
+	respondJSON(w, resp)
+}
+
+// resolveHashesFromLedger finds distinct transaction hashes in a ledger
+func (h *DecodeHandlers) resolveHashesFromLedger(ctx context.Context, ledgerSeq int64, limit int) ([]string, error) {
+	// Try hot schema first, then cold
+	schemas := []string{}
+	if h.reader.hotSchema != "" {
+		schemas = append(schemas, h.reader.hotSchema)
+	}
+	if h.reader.coldSchema != "" {
+		schemas = append(schemas, h.reader.coldSchema)
+	}
+
+	for _, schema := range schemas {
+		query := fmt.Sprintf(`
+			SELECT DISTINCT transaction_hash
+			FROM %s.enriched_history_operations
+			WHERE ledger_sequence = $1
+			ORDER BY transaction_hash
+			LIMIT $2
+		`, schema)
+
+		rows, err := h.reader.db.QueryContext(ctx, query, ledgerSeq, limit)
+		if err != nil {
+			continue
+		}
+
+		var hashes []string
+		for rows.Next() {
+			var hash string
+			if err := rows.Scan(&hash); err != nil {
+				rows.Close()
+				continue
+			}
+			hashes = append(hashes, hash)
+		}
+		rows.Close()
+
+		if len(hashes) > 0 {
+			return hashes, nil
+		}
+	}
+
+	// Also try bronze transactions_row_v2 as fallback
+	bronzeSchemas := []string{}
+	if h.reader.bronzeHotSchema != "" {
+		bronzeSchemas = append(bronzeSchemas, h.reader.bronzeHotSchema)
+	}
+	if h.reader.bronzeColdSchema != "" {
+		bronzeSchemas = append(bronzeSchemas, h.reader.bronzeColdSchema)
+	}
+
+	for _, schema := range bronzeSchemas {
+		query := fmt.Sprintf(`
+			SELECT transaction_hash
+			FROM %s.transactions_row_v2
+			WHERE ledger_sequence = $1
+			ORDER BY transaction_index
+			LIMIT $2
+		`, schema)
+
+		rows, err := h.reader.db.QueryContext(ctx, query, ledgerSeq, limit)
+		if err != nil {
+			continue
+		}
+
+		var hashes []string
+		for rows.Next() {
+			var hash string
+			if err := rows.Scan(&hash); err != nil {
+				rows.Close()
+				continue
+			}
+			hashes = append(hashes, hash)
+		}
+		rows.Close()
+
+		if len(hashes) > 0 {
+			return hashes, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no transactions found in ledger %d", ledgerSeq)
+}
+

@@ -486,10 +486,13 @@ func mainWithSilver() {
 			decodeHandlers := NewDecodeHandlers(unifiedDuckDBReader, unifiedSilverReader)
 			log.Println("Registering Transaction Decode endpoints:")
 
+			// batch route must be registered before {hash} routes to avoid matching "batch" as a hash
+			router.HandleFunc("/api/v1/silver/tx/batch/decoded", decodeHandlers.HandleBatchDecodedTransactions).Methods("GET", "POST")
 			router.HandleFunc("/api/v1/silver/tx/{hash}/decoded", decodeHandlers.HandleDecodedTransaction).Methods("GET")
 			router.HandleFunc("/api/v1/silver/tx/{hash}/full", decodeHandlers.HandleFullTransaction).Methods("GET")
 			router.HandleFunc("/api/v1/silver/contracts/{id}/interface", decodeHandlers.HandleContractInterface).Methods("GET")
 			router.HandleFunc("/api/v1/silver/decode/scval", decodeHandlers.HandleDecodeScVal).Methods("POST")
+			log.Println("  ✓ /api/v1/silver/tx/batch/decoded (batch decoded transactions)")
 			log.Println("  ✓ /api/v1/silver/tx/{hash}/decoded (human-readable transaction)")
 			log.Println("  ✓ /api/v1/silver/tx/{hash}/full (composite transaction analysis)")
 			log.Println("  ✓ /api/v1/silver/contracts/{id}/interface (contract ABI)")

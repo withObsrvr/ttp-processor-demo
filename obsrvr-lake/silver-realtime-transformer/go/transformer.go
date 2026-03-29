@@ -630,6 +630,13 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 		totalRows += count
 	}
 
+	// Post-processing: wallet classification on newly upserted contracts
+	if walletCount, err := rt.transformWalletClassification(ctx, semanticTx, startLedger, endLedger); err != nil {
+		log.Printf("⚠️  Wallet classification failed (non-fatal): %v", err)
+	} else if walletCount > 0 {
+		log.Printf("   🔐 Classified %d smart wallets", walletCount)
+	}
+
 	// If no rows were produced across both phases, check whether the ledgers
 	// actually exist in bronze. Early testnet ledgers (and genesis) have zero
 	// transactions/operations, so all transform queries legitimately return 0 rows.
@@ -2397,9 +2404,9 @@ func (rt *RealtimeTransformer) transformSemanticEntities(ctx context.Context, tx
 			last_activity = GREATEST(semantic_entities_contracts.last_activity, EXCLUDED.last_activity),
 			unique_callers = GREATEST(semantic_entities_contracts.unique_callers, EXCLUDED.unique_callers),
 			observed_functions = (
-				SELECT ARRAY(SELECT DISTINCT unnest(
+				SELECT ARRAY(SELECT DISTINCT f FROM unnest(
 					COALESCE(semantic_entities_contracts.observed_functions, ARRAY[]::text[]) || COALESCE(EXCLUDED.observed_functions, ARRAY[]::text[])
-				) WHERE unnest IS NOT NULL)
+				) AS f WHERE f IS NOT NULL)
 			),
 			updated_at = NOW()
 	`
@@ -2411,6 +2418,209 @@ func (rt *RealtimeTransformer) transformSemanticEntities(ctx context.Context, tx
 
 	count, _ := result.RowsAffected()
 	return count, nil
+}
+
+// transformWalletClassification runs the extensible wallet detector framework on
+// contracts that were active in this ledger batch. Checks for __check_auth in
+// observed_functions and classifies wallet type using the detector registry.
+// This runs as a post-processing step after transformSemanticEntities.
+func (rt *RealtimeTransformer) transformWalletClassification(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	// Find contracts active in this batch that have __check_auth but no wallet_type yet
+	candidateQuery := `
+		SELECT sec.contract_id, sec.observed_functions
+		FROM semantic_entities_contracts sec
+		JOIN contract_invocations_raw ci ON ci.contract_id = sec.contract_id
+		WHERE ci.ledger_sequence BETWEEN $1 AND $2
+		  AND sec.wallet_type IS NULL
+		  AND (
+			sec.observed_functions && ARRAY['__check_auth']
+			OR EXISTS (
+				SELECT 1 FROM contract_invocations_raw ci2
+				WHERE ci2.contract_id = sec.contract_id
+				AND ci2.function_name = '__check_auth'
+			)
+		  )
+		GROUP BY sec.contract_id, sec.observed_functions
+	`
+
+	rows, err := tx.QueryContext(ctx, candidateQuery, startLedger, endLedger)
+	if err != nil {
+		return 0, fmt.Errorf("wallet candidate query: %w", err)
+	}
+
+	type candidate struct {
+		contractID string
+		functions  []string
+	}
+	var candidates []candidate
+	for rows.Next() {
+		var c candidate
+		var funcs []byte // PostgreSQL text[] scans as []byte
+		if err := rows.Scan(&c.contractID, &funcs); err != nil {
+			continue
+		}
+		// Parse PostgreSQL array format {a,b,c}
+		c.functions = parsePostgresArray(string(funcs))
+		candidates = append(candidates, c)
+	}
+	rows.Close()
+
+	if len(candidates) == 0 {
+		return 0, nil
+	}
+
+	registry := newTransformerWalletRegistry()
+	var classified int64
+
+	for _, c := range candidates {
+		// Assemble evidence from silver hot tables
+		evidence := walletEvidenceFromSilver(ctx, tx, c.contractID, c.functions)
+
+		result := registry.detect(evidence)
+		if result == nil {
+			continue
+		}
+
+		// Update semantic_entities_contracts with wallet classification
+		var signersJSON []byte
+		if len(result.signers) > 0 {
+			signersJSON, _ = json.Marshal(result.signers)
+		}
+
+		updateQuery := `
+			UPDATE semantic_entities_contracts
+			SET contract_type = 'smart_wallet',
+			    wallet_type = $2,
+			    wallet_signers = $3::jsonb,
+			    updated_at = NOW()
+			WHERE contract_id = $1
+		`
+		var signersStr *string
+		if signersJSON != nil {
+			s := string(signersJSON)
+			signersStr = &s
+		}
+		if _, err := tx.ExecContext(ctx, updateQuery, c.contractID, string(result.walletType), signersStr); err != nil {
+			log.Printf("⚠️  Failed to classify wallet %s: %v", c.contractID, err)
+			continue
+		}
+		classified++
+	}
+
+	return classified, nil
+}
+
+// Lightweight wallet detection types for the transformer (avoids importing query-api types)
+type transformerWalletType string
+
+const (
+	twCrossmint    transformerWalletType = "crossmint"
+	twOpenZeppelin transformerWalletType = "openzeppelin"
+	twSEP50Generic transformerWalletType = "sep50_generic"
+)
+
+type transformerWalletResult struct {
+	walletType transformerWalletType
+	signers    []map[string]string
+}
+
+type transformerWalletEvidence struct {
+	contractID        string
+	observedFunctions []string
+	instanceStorage   []struct{ keyHash, dataValue string }
+}
+
+type transformerWalletRegistry struct{}
+
+func newTransformerWalletRegistry() *transformerWalletRegistry {
+	return &transformerWalletRegistry{}
+}
+
+func (r *transformerWalletRegistry) detect(evidence transformerWalletEvidence) *transformerWalletResult {
+	// Crossmint: signer type tags in instance storage
+	for _, entry := range evidence.instanceStorage {
+		for _, tag := range []string{"Ed25519", "Secp256k1", "Secp256r1", "WebAuthn", "Passkey"} {
+			if strings.Contains(entry.dataValue, tag) {
+				return &transformerWalletResult{
+					walletType: twCrossmint,
+					signers:    extractCrossmintSigners(evidence.instanceStorage),
+				}
+			}
+		}
+	}
+
+	// OpenZeppelin: signer management functions
+	ozFuncs := map[string]bool{"add_signer": true, "remove_signer": true, "set_signer": true, "add_guardian": true, "recover": true}
+	for _, fn := range evidence.observedFunctions {
+		if ozFuncs[fn] {
+			return &transformerWalletResult{walletType: twOpenZeppelin}
+		}
+	}
+	// OZ: owner/guardian storage without Crossmint tags
+	for _, entry := range evidence.instanceStorage {
+		lower := strings.ToLower(entry.dataValue)
+		if (strings.Contains(lower, "owner") || strings.Contains(lower, "guardian")) &&
+			!strings.Contains(lower, "ed25519") && !strings.Contains(lower, "secp256") {
+			return &transformerWalletResult{walletType: twOpenZeppelin}
+		}
+	}
+
+	// SEP-50 fallback: any contract that made it here has __check_auth
+	return &transformerWalletResult{walletType: twSEP50Generic}
+}
+
+func extractCrossmintSigners(storage []struct{ keyHash, dataValue string }) []map[string]string {
+	var signers []map[string]string
+	for _, entry := range storage {
+		for _, tag := range []string{"Ed25519", "Secp256k1", "Secp256r1", "WebAuthn", "Passkey"} {
+			if strings.Contains(entry.dataValue, tag) {
+				keyType := strings.ToLower(tag)
+				if keyType == "passkey" {
+					keyType = "webauthn"
+				}
+				signers = append(signers, map[string]string{
+					"id":       entry.keyHash,
+					"key_type": keyType,
+				})
+				break
+			}
+		}
+	}
+	return signers
+}
+
+func walletEvidenceFromSilver(ctx context.Context, tx *sql.Tx, contractID string, functions []string) transformerWalletEvidence {
+	evidence := transformerWalletEvidence{
+		contractID:        contractID,
+		observedFunctions: functions,
+	}
+
+	// Get instance storage
+	storageRows, err := tx.QueryContext(ctx,
+		`SELECT key_hash, data_value FROM contract_data_current
+		 WHERE contract_id = $1 AND durability = 'instance'`, contractID)
+	if err == nil {
+		for storageRows.Next() {
+			var entry struct{ keyHash, dataValue string }
+			var dv sql.NullString
+			if storageRows.Scan(&entry.keyHash, &dv) == nil && dv.Valid {
+				entry.dataValue = dv.String
+				evidence.instanceStorage = append(evidence.instanceStorage, entry)
+			}
+		}
+		storageRows.Close()
+	}
+
+	return evidence
+}
+
+func parsePostgresArray(s string) []string {
+	s = strings.TrimPrefix(s, "{")
+	s = strings.TrimSuffix(s, "}")
+	if s == "" {
+		return nil
+	}
+	return strings.Split(s, ",")
 }
 
 // transformSemanticFlows materializes normalized value transfers from Silver hot tables.

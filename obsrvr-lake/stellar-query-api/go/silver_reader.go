@@ -760,6 +760,7 @@ type DecodedTransaction struct {
 	// Supplementary fields from bronze transactions_row_v2
 	SourceAccount                *string `json:"source_account,omitempty"`
 	AccountSequence              *int64  `json:"account_sequence,omitempty"`
+	MaxFee                       *int64  `json:"max_fee,omitempty"`
 	SorobanResourcesInstructions *int64  `json:"soroban_resources_instructions,omitempty"`
 	SorobanResourcesReadBytes    *int64  `json:"soroban_resources_read_bytes,omitempty"`
 	SorobanResourcesWriteBytes   *int64  `json:"soroban_resources_write_bytes,omitempty"`
@@ -921,6 +922,7 @@ type GenericEvent struct {
 // GenericEventFilters contains filters for querying generic contract events
 type GenericEventFilters struct {
 	ContractID  *string
+	TxHash      *string // filter by transaction hash
 	EventType   *string // contract, system, diagnostic
 	TopicMatch  *string // match against topics_decoded
 	Topic0      *string // positional filter: exact match on topic0_decoded
@@ -990,11 +992,15 @@ type TxDiffs struct {
 
 // SmartWalletInfo contains information about a SEP-50 smart wallet
 type SmartWalletInfo struct {
-	ContractID   string   `json:"contract_id"`
-	IsSmartWallet bool    `json:"is_smart_wallet"`
-	SignerCount  int      `json:"signer_count"`
-	Signers      []string `json:"signers,omitempty"`
-	HasCheckAuth bool     `json:"has_check_auth"`
+	ContractID     string             `json:"contract_id"`
+	IsSmartWallet  bool               `json:"is_smart_wallet"`
+	WalletType     string             `json:"wallet_type,omitempty"`      // "crossmint", "openzeppelin", "sep50_generic"
+	Implementation string             `json:"implementation,omitempty"`   // human-readable detector name
+	HasCheckAuth   bool               `json:"has_check_auth"`
+	Confidence     float64            `json:"confidence"`
+	SignerCount    int                `json:"signer_count"`
+	Signers        []WalletSignerInfo `json:"signers,omitempty"`
+	Policies       []string           `json:"policies,omitempty"`
 }
 
 // ============================================

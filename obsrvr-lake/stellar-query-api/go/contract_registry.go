@@ -4,8 +4,9 @@ package main
 type ContractType string
 
 const (
-	ContractTypeSEP41   ContractType = "sep41_token"
-	ContractTypeUnknown ContractType = "unknown"
+	ContractTypeSEP41       ContractType = "sep41_token"
+	ContractTypeSmartWallet ContractType = "smart_wallet"
+	ContractTypeUnknown     ContractType = "unknown"
 )
 
 // ContractInterface describes the detected interface of a contract
