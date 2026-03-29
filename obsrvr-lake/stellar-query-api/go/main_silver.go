@@ -223,11 +223,13 @@ func mainWithSilver() {
 		router.HandleFunc("/api/v1/silver/accounts/signers", silverHandlers.HandleAccountSigners)
 		router.HandleFunc("/api/v1/silver/accounts/{id}/balances", silverHandlers.HandleAccountBalances).Methods("GET")
 		router.HandleFunc("/api/v1/silver/accounts/{id}/offers", silverHandlers.HandleAccountOffers).Methods("GET")
+		router.HandleFunc("/api/v1/silver/accounts/{id}/contracts", silverHandlers.HandleAccountContracts).Methods("GET")
 		log.Println("  ✓ /api/v1/silver/accounts (list all)")
 		log.Println("  ✓ /api/v1/silver/accounts/*")
 		log.Println("  ✓ /api/v1/silver/accounts/signers")
 		log.Println("  ✓ /api/v1/silver/accounts/{id}/balances")
 		log.Println("  ✓ /api/v1/silver/accounts/{id}/offers")
+		log.Println("  ✓ /api/v1/silver/accounts/{id}/contracts")
 
 		// Token/Asset endpoints
 		// IMPORTANT: /assets must be registered BEFORE /assets/{asset}/* to avoid path matching issues
@@ -388,14 +390,18 @@ func mainWithSilver() {
 		router.HandleFunc("/api/v1/silver/contracts/{id}/metadata", contractCallHandlers.HandleContractMetadata).Methods("GET")
 		log.Println("  ✓ /api/v1/silver/contracts/{id}/metadata (contract creator, WASM, storage)")
 
+		// Contract storage is registered via silverHandlers below (Phase B)
+
 		// Phase B: New endpoints (require unified reader for contract storage, tx summaries, fees)
 		if unifiedDuckDBReader != nil {
 			// Fee statistics endpoints
 			feeStatsHandler := NewFeeStatsHandler(unifiedDuckDBReader)
 			router.HandleFunc("/api/v1/silver/stats/fees", feeStatsHandler.HandleFeeStats).Methods("GET")
 			router.HandleFunc("/api/v1/silver/ledgers/{seq}/fees", feeStatsHandler.HandleLedgerFees).Methods("GET")
+			router.HandleFunc("/api/v1/silver/ledgers/{seq}/soroban", feeStatsHandler.HandleLedgerSoroban).Methods("GET")
 			log.Println("  ✓ /api/v1/silver/stats/fees (fee percentiles)")
 			log.Println("  ✓ /api/v1/silver/ledgers/{seq}/fees (per-ledger fee histogram)")
+			log.Println("  ✓ /api/v1/silver/ledgers/{seq}/soroban (per-ledger Soroban resource aggregates)")
 
 			// Contract storage endpoint
 			router.HandleFunc("/api/v1/silver/contracts/{id}/storage", silverHandlers.HandleContractStorage).Methods("GET")

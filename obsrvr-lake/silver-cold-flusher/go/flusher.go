@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
@@ -152,6 +153,15 @@ func (f *Flusher) ExecuteFlush() error {
 			log.Printf("⚠️  VACUUM failed (non-fatal): %v", err)
 		} else {
 			log.Println("✅ VACUUM completed")
+		}
+	}
+
+	// Step 4b: DuckLake maintenance (every Nth flush)
+	if f.config.Maintenance.Enabled && f.flushCount%int64(f.config.Maintenance.EveryNFlushes) == 0 {
+		log.Printf("🔧 Running DuckLake maintenance (flush #%d)...", f.flushCount)
+		ctx := context.Background()
+		if err := f.duckDB.RunCheckpoint(ctx, f.config.Maintenance.MaxCompactedFiles); err != nil {
+			log.Printf("⚠️  DuckLake maintenance failed (non-fatal): %v", err)
 		}
 	}
 

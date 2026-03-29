@@ -295,6 +295,22 @@ func (iw *IndexWriter) GetIndexStats(ctx context.Context) (map[string]interface{
 	}, nil
 }
 
+// RunCheckpoint performs automated DuckLake maintenance:
+// Runs CHECKPOINT on the catalog to merge small files, expire snapshots, and clean up.
+// This is safe to run between writes (single table, no concurrent write conflict).
+func (iw *IndexWriter) RunCheckpoint(ctx context.Context, maxCompactedFiles int) error {
+	startTime := time.Now()
+	log.Println("🔧 Running DuckLake CHECKPOINT maintenance...")
+
+	checkpointSQL := "CHECKPOINT testnet_catalog"
+	if _, err := iw.db.ExecContext(ctx, checkpointSQL); err != nil {
+		return fmt.Errorf("CHECKPOINT failed: %w", err)
+	}
+
+	log.Printf("✅ DuckLake CHECKPOINT completed in %s", time.Since(startTime).Round(time.Millisecond))
+	return nil
+}
+
 // Close closes the DuckDB connection
 func (iw *IndexWriter) Close() error {
 	if iw.db != nil {

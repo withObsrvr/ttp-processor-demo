@@ -114,15 +114,41 @@ func (br *BronzeReader) QueryEnrichedOperations(ctx context.Context, startLedger
 			o.ledger_range,
 			o.source_account_muxed,
 
-			-- Asset fields (exist in stellar_hot)
+			-- Asset fields (derive from canonical 'asset' column if split columns are empty)
 			o.asset,
-			o.asset_type,
-			o.asset_code,
-			o.asset_issuer,
+			COALESCE(NULLIF(o.asset_type, ''), CASE
+				WHEN o.asset IS NULL OR o.asset = '' THEN NULL
+				WHEN o.asset = 'native' THEN 'native'
+				WHEN LENGTH(SPLIT_PART(o.asset, ':', 1)) <= 4 THEN 'credit_alphanum4'
+				ELSE 'credit_alphanum12'
+			END) AS asset_type,
+			COALESCE(NULLIF(o.asset_code, ''), CASE
+				WHEN o.asset IS NULL OR o.asset = '' THEN NULL
+				WHEN o.asset = 'native' THEN 'XLM'
+				ELSE SPLIT_PART(o.asset, ':', 1)
+			END) AS asset_code,
+			COALESCE(NULLIF(o.asset_issuer, ''), CASE
+				WHEN o.asset IS NULL OR o.asset = '' THEN NULL
+				WHEN o.asset = 'native' THEN NULL
+				ELSE SPLIT_PART(o.asset, ':', 2)
+			END) AS asset_issuer,
 			o.source_asset,
-			o.source_asset_type,
-			o.source_asset_code,
-			o.source_asset_issuer,
+			COALESCE(NULLIF(o.source_asset_type, ''), CASE
+				WHEN o.source_asset IS NULL OR o.source_asset = '' THEN NULL
+				WHEN o.source_asset = 'native' THEN 'native'
+				WHEN LENGTH(SPLIT_PART(o.source_asset, ':', 1)) <= 4 THEN 'credit_alphanum4'
+				ELSE 'credit_alphanum12'
+			END) AS source_asset_type,
+			COALESCE(NULLIF(o.source_asset_code, ''), CASE
+				WHEN o.source_asset IS NULL OR o.source_asset = '' THEN NULL
+				WHEN o.source_asset = 'native' THEN 'XLM'
+				ELSE SPLIT_PART(o.source_asset, ':', 1)
+			END) AS source_asset_code,
+			COALESCE(NULLIF(o.source_asset_issuer, ''), CASE
+				WHEN o.source_asset IS NULL OR o.source_asset = '' THEN NULL
+				WHEN o.source_asset = 'native' THEN NULL
+				ELSE SPLIT_PART(o.source_asset, ':', 2)
+			END) AS source_asset_issuer,
 
 			-- Payment/path payment fields
 			o.destination,
@@ -139,16 +165,42 @@ func (br *BronzeReader) QueryEnrichedOperations(ctx context.Context, startLedger
 			-- Trust line fields
 			o.trustline_limit AS limit_amount,
 
-			-- Offer fields
+			-- Offer fields (derive from canonical columns if split columns are empty)
 			o.offer_id,
 			o.selling_asset,
-			o.selling_asset_type,
-			o.selling_asset_code,
-			o.selling_asset_issuer,
+			COALESCE(NULLIF(o.selling_asset_type, ''), CASE
+				WHEN o.selling_asset IS NULL OR o.selling_asset = '' THEN NULL
+				WHEN o.selling_asset = 'native' THEN 'native'
+				WHEN LENGTH(SPLIT_PART(o.selling_asset, ':', 1)) <= 4 THEN 'credit_alphanum4'
+				ELSE 'credit_alphanum12'
+			END) AS selling_asset_type,
+			COALESCE(NULLIF(o.selling_asset_code, ''), CASE
+				WHEN o.selling_asset IS NULL OR o.selling_asset = '' THEN NULL
+				WHEN o.selling_asset = 'native' THEN 'XLM'
+				ELSE SPLIT_PART(o.selling_asset, ':', 1)
+			END) AS selling_asset_code,
+			COALESCE(NULLIF(o.selling_asset_issuer, ''), CASE
+				WHEN o.selling_asset IS NULL OR o.selling_asset = '' THEN NULL
+				WHEN o.selling_asset = 'native' THEN NULL
+				ELSE SPLIT_PART(o.selling_asset, ':', 2)
+			END) AS selling_asset_issuer,
 			o.buying_asset,
-			o.buying_asset_type,
-			o.buying_asset_code,
-			o.buying_asset_issuer,
+			COALESCE(NULLIF(o.buying_asset_type, ''), CASE
+				WHEN o.buying_asset IS NULL OR o.buying_asset = '' THEN NULL
+				WHEN o.buying_asset = 'native' THEN 'native'
+				WHEN LENGTH(SPLIT_PART(o.buying_asset, ':', 1)) <= 4 THEN 'credit_alphanum4'
+				ELSE 'credit_alphanum12'
+			END) AS buying_asset_type,
+			COALESCE(NULLIF(o.buying_asset_code, ''), CASE
+				WHEN o.buying_asset IS NULL OR o.buying_asset = '' THEN NULL
+				WHEN o.buying_asset = 'native' THEN 'XLM'
+				ELSE SPLIT_PART(o.buying_asset, ':', 1)
+			END) AS buying_asset_code,
+			COALESCE(NULLIF(o.buying_asset_issuer, ''), CASE
+				WHEN o.buying_asset IS NULL OR o.buying_asset = '' THEN NULL
+				WHEN o.buying_asset = 'native' THEN NULL
+				ELSE SPLIT_PART(o.buying_asset, ':', 2)
+			END) AS buying_asset_issuer,
 
 			-- Price fields (price_r is JSONB with n/d, need to extract carefully)
 			CASE WHEN o.price_r IS NOT NULL THEN (o.price_r::JSONB->>'n')::INTEGER ELSE NULL END AS price_n,

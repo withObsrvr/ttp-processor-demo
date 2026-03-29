@@ -255,6 +255,14 @@ func (f *Flusher) Flush(ctx context.Context) (*FlushMetrics, error) {
 		}
 	}
 
+	// 6b. Optional: DuckLake maintenance (every Nth flush)
+	if f.config.Maintenance.Enabled && flushCount%int64(f.config.Maintenance.EveryNFlushes) == 0 {
+		log.Printf("🔧 Running DuckLake maintenance (flush #%d)...", flushCount)
+		if err := f.duckdb.RunCheckpoint(ctx, f.config.Maintenance.MaxCompactedFiles); err != nil {
+			log.Printf("Warning: DuckLake maintenance failed: %v", err)
+		}
+	}
+
 	// 7. Update metrics
 	metrics.Duration = time.Since(startTime)
 	f.lastFlush.Store(time.Now().Unix())

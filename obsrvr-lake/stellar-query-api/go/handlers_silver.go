@@ -674,6 +674,126 @@ func (h *SilverHandlers) HandleAccountBalances(w http.ResponseWriter, r *http.Re
 	respondJSON(w, response)
 }
 
+// HandleAccountContracts returns contract interactions for a specific account
+// @Summary Get account contract interactions
+// @Description Returns contracts an account has interacted with, including call counts and token metadata
+// @Tags Accounts
+// @Accept json
+// @Produce json
+// @Param id path string true "Stellar account ID (G...)"
+// @Param limit query int false "Maximum results to return (default: 50, max: 200)"
+// @Success 200 {object} map[string]interface{} "Account contract interactions"
+// @Failure 400 {object} map[string]interface{} "Missing account_id"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/accounts/{id}/contracts [get]
+func (h *SilverHandlers) HandleAccountContracts(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	accountID := vars["id"]
+	if accountID == "" {
+		accountID = r.URL.Query().Get("account_id")
+	}
+	if accountID == "" {
+		respondError(w, "account_id required", http.StatusBadRequest)
+		return
+	}
+
+	limitStr := r.URL.Query().Get("limit")
+	limit := 50
+	if limitStr != "" {
+		if parsed, err := strconv.Atoi(limitStr); err == nil {
+			if parsed < 1 {
+				limit = 1
+			} else if parsed > 200 {
+				limit = 200
+			} else {
+				limit = parsed
+			}
+		}
+	}
+
+	// Query silver_hot via the legacy reader's hot connection
+	if h.legacyReader == nil || h.legacyReader.hot == nil {
+		respondError(w, "silver hot reader not available", http.StatusInternalServerError)
+		return
+	}
+
+	ctx := r.Context()
+	query := `
+		SELECT
+			ci.contract_id,
+			COUNT(*) as total_calls,
+			MAX(ci.function_name) as top_function,
+			MAX(ci.closed_at) as last_called,
+			tr.token_name
+		FROM contract_invocations_raw ci
+		LEFT JOIN token_registry tr ON ci.contract_id = tr.contract_id
+		WHERE ci.source_account = $1
+		GROUP BY ci.contract_id, tr.token_name
+		ORDER BY total_calls DESC
+		LIMIT $2
+	`
+
+	rows, err := h.legacyReader.hot.db.QueryContext(ctx, query, accountID, limit)
+	if err != nil {
+		respondError(w, "query failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	type ContractInteraction struct {
+		ContractID string  `json:"contract_id"`
+		TotalCalls int64   `json:"total_calls"`
+		TopFunction sql.NullString `json:"-"`
+		TopFunctionStr *string `json:"top_function"`
+		LastCalled sql.NullString `json:"-"`
+		LastCalledStr *string `json:"last_called"`
+		TokenName sql.NullString `json:"-"`
+		TokenNameStr *string `json:"token_name"`
+	}
+
+	var contracts []map[string]interface{}
+	for rows.Next() {
+		var contractID string
+		var totalCalls int64
+		var topFunction, lastCalled, tokenName sql.NullString
+
+		if err := rows.Scan(&contractID, &totalCalls, &topFunction, &lastCalled, &tokenName); err != nil {
+			respondError(w, "scan failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		entry := map[string]interface{}{
+			"contract_id": contractID,
+			"total_calls": totalCalls,
+		}
+		if topFunction.Valid {
+			entry["top_function"] = topFunction.String
+		}
+		if lastCalled.Valid {
+			entry["last_called"] = lastCalled.String
+		}
+		if tokenName.Valid {
+			entry["token_name"] = tokenName.String
+		}
+
+		contracts = append(contracts, entry)
+	}
+	if err := rows.Err(); err != nil {
+		respondError(w, "rows error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if contracts == nil {
+		contracts = []map[string]interface{}{}
+	}
+
+	respondJSON(w, map[string]interface{}{
+		"account_id":      accountID,
+		"contracts":       contracts,
+		"total_contracts": len(contracts),
+	})
+}
+
 // ============================================
 // OPERATIONS ENDPOINTS (Enriched)
 // ============================================

@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
+	"time"
 )
 
 // Maintenance operation constants
@@ -46,6 +48,46 @@ var SilverTables = []string{
 	"semantic_asset_stats",
 	"semantic_dex_pairs",
 	"semantic_account_summary",
+}
+
+// HighVolumeSilverTables are tables that accumulate files fastest and need
+// controlled merge batch sizes to avoid memory spikes during compaction.
+var HighVolumeSilverTables = []string{
+	"enriched_history_operations",
+	"semantic_activities",
+	"token_transfers_raw",
+	"accounts_snapshot",
+	"offers_snapshot",
+}
+
+// RunCheckpoint performs automated DuckLake maintenance:
+// 1. Tiered merge for high-volume tables (controlled batch size)
+// 2. CHECKPOINT for everything else + expire + cleanup
+// This is safe to run while the query API is serving reads (snapshot isolation).
+func (c *DuckDBClient) RunCheckpoint(ctx context.Context, maxCompactedFiles int) error {
+	startTime := time.Now()
+	log.Println("🔧 Running DuckLake CHECKPOINT maintenance...")
+
+	// Step 1: Merge high-volume tables with controlled batch size
+	for _, table := range HighVolumeSilverTables {
+		mergeSQL := fmt.Sprintf(
+			`CALL ducklake_merge_adjacent_files('%s', '%s', schema => '%s', max_compacted_files => %d)`,
+			c.config.CatalogName, table, c.config.SchemaName, maxCompactedFiles)
+		if _, err := c.db.ExecContext(ctx, mergeSQL); err != nil {
+			log.Printf("   ⚠️  merge %s: %v", table, err)
+		} else {
+			log.Printf("   ✅ merged %s", table)
+		}
+	}
+
+	// Step 2: Run CHECKPOINT for remaining tables + expire + cleanup
+	checkpointSQL := fmt.Sprintf("CHECKPOINT %s", c.config.CatalogName)
+	if _, err := c.db.ExecContext(ctx, checkpointSQL); err != nil {
+		return fmt.Errorf("CHECKPOINT failed: %w", err)
+	}
+
+	log.Printf("✅ DuckLake CHECKPOINT completed in %s", time.Since(startTime).Round(time.Millisecond))
+	return nil
 }
 
 // RecreateAllSilverTables drops all Silver tables and recreates them with partitioning

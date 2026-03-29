@@ -334,6 +334,8 @@ func (h *SemanticHandlers) HandleSemanticFlows(w http.ResponseWriter, r *http.Re
 // ============================================
 
 // HandleSemanticContractFunctions serves GET /api/v1/semantic/contracts/functions
+// Supports optional ?period=24h|7d|30d to query contract_invocations_raw with time filter
+// instead of the materialized semantic_contract_functions table.
 func (h *SemanticHandlers) HandleSemanticContractFunctions(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	contractID := r.URL.Query().Get("contract_id")
@@ -343,7 +345,86 @@ func (h *SemanticHandlers) HandleSemanticContractFunctions(w http.ResponseWriter
 	}
 
 	limit := parseIntParam(r, "limit", 50, 1, 200)
+	period := r.URL.Query().Get("period")
 
+	// When period is set, query contract_invocations_raw directly with time filter
+	if period != "" {
+		validPeriods := map[string]string{
+			"24h": "24 hours",
+			"7d":  "7 days",
+			"30d": "30 days",
+		}
+		interval, ok := validPeriods[period]
+		if !ok {
+			respondSemanticError(w, "invalid period: must be 24h, 7d, or 30d", http.StatusBadRequest)
+			return
+		}
+
+		query := fmt.Sprintf(`
+			SELECT function_name, COUNT(*) as total_calls,
+				COUNT(DISTINCT source_account) as unique_callers,
+				MIN(closed_at) as first_called,
+				MAX(closed_at) as last_called
+			FROM contract_invocations_raw
+			WHERE contract_id = $1 AND closed_at > NOW() - INTERVAL '%s'
+			GROUP BY function_name
+			ORDER BY total_calls DESC
+			LIMIT $2
+		`, interval)
+
+		rows, err := h.unified.hot.db.QueryContext(ctx, query, contractID, limit+1)
+		if err != nil {
+			respondSemanticError(w, "query failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		var results []SemanticContractFunction
+		for rows.Next() {
+			var f SemanticContractFunction
+			f.ContractID = contractID
+			var fc, lc sql.NullString
+			err := rows.Scan(
+				&f.FunctionName, &f.TotalCalls, &f.UniqueCallers,
+				&fc, &lc,
+			)
+			if err != nil {
+				respondSemanticError(w, "scan failed: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if fc.Valid {
+				f.FirstCalled = &fc.String
+			}
+			if lc.Valid {
+				f.LastCalled = &lc.String
+			}
+			// Period queries don't have success/failure breakdown
+			f.SuccessfulCalls = f.TotalCalls
+			if f.TotalCalls > 0 {
+				f.SuccessRate = 1.0
+			}
+			results = append(results, f)
+		}
+		if err := rows.Err(); err != nil {
+			respondSemanticError(w, "rows error: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		hasMore := len(results) > limit
+		if hasMore {
+			results = results[:limit]
+		}
+
+		respondSemanticJSON(w, map[string]any{
+			"functions": results,
+			"count":     len(results),
+			"has_more":  hasMore,
+			"period":    period,
+		})
+		return
+	}
+
+	// Default: use materialized semantic_contract_functions table
 	query := `SELECT contract_id, function_name,
 		total_calls, successful_calls, failed_calls, unique_callers,
 		first_called, last_called
