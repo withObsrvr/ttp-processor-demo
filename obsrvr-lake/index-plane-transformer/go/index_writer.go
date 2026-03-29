@@ -513,8 +513,9 @@ func (iw *IndexWriter) GetMetadataDebugInfo() (map[string]interface{}, error) {
 	}, nil
 }
 
-// RunCheckpoint performs automated DuckLake maintenance:
-// Runs CHECKPOINT on the catalog to merge small files, expire snapshots, and clean up.
+// RunCheckpoint performs automated DuckLake maintenance by issuing a DuckDB CHECKPOINT
+// on the configured catalog. This delegates file compaction, snapshot expiration, and
+// cleanup to DuckDB's internal maintenance mechanisms.
 // This is safe to run between writes (single table, no concurrent write conflict).
 func (iw *IndexWriter) RunCheckpoint(ctx context.Context, maxCompactedFiles int) error {
 	startTime := time.Now()

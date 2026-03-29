@@ -697,19 +697,7 @@ func (h *SilverHandlers) HandleAccountContracts(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	limitStr := r.URL.Query().Get("limit")
-	limit := 50
-	if limitStr != "" {
-		if parsed, err := strconv.Atoi(limitStr); err == nil {
-			if parsed < 1 {
-				limit = 1
-			} else if parsed > 200 {
-				limit = 200
-			} else {
-				limit = parsed
-			}
-		}
-	}
+	limit := parseLimit(r, 50, 200)
 
 	// Query silver_hot via the legacy reader's hot connection
 	if h.legacyReader == nil || h.legacyReader.hot == nil {
@@ -722,13 +710,15 @@ func (h *SilverHandlers) HandleAccountContracts(w http.ResponseWriter, r *http.R
 		SELECT
 			ci.contract_id,
 			COUNT(*) as total_calls,
-			MAX(ci.function_name) as top_function,
-			MAX(ci.closed_at) as last_called,
+			(SELECT ci2.function_name FROM contract_invocations_raw ci2
+			 WHERE ci2.contract_id = ci.contract_id AND ci2.source_account = ci.source_account
+			 GROUP BY ci2.function_name ORDER BY COUNT(*) DESC LIMIT 1) as top_function,
+			MAX(ci.closed_at)::text as last_called,
 			tr.token_name
 		FROM contract_invocations_raw ci
 		LEFT JOIN token_registry tr ON ci.contract_id = tr.contract_id
 		WHERE ci.source_account = $1
-		GROUP BY ci.contract_id, tr.token_name
+		GROUP BY ci.contract_id, ci.source_account, tr.token_name
 		ORDER BY total_calls DESC
 		LIMIT $2
 	`
@@ -739,17 +729,6 @@ func (h *SilverHandlers) HandleAccountContracts(w http.ResponseWriter, r *http.R
 		return
 	}
 	defer rows.Close()
-
-	type ContractInteraction struct {
-		ContractID string  `json:"contract_id"`
-		TotalCalls int64   `json:"total_calls"`
-		TopFunction sql.NullString `json:"-"`
-		TopFunctionStr *string `json:"top_function"`
-		LastCalled sql.NullString `json:"-"`
-		LastCalledStr *string `json:"last_called"`
-		TokenName sql.NullString `json:"-"`
-		TokenNameStr *string `json:"token_name"`
-	}
 
 	var contracts []map[string]interface{}
 	for rows.Next() {

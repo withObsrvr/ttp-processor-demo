@@ -362,9 +362,11 @@ func (h *SemanticHandlers) HandleSemanticContractFunctions(w http.ResponseWriter
 
 		query := fmt.Sprintf(`
 			SELECT function_name, COUNT(*) as total_calls,
+				COUNT(*) FILTER (WHERE successful = true) as successful_calls,
+				COUNT(*) FILTER (WHERE successful = false) as failed_calls,
 				COUNT(DISTINCT source_account) as unique_callers,
-				MIN(closed_at) as first_called,
-				MAX(closed_at) as last_called
+				MIN(closed_at)::text as first_called,
+				MAX(closed_at)::text as last_called
 			FROM contract_invocations_raw
 			WHERE contract_id = $1 AND closed_at > NOW() - INTERVAL '%s'
 			GROUP BY function_name
@@ -385,8 +387,8 @@ func (h *SemanticHandlers) HandleSemanticContractFunctions(w http.ResponseWriter
 			f.ContractID = contractID
 			var fc, lc sql.NullString
 			err := rows.Scan(
-				&f.FunctionName, &f.TotalCalls, &f.UniqueCallers,
-				&fc, &lc,
+				&f.FunctionName, &f.TotalCalls, &f.SuccessfulCalls, &f.FailedCalls,
+				&f.UniqueCallers, &fc, &lc,
 			)
 			if err != nil {
 				respondSemanticError(w, "scan failed: "+err.Error(), http.StatusInternalServerError)
@@ -398,10 +400,8 @@ func (h *SemanticHandlers) HandleSemanticContractFunctions(w http.ResponseWriter
 			if lc.Valid {
 				f.LastCalled = &lc.String
 			}
-			// Period queries don't have success/failure breakdown
-			f.SuccessfulCalls = f.TotalCalls
 			if f.TotalCalls > 0 {
-				f.SuccessRate = 1.0
+				f.SuccessRate = float64(f.SuccessfulCalls) / float64(f.TotalCalls)
 			}
 			results = append(results, f)
 		}

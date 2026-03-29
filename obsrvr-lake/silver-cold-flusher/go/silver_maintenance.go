@@ -62,8 +62,9 @@ var HighVolumeSilverTables = []string{
 
 // RunCheckpoint performs automated DuckLake maintenance:
 // 1. Tiered merge for high-volume tables (controlled batch size)
-// 2. CHECKPOINT for everything else + expire + cleanup
+// 2. CHECKPOINT on the catalog (delegates compaction, snapshot expiration, and cleanup to DuckDB)
 // This is safe to run while the query API is serving reads (snapshot isolation).
+// Callers should hold the flusher's write lock to avoid conflicts with concurrent flushes.
 func (c *DuckDBClient) RunCheckpoint(ctx context.Context, maxCompactedFiles int) error {
 	startTime := time.Now()
 	log.Println("🔧 Running DuckLake CHECKPOINT maintenance...")

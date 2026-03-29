@@ -474,6 +474,7 @@ func (h *FeeStatsHandler) HandleLedgerSoroban(w http.ResponseWriter, r *http.Req
 	for _, schema := range schemas {
 		query := fmt.Sprintf(`
 			SELECT
+				COUNT(*) as tx_count,
 				COALESCE(SUM(soroban_resources_instructions), 0) as total_cpu_insns,
 				COALESCE(SUM(soroban_resources_read_bytes), 0) as total_read_bytes,
 				COALESCE(SUM(soroban_resources_write_bytes), 0) as total_write_bytes,
@@ -484,40 +485,28 @@ func (h *FeeStatsHandler) HandleLedgerSoroban(w http.ResponseWriter, r *http.Req
 			WHERE ledger_sequence = $1
 		`, schema)
 
-		var totalCPU, totalRead, totalWrite, totalRent, sorobanTxCount, uniqueContracts sql.NullInt64
+		var txCount, totalCPU, totalRead, totalWrite, totalRent, sorobanTxCount, uniqueContracts int64
 		err := h.reader.db.QueryRowContext(ctx, query, ledgerSeq).Scan(
-			&totalCPU, &totalRead, &totalWrite, &totalRent, &sorobanTxCount, &uniqueContracts,
+			&txCount, &totalCPU, &totalRead, &totalWrite, &totalRent, &sorobanTxCount, &uniqueContracts,
 		)
 		if err != nil {
 			continue
 		}
 
-		// Check if the ledger had any rows at all
-		if !sorobanTxCount.Valid {
+		// COUNT(*) returns 0 (not NULL) when no rows match — check explicitly
+		if txCount == 0 {
 			continue
 		}
 
 		resp := LedgerSorobanResponse{
-			LedgerSequence: ledgerSeq,
-			GeneratedAt:    time.Now().UTC().Format(time.RFC3339),
-		}
-		if totalCPU.Valid {
-			resp.TotalCPUInsns = totalCPU.Int64
-		}
-		if totalRead.Valid {
-			resp.TotalReadBytes = totalRead.Int64
-		}
-		if totalWrite.Valid {
-			resp.TotalWriteBytes = totalWrite.Int64
-		}
-		if totalRent.Valid {
-			resp.TotalRentCharged = totalRent.Int64
-		}
-		if sorobanTxCount.Valid {
-			resp.SorobanTxCount = sorobanTxCount.Int64
-		}
-		if uniqueContracts.Valid {
-			resp.UniqueContracts = uniqueContracts.Int64
+			LedgerSequence:   ledgerSeq,
+			SorobanTxCount:   sorobanTxCount,
+			TotalCPUInsns:    totalCPU,
+			TotalReadBytes:   totalRead,
+			TotalWriteBytes:  totalWrite,
+			TotalRentCharged: totalRent,
+			UniqueContracts:  uniqueContracts,
+			GeneratedAt:      time.Now().UTC().Format(time.RFC3339),
 		}
 
 		respondJSON(w, resp)
