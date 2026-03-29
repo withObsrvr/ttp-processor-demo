@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -261,6 +262,7 @@ func (h *DecodeHandlers) HandleFullTransaction(w http.ResponseWriter, r *http.Re
 // @Success 200 {object} map[string]interface{} "Batch decoded transactions"
 // @Failure 400 {object} map[string]interface{} "Invalid parameters"
 // @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/tx/batch/decoded [get]
 // @Router /api/v1/silver/tx/batch/decoded [post]
 func (h *DecodeHandlers) HandleBatchDecodedTransactions(w http.ResponseWriter, r *http.Request) {
 	if h.reader == nil {
@@ -302,9 +304,10 @@ func (h *DecodeHandlers) HandleBatchDecodedTransactions(w http.ResponseWriter, r
 	}
 
 	// If ledger param, resolve hashes from that ledger
+	fromLedger := false
 	if len(hashes) == 0 && ledgerParam != "" {
-		ledgerSeq, err := fmt.Sscanf(ledgerParam, "%d", new(int64))
-		if err != nil || ledgerSeq != 1 {
+		seq, err := strconv.ParseInt(ledgerParam, 10, 64)
+		if err != nil {
 			respondError(w, "invalid ledger sequence", http.StatusBadRequest)
 			return
 		}
@@ -312,29 +315,32 @@ func (h *DecodeHandlers) HandleBatchDecodedTransactions(w http.ResponseWriter, r
 		limit := 25
 		limitStr := r.URL.Query().Get("limit")
 		if limitStr != "" {
-			fmt.Sscanf(limitStr, "%d", &limit)
-			if limit < 1 {
-				limit = 1
-			} else if limit > 100 {
-				limit = 100
+			if parsed, err := strconv.Atoi(limitStr); err == nil {
+				if parsed < 1 {
+					limit = 1
+				} else if parsed > 100 {
+					limit = 100
+				} else {
+					limit = parsed
+				}
 			}
 		}
 
-		var seq int64
-		fmt.Sscanf(ledgerParam, "%d", &seq)
 		resolved, err := h.resolveHashesFromLedger(ctx, seq, limit)
 		if err != nil {
 			respondError(w, "failed to resolve ledger transactions: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 		hashes = resolved
+		fromLedger = true
 	}
 
 	if len(hashes) == 0 {
 		respondError(w, "provide 'hashes' (query or body) or 'ledger' parameter", http.StatusBadRequest)
 		return
 	}
-	if len(hashes) > 25 {
+	// Hashes mode capped at 25; ledger mode respects its own limit (up to 100)
+	if !fromLedger && len(hashes) > 25 {
 		respondError(w, "maximum 25 transactions per batch", http.StatusBadRequest)
 		return
 	}

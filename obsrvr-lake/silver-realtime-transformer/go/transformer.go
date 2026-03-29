@@ -2491,11 +2491,16 @@ func (rt *RealtimeTransformer) transformWalletClassification(ctx context.Context
 			UPDATE semantic_entities_contracts
 			SET contract_type = 'smart_wallet',
 			    wallet_type = $2,
-			    wallet_signers = $3,
+			    wallet_signers = $3::jsonb,
 			    updated_at = NOW()
 			WHERE contract_id = $1
 		`
-		if _, err := tx.ExecContext(ctx, updateQuery, c.contractID, string(result.walletType), signersJSON); err != nil {
+		var signersStr *string
+		if signersJSON != nil {
+			s := string(signersJSON)
+			signersStr = &s
+		}
+		if _, err := tx.ExecContext(ctx, updateQuery, c.contractID, string(result.walletType), signersStr); err != nil {
 			log.Printf("⚠️  Failed to classify wallet %s: %v", c.contractID, err)
 			continue
 		}

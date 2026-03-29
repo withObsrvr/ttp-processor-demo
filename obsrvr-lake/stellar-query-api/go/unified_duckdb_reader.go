@@ -4184,7 +4184,7 @@ func (r *UnifiedDuckDBReader) GetUnifiedEvents(ctx context.Context, filters Unif
 			to_account,
 			asset_code,
 			asset_issuer,
-			amount,
+			CAST(amount AS BIGINT) as amount,
 			token_contract_id,
 			operation_type
 		FROM combined
@@ -4209,7 +4209,7 @@ func (r *UnifiedDuckDBReader) GetUnifiedEvents(ctx context.Context, filters Unif
 					to_account,
 					asset_code,
 					asset_issuer,
-					amount,
+					CAST(amount AS BIGINT) as amount,
 					token_contract_id,
 					operation_type
 				FROM %s.token_transfers_raw
@@ -4234,7 +4234,7 @@ func (r *UnifiedDuckDBReader) GetUnifiedEvents(ctx context.Context, filters Unif
 	for rows.Next() {
 		var e UnifiedEvent
 		var timestamp string
-		var amount *float64
+		var amount *int64
 		if err := rows.Scan(&timestamp, &e.TxHash, &e.LedgerSequence,
 			&e.SourceType, &e.From, &e.To, &e.AssetCode, &e.AssetIssuer,
 			&amount, &e.ContractID, &e.OperationType); err != nil {
@@ -4271,9 +4271,9 @@ func (r *UnifiedDuckDBReader) GetUnifiedEvents(ctx context.Context, filters Unif
 			e.EventType = "transfer"
 		}
 
-		// Format amount from stroops (amount comes as float64 from DB for large values)
+		// Format amount from stroops
 		if amount != nil {
-			formatted := formatStroopsLocal(int64(*amount))
+			formatted := formatStroopsLocal(*amount)
 			e.Amount = &formatted
 		}
 
@@ -4992,28 +4992,40 @@ func (r *UnifiedDuckDBReader) enrichOperationArguments(ctx context.Context, tx *
 		return
 	}
 
-	query := fmt.Sprintf(`
-		SELECT operation_index, arguments_json
-		FROM %s.contract_invocations_raw
-		WHERE transaction_hash = $1
-		ORDER BY operation_index
-	`, r.hotSchema)
-
-	rows, err := r.db.QueryContext(ctx, query, txHash)
-	if err != nil {
-		return
+	// Try hot first, then cold
+	schemas := []string{r.hotSchema}
+	if r.coldSchema != "" {
+		schemas = append(schemas, r.coldSchema)
 	}
-	defer rows.Close()
 
 	argsByIndex := map[int]string{}
-	for rows.Next() {
-		var opIndex int
-		var argsJSON sql.NullString
-		if err := rows.Scan(&opIndex, &argsJSON); err != nil {
+	for _, schema := range schemas {
+		query := fmt.Sprintf(`
+			SELECT operation_index, arguments_json
+			FROM %s.contract_invocations_raw
+			WHERE transaction_hash = $1
+			ORDER BY operation_index
+		`, schema)
+
+		rows, err := r.db.QueryContext(ctx, query, txHash)
+		if err != nil {
 			continue
 		}
-		if argsJSON.Valid && argsJSON.String != "" && argsJSON.String != "[]" {
-			argsByIndex[opIndex] = argsJSON.String
+
+		for rows.Next() {
+			var opIndex int
+			var argsJSON sql.NullString
+			if err := rows.Scan(&opIndex, &argsJSON); err != nil {
+				continue
+			}
+			if argsJSON.Valid && argsJSON.String != "" && argsJSON.String != "[]" {
+				argsByIndex[opIndex] = argsJSON.String
+			}
+		}
+		rows.Close()
+
+		if len(argsByIndex) > 0 {
+			break
 		}
 	}
 
@@ -5701,7 +5713,6 @@ func (r *UnifiedDuckDBReader) getSmartWalletFromSemantic(ctx context.Context, co
 		IsSmartWallet:  true,
 		WalletType:     walletType.String,
 		Implementation: walletType.String,
-		HasCheckAuth:   true,
 		Confidence:     0.9,
 	}
 
@@ -5739,35 +5750,49 @@ func (r *UnifiedDuckDBReader) assembleWalletEvidence(ctx context.Context, contra
 		}
 	}
 
-	// 2. Get observed functions from contract_invocations_raw
-	funcQuery := fmt.Sprintf(`
-		SELECT DISTINCT function_name
-		FROM %s.contract_invocations_raw
-		WHERE contract_id = $1
-	`, r.hotSchema)
-	funcRows, err := r.db.QueryContext(ctx, funcQuery, contractID)
-	if err == nil {
+	// 2. Get observed functions from contract_invocations_raw (hot + cold)
+	schemas := []string{r.hotSchema}
+	if r.coldSchema != "" {
+		schemas = append(schemas, r.coldSchema)
+	}
+	funcSeen := map[string]bool{}
+	for _, schema := range schemas {
+		funcQuery := fmt.Sprintf(`
+			SELECT DISTINCT function_name
+			FROM %s.contract_invocations_raw
+			WHERE contract_id = $1
+		`, schema)
+		funcRows, err := r.db.QueryContext(ctx, funcQuery, contractID)
+		if err != nil {
+			continue
+		}
 		for funcRows.Next() {
 			var fn string
-			if funcRows.Scan(&fn) == nil {
+			if funcRows.Scan(&fn) == nil && !funcSeen[fn] {
+				funcSeen[fn] = true
 				evidence.ObservedFunctions = append(evidence.ObservedFunctions, fn)
 			}
 		}
 		funcRows.Close()
 	}
 
-	// 3. Get instance storage entries from contract_data_current
-	storageQuery := fmt.Sprintf(`
-		SELECT key_hash, data_value
-		FROM %s.contract_data_current
-		WHERE contract_id = $1 AND durability = 'instance'
-	`, r.hotSchema)
-	storageRows, err := r.db.QueryContext(ctx, storageQuery, contractID)
-	if err == nil {
+	// 3. Get instance storage entries from contract_data_current (hot + cold)
+	storageSeen := map[string]bool{}
+	for _, schema := range schemas {
+		storageQuery := fmt.Sprintf(`
+			SELECT key_hash, data_value
+			FROM %s.contract_data_current
+			WHERE contract_id = $1 AND durability = 'instance'
+		`, schema)
+		storageRows, err := r.db.QueryContext(ctx, storageQuery, contractID)
+		if err != nil {
+			continue
+		}
 		for storageRows.Next() {
 			var entry StorageEntry
 			var dataValue sql.NullString
-			if storageRows.Scan(&entry.KeyHash, &dataValue) == nil && dataValue.Valid {
+			if storageRows.Scan(&entry.KeyHash, &dataValue) == nil && dataValue.Valid && !storageSeen[entry.KeyHash] {
+				storageSeen[entry.KeyHash] = true
 				entry.DataValue = dataValue.String
 				evidence.InstanceStorage = append(evidence.InstanceStorage, entry)
 			}
