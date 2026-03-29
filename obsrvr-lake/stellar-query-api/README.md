@@ -60,6 +60,7 @@ All endpoints return JSON. See the [full API reference](./analyst-guide/common-q
 | `GET /api/v1/silver/accounts/{id}/balances` | All balances (XLM + trustlines) |
 | `GET /api/v1/silver/accounts/{id}/offers` | Account DEX offers |
 | `GET /api/v1/silver/accounts/{id}/activity` | Account activity feed |
+| `GET /api/v1/silver/accounts/{id}/contracts` | Account contract interactions with call counts |
 | `POST /api/v1/silver/accounts/batch` | Batch account lookup |
 
 **Operations & Payments:**
@@ -99,6 +100,12 @@ All endpoints return JSON. See the [full API reference](./analyst-guide/common-q
 | `GET /api/v1/silver/contracts/{id}/interface` | Detected contract ABI |
 | `GET /api/v1/silver/smart-wallet/{id}` | SEP-50 smart wallet detection |
 
+**Ledger Analysis:**
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/v1/silver/ledgers/{seq}/soroban` | Per-ledger Soroban resource aggregates (CPU, I/O, rent) |
+| `GET /api/v1/silver/ledgers/{seq}/fees` | Per-ledger fee distribution and histogram |
+
 **Events:**
 | Endpoint | Description |
 |----------|-------------|
@@ -137,6 +144,9 @@ Human-readable analytics that answer high-level questions without requiring Stel
 |----------|-------------|
 | `GET /api/v1/semantic/activities` | Unified on-chain activity feed (payments, contract calls, etc.) |
 | `GET /api/v1/semantic/contracts` | Contract registry with type classification and usage stats |
+| `GET /api/v1/semantic/contracts/functions` | Per-function call stats with optional time period filter |
+| `GET /api/v1/semantic/contracts/functions/leaderboard` | Top functions across all contracts |
+| `GET /api/v1/semantic/accounts/summary` | Account activity summary (operations, payments, contracts) |
 | `GET /api/v1/semantic/flows` | Normalized value transfers (transfers, mints, burns) |
 
 **Quick examples:**
@@ -144,15 +154,23 @@ Human-readable analytics that answer high-level questions without requiring Stel
 ```bash
 # What happened on-chain recently?
 curl -H "Authorization: Api-Key $API_KEY" \
-  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/semantic/activities?limit=10"
+  "$BASE/api/v1/semantic/activities?limit=10"
 
 # What contracts exist and how active are they?
 curl -H "Authorization: Api-Key $API_KEY" \
-  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/semantic/contracts?limit=10"
+  "$BASE/api/v1/semantic/contracts?limit=10"
+
+# What functions has a contract exposed, and how often are they called in the last 7 days?
+curl -H "Authorization: Api-Key $API_KEY" \
+  "$BASE/api/v1/semantic/contracts/functions?contract_id=CABCD...&period=7d"
+
+# What's an account's activity summary?
+curl -H "Authorization: Api-Key $API_KEY" \
+  "$BASE/api/v1/semantic/accounts/summary?account_id=GABCD..."
 
 # What value moved on-chain?
 curl -H "Authorization: Api-Key $API_KEY" \
-  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/semantic/flows?asset_code=XLM&limit=10"
+  "$BASE/api/v1/semantic/flows?asset_code=XLM&limit=10"
 ```
 
 ### Gold Layer (Compliance & Auditing)

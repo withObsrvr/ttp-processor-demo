@@ -10,10 +10,11 @@ import (
 
 // Config holds all configuration for the silver cold flusher
 type Config struct {
-	Service  ServiceConfig  `yaml:"service"`
-	Postgres PostgresConfig `yaml:"postgres"`
-	DuckLake DuckLakeConfig `yaml:"ducklake"`
-	Vacuum   VacuumConfig   `yaml:"vacuum"`
+	Service     ServiceConfig     `yaml:"service"`
+	Postgres    PostgresConfig    `yaml:"postgres"`
+	DuckLake    DuckLakeConfig    `yaml:"ducklake"`
+	Vacuum      VacuumConfig      `yaml:"vacuum"`
+	Maintenance MaintenanceConfig `yaml:"maintenance"`
 }
 
 // ServiceConfig holds service-level configuration
@@ -48,6 +49,13 @@ type VacuumConfig struct {
 	EveryNFlushes int  `yaml:"every_n_flushes"`
 }
 
+// MaintenanceConfig contains DuckLake maintenance settings
+type MaintenanceConfig struct {
+	Enabled           bool `yaml:"enabled"`
+	EveryNFlushes     int  `yaml:"every_n_flushes"`
+	MaxCompactedFiles int  `yaml:"max_compacted_files"`
+}
+
 // LoadConfig loads configuration from a YAML file
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
@@ -69,6 +77,12 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.Vacuum.EveryNFlushes == 0 {
 		config.Vacuum.EveryNFlushes = 10
+	}
+	if config.Maintenance.EveryNFlushes == 0 {
+		config.Maintenance.EveryNFlushes = 6
+	}
+	if config.Maintenance.MaxCompactedFiles == 0 {
+		config.Maintenance.MaxCompactedFiles = 200
 	}
 
 	// Validate

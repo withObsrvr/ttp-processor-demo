@@ -431,6 +431,91 @@ func (h *SorobanStatsHandler) HandleSorobanStats(w http.ResponseWriter, r *http.
 	respondJSON(w, resp)
 }
 
+// LedgerSorobanResponse represents Soroban resource aggregates for a single ledger
+type LedgerSorobanResponse struct {
+	LedgerSequence  int64  `json:"ledger_sequence"`
+	SorobanTxCount  int64  `json:"soroban_tx_count"`
+	TotalCPUInsns   int64  `json:"total_cpu_insns"`
+	TotalReadBytes  int64  `json:"total_read_bytes"`
+	TotalWriteBytes int64  `json:"total_write_bytes"`
+	TotalRentCharged int64 `json:"total_rent_charged"`
+	UniqueContracts int64  `json:"unique_contracts"`
+	GeneratedAt     string `json:"generated_at"`
+}
+
+// HandleLedgerSoroban returns Soroban resource aggregates for a specific ledger
+// @Summary Get ledger Soroban resource usage
+// @Description Returns aggregated Soroban CPU, I/O, and rent statistics for a specific ledger
+// @Tags Statistics
+// @Accept json
+// @Produce json
+// @Param seq path int true "Ledger sequence number"
+// @Success 200 {object} LedgerSorobanResponse "Ledger Soroban resource aggregates"
+// @Failure 400 {object} map[string]interface{} "Invalid ledger sequence"
+// @Failure 404 {object} map[string]interface{} "No transactions in ledger"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/ledgers/{seq}/soroban [get]
+func (h *FeeStatsHandler) HandleLedgerSoroban(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	seqStr := vars["seq"]
+	ledgerSeq, err := strconv.ParseInt(seqStr, 10, 64)
+	if err != nil {
+		respondError(w, "invalid ledger sequence", http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+	schemas := h.getBronzeSchemas()
+	if len(schemas) == 0 {
+		respondError(w, "bronze data source not configured", http.StatusInternalServerError)
+		return
+	}
+
+	for _, schema := range schemas {
+		query := fmt.Sprintf(`
+			SELECT
+				COUNT(*) as tx_count,
+				COALESCE(SUM(soroban_resources_instructions), 0) as total_cpu_insns,
+				COALESCE(SUM(soroban_resources_read_bytes), 0) as total_read_bytes,
+				COALESCE(SUM(soroban_resources_write_bytes), 0) as total_write_bytes,
+				COALESCE(SUM(rent_fee_charged), 0) as total_rent_charged,
+				COUNT(*) FILTER (WHERE soroban_resources_instructions IS NOT NULL) as soroban_tx_count,
+				COUNT(DISTINCT soroban_contract_id) FILTER (WHERE soroban_contract_id IS NOT NULL) as unique_contracts
+			FROM %s.transactions_row_v2
+			WHERE ledger_sequence = $1
+		`, schema)
+
+		var txCount, totalCPU, totalRead, totalWrite, totalRent, sorobanTxCount, uniqueContracts int64
+		err := h.reader.db.QueryRowContext(ctx, query, ledgerSeq).Scan(
+			&txCount, &totalCPU, &totalRead, &totalWrite, &totalRent, &sorobanTxCount, &uniqueContracts,
+		)
+		if err != nil {
+			continue
+		}
+
+		// COUNT(*) returns 0 (not NULL) when no rows match — check explicitly
+		if txCount == 0 {
+			continue
+		}
+
+		resp := LedgerSorobanResponse{
+			LedgerSequence:   ledgerSeq,
+			SorobanTxCount:   sorobanTxCount,
+			TotalCPUInsns:    totalCPU,
+			TotalReadBytes:   totalRead,
+			TotalWriteBytes:  totalWrite,
+			TotalRentCharged: totalRent,
+			UniqueContracts:  uniqueContracts,
+			GeneratedAt:      time.Now().UTC().Format(time.RFC3339),
+		}
+
+		respondJSON(w, resp)
+		return
+	}
+
+	respondError(w, "no transactions found in ledger", http.StatusNotFound)
+}
+
 // percentile computes the p-th percentile from a sorted slice of int64s
 func percentile(sorted []int64, p float64) int64 {
 	if len(sorted) == 0 {

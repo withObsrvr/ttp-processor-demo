@@ -10,12 +10,13 @@ import (
 
 // Config represents the transformer configuration
 type Config struct {
-	Service    ServiceConfig    `yaml:"service"`
-	BronzeHot  DatabaseConfig   `yaml:"bronze_hot"`
-	Catalog    DatabaseConfig   `yaml:"catalog"`
-	S3         S3Config         `yaml:"s3"`
-	Indexing   IndexingConfig   `yaml:"indexing"`
-	Health     HealthConfig     `yaml:"health"`
+	Service     ServiceConfig     `yaml:"service"`
+	BronzeHot   DatabaseConfig    `yaml:"bronze_hot"`
+	Catalog     DatabaseConfig    `yaml:"catalog"`
+	S3          S3Config          `yaml:"s3"`
+	Indexing    IndexingConfig    `yaml:"indexing"`
+	Maintenance MaintenanceConfig `yaml:"maintenance"`
+	Health      HealthConfig      `yaml:"health"`
 }
 
 // ServiceConfig contains service-level configuration
@@ -48,6 +49,13 @@ type IndexingConfig struct {
 	PollInterval   string `yaml:"poll_interval"`    // e.g., "30s"
 	BatchSize      int64  `yaml:"batch_size"`       // Max ledgers per batch
 	CheckpointFile string `yaml:"checkpoint_file"`  // Path to checkpoint.json
+}
+
+// MaintenanceConfig contains DuckLake maintenance settings
+type MaintenanceConfig struct {
+	Enabled          bool `yaml:"enabled"`
+	EveryNWrites     int  `yaml:"every_n_writes"`
+	MaxCompactedFiles int  `yaml:"max_compacted_files"`
 }
 
 // HealthConfig contains health endpoint configuration
@@ -91,6 +99,12 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.Indexing.CheckpointFile == "" {
 		config.Indexing.CheckpointFile = "checkpoint.json"
+	}
+	if config.Maintenance.EveryNWrites == 0 {
+		config.Maintenance.EveryNWrites = 100
+	}
+	if config.Maintenance.MaxCompactedFiles == 0 {
+		config.Maintenance.MaxCompactedFiles = 200
 	}
 	if config.Health.Port == 0 {
 		config.Health.Port = 8096

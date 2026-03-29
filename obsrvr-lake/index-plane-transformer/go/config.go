@@ -10,11 +10,12 @@ import (
 
 // Config represents the transformer configuration
 type Config struct {
-	Service    ServiceConfig    `yaml:"service"`
-	BronzeHot  DatabaseConfig   `yaml:"bronze_hot"`
-	IndexCold  IndexColdConfig  `yaml:"index_cold"`
-	Checkpoint CheckpointConfig `yaml:"checkpoint"`
-	Health     HealthConfig     `yaml:"health"`
+	Service     ServiceConfig     `yaml:"service"`
+	BronzeHot   DatabaseConfig    `yaml:"bronze_hot"`
+	IndexCold   IndexColdConfig   `yaml:"index_cold"`
+	Checkpoint  CheckpointConfig  `yaml:"checkpoint"`
+	Maintenance MaintenanceConfig `yaml:"maintenance"`
+	Health      HealthConfig      `yaml:"health"`
 }
 
 // ServiceConfig contains service-level configuration
@@ -59,6 +60,13 @@ type CheckpointConfig struct {
 	Table string `yaml:"table"`
 }
 
+// MaintenanceConfig contains DuckLake maintenance settings
+type MaintenanceConfig struct {
+	Enabled          bool `yaml:"enabled"`
+	EveryNWrites     int  `yaml:"every_n_writes"`
+	MaxCompactedFiles int  `yaml:"max_compacted_files"`
+}
+
 // HealthConfig contains health endpoint configuration
 type HealthConfig struct {
 	Port int `yaml:"port"`
@@ -94,6 +102,12 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.Checkpoint.Table == "" {
 		config.Checkpoint.Table = "index.transformer_checkpoint"
+	}
+	if config.Maintenance.EveryNWrites == 0 {
+		config.Maintenance.EveryNWrites = 100
+	}
+	if config.Maintenance.MaxCompactedFiles == 0 {
+		config.Maintenance.MaxCompactedFiles = 200
 	}
 	if config.Health.Port == 0 {
 		config.Health.Port = 8096

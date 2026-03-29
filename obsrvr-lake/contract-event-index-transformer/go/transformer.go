@@ -18,6 +18,7 @@ type Transformer struct {
 	stats        TransformerStats
 	mu           sync.RWMutex
 	stopChan     chan struct{}
+	writeCount   int
 }
 
 // NewTransformer creates a new Contract Event Index transformer
@@ -186,6 +187,16 @@ func (t *Transformer) runTransformationCycle() error {
 		}
 
 		log.Printf("✅ Indexed %d contract-ledger pairs (ledgers %d→%d)", rowsWritten, lastLedger+1, endLedger)
+
+		// Increment write count and run maintenance if due
+		t.writeCount++
+		if t.config.Maintenance.Enabled && t.writeCount >= t.config.Maintenance.EveryNWrites {
+			log.Printf("🔧 Running DuckLake maintenance (write #%d)...", t.writeCount)
+			if err := t.indexWriter.RunCheckpoint(ctx, t.config.Maintenance.MaxCompactedFiles); err != nil {
+				log.Printf("⚠️  DuckLake maintenance failed (non-fatal): %v", err)
+			}
+			t.writeCount = 0
+		}
 	}
 
 	// Save checkpoint

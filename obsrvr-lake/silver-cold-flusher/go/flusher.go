@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
@@ -153,6 +154,20 @@ func (f *Flusher) ExecuteFlush() error {
 		} else {
 			log.Println("✅ VACUUM completed")
 		}
+	}
+
+	// Step 4b: DuckLake maintenance (every Nth flush)
+	// Release read lock and acquire write lock for maintenance to avoid conflicts
+	if f.config.Maintenance.Enabled && f.flushCount%int64(f.config.Maintenance.EveryNFlushes) == 0 {
+		f.mu.RUnlock()
+		f.mu.Lock()
+		log.Printf("🔧 Running DuckLake maintenance (flush #%d)...", f.flushCount)
+		ctx := context.Background()
+		if err := f.duckDB.RunCheckpoint(ctx, f.config.Maintenance.MaxCompactedFiles); err != nil {
+			log.Printf("⚠️  DuckLake maintenance failed (non-fatal): %v", err)
+		}
+		f.mu.Unlock()
+		f.mu.RLock()
 	}
 
 	f.totalRows += rowsFlushed
