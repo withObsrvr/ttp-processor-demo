@@ -106,6 +106,9 @@ func parseGenericEventFilters(r *http.Request) GenericEventFilters {
 	if v := r.URL.Query().Get("contract_id"); v != "" {
 		filters.ContractID = &v
 	}
+	if v := r.URL.Query().Get("tx_hash"); v != "" {
+		filters.TxHash = &v
+	}
 	if v := r.URL.Query().Get("event_type"); v != "" {
 		filters.EventType = &v
 	}

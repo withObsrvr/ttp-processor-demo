@@ -94,7 +94,7 @@ func (r *BronzeColdReader) initialize(ctx context.Context) error {
 	attachSQL := fmt.Sprintf(`
 		ATTACH '%s'
 		AS %s
-		(DATA_PATH '%s', METADATA_SCHEMA '%s');
+		(DATA_PATH '%s', METADATA_SCHEMA '%s', AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE);
 	`, r.config.CatalogPath, r.catalogName, r.config.DataPath, r.config.MetadataSchema)
 
 	if _, err := r.db.ExecContext(ctx, attachSQL); err != nil {

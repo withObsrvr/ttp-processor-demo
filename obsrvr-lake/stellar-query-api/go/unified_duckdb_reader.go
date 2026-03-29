@@ -4234,7 +4234,7 @@ func (r *UnifiedDuckDBReader) GetUnifiedEvents(ctx context.Context, filters Unif
 	for rows.Next() {
 		var e UnifiedEvent
 		var timestamp string
-		var amount *int64
+		var amount *float64
 		if err := rows.Scan(&timestamp, &e.TxHash, &e.LedgerSequence,
 			&e.SourceType, &e.From, &e.To, &e.AssetCode, &e.AssetIssuer,
 			&amount, &e.ContractID, &e.OperationType); err != nil {
@@ -4271,9 +4271,9 @@ func (r *UnifiedDuckDBReader) GetUnifiedEvents(ctx context.Context, filters Unif
 			e.EventType = "transfer"
 		}
 
-		// Format amount from stroops
+		// Format amount from stroops (amount comes as float64 from DB for large values)
 		if amount != nil {
-			formatted := formatStroopsLocal(*amount)
+			formatted := formatStroopsLocal(int64(*amount))
 			e.Amount = &formatted
 		}
 
@@ -4956,6 +4956,9 @@ func (r *UnifiedDuckDBReader) GetTransactionForDecode(ctx context.Context, txHas
 
 	tx.OpCount = len(tx.Operations)
 
+	// Enrich Soroban operations with decoded arguments from contract_invocations_raw
+	r.enrichOperationArguments(ctx, tx, txHash)
+
 	// Fetch events from token_transfers_raw
 	events, err := r.GetTransactionEvents(ctx, txHash)
 	if err != nil {
@@ -4972,6 +4975,53 @@ func (r *UnifiedDuckDBReader) GetTransactionForDecode(ctx context.Context, txHas
 	r.enrichTransactionFromBronze(ctx, tx, txHash)
 
 	return tx, nil
+}
+
+// enrichOperationArguments populates ArgumentsJSON on Soroban operations
+// by looking up decoded arguments from contract_invocations_raw in silver hot.
+func (r *UnifiedDuckDBReader) enrichOperationArguments(ctx context.Context, tx *DecodedTransaction, txHash string) {
+	// Only bother if there are Soroban ops missing arguments
+	hasSorobanOps := false
+	for _, op := range tx.Operations {
+		if op.IsSorobanOp && op.ArgumentsJSON == nil {
+			hasSorobanOps = true
+			break
+		}
+	}
+	if !hasSorobanOps {
+		return
+	}
+
+	query := fmt.Sprintf(`
+		SELECT operation_index, arguments_json
+		FROM %s.contract_invocations_raw
+		WHERE transaction_hash = $1
+		ORDER BY operation_index
+	`, r.hotSchema)
+
+	rows, err := r.db.QueryContext(ctx, query, txHash)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	argsByIndex := map[int]string{}
+	for rows.Next() {
+		var opIndex int
+		var argsJSON sql.NullString
+		if err := rows.Scan(&opIndex, &argsJSON); err != nil {
+			continue
+		}
+		if argsJSON.Valid && argsJSON.String != "" && argsJSON.String != "[]" {
+			argsByIndex[opIndex] = argsJSON.String
+		}
+	}
+
+	for i := range tx.Operations {
+		if args, ok := argsByIndex[tx.Operations[i].Index]; ok {
+			tx.Operations[i].ArgumentsJSON = &args
+		}
+	}
 }
 
 // enrichTransactionFromBronze adds supplementary fields from bronze transactions_row_v2
@@ -4991,7 +5041,7 @@ func (r *UnifiedDuckDBReader) enrichTransactionFromBronze(ctx context.Context, t
 
 	for _, schema := range schemas {
 		query := fmt.Sprintf(`
-			SELECT source_account, account_sequence,
+			SELECT source_account, account_sequence, max_fee,
 			       soroban_resources_instructions, soroban_resources_read_bytes,
 			       soroban_resources_write_bytes
 			FROM %s.transactions_row_v2
@@ -5000,11 +5050,11 @@ func (r *UnifiedDuckDBReader) enrichTransactionFromBronze(ctx context.Context, t
 		`, schema)
 
 		var sourceAccount sql.NullString
-		var accountSequence sql.NullInt64
+		var accountSequence, maxFee sql.NullInt64
 		var instructions, readBytes, writeBytes sql.NullInt64
 
 		err := r.db.QueryRowContext(ctx, query, txHash).Scan(
-			&sourceAccount, &accountSequence,
+			&sourceAccount, &accountSequence, &maxFee,
 			&instructions, &readBytes, &writeBytes,
 		)
 		if err != nil {
@@ -5016,6 +5066,9 @@ func (r *UnifiedDuckDBReader) enrichTransactionFromBronze(ctx context.Context, t
 		}
 		if accountSequence.Valid {
 			tx.AccountSequence = &accountSequence.Int64
+		}
+		if maxFee.Valid {
+			tx.MaxFee = &maxFee.Int64
 		}
 		if instructions.Valid {
 			tx.SorobanResourcesInstructions = &instructions.Int64
@@ -5132,6 +5185,11 @@ func (r *UnifiedDuckDBReader) GetGenericEvents(ctx context.Context, filters Gene
 	if filters.ContractID != nil && *filters.ContractID != "" {
 		conditions = append(conditions, fmt.Sprintf("contract_id = $%d", argIdx))
 		args = append(args, *filters.ContractID)
+		argIdx++
+	}
+	if filters.TxHash != nil && *filters.TxHash != "" {
+		conditions = append(conditions, fmt.Sprintf("transaction_hash = $%d", argIdx))
+		args = append(args, *filters.TxHash)
 		argIdx++
 	}
 	if filters.EventType != nil && *filters.EventType != "" {
@@ -5601,72 +5659,148 @@ func contractIDToHex(contractID string) (string, error) {
 	return hex.EncodeToString(raw), nil
 }
 
-// GetSmartWalletInfo detects if a contract is a SEP-50 smart wallet
+// GetSmartWalletInfo detects if a contract is a SEP-50 smart wallet using
+// the extensible WalletDetector framework. First checks materialized data
+// in semantic_entities_contracts, then falls back to on-demand detection.
 func (r *UnifiedDuckDBReader) GetSmartWalletInfo(ctx context.Context, contractID string) (*SmartWalletInfo, error) {
-	info := &SmartWalletInfo{
-		ContractID:    contractID,
-		IsSmartWallet: false,
-		Signers:       []string{},
+	// Fast path: check materialized wallet_type from semantic_entities_contracts
+	info, err := r.getSmartWalletFromSemantic(ctx, contractID)
+	if err == nil && info.IsSmartWallet {
+		return info, nil
 	}
 
-	// Check for __check_auth in contract events topics (bronze hot + cold)
-	// Bronze stores contract_id as hex hashes, so convert from C... strkey
+	// Slow path: assemble evidence and run detectors on-demand
+	evidence, err := r.assembleWalletEvidence(ctx, contractID)
+	if err != nil {
+		return &SmartWalletInfo{ContractID: contractID}, nil
+	}
+
+	registry := NewWalletDetectorRegistry()
+	result := registry.Detect(*evidence)
+
+	return mapDetectionResult(contractID, evidence, result), nil
+}
+
+// getSmartWalletFromSemantic reads materialized wallet data from semantic_entities_contracts
+func (r *UnifiedDuckDBReader) getSmartWalletFromSemantic(ctx context.Context, contractID string) (*SmartWalletInfo, error) {
+	query := fmt.Sprintf(`
+		SELECT wallet_type, wallet_signers
+		FROM %s.semantic_entities_contracts
+		WHERE contract_id = $1 AND wallet_type IS NOT NULL
+	`, r.hotSchema)
+
+	var walletType sql.NullString
+	var walletSigners sql.NullString
+	err := r.db.QueryRowContext(ctx, query, contractID).Scan(&walletType, &walletSigners)
+	if err != nil || !walletType.Valid {
+		return nil, fmt.Errorf("no materialized wallet data")
+	}
+
+	info := &SmartWalletInfo{
+		ContractID:     contractID,
+		IsSmartWallet:  true,
+		WalletType:     walletType.String,
+		Implementation: walletType.String,
+		HasCheckAuth:   true,
+		Confidence:     0.9,
+	}
+
+	// Parse signers from JSONB
+	if walletSigners.Valid && walletSigners.String != "" && walletSigners.String != "null" {
+		var signers []WalletSignerInfo
+		if err := json.Unmarshal([]byte(walletSigners.String), &signers); err == nil {
+			info.Signers = signers
+			info.SignerCount = len(signers)
+		}
+	}
+
+	return info, nil
+}
+
+// assembleWalletEvidence gathers on-chain data for wallet detection
+func (r *UnifiedDuckDBReader) assembleWalletEvidence(ctx context.Context, contractID string) (*WalletEvidence, error) {
+	evidence := &WalletEvidence{
+		ContractID: contractID,
+	}
+
+	// 1. Check for __check_auth in bronze contract events
 	if r.hasBronze() {
 		hexContractID, err := contractIDToHex(contractID)
-		if err != nil {
-			log.Printf("Warning: could not convert contract ID to hex for bronze query: %v", err)
-		} else {
+		if err == nil {
 			innerQuery := r.bronzeUnionQuery("1",
 				"contract_events_stream_v1",
 				"WHERE contract_id = $1 AND topics_decoded LIKE '%__check_auth%'")
 			checkAuthQuery := fmt.Sprintf(`SELECT COUNT(*) FROM (%s) t LIMIT 1`, innerQuery)
 
-			var checkAuthCount int64
-			if err := r.db.QueryRowContext(ctx, checkAuthQuery, hexContractID).Scan(&checkAuthCount); err == nil {
-				info.HasCheckAuth = checkAuthCount > 0
+			var count int64
+			if err := r.db.QueryRowContext(ctx, checkAuthQuery, hexContractID).Scan(&count); err == nil {
+				evidence.HasCheckAuth = count > 0
 			}
 		}
 	}
 
-	// Check contract_data for signer-related keys
-	signerQuery := fmt.Sprintf(`
-		SELECT data_value FROM (
-			SELECT data_value FROM %s.contract_data_current WHERE contract_id = $1
-				AND durability = 'instance'
-			UNION ALL
-			SELECT data_value FROM %s.contract_data_current WHERE contract_id = $1
-				AND durability = 'instance'
-		) combined
-	`, r.hotSchema, r.coldSchema)
-
-	rows, err := r.db.QueryContext(ctx, signerQuery, contractID)
-	if err != nil {
-		// Table may not exist, that's ok
-		if !strings.Contains(err.Error(), "does not exist") {
-			return nil, fmt.Errorf("GetSmartWalletInfo: %w", err)
-		}
-		return info, nil
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var dataValue sql.NullString
-		if err := rows.Scan(&dataValue); err != nil {
-			continue
-		}
-		if dataValue.Valid {
-			// Look for signer-related keys in the data value
-			val := dataValue.String
-			if strings.Contains(val, "Signer") || strings.Contains(val, "signer") || strings.Contains(val, "Policy") {
-				info.Signers = append(info.Signers, val)
+	// 2. Get observed functions from contract_invocations_raw
+	funcQuery := fmt.Sprintf(`
+		SELECT DISTINCT function_name
+		FROM %s.contract_invocations_raw
+		WHERE contract_id = $1
+	`, r.hotSchema)
+	funcRows, err := r.db.QueryContext(ctx, funcQuery, contractID)
+	if err == nil {
+		for funcRows.Next() {
+			var fn string
+			if funcRows.Scan(&fn) == nil {
+				evidence.ObservedFunctions = append(evidence.ObservedFunctions, fn)
 			}
 		}
+		funcRows.Close()
 	}
 
-	info.SignerCount = len(info.Signers)
-	info.IsSmartWallet = info.HasCheckAuth || info.SignerCount > 0
+	// 3. Get instance storage entries from contract_data_current
+	storageQuery := fmt.Sprintf(`
+		SELECT key_hash, data_value
+		FROM %s.contract_data_current
+		WHERE contract_id = $1 AND durability = 'instance'
+	`, r.hotSchema)
+	storageRows, err := r.db.QueryContext(ctx, storageQuery, contractID)
+	if err == nil {
+		for storageRows.Next() {
+			var entry StorageEntry
+			var dataValue sql.NullString
+			if storageRows.Scan(&entry.KeyHash, &dataValue) == nil && dataValue.Valid {
+				entry.DataValue = dataValue.String
+				evidence.InstanceStorage = append(evidence.InstanceStorage, entry)
+			}
+		}
+		storageRows.Close()
+	}
 
-	return info, nil
+	return evidence, nil
+}
+
+// mapDetectionResult converts a WalletDetectionResult to SmartWalletInfo response
+func mapDetectionResult(contractID string, evidence *WalletEvidence, result *WalletDetectionResult) *SmartWalletInfo {
+	info := &SmartWalletInfo{
+		ContractID: contractID,
+	}
+
+	if evidence != nil {
+		info.HasCheckAuth = evidence.HasCheckAuth
+	}
+
+	if result == nil {
+		return info
+	}
+
+	info.IsSmartWallet = true
+	info.WalletType = string(result.WalletType)
+	info.Implementation = string(result.WalletType)
+	info.Confidence = result.Confidence
+	info.Signers = result.Signers
+	info.SignerCount = len(result.Signers)
+	info.Policies = result.Policies
+
+	return info
 }
 
 // ============================================
