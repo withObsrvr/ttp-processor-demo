@@ -108,6 +108,7 @@ type ParquetTransaction struct {
 	LedgerSequence               uint32  `parquet:"ledger_sequence"`
 	TransactionHash              string  `parquet:"transaction_hash"`
 	SourceAccount                string  `parquet:"source_account"`
+	SourceAccountMuxed           *string `parquet:"source_account_muxed,optional"`
 	FeeCharged                   int64   `parquet:"fee_charged"`
 	MaxFee                       int64   `parquet:"max_fee"`
 	Successful                   bool    `parquet:"successful"`
@@ -120,6 +121,10 @@ type ParquetTransaction struct {
 	LedgerRange                  uint32  `parquet:"ledger_range"`
 	SignaturesCount              int32   `parquet:"signatures_count"`
 	NewAccount                   bool    `parquet:"new_account"`
+	TimeboundsMinTime            *string `parquet:"timebounds_min_time,optional"`
+	TimeboundsMaxTime            *string `parquet:"timebounds_max_time,optional"`
+	SorobanHostFunctionType      *string `parquet:"soroban_host_function_type,optional"`
+	SorobanContractID            *string `parquet:"soroban_contract_id,optional"`
 	RentFeeCharged               *int64  `parquet:"rent_fee_charged,optional"`
 	SorobanResourcesInstructions *int64  `parquet:"soroban_resources_instructions,optional"`
 	SorobanResourcesReadBytes    *int64  `parquet:"soroban_resources_read_bytes,optional"`
@@ -133,6 +138,7 @@ type ParquetOperation struct {
 	OperationIndex        int32   `parquet:"operation_index"`
 	LedgerSequence        uint32  `parquet:"ledger_sequence"`
 	SourceAccount         string  `parquet:"source_account"`
+	SourceAccountMuxed    *string `parquet:"source_account_muxed,optional"`
 	OpType                int32   `parquet:"op_type"`
 	TypeString            string  `parquet:"type_string"`
 	CreatedAt             int64   `parquet:"created_at,timestamp(microsecond)"`
@@ -141,7 +147,42 @@ type ParquetOperation struct {
 	LedgerRange           uint32  `parquet:"ledger_range"`
 	Amount                *int64  `parquet:"amount,optional"`
 	Asset                 *string `parquet:"asset,optional"`
+	AssetType             *string `parquet:"asset_type,optional"`
+	AssetCode             *string `parquet:"asset_code,optional"`
+	AssetIssuer           *string `parquet:"asset_issuer,optional"`
 	Destination           *string `parquet:"destination,optional"`
+	SourceAsset           *string `parquet:"source_asset,optional"`
+	SourceAssetType       *string `parquet:"source_asset_type,optional"`
+	SourceAssetCode       *string `parquet:"source_asset_code,optional"`
+	SourceAssetIssuer     *string `parquet:"source_asset_issuer,optional"`
+	SourceAmount          *int64  `parquet:"source_amount,optional"`
+	DestinationMin        *int64  `parquet:"destination_min,optional"`
+	StartingBalance       *int64  `parquet:"starting_balance,optional"`
+	TrustlineLimit        *int64  `parquet:"trustline_limit,optional"`
+	OfferID               *int64  `parquet:"offer_id,optional"`
+	Price                 *string `parquet:"price,optional"`
+	PriceR                *string `parquet:"price_r,optional"`
+	BuyingAsset           *string `parquet:"buying_asset,optional"`
+	BuyingAssetType       *string `parquet:"buying_asset_type,optional"`
+	BuyingAssetCode       *string `parquet:"buying_asset_code,optional"`
+	BuyingAssetIssuer     *string `parquet:"buying_asset_issuer,optional"`
+	SellingAsset          *string `parquet:"selling_asset,optional"`
+	SellingAssetType      *string `parquet:"selling_asset_type,optional"`
+	SellingAssetCode      *string `parquet:"selling_asset_code,optional"`
+	SellingAssetIssuer    *string `parquet:"selling_asset_issuer,optional"`
+	SetFlags              *int32  `parquet:"set_flags,optional"`
+	ClearFlags            *int32  `parquet:"clear_flags,optional"`
+	HomeDomain            *string `parquet:"home_domain,optional"`
+	MasterWeight          *int32  `parquet:"master_weight,optional"`
+	LowThreshold          *int32  `parquet:"low_threshold,optional"`
+	MediumThreshold       *int32  `parquet:"medium_threshold,optional"`
+	HighThreshold         *int32  `parquet:"high_threshold,optional"`
+	DataName              *string `parquet:"data_name,optional"`
+	DataValue             *string `parquet:"data_value,optional"`
+	BalanceID             *string `parquet:"balance_id,optional"`
+	SponsoredID           *string `parquet:"sponsored_id,optional"`
+	BumpTo                *int64  `parquet:"bump_to,optional"`
+	SorobanAuthRequired   *bool   `parquet:"soroban_auth_required,optional"`
 	SorobanOperation      *string `parquet:"soroban_operation,optional"`
 	SorobanContractID     *string `parquet:"soroban_contract_id,optional"`
 	SorobanFunction       *string `parquet:"soroban_function,optional"`
@@ -163,6 +204,13 @@ type ParquetEffect struct {
 	AssetCode        *string `parquet:"asset_code,optional"`
 	AssetIssuer      *string `parquet:"asset_issuer,optional"`
 	AssetType        *string `parquet:"asset_type,optional"`
+	TrustlineLimit   *string `parquet:"trustline_limit,optional"`
+	AuthorizeFlag    *bool   `parquet:"authorize_flag,optional"`
+	ClawbackFlag     *bool   `parquet:"clawback_flag,optional"`
+	SignerAccount    *string `parquet:"signer_account,optional"`
+	SignerWeight     *int32  `parquet:"signer_weight,optional"`
+	OfferID          *int64  `parquet:"offer_id,optional"`
+	SellerAccount    *string `parquet:"seller_account,optional"`
 	CreatedAt        int64   `parquet:"created_at,timestamp(microsecond)"`
 	LedgerRange      uint32  `parquet:"ledger_range"`
 	PipelineVersion  string  `parquet:"pipeline_version"`
@@ -522,6 +570,7 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 				LedgerSequence:               t.LedgerSequence,
 				TransactionHash:              t.TransactionHash,
 				SourceAccount:                t.SourceAccount,
+				SourceAccountMuxed:           t.SourceAccountMuxed,
 				FeeCharged:                   t.FeeCharged,
 				MaxFee:                       t.MaxFee,
 				Successful:                   t.Successful,
@@ -534,6 +583,10 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 				LedgerRange:                  t.LedgerRange,
 				SignaturesCount:              int32(t.SignaturesCount),
 				NewAccount:                   t.NewAccount,
+				TimeboundsMinTime:            t.TimeboundsMinTime,
+				TimeboundsMaxTime:            t.TimeboundsMaxTime,
+				SorobanHostFunctionType:      t.SorobanHostFunctionType,
+				SorobanContractID:            t.SorobanContractID,
 				RentFeeCharged:               t.RentFeeCharged,
 				SorobanResourcesInstructions: t.SorobanResourcesInstructions,
 				SorobanResourcesReadBytes:    t.SorobanResourcesReadBytes,
@@ -555,12 +608,39 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 				d := int32(*o.MaxCallDepth)
 				maxDepth = &d
 			}
+			// Convert *int to *int32 for parquet fields
+			var setFlags, clearFlags, masterWeight, lowThreshold, mediumThreshold, highThreshold *int32
+			if o.SetFlags != nil {
+				v := int32(*o.SetFlags)
+				setFlags = &v
+			}
+			if o.ClearFlags != nil {
+				v := int32(*o.ClearFlags)
+				clearFlags = &v
+			}
+			if o.MasterWeight != nil {
+				v := int32(*o.MasterWeight)
+				masterWeight = &v
+			}
+			if o.LowThreshold != nil {
+				v := int32(*o.LowThreshold)
+				lowThreshold = &v
+			}
+			if o.MediumThreshold != nil {
+				v := int32(*o.MediumThreshold)
+				mediumThreshold = &v
+			}
+			if o.HighThreshold != nil {
+				v := int32(*o.HighThreshold)
+				highThreshold = &v
+			}
 			rows[i] = ParquetOperation{
 				TransactionHash:       o.TransactionHash,
 				TransactionIndex:      int32(o.TransactionIndex),
 				OperationIndex:        int32(o.OperationIndex),
 				LedgerSequence:        o.LedgerSequence,
 				SourceAccount:         o.SourceAccount,
+				SourceAccountMuxed:    o.SourceAccountMuxed,
 				OpType:                int32(o.OpType),
 				TypeString:            o.TypeString,
 				CreatedAt:             o.CreatedAt.UnixMicro(),
@@ -569,7 +649,42 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 				LedgerRange:           o.LedgerRange,
 				Amount:                o.Amount,
 				Asset:                 o.Asset,
+				AssetType:             o.AssetType,
+				AssetCode:             o.AssetCode,
+				AssetIssuer:           o.AssetIssuer,
 				Destination:           o.Destination,
+				SourceAsset:           o.SourceAsset,
+				SourceAssetType:       o.SourceAssetType,
+				SourceAssetCode:       o.SourceAssetCode,
+				SourceAssetIssuer:     o.SourceAssetIssuer,
+				SourceAmount:          o.SourceAmount,
+				DestinationMin:        o.DestinationMin,
+				StartingBalance:       o.StartingBalance,
+				TrustlineLimit:        o.TrustlineLimit,
+				OfferID:               o.OfferID,
+				Price:                 o.Price,
+				PriceR:                o.PriceR,
+				BuyingAsset:           o.BuyingAsset,
+				BuyingAssetType:       o.BuyingAssetType,
+				BuyingAssetCode:       o.BuyingAssetCode,
+				BuyingAssetIssuer:     o.BuyingAssetIssuer,
+				SellingAsset:          o.SellingAsset,
+				SellingAssetType:      o.SellingAssetType,
+				SellingAssetCode:      o.SellingAssetCode,
+				SellingAssetIssuer:    o.SellingAssetIssuer,
+				SetFlags:              setFlags,
+				ClearFlags:            clearFlags,
+				HomeDomain:            o.HomeDomain,
+				MasterWeight:          masterWeight,
+				LowThreshold:          lowThreshold,
+				MediumThreshold:       mediumThreshold,
+				HighThreshold:         highThreshold,
+				DataName:              o.DataName,
+				DataValue:             o.DataValue,
+				BalanceID:             o.BalanceID,
+				SponsoredID:           o.SponsoredID,
+				BumpTo:                o.BumpTo,
+				SorobanAuthRequired:   o.SorobanAuthRequired,
 				SorobanOperation:      o.SorobanOperation,
 				SorobanContractID:     o.SorobanContractID,
 				SorobanFunction:       o.SorobanFunction,
@@ -588,6 +703,11 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 	if len(batch.Effects) > 0 {
 		rows := make([]ParquetEffect, len(batch.Effects))
 		for i, e := range batch.Effects {
+			var signerWeight *int32
+			if e.SignerWeight != nil {
+				w := int32(*e.SignerWeight)
+				signerWeight = &w
+			}
 			rows[i] = ParquetEffect{
 				LedgerSequence:   e.LedgerSequence,
 				TransactionHash:  e.TransactionHash,
@@ -600,6 +720,13 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 				AssetCode:        e.AssetCode,
 				AssetIssuer:      e.AssetIssuer,
 				AssetType:        e.AssetType,
+				TrustlineLimit:   e.TrustlineLimit,
+				AuthorizeFlag:    e.AuthorizeFlag,
+				ClawbackFlag:     e.ClawbackFlag,
+				SignerAccount:    e.SignerAccount,
+				SignerWeight:     signerWeight,
+				OfferID:          e.OfferID,
+				SellerAccount:    e.SellerAccount,
 				CreatedAt:        e.CreatedAt.UnixMicro(),
 				LedgerRange:      e.LedgerRange,
 				PipelineVersion:  pw.pipelineVersion,

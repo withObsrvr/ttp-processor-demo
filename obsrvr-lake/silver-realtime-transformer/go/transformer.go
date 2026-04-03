@@ -106,6 +106,94 @@ func (rt *RealtimeTransformer) Stop() {
 	close(rt.stopChan)
 }
 
+// RunColdReplay reads from bronze cold DuckLake and writes to silver hot PostgreSQL.
+// This replays historical data through all 32 transform jobs without any code duplication.
+// The existing runTransformationCycle() handles all transforms — we just force the
+// SourceManager to read from cold instead of hot.
+func (rt *RealtimeTransformer) RunColdReplay(ctx context.Context, startLedger, endLedger, batchSize int64) error {
+	log.Printf("🔄 COLD REPLAY: Starting replay of ledgers %d → %d (batch size: %d)", startLedger, endLedger, batchSize)
+
+	// Position checkpoint just before the start (both DB and in-memory)
+	if err := rt.checkpoint.Reset(startLedger - 1); err != nil {
+		return fmt.Errorf("failed to reset checkpoint for replay: %w", err)
+	}
+	rt.mu.Lock()
+	rt.lastLedgerSequence = startLedger - 1
+	rt.mu.Unlock()
+
+	// Force SourceManager into backfill mode reading from cold
+	rt.sourceManager.ForceBackfillMode(endLedger)
+
+	// Override batch size for replay
+	origBatchSize := rt.config.Performance.BatchSize
+	rt.config.Performance.BatchSize = int(batchSize)
+	defer func() { rt.config.Performance.BatchSize = origBatchSize }()
+
+	totalStart := time.Now()
+	var totalRows int64
+	cycleCount := 0
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		// Check current position
+		currentLedger, err := rt.checkpoint.Load()
+		if err != nil {
+			return fmt.Errorf("failed to load checkpoint: %w", err)
+		}
+
+		if currentLedger >= endLedger {
+			elapsed := time.Since(totalStart)
+			log.Printf("✅ COLD REPLAY COMPLETE: %d ledgers processed, %d total rows, %s elapsed",
+				endLedger-startLedger+1, totalRows, elapsed.Round(time.Second))
+			return nil
+		}
+
+		// Run one transformation cycle (reuses all 32 transform jobs)
+		cycleStart := time.Now()
+		err = rt.runTransformationCycle()
+		cycleDuration := time.Since(cycleStart)
+
+		if err != nil {
+			log.Printf("⚠️  Replay cycle error at ledger %d: %v", currentLedger, err)
+			// Don't abort on individual cycle errors — log and continue
+			continue
+		}
+
+		// Track progress
+		newLedger, _ := rt.checkpoint.Load()
+		cycleRows := rt.lastTransformationRowCount
+		totalRows += cycleRows
+		cycleCount++
+
+		// Re-force backfill mode in case CheckAndSwitchMode tried to switch
+		rt.sourceManager.ForceBackfillMode(endLedger)
+
+		// Progress logging every 10 cycles
+		if cycleCount%10 == 0 {
+			elapsed := time.Since(totalStart)
+			ledgersProcessed := newLedger - startLedger + 1
+			ledgersRemaining := endLedger - newLedger
+			ledgersPerSec := float64(ledgersProcessed) / elapsed.Seconds()
+			var etaStr string
+			if ledgersPerSec > 0 {
+				etaSeconds := float64(ledgersRemaining) / ledgersPerSec
+				etaStr = time.Duration(etaSeconds * float64(time.Second)).Round(time.Second).String()
+			} else {
+				etaStr = "unknown"
+			}
+
+			pct := float64(ledgersProcessed) / float64(endLedger-startLedger+1) * 100
+			log.Printf("🔄 REPLAY PROGRESS: ledger %d / %d (%.1f%%) | %d rows | %.0f ledgers/sec | cycle %s | ETA %s",
+				newLedger, endLedger, pct, totalRows, ledgersPerSec, cycleDuration.Round(time.Millisecond), etaStr)
+		}
+	}
+}
+
 // migrateHexContractIDs converts existing 64-char hex contract IDs to 56-char C-encoded strkey
 // in token_transfers_raw, evicted_keys, and restored_keys tables. Runs once on startup.
 func (rt *RealtimeTransformer) migrateHexContractIDs() {

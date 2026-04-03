@@ -48,15 +48,19 @@ var HighVolumeBronzeTables = []string{
 }
 
 // RunCheckpoint performs automated DuckLake maintenance:
-// 1. Tiered merge for high-volume tables (controlled batch size)
-// 2. CHECKPOINT on the catalog (delegates compaction, snapshot expiration, and cleanup to DuckDB)
-// This is safe to run while the query API is serving reads (snapshot isolation).
+// Merges small Parquet files into larger ones for query performance.
+//
+// IMPORTANT: This intentionally does NOT run CHECKPOINT, expire_snapshots, or
+// cleanup_old_files. Those operations delete historical Parquet files from S3,
+// which destroys cold storage data. Our lakehouse architecture treats cold storage
+// as a permanent append-only archive — files should never be deleted automatically.
+//
 // Callers should hold the flusher's write lock to avoid conflicts with concurrent flushes.
 func (c *DuckDBClient) RunCheckpoint(ctx context.Context, maxCompactedFiles int) error {
 	startTime := time.Now()
-	log.Println("🔧 Running DuckLake CHECKPOINT maintenance...")
+	log.Println("🔧 Running DuckLake merge maintenance (merge only, no expire/cleanup)...")
 
-	// Step 1: Merge high-volume tables with controlled batch size
+	successCount := 0
 	for _, table := range HighVolumeBronzeTables {
 		mergeSQL := fmt.Sprintf(
 			`CALL ducklake_merge_adjacent_files('%s', '%s', schema => '%s', max_compacted_files => %d)`,
@@ -65,16 +69,12 @@ func (c *DuckDBClient) RunCheckpoint(ctx context.Context, maxCompactedFiles int)
 			log.Printf("   ⚠️  merge %s: %v", table, err)
 		} else {
 			log.Printf("   ✅ merged %s", table)
+			successCount++
 		}
 	}
 
-	// Step 2: Run CHECKPOINT for remaining tables + expire + cleanup
-	checkpointSQL := fmt.Sprintf("CHECKPOINT %s", c.config.CatalogName)
-	if _, err := c.db.ExecContext(ctx, checkpointSQL); err != nil {
-		return fmt.Errorf("CHECKPOINT failed: %w", err)
-	}
-
-	log.Printf("✅ DuckLake CHECKPOINT completed in %s", time.Since(startTime).Round(time.Millisecond))
+	log.Printf("✅ DuckLake merge completed (%d/%d tables) in %s",
+		successCount, len(HighVolumeBronzeTables), time.Since(startTime).Round(time.Millisecond))
 	return nil
 }
 

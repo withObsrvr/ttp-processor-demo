@@ -140,19 +140,45 @@ func (p *DuckLakePusher) Push(ctx context.Context, outputDir string) error {
 		parquetGlob := filepath.Join(bronzeDir, tableName, "**", "*.parquet")
 		fullTableName := fmt.Sprintf("%s.%s.%s", p.config.CatalogName, p.config.SchemaName, duckTableName)
 
-		// Use explicit column list to avoid positional mismatches when the
-		// DuckLake schema has more columns than our Parquet output.
-		colSQL := fmt.Sprintf("SELECT column_name FROM (DESCRIBE SELECT * FROM read_parquet('%s'))", parquetGlob)
-		colRows, err := p.db.QueryContext(ctx, colSQL)
-		var cols []string
+		// Get Parquet columns
+		parquetColSQL := fmt.Sprintf("SELECT column_name FROM (DESCRIBE SELECT * FROM read_parquet('%s'))", parquetGlob)
+		parquetColRows, err := p.db.QueryContext(ctx, parquetColSQL)
+		var parquetCols []string
 		if err == nil {
-			for colRows.Next() {
+			for parquetColRows.Next() {
 				var col string
-				if colRows.Scan(&col) == nil {
+				if parquetColRows.Scan(&col) == nil {
+					parquetCols = append(parquetCols, col)
+				}
+			}
+			parquetColRows.Close()
+		}
+
+		// Get DuckLake table columns to find the intersection
+		// (Parquet may have extra columns the table doesn't, e.g. list types)
+		tableColSQL := fmt.Sprintf("SELECT column_name FROM (DESCRIBE %s)", fullTableName)
+		tableColRows, err := p.db.QueryContext(ctx, tableColSQL)
+		tableColSet := map[string]bool{}
+		if err == nil {
+			for tableColRows.Next() {
+				var col string
+				if tableColRows.Scan(&col) == nil {
+					tableColSet[col] = true
+				}
+			}
+			tableColRows.Close()
+		}
+
+		// Use only columns that exist in BOTH Parquet and DuckLake table
+		var cols []string
+		if len(tableColSet) > 0 {
+			for _, col := range parquetCols {
+				if tableColSet[col] {
 					cols = append(cols, col)
 				}
 			}
-			colRows.Close()
+		} else {
+			cols = parquetCols
 		}
 
 		var insertSQL string
@@ -161,6 +187,26 @@ func (p *DuckLakePusher) Push(ctx context.Context, outputDir string) error {
 			insertSQL = fmt.Sprintf("INSERT INTO %s (%s) SELECT %s FROM read_parquet('%s')", fullTableName, colList, colList, parquetGlob)
 		} else {
 			insertSQL = fmt.Sprintf("INSERT INTO %s SELECT * FROM read_parquet('%s')", fullTableName, parquetGlob)
+		}
+
+		// Delete-before-insert for idempotent multi-push: remove any existing rows
+		// in the same ledger range before inserting, so re-pushing the same range
+		// doesn't create duplicates.
+		seqCol := ledgerSequenceColumn(duckTableName)
+		if seqCol != "" {
+			rangeSQL := fmt.Sprintf("SELECT MIN(%s), MAX(%s) FROM read_parquet('%s')", seqCol, seqCol, parquetGlob)
+			var minSeq, maxSeq sql.NullInt64
+			if err := p.db.QueryRowContext(ctx, rangeSQL).Scan(&minSeq, &maxSeq); err == nil && minSeq.Valid && maxSeq.Valid {
+				deleteSQL := fmt.Sprintf("DELETE FROM %s WHERE %s BETWEEN %d AND %d",
+					fullTableName, seqCol, minSeq.Int64, maxSeq.Int64)
+				if delResult, err := p.db.ExecContext(ctx, deleteSQL); err == nil {
+					deleted, _ := delResult.RowsAffected()
+					if deleted > 0 {
+						log.Printf("[DuckLake] %s: deleted %d existing rows in range %d-%d (idempotent push)",
+							duckTableName, deleted, minSeq.Int64, maxSeq.Int64)
+					}
+				}
+			}
 		}
 
 		log.Printf("[DuckLake] Pushing %s...", duckTableName)
@@ -246,11 +292,14 @@ CREATE TABLE IF NOT EXISTS bronze.ledgers_row_v2 (
 
 CREATE TABLE IF NOT EXISTS bronze.transactions_row_v2 (
     ledger_sequence BIGINT, transaction_hash TEXT, source_account TEXT,
+    source_account_muxed TEXT,
     fee_charged BIGINT, max_fee BIGINT, successful BOOLEAN,
     transaction_result_code TEXT, operation_count INTEGER,
     memo_type TEXT, memo TEXT, created_at TIMESTAMP,
     account_sequence BIGINT, ledger_range BIGINT,
     signatures_count INTEGER, new_account BOOLEAN,
+    timebounds_min_time TEXT, timebounds_max_time TEXT,
+    soroban_host_function_type TEXT, soroban_contract_id TEXT,
     rent_fee_charged BIGINT,
     soroban_resources_instructions BIGINT,
     soroban_resources_read_bytes BIGINT,
@@ -260,10 +309,24 @@ CREATE TABLE IF NOT EXISTS bronze.transactions_row_v2 (
 
 CREATE TABLE IF NOT EXISTS bronze.operations_row_v2 (
     transaction_hash TEXT, transaction_index INTEGER, operation_index INTEGER,
-    ledger_sequence BIGINT, source_account TEXT, op_type INTEGER,
-    type_string TEXT, created_at TIMESTAMP, transaction_successful BOOLEAN,
-    operation_result_code TEXT, ledger_range BIGINT,
-    amount BIGINT, asset TEXT, destination TEXT,
+    ledger_sequence BIGINT, source_account TEXT, source_account_muxed TEXT,
+    op_type INTEGER, type_string TEXT, created_at TIMESTAMP,
+    transaction_successful BOOLEAN, operation_result_code TEXT, ledger_range BIGINT,
+    amount BIGINT, asset TEXT,
+    asset_type TEXT, asset_code TEXT, asset_issuer TEXT,
+    destination TEXT,
+    source_asset TEXT, source_asset_type TEXT, source_asset_code TEXT, source_asset_issuer TEXT,
+    source_amount BIGINT, destination_min BIGINT, starting_balance BIGINT,
+    trustline_limit BIGINT,
+    offer_id BIGINT, price TEXT, price_r TEXT,
+    buying_asset TEXT, buying_asset_type TEXT, buying_asset_code TEXT, buying_asset_issuer TEXT,
+    selling_asset TEXT, selling_asset_type TEXT, selling_asset_code TEXT, selling_asset_issuer TEXT,
+    set_flags INTEGER, clear_flags INTEGER,
+    home_domain TEXT, master_weight INTEGER,
+    low_threshold INTEGER, medium_threshold INTEGER, high_threshold INTEGER,
+    data_name TEXT, data_value TEXT,
+    balance_id TEXT, sponsored_id TEXT, bump_to BIGINT,
+    soroban_auth_required BOOLEAN,
     soroban_operation TEXT, soroban_contract_id TEXT,
     soroban_function TEXT, soroban_arguments_json TEXT,
     contract_calls_json TEXT, max_call_depth INTEGER,
@@ -274,7 +337,11 @@ CREATE TABLE IF NOT EXISTS bronze.effects_row_v1 (
     ledger_sequence BIGINT, transaction_hash TEXT, operation_index INTEGER,
     effect_index INTEGER, effect_type INTEGER, effect_type_string TEXT,
     account_id TEXT, amount TEXT, asset_code TEXT, asset_issuer TEXT,
-    asset_type TEXT, created_at TIMESTAMP, ledger_range BIGINT,
+    asset_type TEXT,
+    trustline_limit TEXT, authorize_flag BOOLEAN, clawback_flag BOOLEAN,
+    signer_account TEXT, signer_weight INTEGER,
+    offer_id BIGINT, seller_account TEXT,
+    created_at TIMESTAMP, ledger_range BIGINT,
     pipeline_version TEXT
 );
 
@@ -409,3 +476,16 @@ CREATE TABLE IF NOT EXISTS bronze.contract_creations_v1 (
     ledger_range BIGINT, pipeline_version TEXT
 )
 `
+
+// ledgerSequenceColumn returns the ledger sequence column name for a given table.
+// Returns empty string for tables without a clear ledger sequence column.
+func ledgerSequenceColumn(tableName string) string {
+	switch tableName {
+	case "ledgers_row_v2":
+		return "sequence"
+	case "contract_creations_v1":
+		return "created_ledger"
+	default:
+		return "ledger_sequence"
+	}
+}
