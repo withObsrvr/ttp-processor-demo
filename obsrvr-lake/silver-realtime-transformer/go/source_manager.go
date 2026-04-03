@@ -31,6 +31,7 @@ type SourceManager struct {
 	backfillTarget int64 // Ledger we're trying to reach before switching back to hot
 
 	fallbackEnabled bool
+	replayMode      bool // When true, suppress automatic mode switching in CheckAndSwitchMode
 	mu              sync.RWMutex
 }
 
@@ -124,11 +125,28 @@ func (sm *SourceManager) RefreshLedgerRanges(ctx context.Context) error {
 	return nil
 }
 
+// ForceBackfillMode forces the SourceManager into backfill mode with a fixed target.
+// Used by cold replay to bypass gap detection. Also enables replayMode which
+// suppresses automatic mode switching back to hot.
+func (sm *SourceManager) ForceBackfillMode(target int64) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.mode = SourceModeBackfill
+	sm.backfillTarget = target
+	sm.replayMode = true
+	sm.fallbackEnabled = true
+}
+
 // CheckAndSwitchMode evaluates if we need to switch modes based on current state
 // Returns true if mode was switched
 func (sm *SourceManager) CheckAndSwitchMode(ctx context.Context, currentCheckpoint int64, dataFound bool) (bool, error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
+
+	// In replay mode, never auto-switch — caller controls the mode
+	if sm.replayMode {
+		return false, nil
+	}
 
 	nextLedger := currentCheckpoint + 1
 

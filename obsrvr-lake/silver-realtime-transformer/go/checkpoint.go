@@ -93,6 +93,22 @@ func (cm *CheckpointManager) SaveWithTx(tx *sql.Tx, ledgerSequence int64) error 
 	return nil
 }
 
+// Reset sets the checkpoint to a specific ledger sequence, creating the row if needed.
+// Used by cold replay to position the cursor before starting replay.
+func (cm *CheckpointManager) Reset(ledgerSequence int64) error {
+	query := fmt.Sprintf(`
+		INSERT INTO %s (id, last_ledger_sequence, last_processed_at)
+		VALUES (1, $1, $2)
+		ON CONFLICT (id) DO UPDATE SET last_ledger_sequence = $1, last_processed_at = $2
+	`, cm.tableName)
+
+	_, err := cm.db.Exec(query, ledgerSequence, time.Now())
+	if err != nil {
+		return fmt.Errorf("failed to reset checkpoint: %w", err)
+	}
+	return nil
+}
+
 // GetStatus returns checkpoint status information
 func (cm *CheckpointManager) GetStatus() (lastLedger int64, lastProcessed time.Time, err error) {
 	query := fmt.Sprintf(`

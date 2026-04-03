@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"flag"
 	"log"
@@ -14,6 +15,10 @@ import (
 func main() {
 	// Parse command line flags
 	configPath := flag.String("config", "config.yaml", "Path to config file")
+	coldReplay := flag.Bool("cold-replay", false, "Run one-shot cold replay: read from bronze cold DuckLake, write to silver hot")
+	replayStart := flag.Int64("replay-start", 0, "Start ledger for cold replay (0 = auto-detect from checkpoint)")
+	replayEnd := flag.Int64("replay-end", 0, "End ledger for cold replay (0 = auto-detect from bronze cold MAX)")
+	replayBatchSize := flag.Int64("replay-batch-size", 500, "Ledgers per batch during cold replay")
 	flag.Parse()
 
 	log.Println("🔧 Loading configuration from", *configPath)
@@ -93,7 +98,67 @@ func main() {
 	// Create transformer
 	transformer := NewRealtimeTransformer(config, sourceManager, silverWriter, checkpoint, silverDB)
 
-	// Start health server in goroutine
+	// Cold replay mode: one-shot batch processing from bronze cold → silver hot
+	if *coldReplay {
+		if bronzeColdReader == nil {
+			log.Fatalf("❌ Cold replay requires bronze_cold and s3 configuration. Enable fallback and configure bronze_cold + s3 in config.")
+		}
+
+		// Determine start ledger
+		start := *replayStart
+		if start == 0 {
+			// Auto-detect from existing checkpoint
+			existing, err := checkpoint.Load()
+			if err != nil {
+				log.Fatalf("Failed to load checkpoint: %v", err)
+			}
+			if existing > 0 {
+				start = existing + 1
+				log.Printf("📍 Resuming cold replay from checkpoint: ledger %d", start)
+			} else {
+				// Detect from bronze cold MIN
+				ctx := context.Background()
+				coldMin, err := bronzeColdReader.GetMinLedgerSequence(ctx)
+				if err != nil {
+					log.Fatalf("Failed to get bronze cold min ledger: %v", err)
+				}
+				start = coldMin
+				log.Printf("📍 Starting cold replay from bronze cold MIN: ledger %d", start)
+			}
+		}
+
+		// Determine end ledger
+		end := *replayEnd
+		if end == 0 {
+			ctx := context.Background()
+			coldMax, err := bronzeColdReader.GetMaxLedgerSequence(ctx)
+			if err != nil {
+				log.Fatalf("Failed to get bronze cold max ledger: %v", err)
+			}
+			end = coldMax
+			log.Printf("📍 Cold replay end: bronze cold MAX ledger %d", end)
+		}
+
+		log.Printf("🔄 COLD REPLAY MODE: ledgers %d → %d, batch size %d", start, end, *replayBatchSize)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+		go func() {
+			<-sigChan
+			log.Println("🛑 Shutdown signal received, stopping replay...")
+			cancel()
+		}()
+
+		if err := transformer.RunColdReplay(ctx, start, end, *replayBatchSize); err != nil {
+			log.Fatalf("Cold replay failed: %v", err)
+		}
+
+		log.Println("👋 Cold replay complete")
+		return
+	}
+
+	// Normal mode: start health server and polling loop
 	healthServer := NewHealthServer(transformer)
 	go func() {
 		if err := healthServer.Start(config.Service.HealthPort); err != nil {

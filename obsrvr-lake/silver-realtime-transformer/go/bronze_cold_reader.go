@@ -187,30 +187,30 @@ func (r *BronzeColdReader) QueryEnrichedOperations(ctx context.Context, startLed
 			o.operation_index,
 			o.ledger_sequence,
 			o.source_account,
-			o.type,
+			o.op_type AS type,
 			o.type_string,
 			o.created_at,
 			o.transaction_successful,
 			o.operation_result_code,
-			o.operation_trace_code,
+			NULL AS operation_trace_code,
 			o.ledger_range,
-			o.source_account_muxed,
+			NULL AS source_account_muxed,
 
-			-- Asset fields
+			-- Asset fields (single composite column in DuckLake)
 			o.asset,
-			o.asset_type,
-			o.asset_code,
-			o.asset_issuer,
-			o.source_asset,
-			o.source_asset_type,
-			o.source_asset_code,
-			o.source_asset_issuer,
+			NULL AS asset_type,
+			NULL AS asset_code,
+			NULL AS asset_issuer,
+			NULL AS source_asset,
+			NULL AS source_asset_type,
+			NULL AS source_asset_code,
+			NULL AS source_asset_issuer,
 
 			-- Payment/path payment fields
 			o.destination,
 			NULL AS destination_muxed,
 			o.amount,
-			o.source_amount,
+			NULL AS source_amount,
 
 			-- Path payment specific
 			NULL AS from_account,
@@ -219,42 +219,42 @@ func (r *BronzeColdReader) QueryEnrichedOperations(ctx context.Context, startLed
 			NULL AS to_muxed,
 
 			-- Trust line fields
-			o.trustline_limit AS limit_amount,
+			NULL AS limit_amount,
 
 			-- Offer fields
-			o.offer_id,
-			o.selling_asset,
-			o.selling_asset_type,
-			o.selling_asset_code,
-			o.selling_asset_issuer,
-			o.buying_asset,
-			o.buying_asset_type,
-			o.buying_asset_code,
-			o.buying_asset_issuer,
+			NULL AS offer_id,
+			NULL AS selling_asset,
+			NULL AS selling_asset_type,
+			NULL AS selling_asset_code,
+			NULL AS selling_asset_issuer,
+			NULL AS buying_asset,
+			NULL AS buying_asset_type,
+			NULL AS buying_asset_code,
+			NULL AS buying_asset_issuer,
 
 			-- Price fields
-			CASE WHEN o.price_r IS NOT NULL THEN CAST(json_extract(o.price_r, '$.n') AS INTEGER) ELSE NULL END AS price_n,
-			CASE WHEN o.price_r IS NOT NULL THEN CAST(json_extract(o.price_r, '$.d') AS INTEGER) ELSE NULL END AS price_d,
-			o.price,
+			NULL AS price_n,
+			NULL AS price_d,
+			NULL AS price,
 
 			-- Account creation
-			o.starting_balance,
+			NULL AS starting_balance,
 
 			-- Account management
-			o.home_domain,
+			NULL AS home_domain,
 			NULL AS inflation_dest,
 
 			-- Flags
-			o.set_flags,
+			NULL AS set_flags,
 			NULL AS set_flags_s,
-			o.clear_flags,
+			NULL AS clear_flags,
 			NULL AS clear_flags_s,
 
 			-- Thresholds
-			o.master_weight AS master_key_weight,
-			o.low_threshold,
-			o.medium_threshold AS med_threshold,
-			o.high_threshold,
+			NULL AS master_key_weight,
+			NULL AS low_threshold,
+			NULL AS med_threshold,
+			NULL AS high_threshold,
 
 			-- Signer fields
 			NULL AS signer_account_id,
@@ -262,8 +262,8 @@ func (r *BronzeColdReader) QueryEnrichedOperations(ctx context.Context, startLed
 			NULL AS signer_weight,
 
 			-- Data entry
-			o.data_name,
-			o.data_value,
+			NULL AS data_name,
+			NULL AS data_value,
 
 			-- Soroban fields
 			o.soroban_operation AS host_function_type,
@@ -273,7 +273,7 @@ func (r *BronzeColdReader) QueryEnrichedOperations(ctx context.Context, startLed
 			o.soroban_function AS function_name,
 
 			-- Claimable balance
-			o.balance_id,
+			NULL AS balance_id,
 			NULL AS claimant,
 			NULL AS claimant_muxed,
 			NULL AS predicate,
@@ -293,7 +293,7 @@ func (r *BronzeColdReader) QueryEnrichedOperations(ctx context.Context, startLed
 
 			-- Sponsorship
 			NULL AS sponsor,
-			o.sponsored_id,
+			NULL AS sponsored_id,
 			NULL AS begin_sponsor,
 
 			-- Transaction fields (enriched from JOIN)
@@ -316,8 +316,8 @@ func (r *BronzeColdReader) QueryEnrichedOperations(ctx context.Context, startLed
 			l.failed_tx_count AS ledger_failed_tx_count,
 
 			-- Derived fields
-			CASE WHEN o.type IN (1, 2, 13) THEN true ELSE false END AS is_payment_op,
-			CASE WHEN o.type = 24 THEN true ELSE false END AS is_soroban_op
+			CASE WHEN o.op_type IN (1, 2, 13) THEN true ELSE false END AS is_payment_op,
+			CASE WHEN o.op_type = 24 THEN true ELSE false END AS is_soroban_op
 		FROM %s o
 		INNER JOIN %s t
 			ON o.transaction_hash = t.transaction_hash
@@ -346,26 +346,18 @@ func (r *BronzeColdReader) QueryTokenTransfers(ctx context.Context, startLedger,
 			o.ledger_sequence,
 			'classic' AS source_type,
 			o.source_account AS from_account,
+			o.destination AS to_account,
 			CASE
-				WHEN o.type = 1 THEN o.destination
-				WHEN o.type = 2 THEN o.destination
-				WHEN o.type = 13 THEN o.destination
-			END AS to_account,
-			CASE
-				WHEN o.asset_type = 'native' THEN 'XLM'
-				ELSE o.asset_code
+				WHEN o.asset IS NULL OR o.asset = 'native' THEN 'XLM'
+				ELSE SPLIT_PART(o.asset, ':', 1)
 			END AS asset_code,
 			CASE
-				WHEN o.asset_type = 'native' THEN NULL
-				ELSE o.asset_issuer
+				WHEN o.asset IS NULL OR o.asset = 'native' THEN NULL
+				ELSE SPLIT_PART(o.asset, ':', 2)
 			END AS asset_issuer,
-			CAST(CASE
-				WHEN o.type = 1 THEN o.amount
-				WHEN o.type = 2 THEN o.amount
-				WHEN o.type = 13 THEN o.source_amount
-			END AS VARCHAR) AS amount,
+			CAST(o.amount AS VARCHAR) AS amount,
 			NULL AS token_contract_id,
-			o.type AS operation_type,
+			o.op_type AS operation_type,
 			t.successful AS transaction_successful,
 			NULL AS event_index
 		FROM %s o
@@ -374,7 +366,7 @@ func (r *BronzeColdReader) QueryTokenTransfers(ctx context.Context, startLedger,
 			AND o.ledger_sequence = t.ledger_sequence
 		INNER JOIN %s l
 			ON o.ledger_sequence = l.sequence
-		WHERE o.type IN (1, 2, 13)
+		WHERE o.op_type IN (1, 2, 13)
 		  AND o.ledger_sequence BETWEEN $1 AND $2
 
 		UNION ALL
@@ -458,12 +450,12 @@ func (r *BronzeColdReader) QueryAccountsSnapshot(ctx context.Context, startLedge
 				auth_clawback_enabled,
 				signers,
 				sponsor_account,
-				created_at,
-				updated_at,
+				closed_at AS created_at,
+				closed_at AS updated_at,
 				ledger_sequence,
 				ledger_range,
-				era_id,
-				version_label,
+				NULL AS era_id,
+				pipeline_version AS version_label,
 				ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY ledger_sequence DESC) as rn
 			FROM %s
 			WHERE ledger_sequence BETWEEN $1 AND $2
@@ -530,11 +522,11 @@ func (r *BronzeColdReader) QueryAccountsSnapshotAll(ctx context.Context, startLe
 			auth_clawback_enabled,
 			signers,
 			sponsor_account,
-			created_at,
-			updated_at,
+			closed_at AS created_at,
+			closed_at AS updated_at,
 			ledger_range,
-			era_id,
-			version_label
+			NULL AS era_id,
+			pipeline_version AS version_label
 		FROM %s
 		WHERE ledger_sequence BETWEEN $1 AND $2
 		ORDER BY account_id, ledger_sequence
@@ -565,10 +557,10 @@ func (r *BronzeColdReader) QueryTrustlinesSnapshotAll(ctx context.Context, start
 			t.clawback_enabled,
 			t.ledger_sequence,
 			l.closed_at,
-			t.created_at,
+			l.closed_at AS created_at,
 			t.ledger_range,
-			t.era_id,
-			t.version_label
+			NULL AS era_id,
+			NULL AS version_label
 		FROM %s t
 		INNER JOIN %s l ON t.ledger_sequence = l.sequence
 		WHERE t.ledger_sequence BETWEEN $1 AND $2
@@ -600,7 +592,7 @@ func (r *BronzeColdReader) QueryTrustlinesSnapshot(ctx context.Context, startLed
 				authorized_to_maintain_liabilities,
 				clawback_enabled,
 				ledger_sequence,
-				created_at,
+				TIMESTAMP '1970-01-01' AS created_at,
 				ledger_range,
 				ROW_NUMBER() OVER (PARTITION BY account_id, asset_type, asset_code, asset_issuer ORDER BY ledger_sequence DESC) as rn
 			FROM %s
@@ -650,7 +642,7 @@ func (r *BronzeColdReader) QueryOffersSnapshot(ctx context.Context, startLedger,
 				price,
 				flags,
 				ledger_sequence,
-				created_at,
+				closed_at AS created_at,
 				ledger_range,
 				ROW_NUMBER() OVER (PARTITION BY offer_id ORDER BY ledger_sequence DESC) as rn
 			FROM %s
@@ -700,10 +692,10 @@ func (r *BronzeColdReader) QueryOffersSnapshotAll(ctx context.Context, startLedg
 			amount,
 			price,
 			flags,
-			created_at,
+			closed_at AS created_at,
 			ledger_range,
-			era_id,
-			version_label
+			NULL AS era_id,
+			NULL AS version_label
 		FROM %s
 		WHERE ledger_sequence BETWEEN $1 AND $2
 		ORDER BY offer_id, ledger_sequence
@@ -728,8 +720,8 @@ func (r *BronzeColdReader) QueryAccountSignersSnapshotAll(ctx context.Context, s
 			weight,
 			sponsor,
 			ledger_range,
-			era_id,
-			version_label
+			NULL AS era_id,
+			NULL AS version_label
 		FROM %s
 		WHERE ledger_sequence BETWEEN $1 AND $2
 		  AND deleted = false
@@ -765,7 +757,7 @@ func (r *BronzeColdReader) QueryContractInvocations(ctx context.Context, startLe
 			o.ledger_range
 		FROM %s o
 		WHERE o.ledger_sequence BETWEEN $1 AND $2
-		  AND o.type = 24
+		  AND o.op_type = 24
 		  AND o.soroban_contract_id IS NOT NULL
 		  AND o.soroban_function IS NOT NULL
 		  AND o.soroban_arguments_json IS NOT NULL
@@ -793,14 +785,14 @@ func (r *BronzeColdReader) QueryContractCallGraphs(ctx context.Context, startLed
 			o.soroban_function,
 			o.soroban_arguments_json,
 			o.contract_calls_json,
-			o.contracts_involved,
+			NULL AS contracts_involved,
 			o.max_call_depth,
 			o.transaction_successful,
 			o.created_at,
 			o.ledger_range
 		FROM %s o
 		WHERE o.ledger_sequence BETWEEN $1 AND $2
-		  AND o.type = 24
+		  AND o.op_type = 24
 		  AND o.contract_calls_json IS NOT NULL
 		  AND o.max_call_depth > 0
 		ORDER BY o.ledger_sequence, o.transaction_index, o.operation_index
@@ -838,7 +830,7 @@ func (r *BronzeColdReader) QueryLiquidityPoolsSnapshot(ctx context.Context, star
 				asset_b_amount,
 				ledger_sequence,
 				closed_at,
-				created_at,
+				closed_at AS created_at,
 				ledger_range,
 				ROW_NUMBER() OVER (PARTITION BY liquidity_pool_id ORDER BY ledger_sequence DESC) as rn
 			FROM %s
@@ -889,7 +881,7 @@ func (r *BronzeColdReader) QueryClaimableBalancesSnapshot(ctx context.Context, s
 				flags,
 				ledger_sequence,
 				closed_at,
-				created_at,
+				closed_at AS created_at,
 				ledger_range,
 				ROW_NUMBER() OVER (PARTITION BY balance_id ORDER BY ledger_sequence DESC) as rn
 			FROM %s
@@ -1017,13 +1009,13 @@ func (r *BronzeColdReader) QueryEffects(ctx context.Context, startLedger, endLed
 			asset_code,
 			asset_issuer,
 			asset_type,
-			trustline_limit,
-			authorize_flag,
-			clawback_flag,
-			signer_account,
-			signer_weight,
-			offer_id,
-			seller_account,
+			NULL AS trustline_limit,
+			NULL AS authorize_flag,
+			NULL AS clawback_flag,
+			NULL AS signer_account,
+			NULL AS signer_weight,
+			NULL AS offer_id,
+			NULL AS seller_account,
 			created_at,
 			ledger_range
 		FROM %s
@@ -1058,7 +1050,7 @@ func (r *BronzeColdReader) QueryContractDataSnapshot(ctx context.Context, startL
 				last_modified_ledger,
 				ledger_sequence,
 				closed_at,
-				created_at,
+				closed_at AS created_at,
 				ledger_range,
 				ROW_NUMBER() OVER (PARTITION BY contract_id, ledger_key_hash ORDER BY ledger_sequence DESC) as rn
 			FROM %s
@@ -1110,7 +1102,7 @@ func (r *BronzeColdReader) QueryContractCodeSnapshot(ctx context.Context, startL
 				last_modified_ledger,
 				ledger_sequence,
 				closed_at,
-				created_at,
+				closed_at AS created_at,
 				ledger_range,
 				ROW_NUMBER() OVER (PARTITION BY contract_code_hash ORDER BY ledger_sequence DESC) as rn
 			FROM %s
@@ -1159,7 +1151,7 @@ func (r *BronzeColdReader) QueryTTLSnapshot(ctx context.Context, startLedger, en
 				last_modified_ledger,
 				ledger_sequence,
 				closed_at,
-				created_at,
+				closed_at AS created_at,
 				ledger_range,
 				ROW_NUMBER() OVER (PARTITION BY key_hash ORDER BY ledger_sequence DESC) as rn
 			FROM %s
@@ -1196,7 +1188,7 @@ func (r *BronzeColdReader) QueryEvictedKeys(ctx context.Context, startLedger, en
 			key_hash,
 			ledger_sequence,
 			closed_at,
-			created_at,
+			closed_at AS created_at,
 			ledger_range
 		FROM %s
 		WHERE ledger_sequence BETWEEN $1 AND $2
@@ -1219,7 +1211,7 @@ func (r *BronzeColdReader) QueryRestoredKeys(ctx context.Context, startLedger, e
 			key_hash,
 			ledger_sequence,
 			closed_at,
-			created_at,
+			closed_at AS created_at,
 			ledger_range
 		FROM %s
 		WHERE ledger_sequence BETWEEN $1 AND $2
@@ -1244,24 +1236,24 @@ func (r *BronzeColdReader) QueryConfigSettingsSnapshot(ctx context.Context, star
 		WITH ranked AS (
 			SELECT
 				config_setting_id,
-				ledger_max_instructions,
-				tx_max_instructions,
-				fee_rate_per_instructions_increment,
-				tx_memory_limit,
-				ledger_max_read_ledger_entries,
-				ledger_max_read_bytes,
-				ledger_max_write_ledger_entries,
-				ledger_max_write_bytes,
-				tx_max_read_ledger_entries,
-				tx_max_read_bytes,
-				tx_max_write_ledger_entries,
-				tx_max_write_bytes,
-				contract_max_size_bytes,
+				NULL AS ledger_max_instructions,
+				NULL AS tx_max_instructions,
+				NULL AS fee_rate_per_instructions_increment,
+				NULL AS tx_memory_limit,
+				NULL AS ledger_max_read_ledger_entries,
+				NULL AS ledger_max_read_bytes,
+				NULL AS ledger_max_write_ledger_entries,
+				NULL AS ledger_max_write_bytes,
+				NULL AS tx_max_read_ledger_entries,
+				NULL AS tx_max_read_bytes,
+				NULL AS tx_max_write_ledger_entries,
+				NULL AS tx_max_write_bytes,
+				NULL AS contract_max_size_bytes,
 				config_setting_xdr,
 				last_modified_ledger,
 				ledger_sequence,
 				closed_at,
-				created_at,
+				closed_at AS created_at,
 				ledger_range,
 				ROW_NUMBER() OVER (PARTITION BY config_setting_id ORDER BY ledger_sequence DESC) as rn
 			FROM %s

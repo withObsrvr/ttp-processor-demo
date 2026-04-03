@@ -117,16 +117,16 @@ func (c *ColdReader) QueryLedgers(ctx context.Context, start, end int64, limit i
 			base_reserve,
 			max_tx_set_size,
 			protocol_version,
-			ledger_header,
-			soroban_fee_write1kb as soroban_fee_write_1kb,
-			node_id,
-			signature,
+			NULL AS ledger_header,
+			NULL AS soroban_fee_write_1kb,
+			NULL AS node_id,
+			NULL AS signature,
 			ledger_range,
-			era_id,
-			version_label,
-			soroban_op_count,
-			total_fee_charged,
-			contract_events_count,
+			NULL AS era_id,
+			pipeline_version AS version_label,
+			NULL AS soroban_op_count,
+			NULL AS total_fee_charged,
+			NULL AS contract_events_count,
 			COALESCE(ingestion_timestamp, closed_at) as created_at
 		FROM %s.%s.ledgers_row_v2
 		WHERE sequence >= ? AND sequence <= ?
@@ -148,14 +148,14 @@ func (c *ColdReader) QueryTransactions(ctx context.Context, start, end int64, li
 			ledger_sequence,
 			transaction_hash,
 			source_account,
-			source_account_muxed,
+			NULL AS source_account_muxed,
 			account_sequence,
 			max_fee,
 			operation_count,
 			created_at,
 			ledger_range,
-			era_id,
-			version_label,
+			NULL AS era_id,
+			pipeline_version AS version_label,
 			successful
 		FROM %s.%s.transactions_row_v2
 		WHERE ledger_sequence >= ? AND ledger_sequence <= ?
@@ -177,13 +177,13 @@ func (c *ColdReader) QueryOperations(ctx context.Context, start, end int64, limi
 			ledger_sequence,
 			transaction_hash,
 			operation_index,
-			type,
+			op_type AS type,
 			source_account,
-			source_account_muxed,
+			NULL AS source_account_muxed,
 			created_at,
 			ledger_range,
-			era_id,
-			version_label
+			NULL AS era_id,
+			pipeline_version AS version_label
 		FROM %s.%s.operations_row_v2
 		WHERE ledger_sequence >= ? AND ledger_sequence <= ?
 		ORDER BY ledger_sequence ASC, transaction_hash ASC, operation_index ASC
@@ -212,17 +212,17 @@ func (c *ColdReader) QueryEffects(ctx context.Context, start, end int64, limit i
 			asset_code,
 			asset_issuer,
 			asset_type,
-			trustline_limit,
-			authorize_flag,
-			clawback_flag,
-			signer_account,
-			signer_weight,
-			offer_id,
-			seller_account,
+			NULL AS trustline_limit,
+			NULL AS authorize_flag,
+			NULL AS clawback_flag,
+			NULL AS signer_account,
+			NULL AS signer_weight,
+			NULL AS offer_id,
+			NULL AS seller_account,
 			created_at,
 			ledger_range,
-			era_id,
-			version_label
+			NULL AS era_id,
+			pipeline_version AS version_label
 		FROM %s.%s.effects_row_v1
 		WHERE ledger_sequence >= ? AND ledger_sequence <= ?
 		ORDER BY ledger_sequence ASC, transaction_hash ASC, operation_index ASC, effect_index ASC
@@ -254,8 +254,8 @@ func (c *ColdReader) QueryTrades(ctx context.Context, start, end int64, limit in
 			buying_amount,
 			price,
 			ledger_range,
-			era_id,
-			version_label
+			NULL AS era_id,
+			pipeline_version AS version_label
 		FROM %s.%s.trades_row_v1
 		WHERE ledger_sequence >= ? AND ledger_sequence <= ?
 		ORDER BY ledger_sequence ASC, transaction_hash ASC, operation_index ASC, trade_index ASC
@@ -289,9 +289,9 @@ func (c *ColdReader) QueryAccounts(ctx context.Context, accountID string, limit 
 			sponsor_account,
 			signers,
 			ledger_range,
-			era_id,
-			version_label,
-			created_at
+			NULL AS era_id,
+			pipeline_version AS version_label,
+			closed_at AS created_at
 		FROM %s.%s.accounts_snapshot_v1
 		WHERE account_id = ?
 		ORDER BY ledger_sequence DESC
@@ -319,9 +319,9 @@ func (c *ColdReader) QueryTrustlines(ctx context.Context, accountID string, limi
 			selling_liabilities,
 			ledger_sequence,
 			ledger_range,
-			era_id,
-			version_label,
-			created_at
+			NULL AS era_id,
+			pipeline_version AS version_label,
+			TIMESTAMP '1970-01-01' AS created_at
 		FROM %s.%s.trustlines_snapshot_v1
 		WHERE account_id = ?
 		ORDER BY ledger_sequence DESC
@@ -352,9 +352,9 @@ func (c *ColdReader) QueryOffers(ctx context.Context, sellerID string, limit int
 			flags,
 			ledger_sequence,
 			ledger_range,
-			era_id,
-			version_label,
-			created_at
+			NULL AS era_id,
+			pipeline_version AS version_label,
+			closed_at AS created_at
 		FROM %s.%s.offers_snapshot_v1
 		WHERE seller_account = ?
 		ORDER BY ledger_sequence DESC
@@ -383,8 +383,8 @@ func (c *ColdReader) QueryContractEvents(ctx context.Context, start, end int64, 
 			data_decoded,
 			closed_at,
 			ledger_range,
-			era_id,
-			version_label
+			NULL AS era_id,
+			pipeline_version AS version_label
 		FROM %s.%s.contract_events_stream_v1
 		WHERE ledger_sequence >= ? AND ledger_sequence <= ?
 		ORDER BY ledger_sequence ASC, transaction_hash ASC, operation_index ASC, event_index ASC

@@ -39,11 +39,12 @@ type LedgerData struct {
 	Ledgers           []LedgerRowData
 }
 
-// TransactionData represents a single transaction (simplified - core fields only)
+// TransactionData represents a single transaction
 type TransactionData struct {
 	LedgerSequence        uint32
 	TransactionHash       string
 	SourceAccount         string
+	SourceAccountMuxed    *string
 	FeeCharged            int64
 	MaxFee                int64
 	Successful            bool
@@ -56,6 +57,11 @@ type TransactionData struct {
 	LedgerRange           uint32
 	SignaturesCount       int
 	NewAccount            bool
+	TimeboundsMinTime     *string
+	TimeboundsMaxTime     *string
+	// Soroban fields
+	SorobanHostFunctionType *string
+	SorobanContractID       *string
 	// Soroban rent tracking (C13)
 	RentFeeCharged *int64
 	// Soroban resource fields
@@ -64,13 +70,14 @@ type TransactionData struct {
 	SorobanResourcesWriteBytes   *int64
 }
 
-// OperationData represents a single operation (simplified - core fields only)
+// OperationData represents a single operation
 type OperationData struct {
 	TransactionHash       string
 	TransactionIndex      int
 	OperationIndex        int
 	LedgerSequence        uint32
 	SourceAccount         string
+	SourceAccountMuxed    *string
 	OpType                int
 	TypeString            string
 	CreatedAt             time.Time
@@ -81,6 +88,52 @@ type OperationData struct {
 	Amount      *int64
 	Asset       *string
 	Destination *string
+	// Decomposed asset fields
+	AssetType *string
+	AssetCode *string
+	AssetIssuer *string
+	// Source asset (path payments)
+	SourceAsset     *string
+	SourceAssetType *string
+	SourceAssetCode *string
+	SourceAssetIssuer *string
+	SourceAmount    *int64
+	DestinationMin  *int64
+	StartingBalance *int64
+	// Trustline
+	TrustlineLimit *int64
+	// Offer fields
+	OfferID *int64
+	Price   *string
+	PriceR  *string
+	// Buying/Selling assets (offers)
+	BuyingAsset       *string
+	BuyingAssetType   *string
+	BuyingAssetCode   *string
+	BuyingAssetIssuer *string
+	SellingAsset       *string
+	SellingAssetType   *string
+	SellingAssetCode   *string
+	SellingAssetIssuer *string
+	// Set options
+	SetFlags        *int
+	ClearFlags      *int
+	HomeDomain      *string
+	MasterWeight    *int
+	LowThreshold   *int
+	MediumThreshold *int
+	HighThreshold   *int
+	// Manage data
+	DataName  *string
+	DataValue *string
+	// Claimable balance
+	BalanceID *string
+	// Sponsorship
+	SponsoredID *string
+	// Bump sequence
+	BumpTo *int64
+	// Soroban
+	SorobanAuthRequired *bool
 	// Soroban contract invocation fields
 	SorobanOperation     *string // Host function type: InvokeContract, CreateContract, UploadWasm, etc.
 	SorobanContractID    *string

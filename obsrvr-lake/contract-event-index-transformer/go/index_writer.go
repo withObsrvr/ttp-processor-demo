@@ -295,20 +295,22 @@ func (iw *IndexWriter) GetIndexStats(ctx context.Context) (map[string]interface{
 	}, nil
 }
 
-// RunCheckpoint performs automated DuckLake maintenance by issuing a DuckDB CHECKPOINT
-// on the configured catalog. This delegates file compaction, snapshot expiration, and
-// cleanup to DuckDB's internal maintenance mechanisms.
-// This is safe to run between writes (single table, no concurrent write conflict).
+// RunCheckpoint performs automated DuckLake maintenance by merging small files.
+//
+// IMPORTANT: Does NOT run CHECKPOINT (which expires snapshots and deletes files from S3).
+// Cold storage is a permanent append-only archive — files should never be deleted.
 func (iw *IndexWriter) RunCheckpoint(ctx context.Context, maxCompactedFiles int) error {
 	startTime := time.Now()
-	log.Println("🔧 Running DuckLake CHECKPOINT maintenance...")
+	log.Println("🔧 Running DuckLake merge maintenance (merge only, no expire/cleanup)...")
 
-	checkpointSQL := "CHECKPOINT testnet_catalog"
-	if _, err := iw.db.ExecContext(ctx, checkpointSQL); err != nil {
-		return fmt.Errorf("CHECKPOINT failed: %w", err)
+	mergeSQL := fmt.Sprintf(
+		`CALL ducklake_merge_adjacent_files('testnet_catalog', 'contract_events_index', schema => 'contract_index', max_compacted_files => %d)`,
+		maxCompactedFiles)
+	if _, err := iw.db.ExecContext(ctx, mergeSQL); err != nil {
+		return fmt.Errorf("merge failed: %w", err)
 	}
 
-	log.Printf("✅ DuckLake CHECKPOINT completed in %s", time.Since(startTime).Round(time.Millisecond))
+	log.Printf("✅ DuckLake merge completed in %s", time.Since(startTime).Round(time.Millisecond))
 	return nil
 }
 
