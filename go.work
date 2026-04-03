@@ -17,6 +17,7 @@ use (
 	./obsrvr-lake/silver-cold-flusher/go
 	./obsrvr-lake/silver-realtime-transformer/go
 	./obsrvr-lake/stellar-postgres-ingester/go
+	./obsrvr-lake/obsrvr-query-engine/go
 	./obsrvr-lake/stellar-query-api/go
 	./silver-transformer
 	./stellar-arrow-source/go

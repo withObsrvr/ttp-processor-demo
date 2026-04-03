@@ -1,0 +1,17 @@
+service:
+  name: obsrvr-query-engine
+  port: 8092
+
+ducklake:
+  catalog_path: "ducklake:postgres:postgresql://${DUCKLAKE_PG_USER}:${DUCKLAKE_PG_PASSWORD}@${DUCKLAKE_PG_HOST}:${DUCKLAKE_PG_PORT}/${DUCKLAKE_PG_DATABASE}"
+  data_path: "s3://${DUCKLAKE_DATA_BUCKET}/"
+  catalog_name: testnet_catalog
+  bronze_schema: bronze
+  silver_schema: silver
+  metadata_schema: bronze_meta
+
+s3:
+  key_id: "${AWS_ACCESS_KEY_ID}"
+  key_secret: "${AWS_SECRET_ACCESS_KEY}"
+  region: "${AWS_REGION}"
+  endpoint: "${AWS_ENDPOINT}"
