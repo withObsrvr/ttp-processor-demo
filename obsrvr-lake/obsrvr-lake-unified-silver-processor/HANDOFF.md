@@ -1,5 +1,51 @@
 # Unified Silver Processor — Developer Handoff
 
+## Architecture Decision (2026-04-05)
+
+DuckLake writes are too slow for wide silver tables (enriched_history_operations has 98 columns).
+Per-column stats tracking in PostgreSQL metadata makes every DuckLake INSERT expensive.
+
+**Decision: Silver uses PostgreSQL hot buffer + periodic DuckLake cold flush.**
+
+```
+stellar-live-source → unified-processor → DuckLake bronze (works great)
+                            ↓ gRPC :50053
+                      silver-processor → PostgreSQL silver_hot (fast writes)
+                            ↓ periodic (every 3hrs)
+                      silver-cold-flusher → DuckLake silver (batch, with inlining)
+
+query-engine → DuckLake bronze + PostgreSQL silver_hot (via DuckDB ATTACH POSTGRES)
+```
+
+### Next Steps (not yet implemented)
+
+**1. Silver processor → PostgreSQL writes**
+- Replace `ducklake_writer.go` with `postgres_writer.go`
+- Use `lib/pq` or `pgx` PostgreSQL driver
+- Same transform logic (transforms.go) but INSERT into PostgreSQL instead of DuckLake
+- Schema: use `init_silver_hot_complete.sql` from old transformer (PostgreSQL-native types)
+- Checkpoint: `silver_processor_checkpoint` table in silver_hot
+
+**2. Silver cold flusher**
+- Adapt existing `silver-cold-flusher` or create new one
+- Use DuckDB `postgres_scan` + INSERT INTO DuckLake pattern (proven approach)
+- Enable data inlining (eliminates merge-adjacent-files maintenance)
+- Periodic `ducklake_flush_inlined_data` to consolidate to Parquet
+- Flush frequency: every 3 hours
+
+**3. Query engine unified reader**
+- Use DuckDB ATTACH POSTGRES to connect to silver_hot
+- Pattern: `ATTACH 'dbname=silver_hot host=... ' AS hot_db (TYPE POSTGRES)`
+- Silver queries check hot_db first, fall back to DuckLake silver cold
+- Bronze queries stay DuckLake-only (no change)
+- Reference: old `stellar-query-api/go/unified_duckdb_reader.go`
+
+**4. Silver history loader**
+- Phase 1 works: bronze DuckLake → local Parquet (~108 ledgers/sec)
+- Phase 2 needs change: push to PostgreSQL silver_hot instead of DuckLake
+- Use `COPY FROM` or bulk INSERT for fast PostgreSQL loads
+- Then cold flusher handles DuckLake population
+
 ## Current State (2026-04-05)
 
 ### What's Built
