@@ -1,0 +1,416 @@
+syntax = "proto3";
+
+package bronze_ledger_service;
+
+option go_package = "github.com/withObsrvr/obsrvr-lake-unified-processor/gen/bronze_ledger_service";
+
+// BronzeLedgerService streams extracted bronze data per ledger.
+// The unified processor serves this after writing bronze to DuckLake.
+// Silver processors consume it for near real-time transforms.
+service BronzeLedgerService {
+    // Stream bronze data starting from a specific ledger sequence.
+    rpc StreamBronzeData(StreamBronzeRequest) returns (stream BronzeLedgerData) {}
+}
+
+message StreamBronzeRequest {
+    uint32 start_ledger = 1;
+}
+
+// BronzeLedgerData contains all extracted bronze data for a single ledger.
+// Each field maps to a DuckLake bronze table.
+message BronzeLedgerData {
+    uint32 ledger_sequence = 1;
+    string closed_at = 2;       // RFC 3339 timestamp
+    uint32 ledger_range = 3;
+
+    LedgerRow ledger = 10;
+    repeated TransactionRow transactions = 11;
+    repeated OperationRow operations = 12;
+    repeated EffectRow effects = 13;
+    repeated TradeRow trades = 14;
+    repeated AccountRow accounts = 15;
+    repeated TrustlineRow trustlines = 16;
+    repeated OfferRow offers = 17;
+    repeated AccountSignerRow account_signers = 18;
+    repeated ClaimableBalanceRow claimable_balances = 19;
+    repeated LiquidityPoolRow liquidity_pools = 20;
+    repeated ConfigSettingRow config_settings = 21;
+    repeated TTLRow ttl_entries = 22;
+    repeated EvictedKeyRow evicted_keys = 23;
+    repeated RestoredKeyRow restored_keys = 24;
+    repeated ContractEventRow contract_events = 25;
+    repeated ContractDataRow contract_data = 26;
+    repeated ContractCodeRow contract_code = 27;
+    repeated NativeBalanceRow native_balances = 28;
+    repeated ContractCreationRow contract_creations = 29;
+}
+
+// --- Core tables ---
+
+message LedgerRow {
+    uint32 sequence = 1;
+    string ledger_hash = 2;
+    string previous_ledger_hash = 3;
+    string closed_at = 4;
+    int32 protocol_version = 5;
+    int64 total_coins = 6;
+    int64 fee_pool = 7;
+    int32 base_fee = 8;
+    int32 base_reserve = 9;
+    int32 max_tx_set_size = 10;
+    int32 successful_tx_count = 11;
+    int32 failed_tx_count = 12;
+    int32 transaction_count = 13;
+    int32 operation_count = 14;
+    int32 tx_set_operation_count = 15;
+    uint32 ledger_range = 16;
+    // V3 fields
+    optional int64 soroban_fee_write1kb = 20;
+    optional string node_id = 21;
+    optional string signature = 22;
+    optional string ledger_header = 23;
+    optional int64 bucket_list_size = 24;
+    optional int64 live_soroban_state_size = 25;
+    optional int32 evicted_keys_count = 26;
+    optional int32 soroban_op_count = 27;
+    optional int64 total_fee_charged = 28;
+    optional int32 contract_events_count = 29;
+}
+
+message TransactionRow {
+    uint32 ledger_sequence = 1;
+    string transaction_hash = 2;
+    string source_account = 3;
+    int64 fee_charged = 4;
+    int64 max_fee = 5;
+    bool successful = 6;
+    string transaction_result_code = 7;
+    int32 operation_count = 8;
+    optional string memo_type = 9;
+    optional string memo = 10;
+    string created_at = 11;
+    int64 account_sequence = 12;
+    uint32 ledger_range = 13;
+    optional string source_account_muxed = 14;
+    int32 signatures_count = 15;
+    bool new_account = 16;
+    optional int64 rent_fee_charged = 17;
+    optional string soroban_host_function_type = 18;
+    optional string soroban_contract_id = 19;
+    optional int64 soroban_resources_instructions = 20;
+    optional int64 soroban_resources_read_bytes = 21;
+    optional int64 soroban_resources_write_bytes = 22;
+    // Fee bump fields
+    optional string fee_account_muxed = 30;
+    optional string inner_transaction_hash = 31;
+    optional int64 fee_bump_fee = 32;
+    optional int64 max_fee_bid = 33;
+    optional string inner_source_account = 34;
+    // Preconditions
+    optional int64 timebounds_min_time = 35;
+    optional int64 timebounds_max_time = 36;
+    optional int64 ledgerbounds_min = 37;
+    optional int64 ledgerbounds_max = 38;
+    optional int64 min_sequence_number = 39;
+    optional int64 min_sequence_age = 40;
+    // Soroban fee breakdown
+    optional int64 soroban_fee_base = 41;
+    optional int64 soroban_fee_resources = 42;
+    optional int64 soroban_fee_refund = 43;
+    optional int64 soroban_fee_charged = 44;
+    optional int64 soroban_fee_wasted = 45;
+    optional int32 soroban_contract_events_count = 46;
+    // Raw XDR
+    optional string tx_envelope = 50;
+    optional string tx_result = 51;
+    optional string tx_meta = 52;
+    optional string tx_fee_meta = 53;
+    optional string tx_signers = 54;
+    optional string extra_signers = 55;
+}
+
+message OperationRow {
+    string transaction_hash = 1;
+    int32 operation_index = 2;
+    uint32 ledger_sequence = 3;
+    string source_account = 4;
+    int32 type = 5;
+    string type_string = 6;
+    string created_at = 7;
+    bool transaction_successful = 8;
+    optional string operation_result_code = 9;
+    optional string operation_trace_code = 10;
+    uint32 ledger_range = 11;
+    optional string source_account_muxed = 12;
+    // Asset fields
+    optional int64 amount = 13;
+    optional string asset = 14;
+    optional string asset_type = 15;
+    optional string asset_code = 16;
+    optional string asset_issuer = 17;
+    optional string destination = 18;
+    optional string source_asset = 19;
+    optional string source_asset_type = 20;
+    optional string source_asset_code = 21;
+    optional string source_asset_issuer = 22;
+    optional int64 source_amount = 23;
+    optional int64 destination_min = 24;
+    optional int64 starting_balance = 25;
+    // DEX fields
+    optional int64 offer_id = 30;
+    optional string price = 31;
+    optional string buying_asset_code = 32;
+    optional string buying_asset_issuer = 33;
+    optional string selling_asset_code = 34;
+    optional string selling_asset_issuer = 35;
+    // Soroban fields
+    optional string soroban_operation = 40;
+    optional string soroban_function = 41;
+    optional string soroban_contract_id = 42;
+    optional string soroban_arguments_json = 43;
+    optional string contract_calls_json = 44;
+    optional int32 max_call_depth = 45;
+    optional string contracts_involved = 46;
+    // Transaction context
+    int32 transaction_index = 50;
+}
+
+message EffectRow {
+    uint32 ledger_sequence = 1;
+    string transaction_hash = 2;
+    int32 operation_index = 3;
+    int32 effect_index = 4;
+    int32 effect_type = 5;
+    string effect_type_string = 6;
+    optional string account_id = 7;
+    optional string amount = 8;
+    optional string asset_code = 9;
+    optional string asset_issuer = 10;
+    optional string asset_type = 11;
+    string created_at = 12;
+    uint32 ledger_range = 13;
+}
+
+message TradeRow {
+    uint32 ledger_sequence = 1;
+    string transaction_hash = 2;
+    int32 operation_index = 3;
+    int32 trade_index = 4;
+    string trade_type = 5;
+    string trade_timestamp = 6;
+    string seller_account = 7;
+    optional string selling_asset_code = 8;
+    optional string selling_asset_issuer = 9;
+    string selling_amount = 10;
+    string buyer_account = 11;
+    optional string buying_asset_code = 12;
+    optional string buying_asset_issuer = 13;
+    string buying_amount = 14;
+    string price = 15;
+    uint32 ledger_range = 16;
+}
+
+message AccountRow {
+    string account_id = 1;
+    uint32 ledger_sequence = 2;
+    string closed_at = 3;
+    string balance = 4;
+    uint64 sequence_number = 5;
+    uint32 flags = 6;
+    optional string home_domain = 7;
+    optional string signers = 8;
+    optional string sponsor_account = 9;
+    uint32 ledger_range = 10;
+}
+
+message TrustlineRow {
+    string account_id = 1;
+    string asset_code = 2;
+    string asset_issuer = 3;
+    string asset_type = 4;
+    string balance = 5;
+    string trust_limit = 6;
+    bool authorized = 7;
+    uint32 ledger_sequence = 8;
+    uint32 ledger_range = 9;
+}
+
+message OfferRow {
+    int64 offer_id = 1;
+    string seller_account = 2;
+    uint32 ledger_sequence = 3;
+    string closed_at = 4;
+    string selling_asset_type = 5;
+    optional string selling_asset_code = 6;
+    optional string selling_asset_issuer = 7;
+    string buying_asset_type = 8;
+    optional string buying_asset_code = 9;
+    optional string buying_asset_issuer = 10;
+    string amount = 11;
+    string price = 12;
+    uint32 flags = 13;
+    uint32 ledger_range = 14;
+}
+
+message AccountSignerRow {
+    string account_id = 1;
+    string signer = 2;
+    uint32 ledger_sequence = 3;
+    uint32 weight = 4;
+    string sponsor = 5;
+    bool deleted = 6;
+    string closed_at = 7;
+    uint32 ledger_range = 8;
+}
+
+message ClaimableBalanceRow {
+    string balance_id = 1;
+    string sponsor = 2;
+    uint32 ledger_sequence = 3;
+    string closed_at = 4;
+    string asset_type = 5;
+    optional string asset_code = 6;
+    optional string asset_issuer = 7;
+    int64 amount = 8;
+    int32 claimants_count = 9;
+    uint32 ledger_range = 10;
+}
+
+message LiquidityPoolRow {
+    string liquidity_pool_id = 1;
+    uint32 ledger_sequence = 2;
+    string closed_at = 3;
+    string pool_type = 4;
+    int32 fee = 5;
+    int64 total_pool_shares = 6;
+    string asset_a_type = 7;
+    optional string asset_a_code = 8;
+    optional string asset_a_issuer = 9;
+    int64 asset_a_amount = 10;
+    string asset_b_type = 11;
+    optional string asset_b_code = 12;
+    optional string asset_b_issuer = 13;
+    int64 asset_b_amount = 14;
+    uint32 ledger_range = 15;
+}
+
+message ConfigSettingRow {
+    int32 config_setting_id = 1;
+    uint32 ledger_sequence = 2;
+    int32 last_modified_ledger = 3;
+    bool deleted = 4;
+    string closed_at = 5;
+    string config_setting_xdr = 6;
+    uint32 ledger_range = 7;
+}
+
+message TTLRow {
+    string key_hash = 1;
+    uint32 ledger_sequence = 2;
+    int64 live_until_ledger_seq = 3;
+    int64 ttl_remaining = 4;
+    bool expired = 5;
+    int32 last_modified_ledger = 6;
+    bool deleted = 7;
+    string closed_at = 8;
+    uint32 ledger_range = 9;
+}
+
+message EvictedKeyRow {
+    string key_hash = 1;
+    uint32 ledger_sequence = 2;
+    string contract_id = 3;
+    string key_type = 4;
+    string durability = 5;
+    string closed_at = 6;
+    uint32 ledger_range = 7;
+}
+
+message RestoredKeyRow {
+    string key_hash = 1;
+    uint32 ledger_sequence = 2;
+    string contract_id = 3;
+    string key_type = 4;
+    string durability = 5;
+    int64 restored_from_ledger = 6;
+    string closed_at = 7;
+    uint32 ledger_range = 8;
+}
+
+message ContractEventRow {
+    string event_id = 1;
+    string contract_id = 2;
+    uint32 ledger_sequence = 3;
+    string transaction_hash = 4;
+    string closed_at = 5;
+    string event_type = 6;
+    bool in_successful_contract_call = 7;
+    string topics_json = 8;
+    string topics_decoded = 9;
+    string data_xdr = 10;
+    string data_decoded = 11;
+    int32 topic_count = 12;
+    int32 operation_index = 13;
+    int32 event_index = 14;
+    optional string topic0_decoded = 15;
+    optional string topic1_decoded = 16;
+    optional string topic2_decoded = 17;
+    optional string topic3_decoded = 18;
+    uint32 ledger_range = 19;
+}
+
+message ContractDataRow {
+    string contract_id = 1;
+    uint32 ledger_sequence = 2;
+    string ledger_key_hash = 3;
+    string contract_key_type = 4;
+    string contract_durability = 5;
+    optional string asset_code = 6;
+    optional string asset_issuer = 7;
+    optional string asset_type = 8;
+    optional string balance_holder = 9;
+    optional string balance = 10;
+    int32 last_modified_ledger = 11;
+    int32 ledger_entry_change = 12;
+    bool deleted = 13;
+    string closed_at = 14;
+    string contract_data_xdr = 15;
+    optional string token_name = 16;
+    optional string token_symbol = 17;
+    optional int32 token_decimals = 18;
+    uint32 ledger_range = 19;
+}
+
+message ContractCodeRow {
+    string contract_code_hash = 1;
+    string ledger_key_hash = 2;
+    int32 contract_code_ext_v = 3;
+    int32 last_modified_ledger = 4;
+    int32 ledger_entry_change = 5;
+    bool deleted = 6;
+    string closed_at = 7;
+    uint32 ledger_sequence = 8;
+    int64 n_instructions = 9;
+    int64 n_functions = 10;
+    uint32 ledger_range = 11;
+}
+
+message NativeBalanceRow {
+    string account_id = 1;
+    int64 balance = 2;
+    int64 buying_liabilities = 3;
+    int64 selling_liabilities = 4;
+    int64 sequence_number = 5;
+    int64 last_modified_ledger = 6;
+    uint32 ledger_sequence = 7;
+    uint32 ledger_range = 8;
+}
+
+message ContractCreationRow {
+    string contract_id = 1;
+    string creator_address = 2;
+    optional string wasm_hash = 3;
+    int64 created_ledger = 4;
+    string created_at = 5;
+    uint32 ledger_range = 6;
+}

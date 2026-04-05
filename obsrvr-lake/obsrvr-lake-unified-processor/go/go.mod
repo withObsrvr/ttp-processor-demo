@@ -4,9 +4,10 @@ go 1.25
 
 require (
 	github.com/duckdb/duckdb-go/v2 v2.10501.0
-	github.com/stellar/go-stellar-sdk v0.3.0
+	github.com/stellar/go-stellar-sdk v0.4.0
 	github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/go v0.0.0-00010101000000-000000000000
 	google.golang.org/grpc v1.79.3
+	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -118,7 +119,6 @@ require (
 	google.golang.org/genproto v0.0.0-20250303144028-a0af3efb3deb // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20251202230838-ff82c1b0f217 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20251202230838-ff82c1b0f217 // indirect
-	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/djherbis/atime.v1 v1.0.0 // indirect
 	gopkg.in/djherbis/stream.v1 v1.3.1 // indirect
 )

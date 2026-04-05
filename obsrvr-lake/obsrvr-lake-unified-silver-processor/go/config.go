@@ -7,7 +7,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config holds all configuration for the unified processor
 type Config struct {
 	Service  ServiceConfig  `yaml:"service"`
 	Source   SourceConfig   `yaml:"source"`
@@ -18,23 +17,22 @@ type Config struct {
 type ServiceConfig struct {
 	Name       string `yaml:"name"`
 	HealthPort int    `yaml:"health_port"`
-	GRPCPort   int    `yaml:"grpc_port"`
 }
 
 type SourceConfig struct {
-	Endpoint          string `yaml:"endpoint"`
-	StartLedger       uint32 `yaml:"start_ledger"`
-	NetworkPassphrase string `yaml:"network_passphrase"`
+	Endpoint    string `yaml:"endpoint"`
+	StartLedger uint32 `yaml:"start_ledger"`
 }
 
 type DuckLakeConfig struct {
-	CatalogPath    string `yaml:"catalog_path"`    // ducklake:postgres:postgresql://...
-	DataPath       string `yaml:"data_path"`       // s3://bucket/
-	CatalogName    string `yaml:"catalog_name"`    // testnet_catalog
-	BronzeSchema   string `yaml:"bronze_schema"`   // bronze
-	MetadataSchema string `yaml:"metadata_schema"` // bronze_meta (for bronze), etc.
-	FlushInterval  int    `yaml:"flush_interval_seconds"` // seconds between ducklake_flush_inlined_data calls
-	InliningLimit  int    `yaml:"inlining_row_limit"`     // default 10
+	CatalogPath    string `yaml:"catalog_path"`
+	DataPath       string `yaml:"data_path"`
+	CatalogName    string `yaml:"catalog_name"`
+	BronzeSchema   string `yaml:"bronze_schema"`
+	SilverSchema   string `yaml:"silver_schema"`
+	MetadataSchema string `yaml:"metadata_schema"`
+	FlushInterval  int    `yaml:"flush_interval_seconds"`
+	InliningLimit  int    `yaml:"inlining_row_limit"`
 }
 
 type S3Config struct {
@@ -55,24 +53,26 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 
-	// Defaults
 	if cfg.Service.Name == "" {
-		cfg.Service.Name = "obsrvr-lake-unified-processor"
+		cfg.Service.Name = "obsrvr-lake-unified-silver-processor"
 	}
 	if cfg.Service.HealthPort == 0 {
-		cfg.Service.HealthPort = 8098
+		cfg.Service.HealthPort = 8099
 	}
 	if cfg.DuckLake.CatalogName == "" {
-		cfg.DuckLake.CatalogName = "lake"
+		cfg.DuckLake.CatalogName = "testnet_catalog"
 	}
 	if cfg.DuckLake.BronzeSchema == "" {
 		cfg.DuckLake.BronzeSchema = "bronze"
 	}
+	if cfg.DuckLake.SilverSchema == "" {
+		cfg.DuckLake.SilverSchema = "silver"
+	}
 	if cfg.DuckLake.FlushInterval == 0 {
-		cfg.DuckLake.FlushInterval = 300 // 5 minutes
+		cfg.DuckLake.FlushInterval = 300
 	}
 	if cfg.DuckLake.InliningLimit == 0 {
-		cfg.DuckLake.InliningLimit = 10
+		cfg.DuckLake.InliningLimit = 100
 	}
 
 	return &cfg, nil

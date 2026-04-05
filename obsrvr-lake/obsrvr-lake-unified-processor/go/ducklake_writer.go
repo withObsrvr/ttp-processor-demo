@@ -10,7 +10,7 @@ import (
 	_ "github.com/duckdb/duckdb-go/v2"
 )
 
-// DuckLakeWriter manages all writes to DuckLake (bronze, silver, index)
+// DuckLakeWriter manages all writes to DuckLake (bronze layer)
 type DuckLakeWriter struct {
 	db  *sql.DB
 	cfg *Config
@@ -86,38 +86,24 @@ func (w *DuckLakeWriter) initialize() error {
 	}
 	log.Printf("DuckLake catalog '%s' attached", w.cfg.DuckLake.CatalogName)
 
-	// Create schemas within the DuckLake catalog
-	schemas := []string{w.cfg.DuckLake.BronzeSchema, w.cfg.DuckLake.SilverSchema, w.cfg.DuckLake.IndexSchema}
-	// Deduplicate in case schemas are the same
-	seen := map[string]bool{}
-	for _, schema := range schemas {
-		if seen[schema] {
-			continue
-		}
-		seen[schema] = true
-		createSQL := fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s.%s", w.cfg.DuckLake.CatalogName, schema)
-		if _, err := w.db.ExecContext(ctx, createSQL); err != nil {
-			return fmt.Errorf("create schema %s: %w", schema, err)
-		}
+	// Create bronze schema within the DuckLake catalog
+	bronzeSchema := w.cfg.DuckLake.BronzeSchema
+	createSQL := fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s.%s", w.cfg.DuckLake.CatalogName, bronzeSchema)
+	if _, err := w.db.ExecContext(ctx, createSQL); err != nil {
+		return fmt.Errorf("create schema %s: %w", bronzeSchema, err)
 	}
-	log.Printf("Schemas created: %v", schemas)
+	log.Printf("Schema created: %s", bronzeSchema)
 
-	// Create tables
+	// Create bronze tables
 	if err := w.createBronzeTables(ctx); err != nil {
 		return fmt.Errorf("create bronze tables: %w", err)
 	}
-	if err := w.createSilverTables(ctx); err != nil {
-		return fmt.Errorf("create silver tables: %w", err)
-	}
-	if err := w.createIndexTables(ctx); err != nil {
-		return fmt.Errorf("create index tables: %w", err)
-	}
 
-	log.Println("All DuckLake tables ready")
+	log.Println("Bronze DuckLake tables ready")
 	return nil
 }
 
-// ProcessLedgerData writes bronze data and transforms to silver within a single transaction
+// ProcessLedgerData writes bronze data to DuckLake within a single transaction
 func (w *DuckLakeWriter) ProcessLedgerData(ctx context.Context, data *BronzeData, ledgerSeq uint32) error {
 	tx, err := w.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -128,35 +114,13 @@ func (w *DuckLakeWriter) ProcessLedgerData(ctx context.Context, data *BronzeData
 	cat := w.cfg.DuckLake.CatalogName
 	bronze := w.cfg.DuckLake.BronzeSchema
 
-	// Step 1: Write bronze tables
+	// Write bronze tables
 	if err := w.writeBronzeLedger(ctx, tx, cat, bronze, data); err != nil {
 		return fmt.Errorf("write bronze: %w", err)
 	}
 
-	// Step 2: Transform bronze → silver (INSERT-SELECT within same tx)
-	silver := w.cfg.DuckLake.SilverSchema
+	// Save checkpoint
 	seq := int64(ledgerSeq)
-	if err := w.transformSilver(ctx, tx, cat, bronze, silver, seq, seq); err != nil {
-		return fmt.Errorf("transform silver: %w", err)
-	}
-
-	// Step 2b: Materialize current-state tables
-	if err := transformCurrentState(ctx, tx, cat, bronze, silver, seq, seq); err != nil {
-		return fmt.Errorf("transform current state: %w", err)
-	}
-
-	// Step 3: Materialize semantic layer
-	if err := w.transformSemantic(ctx, tx, cat, silver, seq, seq); err != nil {
-		return fmt.Errorf("transform semantic: %w", err)
-	}
-
-	// Step 4: Build indexes
-	idx := w.cfg.DuckLake.IndexSchema
-	if err := w.buildIndexes(ctx, tx, cat, bronze, idx, seq, seq); err != nil {
-		return fmt.Errorf("build indexes: %w", err)
-	}
-
-	// Step 5: Update checkpoint
 	if err := w.saveCheckpoint(ctx, tx, cat, seq); err != nil {
 		return fmt.Errorf("save checkpoint: %w", err)
 	}

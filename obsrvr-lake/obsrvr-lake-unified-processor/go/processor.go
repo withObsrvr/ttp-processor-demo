@@ -10,14 +10,15 @@ import (
 	pb "github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/go/gen/raw_ledger_service"
 )
 
-// Processor handles the per-ledger pipeline: extract → bronze → silver → semantic → index
+// Processor handles the per-ledger pipeline: extract → bronze
 type Processor struct {
-	cfg    *Config
-	writer *DuckLakeWriter
+	cfg           *Config
+	writer        *DuckLakeWriter
+	bronzeServer  *BronzeServer
 }
 
-func NewProcessor(cfg *Config, writer *DuckLakeWriter) *Processor {
-	return &Processor{cfg: cfg, writer: writer}
+func NewProcessor(cfg *Config, writer *DuckLakeWriter, bronzeServer *BronzeServer) *Processor {
+	return &Processor{cfg: cfg, writer: writer, bronzeServer: bronzeServer}
 }
 
 // ProcessLedger handles a single ledger through the full pipeline
@@ -46,9 +47,15 @@ func (p *Processor) ProcessLedger(ctx context.Context, rawLedger *pb.RawLedger) 
 		return fmt.Errorf("bronze extraction for ledger %d: %w", ledgerSeq, err)
 	}
 
-	// Step 2: Write bronze to DuckLake + transform silver + semantic + index (single tx)
+	// Step 2: Write bronze to DuckLake
 	if err := p.writer.ProcessLedgerData(ctx, bronzeData, ledgerSeq); err != nil {
 		return fmt.Errorf("write ledger %d: %w", ledgerSeq, err)
+	}
+
+	// Step 3: Broadcast bronze data to gRPC subscribers
+	if p.bronzeServer != nil {
+		protoData := ConvertToProto(bronzeData, ledgerSeq, closedAt, ledgerRange)
+		p.bronzeServer.Broadcast(protoData)
 	}
 
 	return nil

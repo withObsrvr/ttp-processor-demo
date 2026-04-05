@@ -22,8 +22,11 @@ import (
 // Ensure math/big is used (for SAC balance detection)
 var _ = (*big.Int)(nil)
 
-// PipelineVersion identifies this processor build in pipeline_version columns.
-var PipelineVersion = "unified-processor-dev"
+// EraID identifies this processor in era_id columns.
+var EraID = "unified-processor"
+
+// VersionLabel identifies this processor build in version_label columns.
+var VersionLabel = "v1.0.0-dev"
 
 // extractAllBronze extracts all bronze data from a single ledger's XDR.
 func extractAllBronze(meta LedgerMeta, networkPassphrase string) (*BronzeData, error) {
@@ -77,7 +80,7 @@ func extractAllBronze(meta LedgerMeta, networkPassphrase string) (*BronzeData, e
 	data.Accounts = accounts
 
 	// --- Trustlines ---
-	trustlines, err := extractTrustlineRows(lcm, networkPassphrase, seq, ledgerRange)
+	trustlines, err := extractTrustlineRows(lcm, networkPassphrase, seq, closedAt, ledgerRange)
 	if err != nil {
 		log.Printf("Warning: extract trustlines: %v", err)
 	}
@@ -207,7 +210,8 @@ func extractLedgerRow(lcm xdr.LedgerCloseMeta, ledgerSeq uint32, closedAt time.T
 		MaxTxSetSize:       int(header.Header.MaxTxSetSize),
 		IngestionTimestamp:  time.Now().UTC(),
 		LedgerRange:        ledgerRange,
-		PipelineVersion:    PipelineVersion,
+		EraID:              EraID,
+		VersionLabel:       VersionLabel,
 	}
 
 	// Count transactions and operations
@@ -261,7 +265,123 @@ func extractLedgerRow(lcm xdr.LedgerCloseMeta, ledgerSeq uint32, closedAt time.T
 	row.OperationCount = operationCount
 	row.TxSetOperationCount = txSetOperationCount
 
+	// --- V3 ledger aggregates ---
+
+	// Compute per-ledger aggregates from TxProcessing
+	var totalFeeCharged int64
+	var contractEventsCount int
+	var sorobanOpCount int
+
+	switch lcm.V {
+	case 1:
+		for _, txApply := range lcm.MustV1().TxProcessing {
+			totalFeeCharged += int64(txApply.Result.Result.FeeCharged)
+			contractEventsCount += countContractEventsFromMeta(&txApply.TxApplyProcessing)
+			// Count Soroban operations
+			if opResults, ok := txApply.Result.Result.OperationResults(); ok {
+				for _, opResult := range opResults {
+					if opResult.Code == xdr.OperationResultCodeOpInner {
+						tr := opResult.MustTr()
+						switch tr.Type {
+						case xdr.OperationTypeInvokeHostFunction, xdr.OperationTypeExtendFootprintTtl, xdr.OperationTypeRestoreFootprint:
+							sorobanOpCount++
+						}
+					}
+				}
+			}
+		}
+	case 2:
+		for _, txApply := range lcm.MustV2().TxProcessing {
+			totalFeeCharged += int64(txApply.Result.Result.FeeCharged)
+			contractEventsCount += countContractEventsFromMeta(&txApply.TxApplyProcessing)
+			if opResults, ok := txApply.Result.Result.OperationResults(); ok {
+				for _, opResult := range opResults {
+					if opResult.Code == xdr.OperationResultCodeOpInner {
+						tr := opResult.MustTr()
+						switch tr.Type {
+						case xdr.OperationTypeInvokeHostFunction, xdr.OperationTypeExtendFootprintTtl, xdr.OperationTypeRestoreFootprint:
+							sorobanOpCount++
+						}
+					}
+				}
+			}
+		}
+	}
+
+	row.TotalFeeCharged = &totalFeeCharged
+	row.ContractEventsCount = &contractEventsCount
+	row.SorobanOpCount = &sorobanOpCount
+
+	// Protocol 20+ Soroban fields
+	if lcmV1, ok := lcm.GetV1(); ok {
+		if extV1, ok := lcmV1.Ext.GetV1(); ok {
+			feeWrite := int64(extV1.SorobanFeeWrite1Kb)
+			row.SorobanFeeWrite1KB = &feeWrite
+		}
+	} else if lcmV2, ok := lcm.GetV2(); ok {
+		if extV1, ok := lcmV2.Ext.GetV1(); ok {
+			feeWrite := int64(extV1.SorobanFeeWrite1Kb)
+			row.SorobanFeeWrite1KB = &feeWrite
+		}
+	}
+
+	// Node ID and signature (from SCP value)
+	if lcValueSig, ok := header.Header.ScpValue.Ext.GetLcValueSignature(); ok {
+		nodeIDStr := base64.StdEncoding.EncodeToString(lcValueSig.NodeId.Ed25519[:])
+		row.NodeID = &nodeIDStr
+
+		sigStr := base64.StdEncoding.EncodeToString(lcValueSig.Signature[:])
+		row.Signature = &sigStr
+	}
+
+	// Ledger header XDR (base64 encoded)
+	headerXDR, err := header.Header.MarshalBinary()
+	if err == nil {
+		headerStr := base64.StdEncoding.EncodeToString(headerXDR)
+		row.LedgerHeader = &headerStr
+	}
+
+	// Bucket list size and live Soroban state size (Protocol 20+)
+	if lcmV1, ok := lcm.GetV1(); ok {
+		sorobanStateSize := int64(lcmV1.TotalByteSizeOfLiveSorobanState)
+		row.BucketListSize = &sorobanStateSize
+		row.LiveSorobanStateSize = &sorobanStateSize
+	} else if lcmV2, ok := lcm.GetV2(); ok {
+		sorobanStateSize := int64(lcmV2.TotalByteSizeOfLiveSorobanState)
+		row.BucketListSize = &sorobanStateSize
+		row.LiveSorobanStateSize = &sorobanStateSize
+	}
+
+	// Protocol 23+ Hot Archive fields (evicted keys count)
+	if lcmV1, ok := lcm.GetV1(); ok {
+		evicted := len(lcmV1.EvictedKeys)
+		row.EvictedKeysCount = &evicted
+	} else if lcmV2, ok := lcm.GetV2(); ok {
+		evicted := len(lcmV2.EvictedKeys)
+		row.EvictedKeysCount = &evicted
+	}
+
 	return row, nil
+}
+
+// countContractEventsFromMeta counts contract events from a TransactionMeta.
+// Handles V3 (SorobanMeta.Events) and V4 (per-operation events from CAP-67).
+func countContractEventsFromMeta(meta *xdr.TransactionMeta) int {
+	switch meta.V {
+	case 3:
+		v3 := meta.MustV3()
+		if v3.SorobanMeta != nil {
+			return len(v3.SorobanMeta.Events)
+		}
+	case 4:
+		v4 := meta.MustV4()
+		count := 0
+		for _, op := range v4.Operations {
+			count += len(op.Events)
+		}
+		return count
+	}
+	return 0
 }
 
 // ---------------------------------------------------------------------------
@@ -302,15 +422,84 @@ func extractTransactionRows(lcm xdr.LedgerCloseMeta, networkPassphrase string, l
 			LedgerRange:           ledgerRange,
 			SignaturesCount:       len(tx.Envelope.Signatures()),
 			NewAccount:            false,
-			PipelineVersion:       PipelineVersion,
+			EraID:                 EraID,
+			VersionLabel:          VersionLabel,
 		}
 
 		// Timebounds
 		if tb := tx.Envelope.TimeBounds(); tb != nil {
-			minTime := fmt.Sprintf("%d", tb.MinTime)
+			minTime := int64(tb.MinTime)
 			txRow.TimeboundsMinTime = &minTime
-			maxTime := fmt.Sprintf("%d", tb.MaxTime)
+			maxTime := int64(tb.MaxTime)
 			txRow.TimeboundsMaxTime = &maxTime
+		}
+
+		// Preconditions (ledger bounds, min sequence)
+		precond := tx.Envelope.Preconditions()
+		if precond.Type == xdr.PreconditionTypePrecondV2 {
+			v2 := precond.MustV2()
+			if v2.LedgerBounds != nil {
+				lbMin := int64(v2.LedgerBounds.MinLedger)
+				txRow.LedgerboundsMin = &lbMin
+				lbMax := int64(v2.LedgerBounds.MaxLedger)
+				txRow.LedgerboundsMax = &lbMax
+			}
+			if v2.MinSeqNum != nil {
+				msn := int64(*v2.MinSeqNum)
+				txRow.MinSequenceNumber = &msn
+			}
+			minAge := int64(v2.MinSeqAge)
+			txRow.MinSequenceAge = &minAge
+
+			// Extra signers from preconditions
+			if len(v2.ExtraSigners) > 0 {
+				var signerStrs []string
+				for _, signer := range v2.ExtraSigners {
+					signerBytes, err := signer.MarshalBinary()
+					if err == nil {
+						signerStrs = append(signerStrs, base64.StdEncoding.EncodeToString(signerBytes))
+					}
+				}
+				if len(signerStrs) > 0 {
+					joined := strings.Join(signerStrs, ",")
+					txRow.ExtraSigners = &joined
+				}
+			}
+		}
+
+		// Fee bump transaction fields
+		if tx.Envelope.IsFeeBump() {
+			feeBumpFee := int64(tx.Envelope.FeeBumpFee())
+			txRow.FeeBumpFee = &feeBumpFee
+			// MaxFeeBid = fee bump fee / (num ops + 1)
+			opCount := int64(len(tx.Envelope.Operations()))
+			if opCount > 0 {
+				maxFeeBid := feeBumpFee / (opCount + 1)
+				txRow.MaxFeeBid = &maxFeeBid
+			}
+			if innerHash, ok := tx.InnerTransactionHash(); ok {
+				txRow.InnerTransactionHash = &innerHash
+			}
+			// Inner source account from fee bump inner transaction
+			innerTx := tx.Envelope.FeeBump.Tx.InnerTx
+			if innerTx.Type == xdr.EnvelopeTypeEnvelopeTypeTx {
+				innerSourceAddr := innerTx.V1.Tx.SourceAccount.ToAccountId().Address()
+				txRow.InnerSourceAccount = &innerSourceAddr
+			}
+			feeSource := tx.Envelope.FeeBumpAccount()
+			feeAccountMuxed := getMuxedAddr(feeSource)
+			txRow.FeeAccountMuxed = feeAccountMuxed
+		}
+
+		// Tx signers (base64 encoded signatures)
+		sigs := tx.Envelope.Signatures()
+		if len(sigs) > 0 {
+			var sigStrs []string
+			for _, sig := range sigs {
+				sigStrs = append(sigStrs, base64.StdEncoding.EncodeToString(sig.Signature))
+			}
+			joined := strings.Join(sigStrs, ",")
+			txRow.TxSigners = &joined
 		}
 
 		// Soroban host function type
@@ -396,6 +585,57 @@ func extractTransactionRows(lcm xdr.LedgerCloseMeta, networkPassphrase string, l
 			txRow.SorobanResourcesWriteBytes = &val
 		}
 
+		// Soroban data size and resources from envelope
+		if sorobanData, ok := tx.GetSorobanData(); ok {
+			if resBytes, err := sorobanData.Resources.MarshalBinary(); err == nil {
+				size := len(resBytes)
+				txRow.SorobanDataSizeBytes = &size
+				resStr := base64.StdEncoding.EncodeToString(resBytes)
+				txRow.SorobanDataResources = &resStr
+			}
+			// Soroban fee fields
+			resourceFee := int64(sorobanData.ResourceFee)
+			txRow.SorobanFeeResources = &resourceFee
+		}
+
+		// Soroban fee charged / wasted / refund from meta
+		if tx.UnsafeMeta.V == 3 {
+			v3 := tx.UnsafeMeta.MustV3()
+			if v3.SorobanMeta != nil {
+				// Count contract events for this transaction
+				evtCount := len(v3.SorobanMeta.Events)
+				txRow.SorobanContractEventsCount = &evtCount
+
+				if v3.SorobanMeta.Ext.V == 1 && v3.SorobanMeta.Ext.V1 != nil {
+					// Fee charged, refund, and wasted
+					totalNonRefundable := int64(v3.SorobanMeta.Ext.V1.TotalNonRefundableResourceFeeCharged)
+					totalRefundable := int64(v3.SorobanMeta.Ext.V1.TotalRefundableResourceFeeCharged)
+					feeCharged := totalNonRefundable + totalRefundable
+					txRow.SorobanFeeCharged = &feeCharged
+
+					refund := int64(v3.SorobanMeta.Ext.V1.RentFeeCharged)
+					_ = refund // rent fee already captured above
+
+					// Base fee = max_fee - resource_fee
+					if txRow.SorobanFeeResources != nil {
+						baseFee := int64(tx.Envelope.Fee()) - *txRow.SorobanFeeResources
+						txRow.SorobanFeeBase = &baseFee
+					}
+
+					// Fee refund = resource_fee - charged
+					if txRow.SorobanFeeResources != nil {
+						feeRefund := *txRow.SorobanFeeResources - feeCharged
+						if feeRefund < 0 {
+							feeRefund = 0
+						}
+						txRow.SorobanFeeRefund = &feeRefund
+						// Wasted = refund (unused resource allocation)
+						txRow.SorobanFeeWasted = &feeRefund
+					}
+				}
+			}
+		}
+
 		// Raw XDR storage (base64-encoded)
 		if envBytes, err := tx.Envelope.MarshalBinary(); err == nil {
 			s := base64.StdEncoding.EncodeToString(envBytes)
@@ -465,7 +705,8 @@ func extractOperationRows(lcm xdr.LedgerCloseMeta, networkPassphrase string, led
 				CreatedAt:             closedAt,
 				TransactionSuccessful: txSuccessful,
 				LedgerRange:           ledgerRange,
-				PipelineVersion:       PipelineVersion,
+				EraID:                 EraID,
+				VersionLabel:          VersionLabel,
 			}
 
 			// Operation-specific field extraction
@@ -577,6 +818,7 @@ func extractOperationRows(lcm xdr.LedgerCloseMeta, networkPassphrase string, led
 				if allowTrust, ok := op.Body.GetAllowTrustOp(); ok {
 					dest := allowTrust.Trustor.Address()
 					opRow.Destination = &dest
+					opRow.Trustor = &dest
 					var code string
 					if ac4, ok := allowTrust.Asset.GetAssetCode4(); ok {
 						code = strings.TrimRight(string(ac4[:]), "\x00")
@@ -588,6 +830,11 @@ func extractOperationRows(lcm xdr.LedgerCloseMeta, networkPassphrase string, led
 					}
 					flags := int(allowTrust.Authorize)
 					opRow.SetFlags = &flags
+					opRow.TrustLineFlags = &flags
+					authorized := (flags & int(xdr.TrustLineFlagsAuthorizedFlag)) != 0
+					opRow.Authorize = &authorized
+					authMaintain := (flags & int(xdr.TrustLineFlagsAuthorizedToMaintainLiabilitiesFlag)) != 0
+					opRow.AuthorizeToMaintainLiabilities = &authMaintain
 				}
 
 			case xdr.OperationTypeAccountMerge:
@@ -643,6 +890,8 @@ func extractOperationRows(lcm xdr.LedgerCloseMeta, networkPassphrase string, led
 					amt := int64(createCB.Amount)
 					opRow.Amount = &amt
 					setOpAssetFields(&opRow, createCB.Asset)
+					claimantsCount := len(createCB.Claimants)
+					opRow.ClaimantsCount = &claimantsCount
 				}
 
 			case xdr.OperationTypeClaimClaimableBalance:
@@ -672,11 +921,14 @@ func extractOperationRows(lcm xdr.LedgerCloseMeta, networkPassphrase string, led
 				if setTLFlags, ok := op.Body.GetSetTrustLineFlagsOp(); ok {
 					dest := setTLFlags.Trustor.Address()
 					opRow.Destination = &dest
+					opRow.Trustor = &dest
 					setOpAssetFields(&opRow, setTLFlags.Asset)
 					sf := int(setTLFlags.SetFlags)
 					opRow.SetFlags = &sf
 					cf := int(setTLFlags.ClearFlags)
 					opRow.ClearFlags = &cf
+					combinedFlags := sf
+					opRow.TrustLineFlags = &combinedFlags
 				}
 
 			case xdr.OperationTypeLiquidityPoolDeposit:
@@ -779,7 +1031,8 @@ func extractEffectRows(lcm xdr.LedgerCloseMeta, networkPassphrase string, ledger
 								AssetType:        &assetType,
 								CreatedAt:        closedAt,
 								LedgerRange:      ledgerRange,
-								PipelineVersion:  PipelineVersion,
+								EraID:            EraID,
+								VersionLabel:     VersionLabel,
 							})
 							effectIdx++
 						} else if postBal < preBal {
@@ -798,7 +1051,8 @@ func extractEffectRows(lcm xdr.LedgerCloseMeta, networkPassphrase string, ledger
 								AssetType:        &assetType,
 								CreatedAt:        closedAt,
 								LedgerRange:      ledgerRange,
-								PipelineVersion:  PipelineVersion,
+								EraID:            EraID,
+								VersionLabel:     VersionLabel,
 							})
 							effectIdx++
 						}
@@ -1059,7 +1313,8 @@ func extractTradeRows(lcm xdr.LedgerCloseMeta, networkPassphrase string, ledgerS
 								Price:              fmt.Sprintf("%s/%s", buyingAmount, sellingAmount),
 								CreatedAt:          closedAt,
 								LedgerRange:        ledgerRange,
-								PipelineVersion:    PipelineVersion,
+								EraID:              EraID,
+								VersionLabel:       VersionLabel,
 							})
 							tradeIndex++
 						}
@@ -1182,8 +1437,11 @@ func extractAccountRows(lcm xdr.LedgerCloseMeta, networkPassphrase string, ledge
 			AuthImmutable:       authImmutable,
 			AuthClawbackEnabled: authClawbackEnabled,
 			Signers:             signersJSON,
+			CreatedAt:           closedAt,
+			UpdatedAt:           closedAt,
 			LedgerRange:         ledgerRange,
-			PipelineVersion:     PipelineVersion,
+			EraID:               EraID,
+			VersionLabel:        VersionLabel,
 		}
 
 		accountMap[accountID] = &row
@@ -1199,7 +1457,7 @@ func extractAccountRows(lcm xdr.LedgerCloseMeta, networkPassphrase string, ledge
 // Trustline extraction
 // ---------------------------------------------------------------------------
 
-func extractTrustlineRows(lcm xdr.LedgerCloseMeta, networkPassphrase string, ledgerSeq uint32, ledgerRange uint32) ([]TrustlineRow, error) {
+func extractTrustlineRows(lcm xdr.LedgerCloseMeta, networkPassphrase string, ledgerSeq uint32, closedAt time.Time, ledgerRange uint32) ([]TrustlineRow, error) {
 	var trustlines []TrustlineRow
 
 	reader, err := ingest.NewLedgerChangeReaderFromLedgerCloseMeta(networkPassphrase, lcm)
@@ -1283,8 +1541,10 @@ func extractTrustlineRows(lcm xdr.LedgerCloseMeta, networkPassphrase string, led
 			AuthorizedToMaintainLiabilities: authorizedToMaintainLiabilities,
 			ClawbackEnabled:                 clawbackEnabled,
 			LedgerSequence:                  ledgerSeq,
+			CreatedAt:                       closedAt,
 			LedgerRange:                     ledgerRange,
-			PipelineVersion:                 PipelineVersion,
+			EraID:                           EraID,
+			VersionLabel:                    VersionLabel,
 		}
 
 		key := fmt.Sprintf("%s:%s:%s", accountID, assetCode, assetIssuer)
@@ -1361,8 +1621,10 @@ func extractOfferRows(lcm xdr.LedgerCloseMeta, networkPassphrase string, ledgerS
 			Amount:             amount,
 			Price:              priceStr,
 			Flags:              flags,
+			CreatedAt:          closedAt,
 			LedgerRange:        ledgerRange,
-			PipelineVersion:    PipelineVersion,
+			EraID:              EraID,
+			VersionLabel:       VersionLabel,
 		}
 
 		offerMap[offerID] = &row
@@ -1466,7 +1728,9 @@ func extractAccountSignerRows(lcm xdr.LedgerCloseMeta, networkPassphrase string,
 				Deleted:         deleted,
 				ClosedAt:        closedAt,
 				LedgerRange:     ledgerRange,
-				PipelineVersion: PipelineVersion,
+				CreatedAt:       closedAt,
+				EraID:           EraID,
+				VersionLabel:    VersionLabel,
 			})
 		}
 	}
@@ -1546,8 +1810,10 @@ func extractClaimableBalanceRows(lcm xdr.LedgerCloseMeta, networkPassphrase stri
 			Amount:          amount,
 			ClaimantsCount:  claimantsCount,
 			Flags:           0,
+			CreatedAt:       closedAt,
 			LedgerRange:     ledgerRange,
-			PipelineVersion: PipelineVersion,
+			EraID:           EraID,
+			VersionLabel:    VersionLabel,
 		}
 
 		balanceMap[balanceID] = &row
@@ -1626,8 +1892,10 @@ func extractLiquidityPoolRows(lcm xdr.LedgerCloseMeta, networkPassphrase string,
 			AssetBCode:      assetBCode,
 			AssetBIssuer:    assetBIssuer,
 			AssetBAmount:    int64(cp.ReserveB),
+			CreatedAt:       closedAt,
 			LedgerRange:     ledgerRange,
-			PipelineVersion: PipelineVersion,
+			EraID:           EraID,
+			VersionLabel:    VersionLabel,
 		}
 
 		poolMap[poolID] = &row
@@ -1708,9 +1976,14 @@ func extractConfigSettingRows(lcm xdr.LedgerCloseMeta, networkPassphrase string,
 				Deleted:            deleted,
 				ClosedAt:           closedAt,
 				ConfigSettingXDR:   configXDR,
+				CreatedAt:          closedAt,
 				LedgerRange:        ledgerRange,
-				PipelineVersion:    PipelineVersion,
+				EraID:              EraID,
+				VersionLabel:       VersionLabel,
 			}
+
+			// Parse Soroban resource limit fields from config setting
+			parseConfigSettingResourceLimits(configEntry, &row)
 
 			configMap[configID] = &row
 		}
@@ -1730,6 +2003,53 @@ func isConfigSettingChangeType(change ingest.Change) bool {
 		return true
 	}
 	return false
+}
+
+// parseConfigSettingResourceLimits extracts Soroban resource limit fields from a config setting entry.
+func parseConfigSettingResourceLimits(entry *xdr.ConfigSettingEntry, row *ConfigSettingRow) {
+	if entry == nil {
+		return
+	}
+
+	switch entry.ConfigSettingId {
+	case xdr.ConfigSettingIdConfigSettingContractMaxSizeBytes:
+		if maxSize, ok := entry.GetContractMaxSizeBytes(); ok {
+			val := int64(maxSize)
+			row.ContractMaxSizeBytes = &val
+		}
+
+	case xdr.ConfigSettingIdConfigSettingContractComputeV0:
+		if compute, ok := entry.GetContractCompute(); ok {
+			ledgerMaxInstr := int64(compute.LedgerMaxInstructions)
+			row.LedgerMaxInstructions = &ledgerMaxInstr
+			txMaxInstr := int64(compute.TxMaxInstructions)
+			row.TxMaxInstructions = &txMaxInstr
+			feeRate := int64(compute.FeeRatePerInstructionsIncrement)
+			row.FeeRatePerInstructionsIncrement = &feeRate
+			txMemLimit := int64(compute.TxMemoryLimit)
+			row.TxMemoryLimit = &txMemLimit
+		}
+
+	case xdr.ConfigSettingIdConfigSettingContractLedgerCostV0:
+		if cost, ok := entry.GetContractLedgerCost(); ok {
+			v := int64(cost.LedgerMaxDiskReadEntries)
+			row.LedgerMaxReadLedgerEntries = &v
+			v2 := int64(cost.LedgerMaxDiskReadBytes)
+			row.LedgerMaxReadBytes = &v2
+			v3 := int64(cost.LedgerMaxWriteLedgerEntries)
+			row.LedgerMaxWriteLedgerEntries = &v3
+			v4 := int64(cost.LedgerMaxWriteBytes)
+			row.LedgerMaxWriteBytes = &v4
+			v5 := int64(cost.TxMaxDiskReadEntries)
+			row.TxMaxReadLedgerEntries = &v5
+			v6 := int64(cost.TxMaxDiskReadBytes)
+			row.TxMaxReadBytes = &v6
+			v7 := int64(cost.TxMaxWriteLedgerEntries)
+			row.TxMaxWriteLedgerEntries = &v7
+			v8 := int64(cost.TxMaxWriteBytes)
+			row.TxMaxWriteBytes = &v8
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1806,8 +2126,10 @@ func extractTTLRows(lcm xdr.LedgerCloseMeta, networkPassphrase string, ledgerSeq
 				LastModifiedLedger: int(lastModifiedLedger),
 				Deleted:            deleted,
 				ClosedAt:           closedAt,
+				CreatedAt:          closedAt,
 				LedgerRange:        ledgerRange,
-				PipelineVersion:    PipelineVersion,
+				EraID:              EraID,
+				VersionLabel:       VersionLabel,
 			}
 
 			ttlMap[keyHash] = &row
@@ -1887,7 +2209,9 @@ func extractEvictedKeyRows(lcm xdr.LedgerCloseMeta, ledgerSeq uint32, closedAt t
 			Durability:      durability,
 			ClosedAt:        closedAt,
 			LedgerRange:     ledgerRange,
-			PipelineVersion: PipelineVersion,
+			CreatedAt:       closedAt,
+			EraID:           EraID,
+			VersionLabel:    VersionLabel,
 		}
 
 		evictedMap[keyHash] = &row
@@ -2006,7 +2330,9 @@ func extractRestoredKeyRows(lcm xdr.LedgerCloseMeta, networkPassphrase string, l
 					RestoredFromLedger: 0,
 					ClosedAt:           closedAt,
 					LedgerRange:        ledgerRange,
-					PipelineVersion:    PipelineVersion,
+					CreatedAt:          closedAt,
+					EraID:              EraID,
+					VersionLabel:       VersionLabel,
 				}
 
 				restoredMap[keyHash] = &row
@@ -2110,8 +2436,10 @@ func extractContractEventRowFromEvent(
 		Topic3Decoded:            positionalTopics[3],
 		OperationIndex:           int(opIndex),
 		EventIndex:               int(eventIndex),
+		CreatedAt:                closedAt,
 		LedgerRange:              ledgerRange,
-		PipelineVersion:          PipelineVersion,
+		EraID:                    EraID,
+		VersionLabel:             VersionLabel,
 	}
 }
 
@@ -2362,8 +2690,10 @@ func extractContractDataRows(lcm xdr.LedgerCloseMeta, networkPassphrase string, 
 			TokenName:          tokenName,
 			TokenSymbol:        tokenSymbol,
 			TokenDecimals:      tokenDecimals,
+			CreatedAt:          closedAt,
 			LedgerRange:        ledgerRange,
-			PipelineVersion:    PipelineVersion,
+			EraID:              EraID,
+			VersionLabel:       VersionLabel,
 		}
 
 		contractMap[dedupeKey] = &row
@@ -2557,8 +2887,10 @@ func extractContractCodeRows(lcm xdr.LedgerCloseMeta, networkPassphrase string, 
 			NImports:           nImports,
 			NExports:           nExports,
 			NDataSegmentBytes:  nDataSegmentBytes,
+			CreatedAt:          closedAt,
 			LedgerRange:        ledgerRange,
-			PipelineVersion:    PipelineVersion,
+			EraID:              EraID,
+			VersionLabel:       VersionLabel,
 		}
 
 		contractCodeMap[codeHashHex] = &row
@@ -2767,7 +3099,8 @@ func extractNativeBalanceRows(lcm xdr.LedgerCloseMeta, networkPassphrase string,
 			LastModifiedLedger: int64(lastModifiedLedger),
 			LedgerSequence:     ledgerSeq,
 			LedgerRange:        ledgerRange,
-			PipelineVersion:    PipelineVersion,
+			EraID:              EraID,
+			VersionLabel:       VersionLabel,
 		}
 
 		balanceMap[accountID] = &row
@@ -2862,7 +3195,8 @@ func extractContractCreationRows(lcm xdr.LedgerCloseMeta, networkPassphrase stri
 								CreatedLedger:   int64(ledgerSeq),
 								CreatedAt:       closedAt,
 								LedgerRange:     ledgerRange,
-								PipelineVersion: PipelineVersion,
+								EraID:           EraID,
+								VersionLabel:    VersionLabel,
 							}
 
 							if fnType == xdr.HostFunctionTypeHostFunctionTypeCreateContract {

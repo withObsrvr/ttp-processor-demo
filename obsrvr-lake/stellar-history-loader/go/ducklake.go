@@ -275,9 +275,10 @@ func mapToDuckLakeTable(dirName string) string {
 	return mapping[dirName]
 }
 
-// embeddedBronzeSchema is a minimal schema for creating DuckLake tables.
-// It only creates tables that the history loader outputs — production should
-// use the full v3_bronze_schema.sql from postgres-ducklake-flusher.
+// embeddedBronzeSchema is the V3 bronze schema matching the unified processor.
+// The history loader's Parquet files may have fewer columns — the column
+// intersection logic in Push() handles this automatically (extra V3 columns
+// will be NULL, Parquet-only columns like pipeline_version are dropped).
 const embeddedBronzeSchema = `
 CREATE TABLE IF NOT EXISTS bronze.ledgers_row_v2 (
     sequence BIGINT, ledger_hash TEXT, previous_ledger_hash TEXT,
@@ -287,50 +288,74 @@ CREATE TABLE IF NOT EXISTS bronze.ledgers_row_v2 (
     successful_tx_count INTEGER, failed_tx_count INTEGER,
     ingestion_timestamp TIMESTAMP, ledger_range BIGINT,
     transaction_count INTEGER, operation_count INTEGER,
-    tx_set_operation_count INTEGER, pipeline_version TEXT
+    tx_set_operation_count INTEGER,
+    soroban_fee_write1kb BIGINT, node_id TEXT, signature TEXT,
+    ledger_header TEXT, bucket_list_size BIGINT,
+    live_soroban_state_size BIGINT, evicted_keys_count INTEGER,
+    soroban_op_count INTEGER, total_fee_charged BIGINT,
+    contract_events_count INTEGER,
+    era_id TEXT, version_label TEXT
 );
 
 CREATE TABLE IF NOT EXISTS bronze.transactions_row_v2 (
     ledger_sequence BIGINT, transaction_hash TEXT, source_account TEXT,
-    source_account_muxed TEXT,
     fee_charged BIGINT, max_fee BIGINT, successful BOOLEAN,
     transaction_result_code TEXT, operation_count INTEGER,
     memo_type TEXT, memo TEXT, created_at TIMESTAMP,
     account_sequence BIGINT, ledger_range BIGINT,
-    signatures_count INTEGER, new_account BOOLEAN,
-    timebounds_min_time TEXT, timebounds_max_time TEXT,
-    soroban_host_function_type TEXT, soroban_contract_id TEXT,
-    rent_fee_charged BIGINT,
+    source_account_muxed TEXT, fee_account_muxed TEXT,
+    inner_transaction_hash TEXT, fee_bump_fee BIGINT,
+    max_fee_bid BIGINT, inner_source_account TEXT,
+    timebounds_min_time BIGINT, timebounds_max_time BIGINT,
+    ledgerbounds_min BIGINT, ledgerbounds_max BIGINT,
+    min_sequence_number BIGINT, min_sequence_age BIGINT,
     soroban_resources_instructions BIGINT,
     soroban_resources_read_bytes BIGINT,
     soroban_resources_write_bytes BIGINT,
-    pipeline_version TEXT
+    soroban_data_size_bytes INTEGER, soroban_data_resources TEXT,
+    soroban_fee_base BIGINT, soroban_fee_resources BIGINT,
+    soroban_fee_refund BIGINT, soroban_fee_charged BIGINT,
+    soroban_fee_wasted BIGINT,
+    soroban_host_function_type TEXT, soroban_contract_id TEXT,
+    soroban_contract_events_count INTEGER,
+    signatures_count INTEGER, new_account BOOLEAN,
+    rent_fee_charged BIGINT,
+    tx_envelope TEXT, tx_result TEXT, tx_meta TEXT, tx_fee_meta TEXT,
+    tx_signers TEXT, extra_signers TEXT,
+    era_id TEXT, version_label TEXT
 );
 
 CREATE TABLE IF NOT EXISTS bronze.operations_row_v2 (
-    transaction_hash TEXT, transaction_index INTEGER, operation_index INTEGER,
-    ledger_sequence BIGINT, source_account TEXT, source_account_muxed TEXT,
-    op_type INTEGER, type_string TEXT, created_at TIMESTAMP,
-    transaction_successful BOOLEAN, operation_result_code TEXT, ledger_range BIGINT,
-    amount BIGINT, asset TEXT,
-    asset_type TEXT, asset_code TEXT, asset_issuer TEXT,
-    destination TEXT,
-    source_asset TEXT, source_asset_type TEXT, source_asset_code TEXT, source_asset_issuer TEXT,
-    source_amount BIGINT, destination_min BIGINT, starting_balance BIGINT,
-    trustline_limit BIGINT,
+    transaction_hash TEXT, operation_index INTEGER,
+    ledger_sequence BIGINT, source_account TEXT,
+    type INTEGER, type_string TEXT,
+    created_at TIMESTAMP, transaction_successful BOOLEAN,
+    operation_result_code TEXT, operation_trace_code TEXT,
+    ledger_range BIGINT, source_account_muxed TEXT,
+    asset TEXT, asset_type TEXT, asset_code TEXT, asset_issuer TEXT,
+    source_asset TEXT, source_asset_type TEXT,
+    source_asset_code TEXT, source_asset_issuer TEXT,
+    amount BIGINT, source_amount BIGINT, destination_min BIGINT,
+    starting_balance BIGINT, destination TEXT,
+    trustline_limit BIGINT, trustor TEXT,
+    authorize BOOLEAN, authorize_to_maintain_liabilities BOOLEAN,
+    trust_line_flags INTEGER,
+    balance_id TEXT, claimants_count INTEGER, sponsored_id TEXT,
     offer_id BIGINT, price TEXT, price_r TEXT,
-    buying_asset TEXT, buying_asset_type TEXT, buying_asset_code TEXT, buying_asset_issuer TEXT,
-    selling_asset TEXT, selling_asset_type TEXT, selling_asset_code TEXT, selling_asset_issuer TEXT,
-    set_flags INTEGER, clear_flags INTEGER,
+    buying_asset TEXT, buying_asset_type TEXT,
+    buying_asset_code TEXT, buying_asset_issuer TEXT,
+    selling_asset TEXT, selling_asset_type TEXT,
+    selling_asset_code TEXT, selling_asset_issuer TEXT,
+    soroban_operation TEXT, soroban_function TEXT,
+    soroban_contract_id TEXT, soroban_auth_required BOOLEAN,
+    bump_to BIGINT, set_flags INTEGER, clear_flags INTEGER,
     home_domain TEXT, master_weight INTEGER,
     low_threshold INTEGER, medium_threshold INTEGER, high_threshold INTEGER,
     data_name TEXT, data_value TEXT,
-    balance_id TEXT, sponsored_id TEXT, bump_to BIGINT,
-    soroban_auth_required BOOLEAN,
-    soroban_operation TEXT, soroban_contract_id TEXT,
-    soroban_function TEXT, soroban_arguments_json TEXT,
-    contract_calls_json TEXT, max_call_depth INTEGER,
-    pipeline_version TEXT
+    era_id TEXT, version_label TEXT,
+    transaction_index INTEGER, soroban_arguments_json TEXT,
+    contract_calls_json TEXT, contracts_involved TEXT,
+    max_call_depth INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS bronze.effects_row_v1 (
@@ -342,7 +367,7 @@ CREATE TABLE IF NOT EXISTS bronze.effects_row_v1 (
     signer_account TEXT, signer_weight INTEGER,
     offer_id BIGINT, seller_account TEXT,
     created_at TIMESTAMP, ledger_range BIGINT,
-    pipeline_version TEXT
+    era_id TEXT, version_label TEXT
 );
 
 CREATE TABLE IF NOT EXISTS bronze.trades_row_v1 (
@@ -351,7 +376,8 @@ CREATE TABLE IF NOT EXISTS bronze.trades_row_v1 (
     seller_account TEXT, selling_asset_code TEXT, selling_asset_issuer TEXT,
     selling_amount TEXT, buyer_account TEXT, buying_asset_code TEXT,
     buying_asset_issuer TEXT, buying_amount TEXT, price TEXT,
-    created_at TIMESTAMP, ledger_range BIGINT, pipeline_version TEXT
+    created_at TIMESTAMP, ledger_range BIGINT,
+    era_id TEXT, version_label TEXT
 );
 
 CREATE TABLE IF NOT EXISTS bronze.accounts_snapshot_v1 (
@@ -362,34 +388,8 @@ CREATE TABLE IF NOT EXISTS bronze.accounts_snapshot_v1 (
     high_threshold INTEGER, flags INTEGER, auth_required BOOLEAN,
     auth_revocable BOOLEAN, auth_immutable BOOLEAN,
     auth_clawback_enabled BOOLEAN, signers TEXT, sponsor_account TEXT,
-    ledger_range BIGINT, pipeline_version TEXT
-);
-
-CREATE TABLE IF NOT EXISTS bronze.contract_events_stream_v1 (
-    event_id TEXT, contract_id TEXT, ledger_sequence BIGINT,
-    transaction_hash TEXT, closed_at TIMESTAMP, event_type TEXT,
-    in_successful_contract_call BOOLEAN, topics_json TEXT,
-    topics_decoded TEXT, data_xdr TEXT, data_decoded TEXT,
-    topic_count INTEGER, topic0_decoded TEXT, topic1_decoded TEXT,
-    topic2_decoded TEXT, topic3_decoded TEXT,
-    operation_index INTEGER, event_index INTEGER,
-    ledger_range BIGINT, pipeline_version TEXT
-);
-
-CREATE TABLE IF NOT EXISTS bronze.native_balances_snapshot_v1 (
-    account_id TEXT, balance BIGINT, buying_liabilities BIGINT,
-    selling_liabilities BIGINT, num_subentries INTEGER,
-    num_sponsoring INTEGER, num_sponsored INTEGER,
-    sequence_number BIGINT, last_modified_ledger BIGINT,
-    ledger_sequence BIGINT, ledger_range BIGINT, pipeline_version TEXT
-);
-
-CREATE TABLE IF NOT EXISTS bronze.offers_snapshot_v1 (
-    offer_id BIGINT, seller_account TEXT, ledger_sequence BIGINT,
-    closed_at TIMESTAMP, selling_asset_type TEXT, selling_asset_code TEXT,
-    selling_asset_issuer TEXT, buying_asset_type TEXT, buying_asset_code TEXT,
-    buying_asset_issuer TEXT, amount TEXT, price TEXT, flags INTEGER,
-    ledger_range BIGINT, pipeline_version TEXT
+    created_at TIMESTAMP, updated_at TIMESTAMP,
+    ledger_range BIGINT, era_id TEXT, version_label TEXT
 );
 
 CREATE TABLE IF NOT EXISTS bronze.trustlines_snapshot_v1 (
@@ -397,20 +397,32 @@ CREATE TABLE IF NOT EXISTS bronze.trustlines_snapshot_v1 (
     balance TEXT, trust_limit TEXT, buying_liabilities TEXT,
     selling_liabilities TEXT, authorized BOOLEAN,
     authorized_to_maintain_liabilities BOOLEAN, clawback_enabled BOOLEAN,
-    ledger_sequence BIGINT, ledger_range BIGINT, pipeline_version TEXT
+    ledger_sequence BIGINT, created_at TIMESTAMP,
+    ledger_range BIGINT, era_id TEXT, version_label TEXT
+);
+
+CREATE TABLE IF NOT EXISTS bronze.offers_snapshot_v1 (
+    offer_id BIGINT, seller_account TEXT, ledger_sequence BIGINT,
+    closed_at TIMESTAMP, selling_asset_type TEXT, selling_asset_code TEXT,
+    selling_asset_issuer TEXT, buying_asset_type TEXT, buying_asset_code TEXT,
+    buying_asset_issuer TEXT, amount TEXT, price TEXT, flags INTEGER,
+    created_at TIMESTAMP, ledger_range BIGINT,
+    era_id TEXT, version_label TEXT
 );
 
 CREATE TABLE IF NOT EXISTS bronze.account_signers_snapshot_v1 (
     account_id TEXT, signer TEXT, ledger_sequence BIGINT,
     weight INTEGER, sponsor TEXT, deleted BOOLEAN,
-    closed_at TIMESTAMP, ledger_range BIGINT, pipeline_version TEXT
+    closed_at TIMESTAMP, ledger_range BIGINT, created_at TIMESTAMP,
+    era_id TEXT, version_label TEXT
 );
 
 CREATE TABLE IF NOT EXISTS bronze.claimable_balances_snapshot_v1 (
     balance_id TEXT, sponsor TEXT, ledger_sequence BIGINT,
     closed_at TIMESTAMP, asset_type TEXT, asset_code TEXT,
     asset_issuer TEXT, amount BIGINT, claimants_count INTEGER,
-    flags INTEGER, ledger_range BIGINT, pipeline_version TEXT
+    flags INTEGER, created_at TIMESTAMP,
+    ledger_range BIGINT, era_id TEXT, version_label TEXT
 );
 
 CREATE TABLE IF NOT EXISTS bronze.liquidity_pools_snapshot_v1 (
@@ -419,27 +431,56 @@ CREATE TABLE IF NOT EXISTS bronze.liquidity_pools_snapshot_v1 (
     total_pool_shares BIGINT, asset_a_type TEXT, asset_a_code TEXT,
     asset_a_issuer TEXT, asset_a_amount BIGINT, asset_b_type TEXT,
     asset_b_code TEXT, asset_b_issuer TEXT, asset_b_amount BIGINT,
-    ledger_range BIGINT, pipeline_version TEXT
+    created_at TIMESTAMP, ledger_range BIGINT,
+    era_id TEXT, version_label TEXT
 );
 
 CREATE TABLE IF NOT EXISTS bronze.config_settings_snapshot_v1 (
     config_setting_id INTEGER, ledger_sequence BIGINT,
     last_modified_ledger INTEGER, deleted BOOLEAN,
-    closed_at TIMESTAMP, config_setting_xdr TEXT,
-    ledger_range BIGINT, pipeline_version TEXT
+    closed_at TIMESTAMP,
+    ledger_max_instructions BIGINT, tx_max_instructions BIGINT,
+    fee_rate_per_instructions_increment BIGINT, tx_memory_limit BIGINT,
+    ledger_max_read_ledger_entries BIGINT, ledger_max_read_bytes BIGINT,
+    ledger_max_write_ledger_entries BIGINT, ledger_max_write_bytes BIGINT,
+    tx_max_read_ledger_entries BIGINT, tx_max_read_bytes BIGINT,
+    tx_max_write_ledger_entries BIGINT, tx_max_write_bytes BIGINT,
+    contract_max_size_bytes BIGINT,
+    config_setting_xdr TEXT, created_at TIMESTAMP,
+    ledger_range BIGINT, era_id TEXT, version_label TEXT
 );
 
 CREATE TABLE IF NOT EXISTS bronze.ttl_snapshot_v1 (
     key_hash TEXT, ledger_sequence BIGINT, live_until_ledger_seq BIGINT,
     ttl_remaining BIGINT, expired BOOLEAN, last_modified_ledger INTEGER,
-    deleted BOOLEAN, closed_at TIMESTAMP, ledger_range BIGINT,
-    pipeline_version TEXT
+    deleted BOOLEAN, closed_at TIMESTAMP, created_at TIMESTAMP,
+    ledger_range BIGINT, era_id TEXT, version_label TEXT
 );
 
 CREATE TABLE IF NOT EXISTS bronze.evicted_keys_state_v1 (
     key_hash TEXT, ledger_sequence BIGINT, contract_id TEXT,
     key_type TEXT, durability TEXT, closed_at TIMESTAMP,
-    ledger_range BIGINT, pipeline_version TEXT
+    ledger_range BIGINT, created_at TIMESTAMP,
+    era_id TEXT, version_label TEXT
+);
+
+CREATE TABLE IF NOT EXISTS bronze.restored_keys_state_v1 (
+    key_hash TEXT, ledger_sequence BIGINT, contract_id TEXT,
+    key_type TEXT, durability TEXT, restored_from_ledger BIGINT,
+    closed_at TIMESTAMP, ledger_range BIGINT, created_at TIMESTAMP,
+    era_id TEXT, version_label TEXT
+);
+
+CREATE TABLE IF NOT EXISTS bronze.contract_events_stream_v1 (
+    event_id TEXT, contract_id TEXT, ledger_sequence BIGINT,
+    transaction_hash TEXT, closed_at TIMESTAMP, event_type TEXT,
+    in_successful_contract_call BOOLEAN, topics_json TEXT,
+    topics_decoded TEXT, data_xdr TEXT, data_decoded TEXT,
+    topic_count INTEGER, operation_index INTEGER, event_index INTEGER,
+    topic0_decoded TEXT, topic1_decoded TEXT,
+    topic2_decoded TEXT, topic3_decoded TEXT,
+    created_at TIMESTAMP, ledger_range BIGINT,
+    era_id TEXT, version_label TEXT
 );
 
 CREATE TABLE IF NOT EXISTS bronze.contract_data_snapshot_v1 (
@@ -449,8 +490,9 @@ CREATE TABLE IF NOT EXISTS bronze.contract_data_snapshot_v1 (
     balance_holder TEXT, balance TEXT,
     last_modified_ledger INTEGER, ledger_entry_change INTEGER,
     deleted BOOLEAN, closed_at TIMESTAMP, contract_data_xdr TEXT,
+    created_at TIMESTAMP, ledger_range BIGINT,
     token_name TEXT, token_symbol TEXT, token_decimals INTEGER,
-    ledger_range BIGINT, pipeline_version TEXT
+    era_id TEXT, version_label TEXT
 );
 
 CREATE TABLE IF NOT EXISTS bronze.contract_code_snapshot_v1 (
@@ -461,19 +503,23 @@ CREATE TABLE IF NOT EXISTS bronze.contract_code_snapshot_v1 (
     n_instructions BIGINT, n_functions BIGINT, n_globals BIGINT,
     n_table_entries BIGINT, n_types BIGINT, n_data_segments BIGINT,
     n_elem_segments BIGINT, n_imports BIGINT, n_exports BIGINT,
-    n_data_segment_bytes BIGINT, ledger_range BIGINT, pipeline_version TEXT
+    n_data_segment_bytes BIGINT, created_at TIMESTAMP,
+    ledger_range BIGINT, era_id TEXT, version_label TEXT
 );
 
-CREATE TABLE IF NOT EXISTS bronze.restored_keys_state_v1 (
-    key_hash TEXT, ledger_sequence BIGINT, contract_id TEXT,
-    key_type TEXT, durability TEXT, restored_from_ledger BIGINT,
-    closed_at TIMESTAMP, ledger_range BIGINT, pipeline_version TEXT
+CREATE TABLE IF NOT EXISTS bronze.native_balances_snapshot_v1 (
+    account_id TEXT, balance BIGINT, buying_liabilities BIGINT,
+    selling_liabilities BIGINT, num_subentries INTEGER,
+    num_sponsoring INTEGER, num_sponsored INTEGER,
+    sequence_number BIGINT, last_modified_ledger BIGINT,
+    ledger_sequence BIGINT, ledger_range BIGINT,
+    era_id TEXT, version_label TEXT
 );
 
 CREATE TABLE IF NOT EXISTS bronze.contract_creations_v1 (
     contract_id TEXT, creator_address TEXT, wasm_hash TEXT,
     created_ledger BIGINT, created_at TIMESTAMP,
-    ledger_range BIGINT, pipeline_version TEXT
+    ledger_range BIGINT, era_id TEXT, version_label TEXT
 )
 `
 

@@ -20,10 +20,10 @@ func main() {
 	output := flag.String("output", "", "Output directory for Parquet files (required)")
 	batchSize := flag.Int("batch-size", 1000, "Ledgers per extraction batch")
 	networkPassphrase := flag.String("network-passphrase", "Test SDF Network ; September 2015", "Stellar network passphrase")
-	storageType := flag.String("storage-type", "FS", "Backend storage type: GCS, S3, FS")
-	bucket := flag.String("bucket", "", "Storage bucket/path for ledger data (required)")
-	ledgersPerFile := flag.Uint("ledgers-per-file", 1, "Ledgers per archive file (GCS/S3)")
-	filesPerPartition := flag.Uint("files-per-partition", 64000, "Files per archive partition (GCS/S3)")
+	storageType := flag.String("storage-type", "FS", "Backend storage type: GCS, S3, FS, XDR, RPC")
+	bucket := flag.String("bucket", "", "Full bucket path including sub-directory (e.g., bucket-name/landing/ledgers/testnet)")
+	ledgersPerFile := flag.Uint("ledgers-per-file", 1, "Ledgers per archive file — must match archive's ledgersPerBatch (GCS/S3)")
+	filesPerPartition := flag.Uint("files-per-partition", 64000, "Files per archive partition — must match archive's batchesPerPartition (GCS/S3)")
 	runSilver := flag.Bool("silver", false, "Run silver transforms after bronze extraction")
 	runValidate := flag.Bool("validate", false, "Run quality validation checks after extraction")
 	runDuckLake := flag.Bool("ducklake", false, "Push bronze Parquet to DuckLake (B2 + catalog)")
@@ -41,7 +41,7 @@ func main() {
 	pgUser := flag.String("pg-user", "", "PostgreSQL user")
 	pgPassword := flag.String("pg-password", "", "PostgreSQL password")
 	pgSSL := flag.String("pg-sslmode", "require", "PostgreSQL SSL mode")
-	tailLedgers := flag.Uint("tail-ledgers", 100000, "Number of recent ledgers to load into hot buffer")
+	tailLedgers := flag.Uint("tail-ledgers", 100000, "Number of recent ledgers to load into hot buffer (0 = load all)")
 
 	flag.Parse()
 

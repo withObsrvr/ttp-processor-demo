@@ -81,18 +81,28 @@ func writeLedgerRow(ctx context.Context, tx *sql.Tx, cat, schema string, row *Le
 		return nil
 	}
 	table := fmt.Sprintf("%s.%s.ledgers_row_v2", cat, schema)
-	query := fmt.Sprintf(`INSERT INTO %s (
-		sequence, ledger_hash, previous_ledger_hash, closed_at, protocol_version,
-		total_coins, fee_pool, base_fee, base_reserve, max_tx_set_size,
-		successful_tx_count, failed_tx_count, ingestion_timestamp, ledger_range,
-		transaction_count, operation_count, tx_set_operation_count, pipeline_version
-	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`, table)
+	cols := []string{
+		"sequence", "ledger_hash", "previous_ledger_hash", "closed_at", "protocol_version",
+		"total_coins", "fee_pool", "base_fee", "base_reserve", "max_tx_set_size",
+		"successful_tx_count", "failed_tx_count", "ingestion_timestamp", "ledger_range",
+		"transaction_count", "operation_count", "tx_set_operation_count",
+		"soroban_fee_write1kb", "node_id", "signature", "ledger_header",
+		"bucket_list_size", "live_soroban_state_size", "evicted_keys_count",
+		"soroban_op_count", "total_fee_charged", "contract_events_count",
+		"era_id", "version_label",
+	}
+	placeholders := makePlaceholders(len(cols))
+	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", table, strings.Join(cols, ","), placeholders)
 
 	_, err := tx.ExecContext(ctx, query,
 		row.Sequence, row.LedgerHash, row.PreviousLedgerHash, row.ClosedAt, row.ProtocolVersion,
 		row.TotalCoins, row.FeePool, row.BaseFee, row.BaseReserve, row.MaxTxSetSize,
 		row.SuccessfulTxCount, row.FailedTxCount, row.IngestionTimestamp, row.LedgerRange,
-		row.TransactionCount, row.OperationCount, row.TxSetOperationCount, row.PipelineVersion,
+		row.TransactionCount, row.OperationCount, row.TxSetOperationCount,
+		row.SorobanFeeWrite1KB, row.NodeID, row.Signature, row.LedgerHeader,
+		row.BucketListSize, row.LiveSorobanStateSize, row.EvictedKeysCount,
+		row.SorobanOpCount, row.TotalFeeCharged, row.ContractEventsCount,
+		row.EraID, row.VersionLabel,
 	)
 	return err
 }
@@ -111,12 +121,21 @@ func writeTransactionRows(ctx context.Context, tx *sql.Tx, cat, schema string, r
 		"fee_charged", "max_fee", "successful", "transaction_result_code",
 		"operation_count", "memo_type", "memo", "created_at",
 		"account_sequence", "ledger_range", "signatures_count", "new_account",
+		"fee_account_muxed", "inner_transaction_hash", "fee_bump_fee", "max_fee_bid",
+		"inner_source_account",
 		"timebounds_min_time", "timebounds_max_time",
+		"ledgerbounds_min", "ledgerbounds_max",
+		"min_sequence_number", "min_sequence_age",
 		"soroban_host_function_type", "soroban_contract_id",
 		"rent_fee_charged", "soroban_resources_instructions",
 		"soroban_resources_read_bytes", "soroban_resources_write_bytes",
+		"soroban_data_size_bytes", "soroban_data_resources",
+		"soroban_fee_base", "soroban_fee_resources", "soroban_fee_refund",
+		"soroban_fee_charged", "soroban_fee_wasted",
+		"soroban_contract_events_count",
 		"tx_envelope", "tx_result", "tx_meta", "tx_fee_meta",
-		"pipeline_version",
+		"tx_signers", "extra_signers",
+		"era_id", "version_label",
 	}
 	placeholders := makePlaceholders(len(cols))
 	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", table, strings.Join(cols, ","), placeholders)
@@ -127,12 +146,21 @@ func writeTransactionRows(ctx context.Context, tx *sql.Tx, cat, schema string, r
 			r.FeeCharged, r.MaxFee, r.Successful, r.TransactionResultCode,
 			r.OperationCount, r.MemoType, r.Memo, r.CreatedAt,
 			r.AccountSequence, r.LedgerRange, r.SignaturesCount, r.NewAccount,
+			r.FeeAccountMuxed, r.InnerTransactionHash, r.FeeBumpFee, r.MaxFeeBid,
+			r.InnerSourceAccount,
 			r.TimeboundsMinTime, r.TimeboundsMaxTime,
+			r.LedgerboundsMin, r.LedgerboundsMax,
+			r.MinSequenceNumber, r.MinSequenceAge,
 			r.SorobanHostFunctionType, r.SorobanContractID,
 			r.RentFeeCharged, r.SorobanResourcesInstructions,
 			r.SorobanResourcesReadBytes, r.SorobanResourcesWriteBytes,
+			r.SorobanDataSizeBytes, r.SorobanDataResources,
+			r.SorobanFeeBase, r.SorobanFeeResources, r.SorobanFeeRefund,
+			r.SorobanFeeCharged, r.SorobanFeeWasted,
+			r.SorobanContractEventsCount,
 			r.TxEnvelope, r.TxResult, r.TxMeta, r.TxFeeMeta,
-			r.PipelineVersion,
+			r.TxSigners, r.ExtraSigners,
+			r.EraID, r.VersionLabel,
 		); err != nil {
 			return fmt.Errorf("insert transaction %s: %w", r.TransactionHash, err)
 		}
@@ -152,13 +180,14 @@ func writeOperationRows(ctx context.Context, tx *sql.Tx, cat, schema string, row
 	cols := []string{
 		"transaction_hash", "transaction_index", "operation_index",
 		"ledger_sequence", "source_account", "source_account_muxed",
-		"op_type", "type_string", "created_at",
-		"transaction_successful", "operation_result_code", "ledger_range",
+		"type", "type_string", "created_at",
+		"transaction_successful", "operation_result_code", "operation_trace_code", "ledger_range",
 		"amount", "asset", "asset_type", "asset_code", "asset_issuer",
 		"destination",
 		"source_asset", "source_asset_type", "source_asset_code", "source_asset_issuer",
 		"source_amount", "destination_min", "starting_balance",
-		"trustline_limit",
+		"trustline_limit", "trustor", "authorize",
+		"authorize_to_maintain_liabilities", "trust_line_flags",
 		"offer_id", "price", "price_r",
 		"buying_asset", "buying_asset_type", "buying_asset_code", "buying_asset_issuer",
 		"selling_asset", "selling_asset_type", "selling_asset_code", "selling_asset_issuer",
@@ -166,12 +195,12 @@ func writeOperationRows(ctx context.Context, tx *sql.Tx, cat, schema string, row
 		"home_domain", "master_weight",
 		"low_threshold", "medium_threshold", "high_threshold",
 		"data_name", "data_value",
-		"balance_id", "sponsored_id", "bump_to",
+		"balance_id", "claimants_count", "sponsored_id", "bump_to",
 		"soroban_auth_required",
 		"soroban_operation", "soroban_contract_id",
 		"soroban_function", "soroban_arguments_json",
-		"contract_calls_json", "max_call_depth",
-		"pipeline_version",
+		"contract_calls_json", "contracts_involved", "max_call_depth",
+		"era_id", "version_label",
 	}
 	placeholders := makePlaceholders(len(cols))
 	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", table, strings.Join(cols, ","), placeholders)
@@ -181,12 +210,13 @@ func writeOperationRows(ctx context.Context, tx *sql.Tx, cat, schema string, row
 			r.TransactionHash, r.TransactionIndex, r.OperationIndex,
 			r.LedgerSequence, r.SourceAccount, r.SourceAccountMuxed,
 			r.OpType, r.TypeString, r.CreatedAt,
-			r.TransactionSuccessful, r.OperationResultCode, r.LedgerRange,
+			r.TransactionSuccessful, r.OperationResultCode, r.OperationTraceCode, r.LedgerRange,
 			r.Amount, r.Asset, r.AssetType, r.AssetCode, r.AssetIssuer,
 			r.Destination,
 			r.SourceAsset, r.SourceAssetType, r.SourceAssetCode, r.SourceAssetIssuer,
 			r.SourceAmount, r.DestinationMin, r.StartingBalance,
-			r.TrustlineLimit,
+			r.TrustlineLimit, r.Trustor, r.Authorize,
+			r.AuthorizeToMaintainLiabilities, r.TrustLineFlags,
 			r.OfferID, r.Price, r.PriceR,
 			r.BuyingAsset, r.BuyingAssetType, r.BuyingAssetCode, r.BuyingAssetIssuer,
 			r.SellingAsset, r.SellingAssetType, r.SellingAssetCode, r.SellingAssetIssuer,
@@ -194,12 +224,12 @@ func writeOperationRows(ctx context.Context, tx *sql.Tx, cat, schema string, row
 			r.HomeDomain, r.MasterWeight,
 			r.LowThreshold, r.MediumThreshold, r.HighThreshold,
 			r.DataName, r.DataValue,
-			r.BalanceID, r.SponsoredID, r.BumpTo,
+			r.BalanceID, r.ClaimantsCount, r.SponsoredID, r.BumpTo,
 			r.SorobanAuthRequired,
 			r.SorobanOperation, r.SorobanContractID,
 			r.SorobanFunction, r.SorobanArgumentsJSON,
-			r.ContractCallsJSON, r.MaxCallDepth,
-			r.PipelineVersion,
+			r.ContractCallsJSON, r.ContractsInvolved, r.MaxCallDepth,
+			r.EraID, r.VersionLabel,
 		); err != nil {
 			return fmt.Errorf("insert operation %s:%d: %w", r.TransactionHash, r.OperationIndex, err)
 		}
@@ -225,7 +255,7 @@ func writeEffectRows(ctx context.Context, tx *sql.Tx, cat, schema string, rows [
 		"signer_account", "signer_weight",
 		"offer_id", "seller_account",
 		"created_at", "ledger_range",
-		"pipeline_version",
+		"era_id", "version_label",
 	}
 	placeholders := makePlaceholders(len(cols))
 	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", table, strings.Join(cols, ","), placeholders)
@@ -240,7 +270,7 @@ func writeEffectRows(ctx context.Context, tx *sql.Tx, cat, schema string, rows [
 			r.SignerAccount, r.SignerWeight,
 			r.OfferID, r.SellerAccount,
 			r.CreatedAt, r.LedgerRange,
-			r.PipelineVersion,
+			r.EraID, r.VersionLabel,
 		); err != nil {
 			return fmt.Errorf("insert effect: %w", err)
 		}
@@ -267,7 +297,8 @@ func writeTradeRows(ctx context.Context, tx *sql.Tx, cat, schema string, rows []
 		"seller_account", "selling_asset_code", "selling_asset_issuer",
 		"selling_amount", "buyer_account", "buying_asset_code",
 		"buying_asset_issuer", "buying_amount", "price",
-		"created_at", "ledger_range", "pipeline_version",
+		"created_at", "ledger_range",
+		"era_id", "version_label",
 	}
 	placeholders := makePlaceholders(len(cols))
 	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", table, strings.Join(cols, ","), placeholders)
@@ -279,7 +310,8 @@ func writeTradeRows(ctx context.Context, tx *sql.Tx, cat, schema string, rows []
 			r.SellerAccount, r.SellingAssetCode, r.SellingAssetIssuer,
 			r.SellingAmount, r.BuyerAccount, r.BuyingAssetCode,
 			r.BuyingAssetIssuer, r.BuyingAmount, r.Price,
-			r.CreatedAt, r.LedgerRange, r.PipelineVersion,
+			r.CreatedAt, r.LedgerRange,
+			r.EraID, r.VersionLabel,
 		); err != nil {
 			return fmt.Errorf("insert trade: %w", err)
 		}
@@ -304,7 +336,9 @@ func writeAccountRows(ctx context.Context, tx *sql.Tx, cat, schema string, rows 
 		"high_threshold", "flags", "auth_required",
 		"auth_revocable", "auth_immutable",
 		"auth_clawback_enabled", "signers", "sponsor_account",
-		"ledger_range", "pipeline_version",
+		"created_at", "updated_at",
+		"ledger_range",
+		"era_id", "version_label",
 	}
 	placeholders := makePlaceholders(len(cols))
 	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", table, strings.Join(cols, ","), placeholders)
@@ -318,7 +352,9 @@ func writeAccountRows(ctx context.Context, tx *sql.Tx, cat, schema string, rows 
 			r.HighThreshold, r.Flags, r.AuthRequired,
 			r.AuthRevocable, r.AuthImmutable,
 			r.AuthClawbackEnabled, r.Signers, r.SponsorAccount,
-			r.LedgerRange, r.PipelineVersion,
+			r.CreatedAt, r.UpdatedAt,
+			r.LedgerRange,
+			r.EraID, r.VersionLabel,
 		); err != nil {
 			return fmt.Errorf("insert account %s: %w", r.AccountID, err)
 		}
@@ -340,7 +376,9 @@ func writeTrustlineRows(ctx context.Context, tx *sql.Tx, cat, schema string, row
 		"balance", "trust_limit", "buying_liabilities",
 		"selling_liabilities", "authorized",
 		"authorized_to_maintain_liabilities", "clawback_enabled",
-		"ledger_sequence", "ledger_range", "pipeline_version",
+		"ledger_sequence", "created_at",
+		"ledger_range",
+		"era_id", "version_label",
 	}
 	placeholders := makePlaceholders(len(cols))
 	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", table, strings.Join(cols, ","), placeholders)
@@ -351,7 +389,9 @@ func writeTrustlineRows(ctx context.Context, tx *sql.Tx, cat, schema string, row
 			r.Balance, r.TrustLimit, r.BuyingLiabilities,
 			r.SellingLiabilities, r.Authorized,
 			r.AuthorizedToMaintainLiabilities, r.ClawbackEnabled,
-			r.LedgerSequence, r.LedgerRange, r.PipelineVersion,
+			r.LedgerSequence, r.CreatedAt,
+			r.LedgerRange,
+			r.EraID, r.VersionLabel,
 		); err != nil {
 			return fmt.Errorf("insert trustline: %w", err)
 		}
@@ -373,7 +413,8 @@ func writeOfferRows(ctx context.Context, tx *sql.Tx, cat, schema string, rows []
 		"closed_at", "selling_asset_type", "selling_asset_code",
 		"selling_asset_issuer", "buying_asset_type", "buying_asset_code",
 		"buying_asset_issuer", "amount", "price", "flags",
-		"ledger_range", "pipeline_version",
+		"created_at", "ledger_range",
+		"era_id", "version_label",
 	}
 	placeholders := makePlaceholders(len(cols))
 	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", table, strings.Join(cols, ","), placeholders)
@@ -384,7 +425,8 @@ func writeOfferRows(ctx context.Context, tx *sql.Tx, cat, schema string, rows []
 			r.ClosedAt, r.SellingAssetType, r.SellingAssetCode,
 			r.SellingAssetIssuer, r.BuyingAssetType, r.BuyingAssetCode,
 			r.BuyingAssetIssuer, r.Amount, r.Price, r.Flags,
-			r.LedgerRange, r.PipelineVersion,
+			r.CreatedAt, r.LedgerRange,
+			r.EraID, r.VersionLabel,
 		); err != nil {
 			return fmt.Errorf("insert offer %d: %w", r.OfferID, err)
 		}
@@ -404,7 +446,8 @@ func writeAccountSignerRows(ctx context.Context, tx *sql.Tx, cat, schema string,
 	cols := []string{
 		"account_id", "signer", "ledger_sequence",
 		"weight", "sponsor", "deleted",
-		"closed_at", "ledger_range", "pipeline_version",
+		"closed_at", "ledger_range", "created_at",
+		"era_id", "version_label",
 	}
 	placeholders := makePlaceholders(len(cols))
 	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", table, strings.Join(cols, ","), placeholders)
@@ -413,7 +456,8 @@ func writeAccountSignerRows(ctx context.Context, tx *sql.Tx, cat, schema string,
 		if _, err := tx.ExecContext(ctx, query,
 			r.AccountID, r.Signer, r.LedgerSequence,
 			r.Weight, r.Sponsor, r.Deleted,
-			r.ClosedAt, r.LedgerRange, r.PipelineVersion,
+			r.ClosedAt, r.LedgerRange, r.CreatedAt,
+			r.EraID, r.VersionLabel,
 		); err != nil {
 			return fmt.Errorf("insert account signer: %w", err)
 		}
@@ -434,7 +478,8 @@ func writeClaimableBalanceRows(ctx context.Context, tx *sql.Tx, cat, schema stri
 		"balance_id", "sponsor", "ledger_sequence",
 		"closed_at", "asset_type", "asset_code",
 		"asset_issuer", "amount", "claimants_count",
-		"flags", "ledger_range", "pipeline_version",
+		"flags", "created_at", "ledger_range",
+		"era_id", "version_label",
 	}
 	placeholders := makePlaceholders(len(cols))
 	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", table, strings.Join(cols, ","), placeholders)
@@ -444,7 +489,8 @@ func writeClaimableBalanceRows(ctx context.Context, tx *sql.Tx, cat, schema stri
 			r.BalanceID, r.Sponsor, r.LedgerSequence,
 			r.ClosedAt, r.AssetType, r.AssetCode,
 			r.AssetIssuer, r.Amount, r.ClaimantsCount,
-			r.Flags, r.LedgerRange, r.PipelineVersion,
+			r.Flags, r.CreatedAt, r.LedgerRange,
+			r.EraID, r.VersionLabel,
 		); err != nil {
 			return fmt.Errorf("insert claimable balance: %w", err)
 		}
@@ -467,7 +513,8 @@ func writeLiquidityPoolRows(ctx context.Context, tx *sql.Tx, cat, schema string,
 		"total_pool_shares", "asset_a_type", "asset_a_code",
 		"asset_a_issuer", "asset_a_amount", "asset_b_type",
 		"asset_b_code", "asset_b_issuer", "asset_b_amount",
-		"ledger_range", "pipeline_version",
+		"created_at", "ledger_range",
+		"era_id", "version_label",
 	}
 	placeholders := makePlaceholders(len(cols))
 	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", table, strings.Join(cols, ","), placeholders)
@@ -479,7 +526,8 @@ func writeLiquidityPoolRows(ctx context.Context, tx *sql.Tx, cat, schema string,
 			r.TotalPoolShares, r.AssetAType, r.AssetACode,
 			r.AssetAIssuer, r.AssetAAmount, r.AssetBType,
 			r.AssetBCode, r.AssetBIssuer, r.AssetBAmount,
-			r.LedgerRange, r.PipelineVersion,
+			r.CreatedAt, r.LedgerRange,
+			r.EraID, r.VersionLabel,
 		); err != nil {
 			return fmt.Errorf("insert liquidity pool: %w", err)
 		}
@@ -499,8 +547,17 @@ func writeConfigSettingRows(ctx context.Context, tx *sql.Tx, cat, schema string,
 	cols := []string{
 		"config_setting_id", "ledger_sequence",
 		"last_modified_ledger", "deleted",
-		"closed_at", "config_setting_xdr",
-		"ledger_range", "pipeline_version",
+		"closed_at",
+		"ledger_max_instructions", "tx_max_instructions",
+		"fee_rate_per_instructions_increment", "tx_memory_limit",
+		"ledger_max_read_ledger_entries", "ledger_max_read_bytes",
+		"ledger_max_write_ledger_entries", "ledger_max_write_bytes",
+		"tx_max_read_ledger_entries", "tx_max_read_bytes",
+		"tx_max_write_ledger_entries", "tx_max_write_bytes",
+		"contract_max_size_bytes",
+		"config_setting_xdr", "created_at",
+		"ledger_range",
+		"era_id", "version_label",
 	}
 	placeholders := makePlaceholders(len(cols))
 	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", table, strings.Join(cols, ","), placeholders)
@@ -509,8 +566,17 @@ func writeConfigSettingRows(ctx context.Context, tx *sql.Tx, cat, schema string,
 		if _, err := tx.ExecContext(ctx, query,
 			r.ConfigSettingID, r.LedgerSequence,
 			r.LastModifiedLedger, r.Deleted,
-			r.ClosedAt, r.ConfigSettingXDR,
-			r.LedgerRange, r.PipelineVersion,
+			r.ClosedAt,
+			r.LedgerMaxInstructions, r.TxMaxInstructions,
+			r.FeeRatePerInstructionsIncrement, r.TxMemoryLimit,
+			r.LedgerMaxReadLedgerEntries, r.LedgerMaxReadBytes,
+			r.LedgerMaxWriteLedgerEntries, r.LedgerMaxWriteBytes,
+			r.TxMaxReadLedgerEntries, r.TxMaxReadBytes,
+			r.TxMaxWriteLedgerEntries, r.TxMaxWriteBytes,
+			r.ContractMaxSizeBytes,
+			r.ConfigSettingXDR, r.CreatedAt,
+			r.LedgerRange,
+			r.EraID, r.VersionLabel,
 		); err != nil {
 			return fmt.Errorf("insert config setting: %w", err)
 		}
@@ -530,8 +596,9 @@ func writeTTLRows(ctx context.Context, tx *sql.Tx, cat, schema string, rows []TT
 	cols := []string{
 		"key_hash", "ledger_sequence", "live_until_ledger_seq",
 		"ttl_remaining", "expired", "last_modified_ledger",
-		"deleted", "closed_at", "ledger_range",
-		"pipeline_version",
+		"deleted", "closed_at", "created_at",
+		"ledger_range",
+		"era_id", "version_label",
 	}
 	placeholders := makePlaceholders(len(cols))
 	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", table, strings.Join(cols, ","), placeholders)
@@ -540,8 +607,9 @@ func writeTTLRows(ctx context.Context, tx *sql.Tx, cat, schema string, rows []TT
 		if _, err := tx.ExecContext(ctx, query,
 			r.KeyHash, r.LedgerSequence, r.LiveUntilLedgerSeq,
 			r.TTLRemaining, r.Expired, r.LastModifiedLedger,
-			r.Deleted, r.ClosedAt, r.LedgerRange,
-			r.PipelineVersion,
+			r.Deleted, r.ClosedAt, r.CreatedAt,
+			r.LedgerRange,
+			r.EraID, r.VersionLabel,
 		); err != nil {
 			return fmt.Errorf("insert TTL: %w", err)
 		}
@@ -561,7 +629,8 @@ func writeEvictedKeyRows(ctx context.Context, tx *sql.Tx, cat, schema string, ro
 	cols := []string{
 		"key_hash", "ledger_sequence", "contract_id",
 		"key_type", "durability", "closed_at",
-		"ledger_range", "pipeline_version",
+		"ledger_range", "created_at",
+		"era_id", "version_label",
 	}
 	placeholders := makePlaceholders(len(cols))
 	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", table, strings.Join(cols, ","), placeholders)
@@ -570,7 +639,8 @@ func writeEvictedKeyRows(ctx context.Context, tx *sql.Tx, cat, schema string, ro
 		if _, err := tx.ExecContext(ctx, query,
 			r.KeyHash, r.LedgerSequence, r.ContractID,
 			r.KeyType, r.Durability, r.ClosedAt,
-			r.LedgerRange, r.PipelineVersion,
+			r.LedgerRange, r.CreatedAt,
+			r.EraID, r.VersionLabel,
 		); err != nil {
 			return fmt.Errorf("insert evicted key: %w", err)
 		}
@@ -590,7 +660,8 @@ func writeRestoredKeyRows(ctx context.Context, tx *sql.Tx, cat, schema string, r
 	cols := []string{
 		"key_hash", "ledger_sequence", "contract_id",
 		"key_type", "durability", "restored_from_ledger",
-		"closed_at", "ledger_range", "pipeline_version",
+		"closed_at", "ledger_range", "created_at",
+		"era_id", "version_label",
 	}
 	placeholders := makePlaceholders(len(cols))
 	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", table, strings.Join(cols, ","), placeholders)
@@ -599,7 +670,8 @@ func writeRestoredKeyRows(ctx context.Context, tx *sql.Tx, cat, schema string, r
 		if _, err := tx.ExecContext(ctx, query,
 			r.KeyHash, r.LedgerSequence, r.ContractID,
 			r.KeyType, r.Durability, r.RestoredFromLedger,
-			r.ClosedAt, r.LedgerRange, r.PipelineVersion,
+			r.ClosedAt, r.LedgerRange, r.CreatedAt,
+			r.EraID, r.VersionLabel,
 		); err != nil {
 			return fmt.Errorf("insert restored key: %w", err)
 		}
@@ -624,7 +696,8 @@ func writeContractEventRows(ctx context.Context, tx *sql.Tx, cat, schema string,
 		"topic_count", "topic0_decoded", "topic1_decoded",
 		"topic2_decoded", "topic3_decoded",
 		"operation_index", "event_index",
-		"ledger_range", "pipeline_version",
+		"created_at", "ledger_range",
+		"era_id", "version_label",
 	}
 	placeholders := makePlaceholders(len(cols))
 	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", table, strings.Join(cols, ","), placeholders)
@@ -638,7 +711,8 @@ func writeContractEventRows(ctx context.Context, tx *sql.Tx, cat, schema string,
 			r.TopicCount, r.Topic0Decoded, r.Topic1Decoded,
 			r.Topic2Decoded, r.Topic3Decoded,
 			r.OperationIndex, r.EventIndex,
-			r.LedgerRange, r.PipelineVersion,
+			r.CreatedAt, r.LedgerRange,
+			r.EraID, r.VersionLabel,
 		); err != nil {
 			return fmt.Errorf("insert contract event: %w", err)
 		}
@@ -663,7 +737,8 @@ func writeContractDataRows(ctx context.Context, tx *sql.Tx, cat, schema string, 
 		"last_modified_ledger", "ledger_entry_change",
 		"deleted", "closed_at", "contract_data_xdr",
 		"token_name", "token_symbol", "token_decimals",
-		"ledger_range", "pipeline_version",
+		"created_at", "ledger_range",
+		"era_id", "version_label",
 	}
 	placeholders := makePlaceholders(len(cols))
 	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", table, strings.Join(cols, ","), placeholders)
@@ -677,7 +752,8 @@ func writeContractDataRows(ctx context.Context, tx *sql.Tx, cat, schema string, 
 			r.LastModifiedLedger, r.LedgerEntryChange,
 			r.Deleted, r.ClosedAt, r.ContractDataXDR,
 			r.TokenName, r.TokenSymbol, r.TokenDecimals,
-			r.LedgerRange, r.PipelineVersion,
+			r.CreatedAt, r.LedgerRange,
+			r.EraID, r.VersionLabel,
 		); err != nil {
 			return fmt.Errorf("insert contract data: %w", err)
 		}
@@ -702,7 +778,8 @@ func writeContractCodeRows(ctx context.Context, tx *sql.Tx, cat, schema string, 
 		"n_instructions", "n_functions", "n_globals",
 		"n_table_entries", "n_types", "n_data_segments",
 		"n_elem_segments", "n_imports", "n_exports",
-		"n_data_segment_bytes", "ledger_range", "pipeline_version",
+		"n_data_segment_bytes", "created_at", "ledger_range",
+		"era_id", "version_label",
 	}
 	placeholders := makePlaceholders(len(cols))
 	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", table, strings.Join(cols, ","), placeholders)
@@ -716,7 +793,8 @@ func writeContractCodeRows(ctx context.Context, tx *sql.Tx, cat, schema string, 
 			r.NInstructions, r.NFunctions, r.NGlobals,
 			r.NTableEntries, r.NTypes, r.NDataSegments,
 			r.NElemSegments, r.NImports, r.NExports,
-			r.NDataSegmentBytes, r.LedgerRange, r.PipelineVersion,
+			r.NDataSegmentBytes, r.CreatedAt, r.LedgerRange,
+			r.EraID, r.VersionLabel,
 		); err != nil {
 			return fmt.Errorf("insert contract code: %w", err)
 		}
@@ -738,7 +816,8 @@ func writeNativeBalanceRows(ctx context.Context, tx *sql.Tx, cat, schema string,
 		"selling_liabilities", "num_subentries",
 		"num_sponsoring", "num_sponsored",
 		"sequence_number", "last_modified_ledger",
-		"ledger_sequence", "ledger_range", "pipeline_version",
+		"ledger_sequence", "ledger_range",
+		"era_id", "version_label",
 	}
 	placeholders := makePlaceholders(len(cols))
 	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", table, strings.Join(cols, ","), placeholders)
@@ -749,7 +828,8 @@ func writeNativeBalanceRows(ctx context.Context, tx *sql.Tx, cat, schema string,
 			r.SellingLiabilities, r.NumSubentries,
 			r.NumSponsoring, r.NumSponsored,
 			r.SequenceNumber, r.LastModifiedLedger,
-			r.LedgerSequence, r.LedgerRange, r.PipelineVersion,
+			r.LedgerSequence, r.LedgerRange,
+			r.EraID, r.VersionLabel,
 		); err != nil {
 			return fmt.Errorf("insert native balance: %w", err)
 		}
@@ -769,7 +849,8 @@ func writeContractCreationRows(ctx context.Context, tx *sql.Tx, cat, schema stri
 	cols := []string{
 		"contract_id", "creator_address", "wasm_hash",
 		"created_ledger", "created_at",
-		"ledger_range", "pipeline_version",
+		"ledger_range",
+		"era_id", "version_label",
 	}
 	placeholders := makePlaceholders(len(cols))
 	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", table, strings.Join(cols, ","), placeholders)
@@ -778,7 +859,8 @@ func writeContractCreationRows(ctx context.Context, tx *sql.Tx, cat, schema stri
 		if _, err := tx.ExecContext(ctx, query,
 			r.ContractID, r.CreatorAddress, r.WasmHash,
 			r.CreatedLedger, r.CreatedAt,
-			r.LedgerRange, r.PipelineVersion,
+			r.LedgerRange,
+			r.EraID, r.VersionLabel,
 		); err != nil {
 			return fmt.Errorf("insert contract creation: %w", err)
 		}

@@ -31,7 +31,7 @@ type BronzeData struct {
 	ContractCreations []ContractCreationRow
 }
 
-// LedgerRow maps to bronze.ledgers_row_v2
+// LedgerRow maps to bronze.ledgers_row_v2 (V3 schema — 29 columns)
 type LedgerRow struct {
 	Sequence             uint32
 	LedgerHash           string
@@ -50,15 +50,26 @@ type LedgerRow struct {
 	TransactionCount     int
 	OperationCount       int
 	TxSetOperationCount  int
-	PipelineVersion      string
+	// V3 fields
+	SorobanFeeWrite1KB   *int64
+	NodeID               *string
+	Signature            *string
+	LedgerHeader         *string
+	BucketListSize       *int64
+	LiveSorobanStateSize *int64
+	EvictedKeysCount     *int
+	SorobanOpCount       *int
+	TotalFeeCharged      *int64
+	ContractEventsCount  *int
+	EraID                string
+	VersionLabel         string
 }
 
-// TransactionRow maps to bronze.transactions_row_v2
+// TransactionRow maps to bronze.transactions_row_v2 (V3 schema — 49 columns)
 type TransactionRow struct {
 	LedgerSequence               uint32
 	TransactionHash              string
 	SourceAccount                string
-	SourceAccountMuxed           *string
 	FeeCharged                   int64
 	MaxFee                       int64
 	Successful                   bool
@@ -69,28 +80,48 @@ type TransactionRow struct {
 	CreatedAt                    time.Time
 	AccountSequence              int64
 	LedgerRange                  uint32
-	SignaturesCount              int
-	NewAccount                   bool
-	TimeboundsMinTime            *string
-	TimeboundsMaxTime            *string
-	SorobanHostFunctionType      *string
-	SorobanContractID            *string
-	RentFeeCharged               *int64
+	SourceAccountMuxed           *string
+	FeeAccountMuxed              *string
+	InnerTransactionHash         *string
+	FeeBumpFee                   *int64
+	MaxFeeBid                    *int64
+	InnerSourceAccount           *string
+	TimeboundsMinTime            *int64
+	TimeboundsMaxTime            *int64
+	LedgerboundsMin              *int64
+	LedgerboundsMax              *int64
+	MinSequenceNumber            *int64
+	MinSequenceAge               *int64
 	SorobanResourcesInstructions *int64
 	SorobanResourcesReadBytes    *int64
 	SorobanResourcesWriteBytes   *int64
-	// Raw XDR (base64-encoded) for decode endpoints
+	SorobanDataSizeBytes         *int
+	SorobanDataResources         *string
+	SorobanFeeBase               *int64
+	SorobanFeeResources          *int64
+	SorobanFeeRefund             *int64
+	SorobanFeeCharged            *int64
+	SorobanFeeWasted             *int64
+	SorobanHostFunctionType      *string
+	SorobanContractID            *string
+	SorobanContractEventsCount   *int
+	SignaturesCount              int
+	NewAccount                   bool
+	RentFeeCharged               *int64
+	// Raw XDR (base64-encoded)
 	TxEnvelope                   *string
 	TxResult                     *string
 	TxMeta                       *string
 	TxFeeMeta                    *string
-	PipelineVersion              string
+	TxSigners                    *string
+	ExtraSigners                 *string
+	EraID                        string
+	VersionLabel                 string
 }
 
-// OperationRow maps to bronze.operations_row_v2
+// OperationRow maps to bronze.operations_row_v2 (V3 schema — 64 columns)
 type OperationRow struct {
 	TransactionHash       string
-	TransactionIndex      int
 	OperationIndex        int
 	LedgerSequence        uint32
 	SourceAccount         string
@@ -100,6 +131,7 @@ type OperationRow struct {
 	CreatedAt             time.Time
 	TransactionSuccessful bool
 	OperationResultCode   *string
+	OperationTraceCode    *string
 	LedgerRange           uint32
 	Amount                *int64
 	Asset                 *string
@@ -115,6 +147,13 @@ type OperationRow struct {
 	DestinationMin        *int64
 	StartingBalance       *int64
 	TrustlineLimit        *int64
+	Trustor               *string
+	Authorize             *bool
+	AuthorizeToMaintainLiabilities *bool
+	TrustLineFlags        *int
+	BalanceID             *string
+	ClaimantsCount        *int
+	SponsoredID           *string
 	OfferID               *int64
 	Price                 *string
 	PriceR                *string
@@ -126,6 +165,11 @@ type OperationRow struct {
 	SellingAssetType      *string
 	SellingAssetCode      *string
 	SellingAssetIssuer    *string
+	SorobanOperation      *string
+	SorobanFunction       *string
+	SorobanContractID     *string
+	SorobanAuthRequired   *bool
+	BumpTo                *int64
 	SetFlags              *int
 	ClearFlags            *int
 	HomeDomain            *string
@@ -135,20 +179,17 @@ type OperationRow struct {
 	HighThreshold         *int
 	DataName              *string
 	DataValue             *string
-	BalanceID             *string
-	SponsoredID           *string
-	BumpTo                *int64
-	SorobanAuthRequired   *bool
-	SorobanOperation      *string
-	SorobanContractID     *string
-	SorobanFunction       *string
+	EraID                 string
+	VersionLabel          string
+	// Migration fields (contract invocation tracking)
+	TransactionIndex      int
 	SorobanArgumentsJSON  *string
 	ContractCallsJSON     *string
+	ContractsInvolved     *string
 	MaxCallDepth          *int
-	PipelineVersion       string
 }
 
-// EffectRow maps to bronze.effects_row_v1
+// EffectRow maps to bronze.effects_row_v1 (V3 schema — 22 columns)
 type EffectRow struct {
 	LedgerSequence   uint32
 	TransactionHash  string
@@ -170,10 +211,11 @@ type EffectRow struct {
 	SellerAccount    *string
 	CreatedAt        time.Time
 	LedgerRange      uint32
-	PipelineVersion  string
+	EraID            string
+	VersionLabel     string
 }
 
-// TradeRow maps to bronze.trades_row_v1
+// TradeRow maps to bronze.trades_row_v1 (V3 schema — 19 columns)
 type TradeRow struct {
 	LedgerSequence     uint32
 	TransactionHash    string
@@ -192,10 +234,11 @@ type TradeRow struct {
 	Price              string
 	CreatedAt          time.Time
 	LedgerRange        uint32
-	PipelineVersion    string
+	EraID              string
+	VersionLabel       string
 }
 
-// AccountRow maps to bronze.accounts_snapshot_v1
+// AccountRow maps to bronze.accounts_snapshot_v1 (V3 schema — 25 columns)
 type AccountRow struct {
 	AccountID           string
 	LedgerSequence      uint32
@@ -217,11 +260,14 @@ type AccountRow struct {
 	AuthClawbackEnabled bool
 	Signers             *string
 	SponsorAccount      *string
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 	LedgerRange         uint32
-	PipelineVersion     string
+	EraID               string
+	VersionLabel        string
 }
 
-// TrustlineRow maps to bronze.trustlines_snapshot_v1
+// TrustlineRow maps to bronze.trustlines_snapshot_v1 (V3 schema — 16 columns)
 type TrustlineRow struct {
 	AccountID                       string
 	AssetCode                       string
@@ -235,11 +281,13 @@ type TrustlineRow struct {
 	AuthorizedToMaintainLiabilities bool
 	ClawbackEnabled                 bool
 	LedgerSequence                  uint32
+	CreatedAt                       time.Time
 	LedgerRange                     uint32
-	PipelineVersion                 string
+	EraID                           string
+	VersionLabel                    string
 }
 
-// OfferRow maps to bronze.offers_snapshot_v1
+// OfferRow maps to bronze.offers_snapshot_v1 (V3 schema — 17 columns)
 type OfferRow struct {
 	OfferID            int64
 	SellerAccount      string
@@ -254,24 +302,26 @@ type OfferRow struct {
 	Amount             string
 	Price              string
 	Flags              uint32
+	CreatedAt          time.Time
 	LedgerRange        uint32
-	PipelineVersion    string
+	EraID              string
+	VersionLabel       string
 }
 
-// AccountSignerRow maps to bronze.account_signers_snapshot_v1
+// AccountSignerRow maps to bronze.account_signers_snapshot_v1 (V3 schema — 11 columns)
 type AccountSignerRow struct {
-	AccountID      string
-	Signer         string
-	LedgerSequence uint32
-	Weight         uint32
-	Sponsor        string
-	Deleted        bool
-	ClosedAt       time.Time
-	LedgerRange    uint32
-	PipelineVersion string
+	AccountID       string
+	Signer          string
+	LedgerSequence  uint32
+	Weight          uint32
+	Sponsor         string
+	Deleted         bool
+	ClosedAt        time.Time
+	LedgerRange     uint32
+	CreatedAt       time.Time
+	EraID           string
+	VersionLabel    string
 }
-
-// Remaining types are stubs — will be populated as we port extractors
 
 type ClaimableBalanceRow struct {
 	BalanceID       string
@@ -284,8 +334,10 @@ type ClaimableBalanceRow struct {
 	Amount          int64
 	ClaimantsCount  int
 	Flags           int
+	CreatedAt       time.Time
 	LedgerRange     uint32
-	PipelineVersion string
+	EraID           string
+	VersionLabel    string
 }
 
 type LiquidityPoolRow struct {
@@ -304,19 +356,38 @@ type LiquidityPoolRow struct {
 	AssetBCode      *string
 	AssetBIssuer    *string
 	AssetBAmount    int64
+	CreatedAt       time.Time
 	LedgerRange     uint32
-	PipelineVersion string
+	EraID           string
+	VersionLabel    string
 }
 
+// ConfigSettingRow maps to bronze.config_settings_snapshot_v1 (V3 schema — 23 columns)
 type ConfigSettingRow struct {
-	ConfigSettingID    int
-	LedgerSequence     uint32
-	LastModifiedLedger int
-	Deleted            bool
-	ClosedAt           time.Time
-	ConfigSettingXDR   string
-	LedgerRange        uint32
-	PipelineVersion    string
+	ConfigSettingID                 int
+	LedgerSequence                  uint32
+	LastModifiedLedger              int
+	Deleted                         bool
+	ClosedAt                        time.Time
+	// Soroban resource limits (V3 detail fields)
+	LedgerMaxInstructions           *int64
+	TxMaxInstructions               *int64
+	FeeRatePerInstructionsIncrement *int64
+	TxMemoryLimit                   *int64
+	LedgerMaxReadLedgerEntries      *int64
+	LedgerMaxReadBytes              *int64
+	LedgerMaxWriteLedgerEntries     *int64
+	LedgerMaxWriteBytes             *int64
+	TxMaxReadLedgerEntries          *int64
+	TxMaxReadBytes                  *int64
+	TxMaxWriteLedgerEntries         *int64
+	TxMaxWriteBytes                 *int64
+	ContractMaxSizeBytes            *int64
+	ConfigSettingXDR                string
+	CreatedAt                       time.Time
+	LedgerRange                     uint32
+	EraID                           string
+	VersionLabel                    string
 }
 
 type TTLRow struct {
@@ -328,19 +399,23 @@ type TTLRow struct {
 	LastModifiedLedger int
 	Deleted            bool
 	ClosedAt           time.Time
+	CreatedAt          time.Time
 	LedgerRange        uint32
-	PipelineVersion    string
+	EraID              string
+	VersionLabel       string
 }
 
 type EvictedKeyRow struct {
-	KeyHash        string
-	LedgerSequence uint32
-	ContractID     string
-	KeyType        string
-	Durability     string
-	ClosedAt       time.Time
-	LedgerRange    uint32
-	PipelineVersion string
+	KeyHash         string
+	LedgerSequence  uint32
+	ContractID      string
+	KeyType         string
+	Durability      string
+	ClosedAt        time.Time
+	LedgerRange     uint32
+	CreatedAt       time.Time
+	EraID           string
+	VersionLabel    string
 }
 
 type RestoredKeyRow struct {
@@ -352,7 +427,9 @@ type RestoredKeyRow struct {
 	RestoredFromLedger int64
 	ClosedAt           time.Time
 	LedgerRange        uint32
-	PipelineVersion    string
+	CreatedAt          time.Time
+	EraID              string
+	VersionLabel       string
 }
 
 type ContractEventRow struct {
@@ -368,14 +445,16 @@ type ContractEventRow struct {
 	DataXDR                    string
 	DataDecoded                string
 	TopicCount                 int
+	OperationIndex             int
+	EventIndex                 int
 	Topic0Decoded              *string
 	Topic1Decoded              *string
 	Topic2Decoded              *string
 	Topic3Decoded              *string
-	OperationIndex             int
-	EventIndex                 int
+	CreatedAt                  time.Time
 	LedgerRange                uint32
-	PipelineVersion            string
+	EraID                      string
+	VersionLabel               string
 }
 
 type ContractDataRow struct {
@@ -394,11 +473,13 @@ type ContractDataRow struct {
 	Deleted            bool
 	ClosedAt           time.Time
 	ContractDataXDR    string
+	CreatedAt          time.Time
+	LedgerRange        uint32
 	TokenName          *string
 	TokenSymbol        *string
 	TokenDecimals      *int
-	LedgerRange        uint32
-	PipelineVersion    string
+	EraID              string
+	VersionLabel       string
 }
 
 type ContractCodeRow struct {
@@ -420,8 +501,10 @@ type ContractCodeRow struct {
 	NImports           int64
 	NExports           int64
 	NDataSegmentBytes  int64
+	CreatedAt          time.Time
 	LedgerRange        uint32
-	PipelineVersion    string
+	EraID              string
+	VersionLabel       string
 }
 
 type NativeBalanceRow struct {
@@ -436,7 +519,8 @@ type NativeBalanceRow struct {
 	LastModifiedLedger int64
 	LedgerSequence     uint32
 	LedgerRange        uint32
-	PipelineVersion    string
+	EraID              string
+	VersionLabel       string
 }
 
 type ContractCreationRow struct {
@@ -446,7 +530,8 @@ type ContractCreationRow struct {
 	CreatedLedger  int64
 	CreatedAt      time.Time
 	LedgerRange    uint32
-	PipelineVersion string
+	EraID          string
+	VersionLabel   string
 }
 
 // LedgerMeta holds pre-extracted metadata for a ledger

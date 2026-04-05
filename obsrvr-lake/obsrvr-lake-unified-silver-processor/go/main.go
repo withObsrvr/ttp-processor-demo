@@ -5,14 +5,12 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	bronzepb "github.com/withObsrvr/obsrvr-lake-unified-processor/gen/bronze_ledger_service"
-	pb "github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/go/gen/raw_ledger_service"
+	pb "github.com/withObsrvr/obsrvr-lake-unified-processor/gen/bronze_ledger_service"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -27,43 +25,21 @@ func main() {
 	}
 
 	log.Printf("Starting %s", cfg.Service.Name)
-	log.Printf("Source: %s", cfg.Source.Endpoint)
+	log.Printf("Bronze source: %s", cfg.Source.Endpoint)
 	log.Printf("DuckLake catalog: %s", cfg.DuckLake.CatalogName)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Initialize DuckLake writer (DuckDB + ducklake extension + S3)
+	// Initialize DuckLake writer for silver schema
 	writer, err := NewDuckLakeWriter(cfg)
 	if err != nil {
 		log.Fatalf("Failed to initialize DuckLake: %v", err)
 	}
 	defer writer.Close()
 
-	// Create bronze gRPC server
-	bronzeServer := NewBronzeServer()
-
 	// Create processor
-	processor := NewProcessor(cfg, writer, bronzeServer)
-
-	// Start bronze gRPC server
-	grpcPort := cfg.Service.GRPCPort
-	if grpcPort == 0 {
-		grpcPort = 50053
-	}
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", grpcPort))
-	if err != nil {
-		log.Fatalf("Failed to listen on port %d: %v", grpcPort, err)
-	}
-	grpcServer := grpc.NewServer(grpc.MaxSendMsgSize(100 * 1024 * 1024))
-	bronzepb.RegisterBronzeLedgerServiceServer(grpcServer, bronzeServer)
-	go func() {
-		log.Printf("Bronze gRPC server listening on :%d", grpcPort)
-		if err := grpcServer.Serve(lis); err != nil {
-			log.Printf("gRPC server error: %v", err)
-		}
-	}()
-	defer grpcServer.GracefulStop()
+	processor := NewProcessor(cfg, writer)
 
 	// Load checkpoint
 	lastLedger, err := processor.LoadCheckpoint(ctx)
@@ -76,18 +52,18 @@ func main() {
 		log.Printf("Resuming from checkpoint: ledger %d", startLedger)
 	}
 
-	// Connect to gRPC source
-	conn, err := grpc.Dial(
+	// Connect to bronze processor's gRPC stream
+	conn, err := grpc.NewClient(
 		cfg.Source.Endpoint,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(100*1024*1024)),
 	)
 	if err != nil {
-		log.Fatalf("Failed to connect to gRPC source: %v", err)
+		log.Fatalf("Failed to connect to bronze source: %v", err)
 	}
 	defer conn.Close()
 
-	client := pb.NewRawLedgerServiceClient(conn)
+	client := pb.NewBronzeLedgerServiceClient(conn)
 	log.Printf("Connected to %s", cfg.Source.Endpoint)
 
 	// Start periodic flush in background
@@ -96,14 +72,13 @@ func main() {
 	// Graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-
 	go func() {
 		<-sigChan
 		log.Println("Shutdown signal received...")
 		cancel()
 	}()
 
-	// Stream and process ledgers — one at a time, real-time
+	// Stream and process
 	if err := streamAndProcess(ctx, client, processor, startLedger); err != nil {
 		if ctx.Err() != nil {
 			log.Println("Shutting down gracefully")
@@ -115,17 +90,17 @@ func main() {
 	log.Println("Shutdown complete")
 }
 
-func streamAndProcess(ctx context.Context, client pb.RawLedgerServiceClient, processor *Processor, startLedger uint32) error {
-	req := &pb.StreamLedgersRequest{
+func streamAndProcess(ctx context.Context, client pb.BronzeLedgerServiceClient, processor *Processor, startLedger uint32) error {
+	req := &pb.StreamBronzeRequest{
 		StartLedger: startLedger,
 	}
 
-	stream, err := client.StreamRawLedgers(ctx, req)
+	stream, err := client.StreamBronzeData(ctx, req)
 	if err != nil {
 		return fmt.Errorf("start stream: %w", err)
 	}
 
-	log.Printf("Streaming ledgers from %d (real-time, per-ledger processing)", startLedger)
+	log.Printf("Streaming bronze data from ledger %d", startLedger)
 
 	for {
 		select {
@@ -134,7 +109,7 @@ func streamAndProcess(ctx context.Context, client pb.RawLedgerServiceClient, pro
 		default:
 		}
 
-		rawLedger, err := stream.Recv()
+		bronzeData, err := stream.Recv()
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -144,14 +119,14 @@ func streamAndProcess(ctx context.Context, client pb.RawLedgerServiceClient, pro
 
 		startTime := time.Now()
 
-		if err := processor.ProcessLedger(ctx, rawLedger); err != nil {
-			log.Printf("Error processing ledger %d: %v", rawLedger.Sequence, err)
+		if err := processor.ProcessLedger(ctx, bronzeData); err != nil {
+			log.Printf("Error processing ledger %d: %v", bronzeData.LedgerSequence, err)
 			continue
 		}
 
 		duration := time.Since(startTime)
-		if rawLedger.Sequence%100 == 0 {
-			log.Printf("Processed ledger %d in %s", rawLedger.Sequence, duration.Round(time.Millisecond))
+		if bronzeData.LedgerSequence%100 == 0 {
+			log.Printf("Silver transform ledger %d in %s", bronzeData.LedgerSequence, duration.Round(time.Millisecond))
 		}
 	}
 }
