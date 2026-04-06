@@ -1,7 +1,15 @@
 service:
   name: silver-realtime-transformer
   health_port: "8094"
-  poll_interval_seconds: 5  # Poll every 5 seconds for sub-10s latency target
+  poll_interval_seconds: 5  # Poll every 5 seconds (used in poll mode)
+
+# Bronze source mode: "poll" (default) or "grpc"
+# In grpc mode, the transformer receives push notifications from the ingester
+# instead of polling bronze_hot for new data. The transform logic is unchanged —
+# it still reads from bronze_hot via SQL, but is triggered by the stream.
+bronze_source:
+  mode: "grpc"
+  endpoint: "localhost:50054"  # stellar-postgres-ingester flowctl SourceService
 
 # Source: Bronze hot buffer (stellar_hot PostgreSQL)
 bronze_hot:

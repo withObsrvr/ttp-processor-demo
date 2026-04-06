@@ -1,6 +1,7 @@
 service:
   name: stellar-postgres-ingester
   health_port: 8088
+  grpc_port: 50054  # flowctl SourceService port (0 = disabled)
 
 source:
   endpoint: "localhost:50053"

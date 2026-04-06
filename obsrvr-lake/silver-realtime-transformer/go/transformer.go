@@ -46,11 +46,10 @@ func NewRealtimeTransformer(config *Config, sourceManager *SourceManager, silver
 	}
 }
 
-// Start begins the real-time transformation loop
+// Start begins the real-time transformation loop.
+// It dispatches to either gRPC streaming or polling mode based on config.
 func (rt *RealtimeTransformer) Start() error {
-	log.Println("🚀 Starting Real-Time Silver Transformer")
-	log.Printf("Poll Interval: %v", rt.config.PollInterval())
-	log.Printf("Target Latency: < 10 seconds")
+	log.Println("Starting Real-Time Silver Transformer")
 
 	// Load initial checkpoint
 	lastLedger, err := rt.checkpoint.Load()
@@ -63,9 +62,9 @@ func (rt *RealtimeTransformer) Start() error {
 	rt.mu.Unlock()
 
 	if lastLedger == 0 {
-		log.Println("⚠️  No checkpoint found, starting from beginning")
+		log.Println("No checkpoint found, starting from beginning")
 	} else {
-		log.Printf("📍 Resuming from ledger sequence: %d", lastLedger)
+		log.Printf("Resuming from ledger sequence: %d", lastLedger)
 	}
 
 	// One-time migration: convert hex contract IDs to C-encoded strkey
@@ -75,27 +74,117 @@ func (rt *RealtimeTransformer) Start() error {
 	rt.migrateSorobanTransfers()
 
 	// Run immediate transformation check
-	log.Println("🔍 Running initial transformation check...")
+	log.Println("Running initial transformation check...")
 	if err := rt.runTransformationCycle(); err != nil {
-		log.Printf("⚠️  Initial transformation error: %v", err)
+		log.Printf("Initial transformation error: %v", err)
 		rt.incrementErrors()
 	}
 
-	// Start polling loop
+	// Dispatch to the configured source mode
+	if rt.config.BronzeSource.Mode == "grpc" {
+		return rt.startGRPC()
+	}
+	return rt.startPolling()
+}
+
+// startPolling runs the original ticker-based polling loop
+func (rt *RealtimeTransformer) startPolling() error {
+	log.Printf("Transformer ready - polling for new data (interval: %v)...", rt.config.PollInterval())
+
 	ticker := time.NewTicker(rt.config.PollInterval())
 	defer ticker.Stop()
-
-	log.Println("✅ Transformer ready - polling for new data...")
 
 	for {
 		select {
 		case <-ticker.C:
 			if err := rt.runTransformationCycle(); err != nil {
-				log.Printf("❌ Transformation error: %v", err)
+				log.Printf("Transformation error: %v", err)
 				rt.incrementErrors()
 			}
 		case <-rt.stopChan:
-			log.Println("🛑 Stopping transformer...")
+			log.Println("Stopping transformer...")
+			return nil
+		}
+	}
+}
+
+// startGRPC connects to the bronze ingester's flowctl SourceService and triggers
+// transformation cycles on each received ledger-committed event.
+// Falls back to polling if the gRPC connection cannot be established.
+func (rt *RealtimeTransformer) startGRPC() error {
+	endpoint := rt.config.BronzeSource.Endpoint
+	log.Printf("Transformer ready - gRPC streaming from %s", endpoint)
+
+	client, err := NewBronzeStreamClient(endpoint)
+	if err != nil {
+		return fmt.Errorf("failed to create bronze stream client: %w", err)
+	}
+	defer client.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Stop on shutdown signal
+	go func() {
+		<-rt.stopChan
+		cancel()
+	}()
+
+	startLedger := rt.getLastLedger()
+	eventCh, _ := client.StreamLedgerEvents(ctx, startLedger)
+
+	// Track whether a cycle is running to coalesce batches
+	var pendingEnd int64
+	var cycleRunning bool
+	cycleDone := make(chan struct{}, 1)
+
+	for {
+		select {
+		case event, ok := <-eventCh:
+			if !ok {
+				// Channel closed — stream ended
+				log.Println("Stopping transformer (stream closed)...")
+				return nil
+			}
+
+			endLedger := int64(event.EndLedger)
+
+			if cycleRunning {
+				// Coalesce: remember the latest end ledger for the next cycle
+				if endLedger > pendingEnd {
+					pendingEnd = endLedger
+				}
+				continue
+			}
+
+			// Run transformation cycle
+			cycleRunning = true
+			pendingEnd = 0
+			go func() {
+				if err := rt.runTransformationCycle(); err != nil {
+					log.Printf("Transformation error: %v", err)
+					rt.incrementErrors()
+				}
+				cycleDone <- struct{}{}
+			}()
+
+		case <-cycleDone:
+			cycleRunning = false
+			// If events arrived while we were processing, run another cycle immediately
+			if pendingEnd > 0 {
+				pendingEnd = 0
+				cycleRunning = true
+				go func() {
+					if err := rt.runTransformationCycle(); err != nil {
+						log.Printf("Transformation error: %v", err)
+						rt.incrementErrors()
+					}
+					cycleDone <- struct{}{}
+				}()
+			}
+
+		case <-ctx.Done():
+			log.Println("Stopping transformer...")
 			return nil
 		}
 	}

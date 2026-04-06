@@ -20,6 +20,12 @@ type Writer struct {
 	config       *Config
 	checkpoint   *Checkpoint
 	healthServer *HealthServer
+	broadcaster  *BronzeSourceServer
+}
+
+// SetBroadcaster sets the gRPC source server for broadcasting events after commit
+func (w *Writer) SetBroadcaster(b *BronzeSourceServer) {
+	w.broadcaster = b
 }
 
 // LedgerData represents extracted ledger information
@@ -474,6 +480,17 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 	// Commit transaction
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	// Broadcast to gRPC subscribers (before checkpoint save so consumers see the data)
+	if w.broadcaster != nil {
+		w.broadcaster.Broadcast(BronzeBatchInfo{
+			StartLedger: rawLedgers[0].Sequence,
+			EndLedger:   rawLedgers[len(rawLedgers)-1].Sequence,
+			ClosedAt:    time.Now(),
+			TxCount:     totalTxCount,
+			OpCount:     totalOpCount,
+		})
 	}
 
 	// Save checkpoint

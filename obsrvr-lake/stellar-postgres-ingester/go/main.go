@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -73,6 +74,31 @@ func main() {
 
 	// Create writer
 	writer := NewWriter(dbpool, cfg, checkpoint, healthServer)
+
+	// Start flowctl SourceService gRPC server (if configured)
+	var bronzeSource *BronzeSourceServer
+	if cfg.Service.GRPCPort > 0 {
+		bronzeSource = NewBronzeSourceServer(checkpoint)
+		grpcServer := grpc.NewServer(
+			grpc.MaxSendMsgSize(50 * 1024 * 1024), // 50MB
+		)
+		bronzeSource.Register(grpcServer)
+
+		lis, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.Service.GRPCPort))
+		if err != nil {
+			log.Fatalf("Failed to listen on gRPC port %d: %v", cfg.Service.GRPCPort, err)
+		}
+
+		go func() {
+			log.Printf("flowctl SourceService gRPC server listening on :%d", cfg.Service.GRPCPort)
+			if err := grpcServer.Serve(lis); err != nil {
+				log.Printf("gRPC server error: %v", err)
+			}
+		}()
+		defer grpcServer.GracefulStop()
+
+		writer.SetBroadcaster(bronzeSource)
+	}
 
 	// Connect to gRPC source
 	conn, err := grpc.Dial(
