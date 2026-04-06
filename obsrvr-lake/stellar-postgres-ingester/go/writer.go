@@ -851,6 +851,15 @@ func (w *Writer) insertOperations(ctx context.Context, tx pgx.Tx, operations []O
 	`
 
 	for _, opData := range operations {
+		// Sanitize text fields: PostgreSQL rejects null bytes and invalid Unicode escapes
+		opData.Asset = sanitizeStringPtr(opData.Asset)
+		opData.Destination = sanitizeStringPtr(opData.Destination)
+		opData.SorobanOperation = sanitizeStringPtr(opData.SorobanOperation)
+		opData.SorobanContractID = sanitizeStringPtr(opData.SorobanContractID)
+		opData.SorobanFunction = sanitizeStringPtr(opData.SorobanFunction)
+		opData.SorobanArgumentsJSON = sanitizeStringPtr(opData.SorobanArgumentsJSON)
+		opData.ContractCallsJSON = sanitizeStringPtr(opData.ContractCallsJSON)
+
 		_, err := tx.Exec(ctx, query,
 			opData.TransactionHash,
 			opData.TransactionIndex,
@@ -1759,10 +1768,12 @@ func (w *Writer) insertContractCreations(ctx context.Context, tx pgx.Tx, creatio
 	return nil
 }
 
-// sanitizeUTF8 strips null bytes (0x00) from strings.
-// PostgreSQL rejects null bytes in text columns even though they are valid in Go strings.
+// sanitizeUTF8 strips null bytes and invalid Unicode escape sequences from strings.
+// PostgreSQL rejects null bytes (0x00) in text columns and \u0000 in JSON text.
 func sanitizeUTF8(s string) string {
-	return strings.ReplaceAll(s, "\x00", "")
+	s = strings.ReplaceAll(s, "\x00", "")
+	s = strings.ReplaceAll(s, "\\u0000", "")
+	return s
 }
 
 func sanitizeStringPtr(s *string) *string {

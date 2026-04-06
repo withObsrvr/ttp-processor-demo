@@ -437,21 +437,21 @@ func mainWithSilver() {
 				explorerEventHandlers := NewExplorerEventHandlers(unifiedDuckDBReader, eventClassifier)
 				router.HandleFunc("/api/v1/explorer/events", explorerEventHandlers.HandleExplorerEvents).Methods("GET")
 				router.HandleFunc("/api/v1/explorer/events/rules", explorerEventHandlers.HandleExplorerEventRules).Methods("GET")
-				router.HandleFunc("/api/v1/explorer/events/rules/reload", explorerEventHandlers.HandleExplorerEventRulesReload).Methods("POST")
+				router.HandleFunc("/api/v1/explorer/events/rules/reload", requireAdmin(explorerEventHandlers.HandleExplorerEventRulesReload)).Methods("POST")
 				log.Println("  ✓ /api/v1/explorer/events (Prism explorer events)")
 				log.Println("  ✓ /api/v1/explorer/events/rules (view classification rules)")
-				log.Println("  ✓ /api/v1/explorer/events/rules/reload (hot-reload rules)")
+				log.Println("  ✓ /api/v1/explorer/events/rules/reload (hot-reload rules, admin)")
 			}
 
 			// Contract Registry (Prism contract identity)
 			registryHandlers := NewContractRegistryHandlers(silverHotReader.DB(), unifiedDuckDBReader)
 			router.HandleFunc("/api/v1/explorer/contracts/search", registryHandlers.HandleSearchContracts).Methods("GET")
-			router.HandleFunc("/api/v1/explorer/contracts/seed", registryHandlers.HandleSeedRegistry).Methods("POST")
+			router.HandleFunc("/api/v1/explorer/contracts/seed", requireAdmin(registryHandlers.HandleSeedRegistry)).Methods("POST")
 			router.HandleFunc("/api/v1/explorer/contracts/{id}", registryHandlers.HandleGetContract).Methods("GET")
-			router.HandleFunc("/api/v1/explorer/contracts/{id}", registryHandlers.HandleDeleteContract).Methods("DELETE")
+			router.HandleFunc("/api/v1/explorer/contracts/{id}", requireAdmin(registryHandlers.HandleDeleteContract)).Methods("DELETE")
 			router.HandleFunc("/api/v1/explorer/contracts", registryHandlers.HandleListContracts).Methods("GET")
-			router.HandleFunc("/api/v1/explorer/contracts", registryHandlers.HandleUpsertContract).Methods("POST")
-			log.Println("  ✓ /api/v1/explorer/contracts (contract registry CRUD)")
+			router.HandleFunc("/api/v1/explorer/contracts", requireAdmin(registryHandlers.HandleUpsertContract)).Methods("POST")
+			log.Println("  ✓ /api/v1/explorer/contracts (contract registry, admin for mutations)")
 
 			// Feature 2: Unified Search
 			searchHandlers := NewSearchHandlers(unifiedDuckDBReader)
