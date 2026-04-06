@@ -1,4 +1,4 @@
-FROM golang:1.25-bookworm AS builder
+FROM golang:1.26-bookworm AS builder
 
 # Install build dependencies for C/C++ compilation
 RUN apt-get update && apt-get install -y --no-install-recommends \

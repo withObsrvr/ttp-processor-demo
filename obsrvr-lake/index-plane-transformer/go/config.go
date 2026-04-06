@@ -10,12 +10,19 @@ import (
 
 // Config represents the transformer configuration
 type Config struct {
-	Service     ServiceConfig     `yaml:"service"`
-	BronzeHot   DatabaseConfig    `yaml:"bronze_hot"`
-	IndexCold   IndexColdConfig   `yaml:"index_cold"`
-	Checkpoint  CheckpointConfig  `yaml:"checkpoint"`
-	Maintenance MaintenanceConfig `yaml:"maintenance"`
-	Health      HealthConfig      `yaml:"health"`
+	Service      ServiceConfig      `yaml:"service"`
+	BronzeSource BronzeSourceConfig `yaml:"bronze_source"`
+	BronzeHot    DatabaseConfig     `yaml:"bronze_hot"`
+	IndexCold    IndexColdConfig    `yaml:"index_cold"`
+	Checkpoint   CheckpointConfig   `yaml:"checkpoint"`
+	Maintenance  MaintenanceConfig  `yaml:"maintenance"`
+	Health       HealthConfig       `yaml:"health"`
+}
+
+// BronzeSourceConfig configures the gRPC connection to the bronze ingester's SourceService.
+type BronzeSourceConfig struct {
+	Mode     string `yaml:"mode"`     // "poll" (default) or "grpc"
+	Endpoint string `yaml:"endpoint"` // gRPC endpoint, e.g. "localhost:50054"
 }
 
 // ServiceConfig contains service-level configuration
@@ -111,6 +118,11 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.Health.Port == 0 {
 		config.Health.Port = 8096
+	}
+
+	// Validate bronze source config
+	if config.BronzeSource.Mode == "grpc" && config.BronzeSource.Endpoint == "" {
+		return nil, fmt.Errorf("bronze_source.endpoint is required when mode is \"grpc\"")
 	}
 
 	return &config, nil

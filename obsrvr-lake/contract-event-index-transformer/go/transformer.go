@@ -100,9 +100,15 @@ func (t *Transformer) Start() error {
 		log.Printf("⚠️  Initial transformation error: %v", err)
 	}
 
-	log.Println("✅ Transformer ready - polling for new contract events...")
+	if t.config.BronzeSource.Mode == "grpc" {
+		return t.startGRPC()
+	}
+	return t.startPolling(pollInterval)
+}
 
-	// Start polling loop
+func (t *Transformer) startPolling(pollInterval time.Duration) error {
+	log.Printf("✅ Transformer ready - polling for new contract events (interval: %v)...", pollInterval)
+
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
@@ -114,6 +120,85 @@ func (t *Transformer) Start() error {
 				t.incrementErrors()
 			}
 		case <-t.stopChan:
+			log.Println("🛑 Transformer stopping...")
+			return nil
+		}
+	}
+}
+
+func (t *Transformer) startGRPC() error {
+	endpoint := t.config.BronzeSource.Endpoint
+	log.Printf("✅ Transformer ready - gRPC streaming from %s", endpoint)
+
+	client, err := NewBronzeStreamClient(endpoint)
+	if err != nil {
+		return fmt.Errorf("failed to create bronze stream client: %w", err)
+	}
+	defer client.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		<-t.stopChan
+		cancel()
+	}()
+
+	lastLedger, err := t.checkpoint.Load(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to load checkpoint: %w", err)
+	}
+	eventCh := client.StreamLedgerEvents(ctx, lastLedger)
+
+	var pendingEnd int64
+	var cycleRunning bool
+	cycleDone := make(chan struct{}, 1)
+
+	for {
+		select {
+		case event, ok := <-eventCh:
+			if !ok {
+				log.Println("Stopping transformer (stream closed)...")
+				return nil
+			}
+			endLedger := int64(event.EndLedger)
+			if cycleRunning {
+				if endLedger > pendingEnd {
+					pendingEnd = endLedger
+				}
+				continue
+			}
+			cycleRunning = true
+			pendingEnd = 0
+			go func() {
+				if err := t.runTransformationCycle(); err != nil {
+					log.Printf("❌ Transformation error: %v", err)
+					t.incrementErrors()
+				}
+				select {
+				case cycleDone <- struct{}{}:
+				case <-ctx.Done():
+				}
+			}()
+
+		case <-cycleDone:
+			cycleRunning = false
+			if pendingEnd > 0 {
+				pendingEnd = 0
+				cycleRunning = true
+				go func() {
+					if err := t.runTransformationCycle(); err != nil {
+						log.Printf("❌ Transformation error: %v", err)
+						t.incrementErrors()
+					}
+					select {
+					case cycleDone <- struct{}{}:
+					case <-ctx.Done():
+					}
+				}()
+			}
+
+		case <-ctx.Done():
 			log.Println("🛑 Transformer stopping...")
 			return nil
 		}

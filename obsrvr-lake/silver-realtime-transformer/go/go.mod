@@ -1,12 +1,12 @@
 module github.com/withobsrvr/silver-realtime-transformer
 
-go 1.24.0
+go 1.26.1
 
 require (
 	github.com/duckdb/duckdb-go/v2 v2.10501.0
 	github.com/lib/pq v1.10.9
 	github.com/stellar/go-stellar-sdk v0.2.0
-	github.com/withObsrvr/flow-proto v0.1.2
+	github.com/withObsrvr/flow-proto v0.1.3
 	google.golang.org/grpc v1.78.0
 	gopkg.in/yaml.v3 v3.0.1
 )
