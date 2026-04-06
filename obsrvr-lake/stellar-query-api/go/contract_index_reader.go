@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"time"
 
 	_ "github.com/duckdb/duckdb-go/v2"
@@ -35,7 +36,7 @@ func NewContractIndexReader(config ContractIndexConfig) (*ContractIndexReader, e
 	}
 
 	// Install extensions
-	if _, err := db.Exec("INSTALL ducklake"); err != nil {
+	if _, err := db.Exec("INSTALL ducklake FROM core_nightly"); err != nil {
 		return nil, fmt.Errorf("failed to install ducklake: %w", err)
 	}
 	if _, err := db.Exec("LOAD ducklake"); err != nil {
@@ -79,12 +80,28 @@ func NewContractIndexReader(config ContractIndexConfig) (*ContractIndexReader, e
 		return nil, fmt.Errorf("failed to attach catalog: %w", err)
 	}
 
-	return &ContractIndexReader{
+	reader := &ContractIndexReader{
 		db:          db,
 		catalogName: "testnet_catalog",
 		schemaName:  "index",
 		tableName:   "contract_events_index",
-	}, nil
+	}
+
+	// Warm up DuckDB by scanning the table to load Parquet file metadata + row groups.
+	// Bounded to 60s to avoid blocking startup indefinitely.
+	warmCtx, warmCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer warmCancel()
+	var cnt int64
+	if err := db.QueryRowContext(warmCtx, "SELECT COUNT(*) FROM testnet_catalog.index.contract_events_index").Scan(&cnt); err != nil {
+		log.Printf("Contract index warm-up query failed (non-fatal): %v", err)
+	} else {
+		log.Printf("Contract index reader warmed up (contract_events_index: %d rows)", cnt)
+	}
+	if _, err := db.ExecContext(warmCtx, "SELECT ledger_range, MIN(contract_id) FROM testnet_catalog.index.contract_events_index GROUP BY ledger_range"); err != nil {
+		log.Printf("Contract index warm-up partition scan failed (non-fatal): %v", err)
+	}
+
+	return reader, nil
 }
 
 // GetLedgersForContract returns all ledgers containing events from a specific contract

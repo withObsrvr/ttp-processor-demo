@@ -52,7 +52,7 @@ func (iw *IndexWriter) initialize() error {
 	log.Println("🔧 Initializing Contract Event Index Writer (DuckDB with DuckLake)...")
 
 	// Install and load required extensions
-	if _, err := iw.db.Exec("INSTALL ducklake"); err != nil {
+	if _, err := iw.db.Exec("INSTALL ducklake FROM core_nightly"); err != nil {
 		return fmt.Errorf("failed to install ducklake extension: %w", err)
 	}
 	if _, err := iw.db.Exec("LOAD ducklake"); err != nil {
@@ -90,7 +90,7 @@ func (iw *IndexWriter) initialize() error {
 	dataPath := iw.config.DataPath()
 
 	// Use 'index' schema for both data and metadata
-	attachSQL := fmt.Sprintf(`ATTACH '%s' AS testnet_catalog (DATA_PATH '%s', METADATA_SCHEMA 'index', AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE)`,
+	attachSQL := fmt.Sprintf(`ATTACH '%s' AS testnet_catalog (DATA_PATH '%s', METADATA_SCHEMA 'index', DATA_INLINING_ROW_LIMIT 10000, AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE)`,
 		catalogPath, dataPath)
 
 	if _, err := iw.db.Exec(attachSQL); err != nil {
@@ -219,13 +219,19 @@ func (iw *IndexWriter) WriteBatch(ctx context.Context, rows []ContractEventIndex
 	return rowsAffected, nil
 }
 
-// Checkpoint forces DuckDB to flush buffered data to Parquet files on S3
-// CRITICAL: Must be called after WriteBatch to ensure data is persisted
-func (iw *IndexWriter) Checkpoint() error {
-	if _, err := iw.db.Exec("CHECKPOINT"); err != nil {
-		return fmt.Errorf("CHECKPOINT failed: %w", err)
+// FlushInlinedData consolidates inlined rows from the catalog into Parquet files on S3.
+func (iw *IndexWriter) FlushInlinedData() (int64, error) {
+	var schema, table string
+	var rowsFlushed int64
+	query := "CALL ducklake_flush_inlined_data('testnet_catalog', schema_name => 'index', table_name => 'contract_events_index')"
+	err := iw.db.QueryRow(query).Scan(&schema, &table, &rowsFlushed)
+	if err != nil {
+		return 0, fmt.Errorf("flush inlined data failed: %w", err)
 	}
-	return nil
+	if rowsFlushed > 0 {
+		log.Printf("✅ Flushed %d inlined rows to Parquet (%s.%s)", rowsFlushed, schema, table)
+	}
+	return rowsFlushed, nil
 }
 
 // GetIndexStats returns statistics about the index.

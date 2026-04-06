@@ -50,7 +50,7 @@ func (c *DuckDBClient) initialize() error {
 		return fmt.Errorf("failed to load postgres extension: %w", err)
 	}
 
-	if _, err := c.db.Exec("INSTALL ducklake"); err != nil {
+	if _, err := c.db.Exec("INSTALL ducklake FROM core_nightly"); err != nil {
 		return fmt.Errorf("failed to install ducklake extension: %w", err)
 	}
 	if _, err := c.db.Exec("LOAD ducklake"); err != nil {
