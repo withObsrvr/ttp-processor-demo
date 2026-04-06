@@ -35,6 +35,11 @@ func NewSilverHotReader(config PostgresConfig) (*SilverHotReader, error) {
 	return &SilverHotReader{db: db}, nil
 }
 
+// DB returns the underlying database connection
+func (h *SilverHotReader) DB() *sql.DB {
+	return h.db
+}
+
 // Close closes the database connection
 func (h *SilverHotReader) Close() error {
 	if h.db != nil {

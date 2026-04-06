@@ -1,0 +1,718 @@
+openapi: 3.0.3
+info:
+  title: Obsrvr Lake Explorer Events API
+  description: |
+    Unified event stream endpoint for the Prism block explorer.
+    Returns enriched Soroban contract events with contract name resolution,
+    semantic type classification, protocol attribution, and cursor-based pagination.
+
+    ## Polling pattern
+
+    The endpoint is designed for polling-based real-time updates:
+
+    1. **Initial load**: `GET /api/v1/explorer/events?order=desc&limit=20`
+    2. **Load newer events**: Poll with `start_ledger` set to the highest ledger from your current data
+    3. **Load older events**: Use `next_cursor` from the previous response
+    4. **Filtered views**: Add `type`, `contract_id`, `tab`, or topic filters
+
+    Recommended poll interval: 1–2 seconds for real-time feel.
+
+    ## Event classification
+
+    Events are classified by **database-driven rules** evaluated in priority order.
+    Each rule can match on contract IDs, topic0 values, and/or a regex on the full
+    decoded topics string. First match wins.
+
+    Default rules classify standard SEP-41 token events (transfer, mint, burn, approve),
+    Soroswap swaps, and a catch-all for unclassified contract events.
+
+    New protocols and event types can be added at any time by inserting rows into the
+    `event_classification_rules` table and calling `POST /api/v1/explorer/events/rules/reload`.
+    No code changes or redeployments needed.
+
+    See the [Explorer Events Guide](../analyst-guide/explorer-events.md) for details.
+
+  version: 1.1.0
+  contact:
+    name: Obsrvr
+    url: https://withobsrvr.com
+
+servers:
+  - url: https://gateway.withobsrvr.com/lake/v1/testnet
+    description: Testnet (via gateway)
+  - url: http://localhost:8080
+    description: Local development
+
+paths:
+  /api/v1/explorer/events:
+    get:
+      operationId: getExplorerEvents
+      summary: Get explorer events
+      description: |
+        Returns a paginated stream of Soroban contract events enriched with
+        contract names, semantic type classification, protocol attribution,
+        and metadata stats.
+
+        Supports filtering by event type, contract, topics, transaction hash,
+        and ledger range. Event types are dynamically derived from classification
+        rules and can be extended without code changes.
+      tags:
+        - Explorer Events
+      parameters:
+        - name: type
+          in: query
+          description: |
+            Comma-separated list of event types to include.
+            Types are dynamically derived from classification rules.
+            Use `GET /api/v1/explorer/events/rules` to see available types.
+            Common values: `transfer`, `swap`, `mint`, `burn`, `approve`, `contract_call`.
+          schema:
+            type: string
+          example: "transfer,swap"
+
+        - name: tab
+          in: query
+          description: |
+            UI tab shortcut. Maps to type filters:
+            - `transfers` -> `type=transfer`
+            - `swaps` -> `type=swap`
+            - `mints_burns` -> `type=mint,burn`
+            - `contract_calls` -> `type=contract_call`
+
+            Ignored if `type` is also provided.
+          schema:
+            type: string
+            enum: [transfers, swaps, mints_burns, contract_calls]
+
+        - name: contract_id
+          in: query
+          description: Filter by contract ID (C... address or 64-char hex hash).
+          schema:
+            type: string
+          example: "CCW6RLPVMJBMZOHPWGQNV7YA7CGZES5B3MNZJQHCOQMJFIQ7YMK"
+
+        - name: contract_name
+          in: query
+          description: |
+            Search by contract/token name (case-insensitive substring match
+            against `contract_registry.display_name` and `token_registry.token_name`).
+          schema:
+            type: string
+          example: "USDC"
+
+        - name: tx_hash
+          in: query
+          description: Filter by transaction hash.
+          schema:
+            type: string
+
+        - name: topic_match
+          in: query
+          description: Substring match across all decoded topics (case-insensitive).
+          schema:
+            type: string
+
+        - name: topic0
+          in: query
+          description: Exact match on topic position 0 (e.g. `transfer`, `swap`).
+          schema:
+            type: string
+
+        - name: topic1
+          in: query
+          description: Exact match on topic position 1 (e.g. sender address).
+          schema:
+            type: string
+
+        - name: topic2
+          in: query
+          description: Exact match on topic position 2 (e.g. receiver address).
+          schema:
+            type: string
+
+        - name: topic3
+          in: query
+          description: Exact match on topic position 3.
+          schema:
+            type: string
+
+        - name: start_ledger
+          in: query
+          description: Only return events at or after this ledger sequence.
+          schema:
+            type: integer
+            format: int64
+
+        - name: end_ledger
+          in: query
+          description: Only return events at or before this ledger sequence.
+          schema:
+            type: integer
+            format: int64
+
+        - name: limit
+          in: query
+          description: Maximum number of events to return.
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 200
+
+        - name: cursor
+          in: query
+          description: |
+            Opaque pagination cursor from a previous response's `next_cursor`.
+            Used to load the next page of results.
+          schema:
+            type: string
+
+        - name: order
+          in: query
+          description: Sort order by ledger sequence and event index.
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+
+      responses:
+        "200":
+          description: Paginated list of explorer events with metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExplorerEventsResponse"
+
+        "400":
+          description: Invalid request parameters.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "invalid type filter: 'foo' is not a recognized event type"
+
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/explorer/events/rules:
+    get:
+      operationId: getExplorerEventRules
+      summary: Get event classification rules
+      description: |
+        Returns the currently loaded classification rules. Rules define how raw
+        contract events are classified into semantic types (transfer, swap, etc.)
+        with protocol attribution.
+      tags:
+        - Explorer Events
+      responses:
+        "200":
+          description: Currently loaded classification rules.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClassificationRulesResponse"
+
+  /api/v1/explorer/events/rules/reload:
+    post:
+      operationId: reloadExplorerEventRules
+      summary: Reload classification rules
+      description: |
+        Hot-reloads classification rules from the database without restarting
+        the service. Call this after inserting, updating, or deleting rules in
+        the `event_classification_rules` table.
+      tags:
+        - Explorer Events
+      responses:
+        "200":
+          description: Rules reloaded successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "reloaded"
+                  count:
+                    type: integer
+                    description: Number of rules loaded.
+                    example: 7
+                  rules:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ClassificationRule"
+        "500":
+          description: Reload failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/explorer/contracts:
+    get:
+      operationId: listContracts
+      summary: List contract registry entries
+      tags:
+        - Contract Registry
+      parameters:
+        - name: category
+          in: query
+          schema:
+            type: string
+          description: Filter by category (token, dex, oracle, etc.)
+        - name: project
+          in: query
+          schema:
+            type: string
+          description: Filter by project (soroswap, redstone, etc.)
+        - name: source
+          in: query
+          schema:
+            type: string
+          description: Filter by source (manual, token_registry, etc.)
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 500
+      responses:
+        "200":
+          description: List of contract registry entries.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  contracts:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ContractRegistryEntry"
+                  count:
+                    type: integer
+    post:
+      operationId: upsertContract
+      summary: Add or update a contract registry entry
+      tags:
+        - Contract Registry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [contract_id, display_name]
+              properties:
+                contract_id:
+                  type: string
+                display_name:
+                  type: string
+                category:
+                  type: string
+                project:
+                  type: string
+                icon_url:
+                  type: string
+                website:
+                  type: string
+                verified:
+                  type: boolean
+      responses:
+        "200":
+          description: Entry created or updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  contract_id:
+                    type: string
+
+  /api/v1/explorer/contracts/search:
+    get:
+      operationId: searchContracts
+      summary: Search contract registry by name or project
+      tags:
+        - Contract Registry
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Search query (matches display_name and project)
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+      responses:
+        "200":
+          description: Search results.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  query:
+                    type: string
+                  results:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ContractRegistryEntry"
+                  count:
+                    type: integer
+
+  /api/v1/explorer/contracts/seed:
+    post:
+      operationId: seedContractRegistry
+      summary: Re-seed registry from token_registry
+      description: Inserts tokens from token_registry that don't already exist in the registry.
+      tags:
+        - Contract Registry
+      responses:
+        "200":
+          description: Seed completed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  new_entries:
+                    type: integer
+
+  /api/v1/explorer/contracts/{id}:
+    get:
+      operationId: getContract
+      summary: Get a single contract registry entry
+      tags:
+        - Contract Registry
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Contract ID (C... address)
+      responses:
+        "200":
+          description: Contract registry entry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContractRegistryEntry"
+        "404":
+          description: Contract not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteContract
+      summary: Delete a contract registry entry
+      tags:
+        - Contract Registry
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Entry deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  contract_id:
+                    type: string
+
+components:
+  schemas:
+    ExplorerEventsResponse:
+      type: object
+      required: [meta, events, has_more, count]
+      properties:
+        meta:
+          $ref: "#/components/schemas/ExplorerEventMeta"
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/ExplorerEvent"
+        has_more:
+          type: boolean
+          description: Whether more results are available beyond this page.
+        next_cursor:
+          type: string
+          nullable: true
+          description: |
+            Opaque cursor to pass as the `cursor` parameter for the next page.
+            Null when there are no more results.
+        count:
+          type: integer
+          description: Number of events in this response page.
+
+    ExplorerEventMeta:
+      type: object
+      description: |
+        Aggregate statistics for the current filter set.
+        Useful for displaying matched count and ledger range in the UI.
+      required: [matched_count, ledger_range]
+      properties:
+        matched_count:
+          type: integer
+          description: |
+            Total number of events matching the current filters.
+            Capped at 10000 for performance. Check `count_capped`.
+          example: 2847
+        count_capped:
+          type: boolean
+          description: True if `matched_count` was capped at 10000.
+          default: false
+        ledger_range:
+          type: object
+          required: [min, max]
+          properties:
+            min:
+              type: integer
+              format: int64
+              example: 5104892
+            max:
+              type: integer
+              format: int64
+              example: 5104938
+        events_per_second:
+          type: number
+          format: float
+          nullable: true
+          description: Estimated event throughput. Null if ledger range is too narrow.
+
+    ExplorerEvent:
+      type: object
+      description: |
+        A single enriched contract event with classified type, protocol attribution,
+        contract name resolution, and raw topic/data fields for frontend rendering.
+      required:
+        - event_id
+        - type
+        - ledger_sequence
+        - transaction_hash
+        - closed_at
+        - successful
+      properties:
+        event_id:
+          type: string
+          description: Unique event identifier.
+          example: "bf2a...1b:0:0"
+        type:
+          type: string
+          description: |
+            Classified event type from classification rules.
+            Not a fixed enum — new types can be added via rules.
+          example: "transfer"
+        protocol:
+          type: string
+          nullable: true
+          description: |
+            Protocol or standard that emitted this event, from the matching
+            classification rule. Examples: `sep41`, `soroswap`, `aquarius`,
+            `redstone`. Null if the catch-all rule matched.
+          example: "sep41"
+        contract_id:
+          type: string
+          nullable: true
+          description: Contract ID that emitted the event (C... address).
+          example: "CCW6RLPVMJBMZOHPWGQNV7YA7CGZES5B3MNZJQHCOQMJFIQ7YMK"
+        contract_name:
+          type: string
+          nullable: true
+          description: |
+            Human-readable name from contract_registry (tokens, DEXes, oracles, etc.).
+            Falls back to token_registry for tokens not yet in the registry.
+            Null if contract is unknown.
+          example: "RedStone Oracle"
+        contract_symbol:
+          type: string
+          nullable: true
+          description: |
+            Token symbol from token_registry (e.g. "USDC", "XLM").
+            Null for non-token contracts.
+          example: "USDC"
+        contract_category:
+          type: string
+          nullable: true
+          description: |
+            Contract category from contract_registry (e.g. "token", "dex", "oracle").
+            Null if contract is not in the registry.
+          example: "token"
+        ledger_sequence:
+          type: integer
+          format: int64
+          example: 5104938
+        transaction_hash:
+          type: string
+          example: "bf2a3e4f..."
+        closed_at:
+          type: string
+          format: date-time
+          example: "2026-04-06T12:00:00Z"
+        successful:
+          type: boolean
+          description: Whether the event occurred in a successful contract call.
+        topic0:
+          type: string
+          nullable: true
+          description: Decoded value of topic position 0.
+          example: "transfer"
+        topic1:
+          type: string
+          nullable: true
+          description: Decoded value of topic position 1.
+        topic2:
+          type: string
+          nullable: true
+          description: Decoded value of topic position 2.
+        topic3:
+          type: string
+          nullable: true
+          description: Decoded value of topic position 3.
+        topics_decoded:
+          type: string
+          nullable: true
+          description: All topics decoded as a single string.
+        data:
+          type: string
+          nullable: true
+          description: Raw decoded event data payload.
+        data_decoded:
+          type: string
+          nullable: true
+          description: Human-readable decoded data.
+        event_index:
+          type: integer
+          description: Event position within the transaction.
+        operation_index:
+          type: integer
+          description: Operation index within the transaction.
+
+    ClassificationRulesResponse:
+      type: object
+      properties:
+        count:
+          type: integer
+          description: Number of loaded rules.
+          example: 6
+        rules:
+          type: array
+          items:
+            $ref: "#/components/schemas/ClassificationRule"
+
+    ClassificationRule:
+      type: object
+      description: |
+        A single event classification rule. Rules are evaluated in priority order
+        (highest first). First match wins.
+      properties:
+        rule_id:
+          type: integer
+          example: 1
+        priority:
+          type: integer
+          description: |
+            Higher = checked first. Use 100+ for protocol-specific,
+            10 for generic standards, 0 for catch-all.
+          example: 100
+        event_type:
+          type: string
+          description: The classified event type this rule produces.
+          example: "swap"
+        protocol:
+          type: string
+          nullable: true
+          description: Protocol attribution (e.g. soroswap, sep41, aquarius).
+          example: "soroswap"
+        match_contracts:
+          type: array
+          items:
+            type: string
+          nullable: true
+          description: Contract IDs to match (C... format). Null = match any.
+          example: ["CAG5LRYQ5JVEUI5TEID72EYOVX44TTUJT5BQR2J6J77FH65PCCFAJDDH"]
+        match_topic0:
+          type: array
+          items:
+            type: string
+          nullable: true
+          description: topic0 values to match. Null = match any.
+          example: ["swap"]
+        match_topic_sig:
+          type: string
+          nullable: true
+          description: Regex pattern applied to topics_decoded. Null = skip.
+        description:
+          type: string
+          nullable: true
+          description: Human-readable description of what this rule detects.
+          example: "Soroswap router swap events"
+
+    ContractRegistryEntry:
+      type: object
+      description: A contract identity entry in the registry.
+      properties:
+        contract_id:
+          type: string
+          example: "CD4KFB23CQLJ47RIPESVBTQ444R75M6QVEZULWXHHFYYZT7SS2VGXOPW"
+        display_name:
+          type: string
+          example: "RedStone Oracle"
+        category:
+          type: string
+          nullable: true
+          description: "Contract type: token, dex, oracle, bridge, dao, nft, game, utility"
+          example: "oracle"
+        project:
+          type: string
+          nullable: true
+          description: "Project name: soroswap, redstone, aquarius, etc."
+          example: "redstone"
+        icon_url:
+          type: string
+          nullable: true
+        website:
+          type: string
+          nullable: true
+        verified:
+          type: boolean
+          description: Manually verified by operators.
+        source:
+          type: string
+          description: "How entry was created: manual, token_registry, community"
+          example: "manual"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: Error message.

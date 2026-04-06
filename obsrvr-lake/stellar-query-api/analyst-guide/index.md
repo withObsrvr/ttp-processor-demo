@@ -166,6 +166,11 @@ The API automatically queries both hot and cold storage, merging results seamles
 - [nebu for Analysts](./nebu-for-analysts.md) - Build custom data pipelines (power users)
 - [Hubble Comparison](./vs-hubble.md) - How Obsrvr Lake compares to Stellar Hubble
 
+**Explorer & Events:**
+- [Explorer Events API](./explorer-events.md) - Unified event stream with extensible classification rules
+- [Classification Rules](./explorer-events.md#classification-rules) - How to add new protocols and event types (no code changes)
+- [Contract Registry](./explorer-events.md#contract-registry) - Name any contract (tokens, DEXes, oracles) for display in Prism
+
 **Soroban & Smart Contracts:**
 - [Contract Metadata](./common-queries.md#get-contract-metadata) - Creator, WASM info, storage summary, observed functions
 - [Contract Storage](./common-queries.md#get-contract-storage) - Contract data entries with TTL information

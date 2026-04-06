@@ -937,6 +937,66 @@ type GenericEventFilters struct {
 }
 
 // ============================================
+// EXPLORER EVENT TYPES
+// ============================================
+
+// ExplorerEvent represents an enriched contract event for the Prism explorer
+type ExplorerEvent struct {
+	EventID          string  `json:"event_id"`
+	Type             string  `json:"type"`                        // transfer, swap, mint, burn, approve, contract_call
+	Protocol         *string `json:"protocol,omitempty"`          // soroswap, aquarius, sep41, etc.
+	ContractID       *string `json:"contract_id,omitempty"`
+	ContractName     *string `json:"contract_name,omitempty"`
+	ContractSymbol   *string `json:"contract_symbol,omitempty"`
+	ContractCategory *string `json:"contract_category,omitempty"` // token, dex, oracle, bridge, etc.
+	LedgerSequence   int64   `json:"ledger_sequence"`
+	TxHash         string  `json:"transaction_hash"`
+	ClosedAt       string  `json:"closed_at"`
+	Successful     bool    `json:"successful"`
+	Topic0         *string `json:"topic0,omitempty"`
+	Topic1         *string `json:"topic1,omitempty"`
+	Topic2         *string `json:"topic2,omitempty"`
+	Topic3         *string `json:"topic3,omitempty"`
+	TopicsDecoded  *string `json:"topics_decoded,omitempty"`
+	Data           *string `json:"data,omitempty"`
+	DataDecoded    *string `json:"data_decoded,omitempty"`
+	EventIndex     int     `json:"event_index"`
+	OpIndex        int     `json:"operation_index"`
+}
+
+// ExplorerEventMeta contains aggregate stats for the current filter set
+type ExplorerEventMeta struct {
+	MatchedCount    int64                    `json:"matched_count"`
+	CountCapped     bool                     `json:"count_capped"`
+	LedgerRange     ExplorerEventLedgerRange `json:"ledger_range"`
+	EventsPerSecond *float64                 `json:"events_per_second,omitempty"`
+}
+
+// ExplorerEventLedgerRange contains min/max ledger sequence for matched events
+type ExplorerEventLedgerRange struct {
+	Min int64 `json:"min"`
+	Max int64 `json:"max"`
+}
+
+// ExplorerEventFilters contains all filter options for the explorer events endpoint
+type ExplorerEventFilters struct {
+	Types        []string // classified event types (transfer, swap, etc.)
+	ContractID   *string
+	ContractName *string // ILIKE search on token_registry.token_name
+	TxHash       *string
+	TopicMatch   *string
+	Topic0       *string
+	Topic1       *string
+	Topic2       *string
+	Topic3       *string
+	StartLedger  *int64
+	EndLedger    *int64
+	Limit        int
+	Cursor       *string
+	Order        string // "asc" or "desc"
+}
+
+// ============================================
 // SEARCH TYPES
 // ============================================
 
