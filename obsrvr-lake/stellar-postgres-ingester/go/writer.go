@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -1474,6 +1475,9 @@ func (w *Writer) insertContractEvents(ctx context.Context, tx pgx.Tx, events []C
 	`
 
 	for _, event := range events {
+		// Sanitize text fields: PostgreSQL rejects null bytes (0x00) in UTF-8 text
+		sanitizeEventStrings(&event)
+
 		_, err := tx.Exec(ctx, query,
 			event.EventID,
 			event.ContractID,
@@ -1753,4 +1757,30 @@ func (w *Writer) insertContractCreations(ctx context.Context, tx pgx.Tx, creatio
 	}
 
 	return nil
+}
+
+// sanitizeUTF8 strips null bytes (0x00) from strings.
+// PostgreSQL rejects null bytes in text columns even though they are valid in Go strings.
+func sanitizeUTF8(s string) string {
+	return strings.ReplaceAll(s, "\x00", "")
+}
+
+func sanitizeStringPtr(s *string) *string {
+	if s == nil {
+		return nil
+	}
+	cleaned := sanitizeUTF8(*s)
+	return &cleaned
+}
+
+// sanitizeEventStrings removes null bytes from all text fields of a contract event
+func sanitizeEventStrings(e *ContractEventData) {
+	e.TopicsJSON = sanitizeUTF8(e.TopicsJSON)
+	e.TopicsDecoded = sanitizeUTF8(e.TopicsDecoded)
+	e.DataXDR = sanitizeUTF8(e.DataXDR)
+	e.DataDecoded = sanitizeUTF8(e.DataDecoded)
+	e.Topic0Decoded = sanitizeStringPtr(e.Topic0Decoded)
+	e.Topic1Decoded = sanitizeStringPtr(e.Topic1Decoded)
+	e.Topic2Decoded = sanitizeStringPtr(e.Topic2Decoded)
+	e.Topic3Decoded = sanitizeStringPtr(e.Topic3Decoded)
 }

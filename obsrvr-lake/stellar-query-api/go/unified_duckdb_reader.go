@@ -6053,3 +6053,520 @@ func (r *UnifiedDuckDBReader) enrichContractFunctions(ctx context.Context, resp 
 		resp.ExportedFunctions = append(resp.ExportedFunctions, fc)
 	}
 }
+
+// ============================================
+// EXPLORER EVENTS (Prism block explorer)
+// ============================================
+
+// GetExplorerEvents returns enriched contract events for the Prism explorer.
+// Queries bronze contract_events_stream_v1 and enriches with token_registry names.
+func (r *UnifiedDuckDBReader) GetExplorerEvents(ctx context.Context, filters ExplorerEventFilters, classifier *EventClassifier) ([]ExplorerEvent, *ExplorerEventMeta, string, bool, error) {
+	if !r.hasBronze() {
+		return nil, nil, "", false, fmt.Errorf("no bronze database attached")
+	}
+
+	limit := filters.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	requestLimit := limit + 1
+
+	order := "DESC"
+	if filters.Order == "asc" {
+		order = "ASC"
+	}
+
+	// Build WHERE conditions
+	conditions, args, argIdx := r.buildExplorerEventConditions(filters, order, classifier)
+
+	whereClause := ""
+	if len(conditions) > 0 {
+		whereClause = "WHERE " + strings.Join(conditions, " AND ")
+	}
+
+	// Build the main query with token_registry enrichment
+	events, nextCursor, hasMore, err := r.queryExplorerEvents(ctx, whereClause, args, argIdx, order, requestLimit, limit, filters, classifier)
+	if err != nil {
+		return nil, nil, "", false, err
+	}
+
+	// Build meta stats — use args before LIMIT was appended
+	meta, err := r.queryExplorerEventMeta(ctx, whereClause, args)
+	if err != nil {
+		// Non-fatal: return events without meta
+		meta = &ExplorerEventMeta{}
+	}
+
+	return events, meta, nextCursor, hasMore, nil
+}
+
+func (r *UnifiedDuckDBReader) buildExplorerEventConditions(filters ExplorerEventFilters, order string, classifier *EventClassifier) ([]string, []any, int) {
+	var conditions []string
+	var args []any
+	argIdx := 1
+
+	// Type filter: use classifier to resolve event types → topic0 values
+	if len(filters.Types) > 0 {
+		topic0Values, includesCatchAll := classifier.Topic0ValuesForTypes(filters.Types)
+
+		if includesCatchAll && len(topic0Values) > 0 {
+			// Include specific topic0 values OR anything not classified by any rule
+			allKnown := classifier.AllKnownTopic0Values()
+			placeholders := make([]string, len(topic0Values))
+			for i, t := range topic0Values {
+				placeholders[i] = fmt.Sprintf("$%d", argIdx)
+				args = append(args, t)
+				argIdx++
+			}
+			excludePlaceholders := make([]string, len(allKnown))
+			for i, t := range allKnown {
+				excludePlaceholders[i] = fmt.Sprintf("$%d", argIdx)
+				args = append(args, t)
+				argIdx++
+			}
+			conditions = append(conditions, fmt.Sprintf(
+				"(topic0_decoded IN (%s) OR topic0_decoded IS NULL OR topic0_decoded NOT IN (%s))",
+				strings.Join(placeholders, ","), strings.Join(excludePlaceholders, ",")))
+		} else if includesCatchAll {
+			// Only catch-all: exclude all known topic0 values
+			allKnown := classifier.AllKnownTopic0Values()
+			if len(allKnown) > 0 {
+				excludePlaceholders := make([]string, len(allKnown))
+				for i, t := range allKnown {
+					excludePlaceholders[i] = fmt.Sprintf("$%d", argIdx)
+					args = append(args, t)
+					argIdx++
+				}
+				conditions = append(conditions, fmt.Sprintf(
+					"(topic0_decoded IS NULL OR topic0_decoded NOT IN (%s))",
+					strings.Join(excludePlaceholders, ",")))
+			}
+		} else if len(topic0Values) > 0 {
+			// Only specific topic0 values
+			placeholders := make([]string, len(topic0Values))
+			for i, t := range topic0Values {
+				placeholders[i] = fmt.Sprintf("$%d", argIdx)
+				args = append(args, t)
+				argIdx++
+			}
+			conditions = append(conditions, fmt.Sprintf("topic0_decoded IN (%s)", strings.Join(placeholders, ",")))
+		}
+	}
+
+	if filters.ContractID != nil && *filters.ContractID != "" {
+		// Normalize to hex for bronze table lookup (accepts both C... and hex)
+		hexID, err := normalizeContractID(*filters.ContractID)
+		if err == nil {
+			conditions = append(conditions, fmt.Sprintf("contract_id = $%d", argIdx))
+			args = append(args, hexID)
+			argIdx++
+		}
+	}
+	if filters.TxHash != nil && *filters.TxHash != "" {
+		conditions = append(conditions, fmt.Sprintf("transaction_hash = $%d", argIdx))
+		args = append(args, *filters.TxHash)
+		argIdx++
+	}
+	if filters.TopicMatch != nil && *filters.TopicMatch != "" {
+		conditions = append(conditions, fmt.Sprintf("topics_decoded ILIKE '%%' || $%d || '%%'", argIdx))
+		args = append(args, *filters.TopicMatch)
+		argIdx++
+	}
+	if filters.Topic0 != nil && *filters.Topic0 != "" {
+		conditions = append(conditions, fmt.Sprintf("topic0_decoded = $%d", argIdx))
+		args = append(args, *filters.Topic0)
+		argIdx++
+	}
+	if filters.Topic1 != nil && *filters.Topic1 != "" {
+		conditions = append(conditions, fmt.Sprintf("topic1_decoded = $%d", argIdx))
+		args = append(args, *filters.Topic1)
+		argIdx++
+	}
+	if filters.Topic2 != nil && *filters.Topic2 != "" {
+		conditions = append(conditions, fmt.Sprintf("topic2_decoded = $%d", argIdx))
+		args = append(args, *filters.Topic2)
+		argIdx++
+	}
+	if filters.Topic3 != nil && *filters.Topic3 != "" {
+		conditions = append(conditions, fmt.Sprintf("topic3_decoded = $%d", argIdx))
+		args = append(args, *filters.Topic3)
+		argIdx++
+	}
+	if filters.StartLedger != nil {
+		conditions = append(conditions, fmt.Sprintf("ledger_sequence >= $%d", argIdx))
+		args = append(args, *filters.StartLedger)
+		argIdx++
+	}
+	if filters.EndLedger != nil {
+		conditions = append(conditions, fmt.Sprintf("ledger_sequence <= $%d", argIdx))
+		args = append(args, *filters.EndLedger)
+		argIdx++
+	}
+	if filters.Cursor != nil && *filters.Cursor != "" {
+		parts := strings.SplitN(*filters.Cursor, ":", 2)
+		if len(parts) == 2 {
+			cursorLedger, err1 := strconv.ParseInt(parts[0], 10, 64)
+			cursorEvent, err2 := strconv.ParseInt(parts[1], 10, 64)
+			if err1 == nil && err2 == nil {
+				if order == "DESC" {
+					conditions = append(conditions, fmt.Sprintf(
+						"(ledger_sequence < $%d OR (ledger_sequence = $%d AND event_index < $%d))",
+						argIdx, argIdx, argIdx+1))
+				} else {
+					conditions = append(conditions, fmt.Sprintf(
+						"(ledger_sequence > $%d OR (ledger_sequence = $%d AND event_index > $%d))",
+						argIdx, argIdx, argIdx+1))
+				}
+				args = append(args, cursorLedger, cursorEvent)
+				argIdx += 2
+			}
+		}
+	}
+
+	return conditions, args, argIdx
+}
+
+func (r *UnifiedDuckDBReader) queryExplorerEvents(ctx context.Context, whereClause string, args []any, argIdx int, order string, requestLimit, limit int, filters ExplorerEventFilters, classifier *EventClassifier) ([]ExplorerEvent, string, bool, error) {
+	selectCols := `event_id, contract_id, ledger_sequence, transaction_hash, closed_at,
+		in_successful_contract_call, topic0_decoded, topic1_decoded, topic2_decoded, topic3_decoded,
+		topics_decoded, data_decoded, event_index, operation_index`
+
+	// Handle contract_name filter: pre-resolve matching C... IDs from token_registry,
+	// convert to hex, and add as IN clause for the bronze query
+	if filters.ContractName != nil && *filters.ContractName != "" {
+		hexIDs := r.resolveContractNameToHex(ctx, *filters.ContractName)
+		if len(hexIDs) == 0 {
+			// No matching contracts — return empty result
+			return nil, "", false, nil
+		}
+		placeholders := make([]string, len(hexIDs))
+		for i, hexID := range hexIDs {
+			placeholders[i] = fmt.Sprintf("$%d", argIdx)
+			args = append(args, hexID)
+			argIdx++
+		}
+		nameCondition := fmt.Sprintf("contract_id IN (%s)", strings.Join(placeholders, ","))
+		if whereClause == "" {
+			whereClause = "WHERE " + nameCondition
+		} else {
+			whereClause += " AND " + nameCondition
+		}
+	}
+
+	var innerParts []string
+	if r.bronzeHotSchema != "" {
+		innerParts = append(innerParts, fmt.Sprintf("SELECT %s FROM %s.contract_events_stream_v1 %s",
+			selectCols, r.bronzeHotSchema, whereClause))
+	}
+	if r.bronzeColdSchema != "" {
+		innerParts = append(innerParts, fmt.Sprintf("SELECT %s FROM %s.contract_events_stream_v1 %s",
+			selectCols, r.bronzeColdSchema, whereClause))
+	}
+	innerQuery := strings.Join(innerParts, " UNION ALL ")
+
+	query := fmt.Sprintf(`
+		SELECT event_id, contract_id, ledger_sequence, transaction_hash, closed_at,
+		       in_successful_contract_call, topic0_decoded, topic1_decoded, topic2_decoded, topic3_decoded,
+		       topics_decoded, data_decoded, event_index, operation_index
+		FROM (%s) combined
+		ORDER BY ledger_sequence %s, event_index %s
+		LIMIT $%d
+	`, innerQuery, order, order, argIdx)
+	args = append(args, requestLimit)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, "", false, fmt.Errorf("GetExplorerEvents: %w", err)
+	}
+	defer rows.Close()
+
+	var events []ExplorerEvent
+	var contractIDs []string
+	contractSet := make(map[string]bool)
+
+	for rows.Next() {
+		var e ExplorerEvent
+		var successful sql.NullBool
+		if err := rows.Scan(&e.EventID, &e.ContractID, &e.LedgerSequence, &e.TxHash, &e.ClosedAt,
+			&successful, &e.Topic0, &e.Topic1, &e.Topic2, &e.Topic3,
+			&e.TopicsDecoded, &e.DataDecoded, &e.EventIndex, &e.OpIndex); err != nil {
+			return nil, "", false, fmt.Errorf("GetExplorerEvents scan: %w", err)
+		}
+		// Explorer events come from operation-level contract events which only
+		// appear for successful operations. The bronze table has this field
+		// incorrectly set to false for historical data (fixed in ingester).
+		// Default to true for explorer display.
+		e.Successful = true
+		e.Data = e.DataDecoded
+
+		// Convert hex contract_id to C... StrKey format before classification
+		// (rules table stores C... addresses)
+		if e.ContractID != nil {
+			if strKeyID, err := hexToStrKey(*e.ContractID); err == nil {
+				e.ContractID = &strKeyID
+			}
+		}
+
+		classification := classifier.Classify(e.ContractID, e.Topic0, e.TopicsDecoded)
+		e.Type = classification.EventType
+		e.Protocol = classification.Protocol
+
+		events = append(events, e)
+
+		if e.ContractID != nil && !contractSet[*e.ContractID] {
+			contractIDs = append(contractIDs, *e.ContractID)
+			contractSet[*e.ContractID] = true
+		}
+	}
+
+	// Enrich with contract_registry + token_registry names (contract IDs are now in C... format)
+	if len(contractIDs) > 0 {
+		nameMap := r.batchResolveContractNames(ctx, contractIDs)
+		for i := range events {
+			if events[i].ContractID != nil {
+				if info, ok := nameMap[*events[i].ContractID]; ok {
+					events[i].ContractName = info.name
+					events[i].ContractSymbol = info.symbol
+					events[i].ContractCategory = info.category
+				}
+			}
+		}
+	}
+
+	hasMore := len(events) > limit
+	if hasMore {
+		events = events[:limit]
+	}
+
+	var nextCursor string
+	if len(events) > 0 && hasMore {
+		last := events[len(events)-1]
+		nextCursor = fmt.Sprintf("%d:%d", last.LedgerSequence, last.EventIndex)
+	}
+
+	return events, nextCursor, hasMore, nil
+}
+
+type contractNameInfo struct {
+	name     *string
+	symbol   *string
+	category *string
+}
+
+// batchResolveContractNames looks up contract_registry (with token_registry fallback)
+// for a batch of contract IDs. Returns display names, symbols, and categories.
+func (r *UnifiedDuckDBReader) batchResolveContractNames(ctx context.Context, contractIDs []string) map[string]contractNameInfo {
+	result := make(map[string]contractNameInfo)
+	if len(contractIDs) == 0 {
+		return result
+	}
+
+	placeholders := make([]string, len(contractIDs))
+	args := make([]any, len(contractIDs))
+	for i, id := range contractIDs {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = id
+	}
+	inClause := strings.Join(placeholders, ",")
+
+	// Query contract_registry LEFT JOIN token_registry for symbol
+	// contract_registry has display_name + category for all contracts
+	// token_registry has token_symbol only for SEP-41 tokens
+	query := fmt.Sprintf(`
+		SELECT cr.contract_id, cr.display_name, tr.token_symbol, cr.category
+		FROM %s.contract_registry cr
+		LEFT JOIN %s.token_registry tr ON cr.contract_id = tr.contract_id
+		WHERE cr.contract_id IN (%s)
+	`, r.hotSchema, r.hotSchema, inClause)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		// Fallback: try token_registry directly if contract_registry doesn't exist
+		return r.batchResolveFromTokenRegistry(ctx, contractIDs)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var contractID string
+		var name sql.NullString
+		var symbol, category sql.NullString
+		if err := rows.Scan(&contractID, &name, &symbol, &category); err != nil {
+			continue
+		}
+		if _, exists := result[contractID]; !exists {
+			info := contractNameInfo{}
+			if name.Valid && name.String != "" {
+				s := name.String
+				info.name = &s
+			}
+			if symbol.Valid && symbol.String != "" {
+				s := symbol.String
+				info.symbol = &s
+			}
+			if category.Valid && category.String != "" {
+				s := category.String
+				info.category = &s
+			}
+			result[contractID] = info
+		}
+	}
+
+	// For any contract IDs not found in contract_registry, try token_registry as fallback
+	if len(result) < len(contractIDs) {
+		var missing []string
+		for _, id := range contractIDs {
+			if _, ok := result[id]; !ok {
+				missing = append(missing, id)
+			}
+		}
+		if len(missing) > 0 {
+			fallback := r.batchResolveFromTokenRegistry(ctx, missing)
+			for k, v := range fallback {
+				result[k] = v
+			}
+		}
+	}
+
+	return result
+}
+
+// batchResolveFromTokenRegistry is a fallback that queries token_registry (hot + cold)
+func (r *UnifiedDuckDBReader) batchResolveFromTokenRegistry(ctx context.Context, contractIDs []string) map[string]contractNameInfo {
+	result := make(map[string]contractNameInfo)
+	if len(contractIDs) == 0 {
+		return result
+	}
+
+	placeholders := make([]string, len(contractIDs))
+	args := make([]any, len(contractIDs))
+	for i, id := range contractIDs {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = id
+	}
+	inClause := strings.Join(placeholders, ",")
+
+	placeholders2 := make([]string, len(contractIDs))
+	for i := range contractIDs {
+		placeholders2[i] = fmt.Sprintf("$%d", i+1+len(contractIDs))
+	}
+	inClause2 := strings.Join(placeholders2, ",")
+
+	query := fmt.Sprintf(`
+		SELECT contract_id, token_name, token_symbol FROM (
+			SELECT contract_id, token_name, token_symbol FROM %s.token_registry WHERE contract_id IN (%s)
+			UNION ALL
+			SELECT contract_id, token_name, token_symbol FROM %s.token_registry WHERE contract_id IN (%s)
+		) combined
+	`, r.hotSchema, inClause, r.coldSchema, inClause2)
+
+	allArgs := make([]any, 0, len(args)*2)
+	allArgs = append(allArgs, args...)
+	allArgs = append(allArgs, args...)
+
+	rows, err := r.db.QueryContext(ctx, query, allArgs...)
+	if err != nil {
+		return result
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var contractID string
+		var name, symbol sql.NullString
+		if err := rows.Scan(&contractID, &name, &symbol); err != nil {
+			continue
+		}
+		if _, exists := result[contractID]; !exists {
+			info := contractNameInfo{}
+			if name.Valid && name.String != "" {
+				s := name.String
+				info.name = &s
+			}
+			if symbol.Valid && symbol.String != "" {
+				s := symbol.String
+				info.symbol = &s
+			}
+			tokenCat := "token"
+			info.category = &tokenCat
+			result[contractID] = info
+		}
+	}
+	return result
+}
+
+// resolveContractNameToHex finds contracts matching a name in contract_registry
+// (with token_registry fallback) and returns their hex-encoded IDs for querying bronze tables
+func (r *UnifiedDuckDBReader) resolveContractNameToHex(ctx context.Context, name string) []string {
+	query := fmt.Sprintf(`
+		SELECT contract_id FROM (
+			SELECT contract_id FROM %s.contract_registry WHERE display_name ILIKE '%%' || $1 || '%%'
+			UNION
+			SELECT contract_id FROM %s.token_registry WHERE token_name ILIKE '%%' || $2 || '%%'
+		) combined
+	`, r.hotSchema, r.hotSchema)
+
+	rows, err := r.db.QueryContext(ctx, query, name, name)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var hexIDs []string
+	for rows.Next() {
+		var strKeyID string
+		if err := rows.Scan(&strKeyID); err != nil {
+			continue
+		}
+		// Convert C... StrKey to hex for bronze table lookup
+		hexID, err := normalizeContractID(strKeyID)
+		if err == nil {
+			hexIDs = append(hexIDs, hexID)
+		}
+	}
+	return hexIDs
+}
+
+func (r *UnifiedDuckDBReader) queryExplorerEventMeta(ctx context.Context, whereClause string, args []any) (*ExplorerEventMeta, error) {
+	var innerParts []string
+	if r.bronzeHotSchema != "" {
+		innerParts = append(innerParts, fmt.Sprintf("SELECT ledger_sequence FROM %s.contract_events_stream_v1 %s",
+			r.bronzeHotSchema, whereClause))
+	}
+	if r.bronzeColdSchema != "" {
+		innerParts = append(innerParts, fmt.Sprintf("SELECT ledger_sequence FROM %s.contract_events_stream_v1 %s",
+			r.bronzeColdSchema, whereClause))
+	}
+	innerQuery := strings.Join(innerParts, " UNION ALL ")
+
+	// Cap the count scan at 10001 rows for performance
+	query := fmt.Sprintf(`
+		SELECT COUNT(*), MIN(ledger_sequence), MAX(ledger_sequence) FROM (
+			SELECT ledger_sequence FROM (%s) sub LIMIT 10001
+		) capped
+	`, innerQuery)
+
+	var count int64
+	var minLedger, maxLedger sql.NullInt64
+	err := r.db.QueryRowContext(ctx, query, args...).Scan(&count, &minLedger, &maxLedger)
+	if err != nil {
+		return nil, fmt.Errorf("queryExplorerEventMeta: %w", err)
+	}
+
+	meta := &ExplorerEventMeta{
+		MatchedCount: count,
+		CountCapped:  count > 10000,
+	}
+	if meta.CountCapped {
+		meta.MatchedCount = 10000
+	}
+	if minLedger.Valid {
+		meta.LedgerRange.Min = minLedger.Int64
+	}
+	if maxLedger.Valid {
+		meta.LedgerRange.Max = maxLedger.Int64
+	}
+
+	return meta, nil
+}

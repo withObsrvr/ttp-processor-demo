@@ -85,6 +85,7 @@ func mainWithSilver() {
 	var silverHandlers *SilverHandlers
 	var unifiedSilverReader *UnifiedSilverReader
 	var unifiedDuckDBReader *UnifiedDuckDBReader
+	var silverHotReader *SilverHotReader
 	readerMode := config.Query.ReaderMode
 	if readerMode == "" {
 		readerMode = ReaderModeLegacy // Default to legacy for backward compatibility
@@ -92,7 +93,8 @@ func mainWithSilver() {
 
 	if config.DuckLakeSilver != nil && config.PostgresSilver != nil {
 		// Create hot reader (PostgreSQL silver_hot)
-		silverHotReader, err := NewSilverHotReader(*config.PostgresSilver)
+		var err error
+		silverHotReader, err = NewSilverHotReader(*config.PostgresSilver)
 		if err != nil {
 			log.Fatalf("Failed to create Silver hot reader: %v", err)
 		}
@@ -425,6 +427,31 @@ func mainWithSilver() {
 			router.HandleFunc("/api/v1/silver/events/contract/{contract_id}", genericEventHandlers.HandleContractGenericEvents).Methods("GET")
 			log.Println("  ✓ /api/v1/silver/events/generic (all contract events from bronze)")
 			log.Println("  ✓ /api/v1/silver/events/contract/{contract_id} (contract events)")
+
+			// Explorer Events (Prism block explorer)
+			eventClassifier, err := NewEventClassifier(silverHotReader.DB())
+			if err != nil {
+				log.Printf("WARNING: failed to create event classifier: %v (explorer events will use fallback)", err)
+			}
+			if eventClassifier != nil {
+				explorerEventHandlers := NewExplorerEventHandlers(unifiedDuckDBReader, eventClassifier)
+				router.HandleFunc("/api/v1/explorer/events", explorerEventHandlers.HandleExplorerEvents).Methods("GET")
+				router.HandleFunc("/api/v1/explorer/events/rules", explorerEventHandlers.HandleExplorerEventRules).Methods("GET")
+				router.HandleFunc("/api/v1/explorer/events/rules/reload", explorerEventHandlers.HandleExplorerEventRulesReload).Methods("POST")
+				log.Println("  ✓ /api/v1/explorer/events (Prism explorer events)")
+				log.Println("  ✓ /api/v1/explorer/events/rules (view classification rules)")
+				log.Println("  ✓ /api/v1/explorer/events/rules/reload (hot-reload rules)")
+			}
+
+			// Contract Registry (Prism contract identity)
+			registryHandlers := NewContractRegistryHandlers(silverHotReader.DB(), unifiedDuckDBReader)
+			router.HandleFunc("/api/v1/explorer/contracts/search", registryHandlers.HandleSearchContracts).Methods("GET")
+			router.HandleFunc("/api/v1/explorer/contracts/seed", registryHandlers.HandleSeedRegistry).Methods("POST")
+			router.HandleFunc("/api/v1/explorer/contracts/{id}", registryHandlers.HandleGetContract).Methods("GET")
+			router.HandleFunc("/api/v1/explorer/contracts/{id}", registryHandlers.HandleDeleteContract).Methods("DELETE")
+			router.HandleFunc("/api/v1/explorer/contracts", registryHandlers.HandleListContracts).Methods("GET")
+			router.HandleFunc("/api/v1/explorer/contracts", registryHandlers.HandleUpsertContract).Methods("POST")
+			log.Println("  ✓ /api/v1/explorer/contracts (contract registry CRUD)")
 
 			// Feature 2: Unified Search
 			searchHandlers := NewSearchHandlers(unifiedDuckDBReader)

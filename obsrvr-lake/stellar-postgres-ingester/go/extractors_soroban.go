@@ -83,9 +83,10 @@ func (w *Writer) extractContractEvents(rawLedger *pb.RawLedger) ([]ContractEvent
 		}
 
 		// Extract operation-level contract events
+		// Operation events only appear for successful operations, so in_successful_contract_call is always true
 		for opIdx, opEvents := range txEvents.OperationEvents {
 			for eventIdx, contractEvent := range opEvents {
-				eventData := extractContractEvent(contractEvent, txHash, ledgerSeq, closedAt, uint32(opIdx), uint32(eventIdx), false)
+				eventData := extractContractEvent(contractEvent, txHash, ledgerSeq, closedAt, uint32(opIdx), uint32(eventIdx), true)
 				events = append(events, eventData)
 			}
 		}
