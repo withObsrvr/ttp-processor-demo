@@ -56,7 +56,7 @@ func NewBronzeColdReader(config *DuckLakeConfig, s3Config *S3Config) (*BronzeCol
 
 func (r *BronzeColdReader) initialize(ctx context.Context) error {
 	// Install required extensions
-	if _, err := r.db.ExecContext(ctx, "INSTALL ducklake;"); err != nil {
+	if _, err := r.db.ExecContext(ctx, "FORCE INSTALL ducklake FROM core_nightly;"); err != nil {
 		return fmt.Errorf("failed to install ducklake extension: %w", err)
 	}
 	if _, err := r.db.ExecContext(ctx, "LOAD ducklake;"); err != nil {

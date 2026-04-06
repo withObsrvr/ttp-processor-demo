@@ -266,17 +266,15 @@ func (t *Transformer) runTransformationCycle() error {
 			return fmt.Errorf("failed to write index rows: %w", err)
 		}
 
-		// CRITICAL: CHECKPOINT to flush data to Parquet files
-		if err := t.indexWriter.Checkpoint(); err != nil {
-			return fmt.Errorf("failed to checkpoint DuckLake: %w", err)
-		}
-
 		log.Printf("✅ Indexed %d contract-ledger pairs (ledgers %d→%d)", rowsWritten, lastLedger+1, endLedger)
 
-		// Increment write count and run maintenance if due
+		// Increment write count and flush inlined data + run maintenance if due
 		t.writeCount++
 		if t.config.Maintenance.Enabled && t.writeCount >= t.config.Maintenance.EveryNWrites {
-			log.Printf("🔧 Running DuckLake maintenance (write #%d)...", t.writeCount)
+			log.Printf("🔧 Flushing inlined data + maintenance (write #%d)...", t.writeCount)
+			if _, err := t.indexWriter.FlushInlinedData(); err != nil {
+				log.Printf("⚠️  Flush inlined data failed (non-fatal): %v", err)
+			}
 			if err := t.indexWriter.RunCheckpoint(ctx, t.config.Maintenance.MaxCompactedFiles); err != nil {
 				log.Printf("⚠️  DuckLake maintenance failed (non-fatal): %v", err)
 			}

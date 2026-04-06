@@ -43,7 +43,7 @@ func (iw *IndexWriter) initialize() error {
 	log.Println("🔧 Initializing Index Writer (DuckDB with DuckLake)...")
 
 	// Install and load required extensions
-	if _, err := iw.db.Exec("INSTALL ducklake"); err != nil {
+	if _, err := iw.db.Exec("FORCE INSTALL ducklake FROM core_nightly"); err != nil {
 		return fmt.Errorf("failed to install ducklake extension: %w", err)
 	}
 	if _, err := iw.db.Exec("LOAD ducklake"); err != nil {
@@ -85,7 +85,7 @@ func (iw *IndexWriter) initialize() error {
 
 	// Use same schema for both data and metadata (index)
 	// This ensures queries looking for metadata in 'index' schema will find it
-	attachSQL := fmt.Sprintf(`ATTACH '%s' AS %s (DATA_PATH '%s', METADATA_SCHEMA '%s', AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE)`,
+	attachSQL := fmt.Sprintf(`ATTACH '%s' AS %s (DATA_PATH '%s', METADATA_SCHEMA '%s', DATA_INLINING_ROW_LIMIT 10000, AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE)`,
 		catalogPath, iw.config.CatalogName, dataPath, iw.config.SchemaName)
 
 	if _, err := iw.db.Exec(attachSQL); err != nil {
@@ -289,15 +289,25 @@ func (iw *IndexWriter) WriteTransactions(ctx context.Context, transactions []Tra
 		return 0, fmt.Errorf("failed to get rows affected: %w", err)
 	}
 
-	// Force DuckDB to flush buffered data to Parquet files on S3
-	// Without this, small batches stay in memory and no files are created
-	if _, err := iw.db.Exec("CHECKPOINT"); err != nil {
-		log.Printf("⚠️  CHECKPOINT failed (data may be buffered): %v", err)
-	}
-
-	log.Printf("✅ Inserted %d transactions into %s (DuckLake manages Parquet storage)", rowsAffected, fullTableName)
+	log.Printf("✅ Inserted %d transactions into %s (inlined in catalog)", rowsAffected, fullTableName)
 
 	return rowsAffected, nil
+}
+
+// FlushInlinedData consolidates inlined rows from the catalog into Parquet files on S3.
+func (iw *IndexWriter) FlushInlinedData() (int64, error) {
+	var schema, table string
+	var rowsFlushed int64
+	query := fmt.Sprintf("CALL ducklake_flush_inlined_data('%s', schema_name => '%s', table_name => '%s')",
+		iw.config.CatalogName, iw.config.SchemaName, iw.config.TableName)
+	err := iw.db.QueryRow(query).Scan(&schema, &table, &rowsFlushed)
+	if err != nil {
+		return 0, fmt.Errorf("flush inlined data failed: %w", err)
+	}
+	if rowsFlushed > 0 {
+		log.Printf("✅ Flushed %d inlined rows to Parquet (%s.%s)", rowsFlushed, schema, table)
+	}
+	return rowsFlushed, nil
 }
 
 // GetIndexStats returns statistics about the index

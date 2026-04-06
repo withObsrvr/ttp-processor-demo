@@ -54,7 +54,7 @@ func (c *DuckDBClient) initialize() error {
 
 	// Install and load ducklake extension
 	log.Println("Installing ducklake extension...")
-	if _, err := c.db.ExecContext(ctx, "INSTALL ducklake;"); err != nil {
+	if _, err := c.db.ExecContext(ctx, "FORCE INSTALL ducklake FROM core_nightly;"); err != nil {
 		return fmt.Errorf("failed to install ducklake extension: %w", err)
 	}
 	if _, err := c.db.ExecContext(ctx, "LOAD ducklake;"); err != nil {
