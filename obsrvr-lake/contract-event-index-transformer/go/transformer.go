@@ -144,7 +144,10 @@ func (t *Transformer) startGRPC() error {
 		cancel()
 	}()
 
-	lastLedger, _ := t.checkpoint.Load(ctx)
+	lastLedger, err := t.checkpoint.Load(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to load checkpoint: %w", err)
+	}
 	eventCh := client.StreamLedgerEvents(ctx, lastLedger)
 
 	var pendingEnd int64

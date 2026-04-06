@@ -120,6 +120,11 @@ func LoadConfig(path string) (*Config, error) {
 		config.Health.Port = 8096
 	}
 
+	// Validate bronze source config
+	if config.BronzeSource.Mode == "grpc" && config.BronzeSource.Endpoint == "" {
+		return nil, fmt.Errorf("bronze_source.endpoint is required when mode is \"grpc\"")
+	}
+
 	return &config, nil
 }
 

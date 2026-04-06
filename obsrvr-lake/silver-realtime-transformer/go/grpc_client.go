@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	flowctlv1 "github.com/withObsrvr/flow-proto/go/gen/flowctl/v1"
@@ -55,12 +56,16 @@ type LedgerBatchEvent struct {
 
 // StreamLedgerEvents opens a streaming connection and sends batch events to the returned channel.
 // It reconnects automatically with exponential backoff on transient errors.
+// On reconnect, it resumes from the latest received end ledger (not the original start).
 // The returned channel is closed when the context is cancelled.
 func (c *BronzeStreamClient) StreamLedgerEvents(ctx context.Context, startLedger int64) <-chan LedgerBatchEvent {
 	eventCh := make(chan LedgerBatchEvent, 100)
 
 	go func() {
 		defer close(eventCh)
+
+		var nextStart atomic.Int64
+		nextStart.Store(startLedger)
 
 		backoff := time.Second
 		maxBackoff := 30 * time.Second
@@ -70,7 +75,7 @@ func (c *BronzeStreamClient) StreamLedgerEvents(ctx context.Context, startLedger
 				return
 			}
 
-			err := c.streamOnce(ctx, startLedger, eventCh)
+			err := c.streamOnce(ctx, nextStart.Load(), eventCh, &nextStart)
 			if ctx.Err() != nil {
 				return
 			}
@@ -92,7 +97,7 @@ func (c *BronzeStreamClient) StreamLedgerEvents(ctx context.Context, startLedger
 	return eventCh
 }
 
-func (c *BronzeStreamClient) streamOnce(ctx context.Context, startLedger int64, eventCh chan<- LedgerBatchEvent) error {
+func (c *BronzeStreamClient) streamOnce(ctx context.Context, startLedger int64, eventCh chan<- LedgerBatchEvent, nextStart *atomic.Int64) error {
 	params := map[string]string{}
 	if startLedger > 0 {
 		params["start_ledger"] = fmt.Sprintf("%d", startLedger)
@@ -119,6 +124,11 @@ func (c *BronzeStreamClient) streamOnce(ctx context.Context, startLedger int64, 
 			continue
 		}
 
+		// Track latest end ledger for reconnect resumption
+		if int64(batch.EndLedger) > nextStart.Load() {
+			nextStart.Store(int64(batch.EndLedger))
+		}
+
 		select {
 		case eventCh <- batch:
 		case <-ctx.Done():
@@ -135,21 +145,25 @@ func parseEvent(event *flowctlv1.Event) (LedgerBatchEvent, error) {
 		return batch, fmt.Errorf("event has no metadata")
 	}
 
-	if v, ok := meta["start_ledger"]; ok {
-		n, err := strconv.ParseUint(v, 10, 32)
-		if err != nil {
-			return batch, fmt.Errorf("invalid start_ledger: %w", err)
-		}
-		batch.StartLedger = uint32(n)
+	v, ok := meta["start_ledger"]
+	if !ok {
+		return batch, fmt.Errorf("event missing start_ledger")
 	}
+	n, err := strconv.ParseUint(v, 10, 32)
+	if err != nil {
+		return batch, fmt.Errorf("invalid start_ledger: %w", err)
+	}
+	batch.StartLedger = uint32(n)
 
-	if v, ok := meta["end_ledger"]; ok {
-		n, err := strconv.ParseUint(v, 10, 32)
-		if err != nil {
-			return batch, fmt.Errorf("invalid end_ledger: %w", err)
-		}
-		batch.EndLedger = uint32(n)
+	v, ok = meta["end_ledger"]
+	if !ok {
+		return batch, fmt.Errorf("event missing end_ledger")
 	}
+	n, err = strconv.ParseUint(v, 10, 32)
+	if err != nil {
+		return batch, fmt.Errorf("invalid end_ledger: %w", err)
+	}
+	batch.EndLedger = uint32(n)
 
 	return batch, nil
 }
