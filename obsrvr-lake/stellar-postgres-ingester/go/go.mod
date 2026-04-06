@@ -1,11 +1,11 @@
 module github.com/withObsrvr/ttp-processor-demo/stellar-postgres-ingester/go
 
-go 1.24.0
+go 1.26.1
 
 require (
 	github.com/jackc/pgx/v5 v5.7.2
 	github.com/stellar/go-stellar-sdk v0.2.0
-	github.com/withObsrvr/flow-proto v0.1.2
+	github.com/withObsrvr/flow-proto v0.1.3
 	github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/go v0.0.0-00010101000000-000000000000
 	google.golang.org/grpc v1.79.3
 	google.golang.org/protobuf v1.36.10
