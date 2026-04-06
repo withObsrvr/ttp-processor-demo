@@ -38,7 +38,7 @@ func NewIndexReader(config IndexConfig) (*IndexReader, error) {
 	}
 
 	// Install extensions
-	if _, err := db.Exec("FORCE INSTALL ducklake FROM core_nightly"); err != nil {
+	if _, err := db.Exec("INSTALL ducklake FROM core_nightly"); err != nil {
 		return nil, fmt.Errorf("failed to install ducklake: %w", err)
 	}
 	if _, err := db.Exec("LOAD ducklake"); err != nil {
@@ -91,15 +91,18 @@ func NewIndexReader(config IndexConfig) (*IndexReader, error) {
 	}
 
 	// Warm up DuckDB by scanning the table to load Parquet file metadata + row groups.
-	// This forces DuckDB to download and cache Parquet footers from B2 for all partitions.
+	// Bounded to 60s to avoid blocking startup indefinitely.
+	warmCtx, warmCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer warmCancel()
 	var cnt int64
-	if err := db.QueryRow("SELECT COUNT(*) FROM testnet_catalog.index.tx_hash_index").Scan(&cnt); err != nil {
+	if err := db.QueryRowContext(warmCtx, "SELECT COUNT(*) FROM testnet_catalog.index.tx_hash_index").Scan(&cnt); err != nil {
 		log.Printf("Index warm-up query failed (non-fatal): %v", err)
 	} else {
 		log.Printf("Index reader warmed up (tx_hash_index: %d rows)", cnt)
 	}
-	// Scan one row per partition to cache all Parquet file footers
-	db.Exec("SELECT ledger_range, MIN(tx_hash) FROM testnet_catalog.index.tx_hash_index GROUP BY ledger_range")
+	if _, err := db.ExecContext(warmCtx, "SELECT ledger_range, MIN(tx_hash) FROM testnet_catalog.index.tx_hash_index GROUP BY ledger_range"); err != nil {
+		log.Printf("Index warm-up partition scan failed (non-fatal): %v", err)
+	}
 
 	return reader, nil
 }

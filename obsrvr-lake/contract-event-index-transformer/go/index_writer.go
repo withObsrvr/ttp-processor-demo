@@ -52,7 +52,7 @@ func (iw *IndexWriter) initialize() error {
 	log.Println("🔧 Initializing Contract Event Index Writer (DuckDB with DuckLake)...")
 
 	// Install and load required extensions
-	if _, err := iw.db.Exec("FORCE INSTALL ducklake FROM core_nightly"); err != nil {
+	if _, err := iw.db.Exec("INSTALL ducklake FROM core_nightly"); err != nil {
 		return fmt.Errorf("failed to install ducklake extension: %w", err)
 	}
 	if _, err := iw.db.Exec("LOAD ducklake"); err != nil {
@@ -217,11 +217,6 @@ func (iw *IndexWriter) WriteBatch(ctx context.Context, rows []ContractEventIndex
 	}
 
 	return rowsAffected, nil
-}
-
-// Checkpoint is kept for backward compatibility but now flushes inlined data instead.
-func (iw *IndexWriter) Checkpoint() error {
-	return nil // Data is inlined; flushing happens periodically via FlushInlinedData
 }
 
 // FlushInlinedData consolidates inlined rows from the catalog into Parquet files on S3.

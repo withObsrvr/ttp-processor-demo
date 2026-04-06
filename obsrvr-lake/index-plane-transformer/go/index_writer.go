@@ -43,7 +43,7 @@ func (iw *IndexWriter) initialize() error {
 	log.Println("🔧 Initializing Index Writer (DuckDB with DuckLake)...")
 
 	// Install and load required extensions
-	if _, err := iw.db.Exec("FORCE INSTALL ducklake FROM core_nightly"); err != nil {
+	if _, err := iw.db.Exec("INSTALL ducklake FROM core_nightly"); err != nil {
 		return fmt.Errorf("failed to install ducklake extension: %w", err)
 	}
 	if _, err := iw.db.Exec("LOAD ducklake"); err != nil {

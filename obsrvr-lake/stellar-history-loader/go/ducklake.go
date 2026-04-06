@@ -59,7 +59,7 @@ func (p *DuckLakePusher) Close() error {
 func (p *DuckLakePusher) Push(ctx context.Context, outputDir string) error {
 	// Step 1: Load extensions
 	log.Println("[DuckLake] Loading extensions...")
-	if _, err := p.db.ExecContext(ctx, "FORCE INSTALL ducklake FROM core_nightly; LOAD ducklake;"); err != nil {
+	if _, err := p.db.ExecContext(ctx, "INSTALL ducklake FROM core_nightly; LOAD ducklake;"); err != nil {
 		return fmt.Errorf("load extension ducklake: %w", err)
 	}
 	if _, err := p.db.ExecContext(ctx, "INSTALL httpfs; LOAD httpfs;"); err != nil {
