@@ -11,6 +11,7 @@ import (
 // Config represents the service configuration
 type Config struct {
 	Service      ServiceConfig      `yaml:"service"`
+	BronzeSource BronzeSourceConfig `yaml:"bronze_source"` // gRPC source (replaces polling)
 	BronzeHot    DatabaseConfig     `yaml:"bronze_hot"`
 	BronzeCold   *DuckLakeConfig    `yaml:"bronze_cold,omitempty"`
 	S3           *S3Config          `yaml:"s3,omitempty"`
@@ -19,6 +20,13 @@ type Config struct {
 	Performance  PerformanceConfig  `yaml:"performance"`
 	GapDetection GapDetectionConfig `yaml:"gap_detection"`
 	Fallback     FallbackConfig     `yaml:"fallback"`
+}
+
+// BronzeSourceConfig configures the gRPC connection to the bronze ingester's SourceService.
+// When mode is "grpc", the transformer receives push notifications instead of polling.
+type BronzeSourceConfig struct {
+	Mode     string `yaml:"mode"`     // "poll" (default) or "grpc"
+	Endpoint string `yaml:"endpoint"` // gRPC endpoint, e.g. "stellar-postgres-ingester:50054"
 }
 
 // DuckLakeConfig holds DuckLake (cold storage) connection settings
@@ -113,6 +121,18 @@ func (c *Config) Validate() error {
 
 	if c.Performance.MaxWorkers < 1 {
 		return fmt.Errorf("max_workers must be at least 1")
+	}
+
+	// Validate bronze source config
+	switch c.BronzeSource.Mode {
+	case "", "poll":
+		// poll is default, no extra config needed
+	case "grpc":
+		if c.BronzeSource.Endpoint == "" {
+			return fmt.Errorf("bronze_source.endpoint is required when mode is \"grpc\"")
+		}
+	default:
+		return fmt.Errorf("bronze_source.mode must be \"poll\" or \"grpc\", got %q", c.BronzeSource.Mode)
 	}
 
 	// Validate fallback config if enabled

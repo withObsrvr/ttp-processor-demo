@@ -12,6 +12,7 @@ type Config struct {
 	Service struct {
 		Name       string `yaml:"name"`
 		HealthPort int    `yaml:"health_port"`
+		GRPCPort   int    `yaml:"grpc_port"` // Port for flowctl SourceService gRPC server (0 = disabled)
 	} `yaml:"service"`
 
 	Source struct {
