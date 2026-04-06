@@ -88,6 +88,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to listen on gRPC port %d: %v", cfg.Service.GRPCPort, err)
 		}
+		defer lis.Close()
 
 		go func() {
 			log.Printf("flowctl SourceService gRPC server listening on :%d", cfg.Service.GRPCPort)

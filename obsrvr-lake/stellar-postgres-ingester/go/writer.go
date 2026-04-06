@@ -482,7 +482,12 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	// Broadcast to gRPC subscribers (before checkpoint save so consumers see the data)
+	// Save checkpoint
+	if err := w.checkpoint.Save(); err != nil {
+		log.Printf("Warning: Failed to save checkpoint: %v", err)
+	}
+
+	// Broadcast to gRPC subscribers after checkpoint is persisted
 	if w.broadcaster != nil {
 		w.broadcaster.Broadcast(BronzeBatchInfo{
 			StartLedger: rawLedgers[0].Sequence,
@@ -491,11 +496,6 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 			TxCount:     totalTxCount,
 			OpCount:     totalOpCount,
 		})
-	}
-
-	// Save checkpoint
-	if err := w.checkpoint.Save(); err != nil {
-		log.Printf("Warning: Failed to save checkpoint: %v", err)
 	}
 
 	// Update metrics

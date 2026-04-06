@@ -123,6 +123,18 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("max_workers must be at least 1")
 	}
 
+	// Validate bronze source config
+	switch c.BronzeSource.Mode {
+	case "", "poll":
+		// poll is default, no extra config needed
+	case "grpc":
+		if c.BronzeSource.Endpoint == "" {
+			return fmt.Errorf("bronze_source.endpoint is required when mode is \"grpc\"")
+		}
+	default:
+		return fmt.Errorf("bronze_source.mode must be \"poll\" or \"grpc\", got %q", c.BronzeSource.Mode)
+	}
+
 	// Validate fallback config if enabled
 	if c.Fallback.Enabled {
 		if c.BronzeCold == nil {

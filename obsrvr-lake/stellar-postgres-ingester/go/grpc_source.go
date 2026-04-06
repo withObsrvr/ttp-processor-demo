@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 	"sync"
 	"time"
 
@@ -86,7 +87,11 @@ func (s *BronzeSourceServer) StreamEvents(req *flowctlv1.StreamRequest, stream g
 	var startLedger uint64
 	if req.Params != nil {
 		if v, ok := req.Params["start_ledger"]; ok {
-			fmt.Sscanf(v, "%d", &startLedger)
+			n, err := strconv.ParseUint(v, 10, 64)
+			if err != nil {
+				return fmt.Errorf("invalid start_ledger %q: %w", v, err)
+			}
+			startLedger = n
 		}
 	}
 

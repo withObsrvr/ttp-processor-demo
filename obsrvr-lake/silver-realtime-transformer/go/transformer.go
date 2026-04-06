@@ -110,7 +110,6 @@ func (rt *RealtimeTransformer) startPolling() error {
 
 // startGRPC connects to the bronze ingester's flowctl SourceService and triggers
 // transformation cycles on each received ledger-committed event.
-// Falls back to polling if the gRPC connection cannot be established.
 func (rt *RealtimeTransformer) startGRPC() error {
 	endpoint := rt.config.BronzeSource.Endpoint
 	log.Printf("Transformer ready - gRPC streaming from %s", endpoint)
@@ -131,7 +130,7 @@ func (rt *RealtimeTransformer) startGRPC() error {
 	}()
 
 	startLedger := rt.getLastLedger()
-	eventCh, _ := client.StreamLedgerEvents(ctx, startLedger)
+	eventCh := client.StreamLedgerEvents(ctx, startLedger)
 
 	// Track whether a cycle is running to coalesce batches
 	var pendingEnd int64
@@ -165,7 +164,10 @@ func (rt *RealtimeTransformer) startGRPC() error {
 					log.Printf("Transformation error: %v", err)
 					rt.incrementErrors()
 				}
-				cycleDone <- struct{}{}
+				select {
+				case cycleDone <- struct{}{}:
+				case <-ctx.Done():
+				}
 			}()
 
 		case <-cycleDone:
@@ -179,7 +181,10 @@ func (rt *RealtimeTransformer) startGRPC() error {
 						log.Printf("Transformation error: %v", err)
 						rt.incrementErrors()
 					}
-					cycleDone <- struct{}{}
+					select {
+					case cycleDone <- struct{}{}:
+					case <-ctx.Done():
+					}
 				}()
 			}
 

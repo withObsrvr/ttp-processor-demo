@@ -51,20 +51,16 @@ func (c *BronzeStreamClient) Close() error {
 type LedgerBatchEvent struct {
 	StartLedger uint32
 	EndLedger   uint32
-	TxCount     uint64
-	OpCount     uint64
 }
 
 // StreamLedgerEvents opens a streaming connection and sends batch events to the returned channel.
-// It blocks until the context is cancelled or the stream errors.
-// On transient errors it reconnects automatically with backoff.
-func (c *BronzeStreamClient) StreamLedgerEvents(ctx context.Context, startLedger int64) (<-chan LedgerBatchEvent, <-chan error) {
+// It reconnects automatically with exponential backoff on transient errors.
+// The returned channel is closed when the context is cancelled.
+func (c *BronzeStreamClient) StreamLedgerEvents(ctx context.Context, startLedger int64) <-chan LedgerBatchEvent {
 	eventCh := make(chan LedgerBatchEvent, 100)
-	errCh := make(chan error, 1)
 
 	go func() {
 		defer close(eventCh)
-		defer close(errCh)
 
 		backoff := time.Second
 		maxBackoff := 30 * time.Second
@@ -93,7 +89,7 @@ func (c *BronzeStreamClient) StreamLedgerEvents(ctx context.Context, startLedger
 		}
 	}()
 
-	return eventCh, errCh
+	return eventCh
 }
 
 func (c *BronzeStreamClient) streamOnce(ctx context.Context, startLedger int64, eventCh chan<- LedgerBatchEvent) error {
