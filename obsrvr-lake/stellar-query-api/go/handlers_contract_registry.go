@@ -257,6 +257,12 @@ func (h *ContractRegistryHandlers) HandleUpsertContract(w http.ResponseWriter, r
 		return
 	}
 
+	// Validate contract_id is a valid Stellar contract address
+	if _, err := normalizeContractID(req.ContractID); err != nil {
+		respondError(w, "invalid contract_id: must be a valid C... contract address or 64-char hex hash", http.StatusBadRequest)
+		return
+	}
+
 	verified := false
 	if req.Verified != nil {
 		verified = *req.Verified

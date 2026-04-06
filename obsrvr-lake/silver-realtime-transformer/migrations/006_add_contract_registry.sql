@@ -1,3 +1,6 @@
+-- Ensure pg_trgm extension for trigram search index
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
 -- Contract registry: single source of truth for contract display names.
 -- Names any contract (tokens, DEXes, oracles, bridges, etc.), not just SEP-41 tokens.
 -- Read by stellar-query-api for explorer events name resolution.

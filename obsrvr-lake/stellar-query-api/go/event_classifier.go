@@ -85,10 +85,10 @@ func (ec *EventClassifier) LoadRules(ctx context.Context) error {
 			r.MatchTopicSig = &s
 			compiled, err := regexp.Compile(s)
 			if err != nil {
-				log.Printf("WARNING: rule %d has invalid topic_sig regex %q: %v (skipping regex)", r.RuleID, s, err)
-			} else {
-				r.topicSigRegex = compiled
+				log.Printf("WARNING: rule %d has invalid topic_sig regex %q: %v (skipping rule)", r.RuleID, s, err)
+				continue
 			}
+			r.topicSigRegex = compiled
 		}
 
 		rules = append(rules, r)

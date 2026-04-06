@@ -95,7 +95,7 @@ paths:
           in: query
           description: |
             Search by contract/token name (case-insensitive substring match
-            against `token_registry.token_name`).
+            against `contract_registry.display_name` and `token_registry.token_name`).
           schema:
             type: string
           example: "USDC"
@@ -253,6 +253,194 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /api/v1/explorer/contracts:
+    get:
+      operationId: listContracts
+      summary: List contract registry entries
+      tags:
+        - Contract Registry
+      parameters:
+        - name: category
+          in: query
+          schema:
+            type: string
+          description: Filter by category (token, dex, oracle, etc.)
+        - name: project
+          in: query
+          schema:
+            type: string
+          description: Filter by project (soroswap, redstone, etc.)
+        - name: source
+          in: query
+          schema:
+            type: string
+          description: Filter by source (manual, token_registry, etc.)
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 500
+      responses:
+        "200":
+          description: List of contract registry entries.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  contracts:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ContractRegistryEntry"
+                  count:
+                    type: integer
+    post:
+      operationId: upsertContract
+      summary: Add or update a contract registry entry
+      tags:
+        - Contract Registry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [contract_id, display_name]
+              properties:
+                contract_id:
+                  type: string
+                display_name:
+                  type: string
+                category:
+                  type: string
+                project:
+                  type: string
+                icon_url:
+                  type: string
+                website:
+                  type: string
+                verified:
+                  type: boolean
+      responses:
+        "200":
+          description: Entry created or updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  contract_id:
+                    type: string
+
+  /api/v1/explorer/contracts/search:
+    get:
+      operationId: searchContracts
+      summary: Search contract registry by name or project
+      tags:
+        - Contract Registry
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Search query (matches display_name and project)
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+      responses:
+        "200":
+          description: Search results.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  query:
+                    type: string
+                  results:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ContractRegistryEntry"
+                  count:
+                    type: integer
+
+  /api/v1/explorer/contracts/seed:
+    post:
+      operationId: seedContractRegistry
+      summary: Re-seed registry from token_registry
+      description: Inserts tokens from token_registry that don't already exist in the registry.
+      tags:
+        - Contract Registry
+      responses:
+        "200":
+          description: Seed completed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  new_entries:
+                    type: integer
+
+  /api/v1/explorer/contracts/{id}:
+    get:
+      operationId: getContract
+      summary: Get a single contract registry entry
+      tags:
+        - Contract Registry
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Contract ID (C... address)
+      responses:
+        "200":
+          description: Contract registry entry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContractRegistryEntry"
+        "404":
+          description: Contract not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteContract
+      summary: Delete a contract registry entry
+      tags:
+        - Contract Registry
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Entry deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  contract_id:
+                    type: string
+
 components:
   schemas:
     ExplorerEventsResponse:
@@ -353,9 +541,10 @@ components:
           type: string
           nullable: true
           description: |
-            Human-readable contract/token name from token_registry.
-            Null if the contract is not in the registry.
-          example: "USDC:GBBD...LA5"
+            Human-readable name from contract_registry (tokens, DEXes, oracles, etc.).
+            Falls back to token_registry for tokens not yet in the registry.
+            Null if contract is unknown.
+          example: "RedStone Oracle"
         contract_symbol:
           type: string
           nullable: true
@@ -363,6 +552,13 @@ components:
             Token symbol from token_registry (e.g. "USDC", "XLM").
             Null for non-token contracts.
           example: "USDC"
+        contract_category:
+          type: string
+          nullable: true
+          description: |
+            Contract category from contract_registry (e.g. "token", "dex", "oracle").
+            Null if contract is not in the registry.
+          example: "token"
         ledger_sequence:
           type: integer
           format: int64
@@ -472,6 +668,46 @@ components:
           nullable: true
           description: Human-readable description of what this rule detects.
           example: "Soroswap router swap events"
+
+    ContractRegistryEntry:
+      type: object
+      description: A contract identity entry in the registry.
+      properties:
+        contract_id:
+          type: string
+          example: "CD4KFB23CQLJ47RIPESVBTQ444R75M6QVEZULWXHHFYYZT7SS2VGXOPW"
+        display_name:
+          type: string
+          example: "RedStone Oracle"
+        category:
+          type: string
+          nullable: true
+          description: "Contract type: token, dex, oracle, bridge, dao, nft, game, utility"
+          example: "oracle"
+        project:
+          type: string
+          nullable: true
+          description: "Project name: soroswap, redstone, aquarius, etc."
+          example: "redstone"
+        icon_url:
+          type: string
+          nullable: true
+        website:
+          type: string
+          nullable: true
+        verified:
+          type: boolean
+          description: Manually verified by operators.
+        source:
+          type: string
+          description: "How entry was created: manual, token_registry, community"
+          example: "manual"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
 
     ErrorResponse:
       type: object

@@ -6079,21 +6079,24 @@ func (r *UnifiedDuckDBReader) GetExplorerEvents(ctx context.Context, filters Exp
 		order = "ASC"
 	}
 
-	// Build WHERE conditions
-	conditions, args, argIdx := r.buildExplorerEventConditions(filters, order, classifier)
+	// Build WHERE conditions (includes contract_name resolution)
+	conditions, args, argIdx, err := r.buildExplorerEventConditions(ctx, filters, order, classifier)
+	if err != nil {
+		return nil, nil, "", false, err
+	}
 
 	whereClause := ""
 	if len(conditions) > 0 {
 		whereClause = "WHERE " + strings.Join(conditions, " AND ")
 	}
 
-	// Build the main query with token_registry enrichment
-	events, nextCursor, hasMore, err := r.queryExplorerEvents(ctx, whereClause, args, argIdx, order, requestLimit, limit, filters, classifier)
+	// Build the main query with contract_registry enrichment
+	events, nextCursor, hasMore, err := r.queryExplorerEvents(ctx, whereClause, args, argIdx, order, requestLimit, limit, classifier, filters.Types)
 	if err != nil {
 		return nil, nil, "", false, err
 	}
 
-	// Build meta stats — use args before LIMIT was appended
+	// Build meta stats using same whereClause (includes contract_name filter)
 	meta, err := r.queryExplorerEventMeta(ctx, whereClause, args)
 	if err != nil {
 		// Non-fatal: return events without meta
@@ -6103,7 +6106,7 @@ func (r *UnifiedDuckDBReader) GetExplorerEvents(ctx context.Context, filters Exp
 	return events, meta, nextCursor, hasMore, nil
 }
 
-func (r *UnifiedDuckDBReader) buildExplorerEventConditions(filters ExplorerEventFilters, order string, classifier *EventClassifier) ([]string, []any, int) {
+func (r *UnifiedDuckDBReader) buildExplorerEventConditions(ctx context.Context, filters ExplorerEventFilters, order string, classifier *EventClassifier) ([]string, []any, int, error) {
 	var conditions []string
 	var args []any
 	argIdx := 1
@@ -6113,7 +6116,6 @@ func (r *UnifiedDuckDBReader) buildExplorerEventConditions(filters ExplorerEvent
 		topic0Values, includesCatchAll := classifier.Topic0ValuesForTypes(filters.Types)
 
 		if includesCatchAll && len(topic0Values) > 0 {
-			// Include specific topic0 values OR anything not classified by any rule
 			allKnown := classifier.AllKnownTopic0Values()
 			placeholders := make([]string, len(topic0Values))
 			for i, t := range topic0Values {
@@ -6131,7 +6133,6 @@ func (r *UnifiedDuckDBReader) buildExplorerEventConditions(filters ExplorerEvent
 				"(topic0_decoded IN (%s) OR topic0_decoded IS NULL OR topic0_decoded NOT IN (%s))",
 				strings.Join(placeholders, ","), strings.Join(excludePlaceholders, ",")))
 		} else if includesCatchAll {
-			// Only catch-all: exclude all known topic0 values
 			allKnown := classifier.AllKnownTopic0Values()
 			if len(allKnown) > 0 {
 				excludePlaceholders := make([]string, len(allKnown))
@@ -6145,7 +6146,6 @@ func (r *UnifiedDuckDBReader) buildExplorerEventConditions(filters ExplorerEvent
 					strings.Join(excludePlaceholders, ",")))
 			}
 		} else if len(topic0Values) > 0 {
-			// Only specific topic0 values
 			placeholders := make([]string, len(topic0Values))
 			for i, t := range topic0Values {
 				placeholders[i] = fmt.Sprintf("$%d", argIdx)
@@ -6157,14 +6157,33 @@ func (r *UnifiedDuckDBReader) buildExplorerEventConditions(filters ExplorerEvent
 	}
 
 	if filters.ContractID != nil && *filters.ContractID != "" {
-		// Normalize to hex for bronze table lookup (accepts both C... and hex)
 		hexID, err := normalizeContractID(*filters.ContractID)
-		if err == nil {
-			conditions = append(conditions, fmt.Sprintf("contract_id = $%d", argIdx))
-			args = append(args, hexID)
-			argIdx++
+		if err != nil {
+			return nil, nil, 0, fmt.Errorf("invalid contract_id %q: must be C... address or 64-char hex hash", *filters.ContractID)
+		}
+		conditions = append(conditions, fmt.Sprintf("contract_id = $%d", argIdx))
+		args = append(args, hexID)
+		argIdx++
+	}
+
+	// Contract name filter: resolve matching contract IDs and add to WHERE
+	// (applied here so meta query also uses the same filter)
+	if filters.ContractName != nil && *filters.ContractName != "" {
+		hexIDs := r.resolveContractNameToHex(ctx, *filters.ContractName)
+		if len(hexIDs) == 0 {
+			// No matching contracts — add impossible condition
+			conditions = append(conditions, "1 = 0")
+		} else {
+			placeholders := make([]string, len(hexIDs))
+			for i, hexID := range hexIDs {
+				placeholders[i] = fmt.Sprintf("$%d", argIdx)
+				args = append(args, hexID)
+				argIdx++
+			}
+			conditions = append(conditions, fmt.Sprintf("contract_id IN (%s)", strings.Join(placeholders, ",")))
 		}
 	}
+
 	if filters.TxHash != nil && *filters.TxHash != "" {
 		conditions = append(conditions, fmt.Sprintf("transaction_hash = $%d", argIdx))
 		args = append(args, *filters.TxHash)
@@ -6207,53 +6226,39 @@ func (r *UnifiedDuckDBReader) buildExplorerEventConditions(filters ExplorerEvent
 	}
 	if filters.Cursor != nil && *filters.Cursor != "" {
 		parts := strings.SplitN(*filters.Cursor, ":", 2)
-		if len(parts) == 2 {
-			cursorLedger, err1 := strconv.ParseInt(parts[0], 10, 64)
-			cursorEvent, err2 := strconv.ParseInt(parts[1], 10, 64)
-			if err1 == nil && err2 == nil {
-				if order == "DESC" {
-					conditions = append(conditions, fmt.Sprintf(
-						"(ledger_sequence < $%d OR (ledger_sequence = $%d AND event_index < $%d))",
-						argIdx, argIdx, argIdx+1))
-				} else {
-					conditions = append(conditions, fmt.Sprintf(
-						"(ledger_sequence > $%d OR (ledger_sequence = $%d AND event_index > $%d))",
-						argIdx, argIdx, argIdx+1))
-				}
-				args = append(args, cursorLedger, cursorEvent)
-				argIdx += 2
-			}
+		if len(parts) != 2 {
+			return nil, nil, 0, fmt.Errorf("invalid cursor format")
 		}
+		cursorLedger, err1 := strconv.ParseInt(parts[0], 10, 64)
+		cursorEvent, err2 := strconv.ParseInt(parts[1], 10, 64)
+		if err1 != nil || err2 != nil {
+			return nil, nil, 0, fmt.Errorf("invalid cursor values")
+		}
+		if order == "DESC" {
+			conditions = append(conditions, fmt.Sprintf(
+				"(ledger_sequence < $%d OR (ledger_sequence = $%d AND event_index < $%d))",
+				argIdx, argIdx, argIdx+1))
+		} else {
+			conditions = append(conditions, fmt.Sprintf(
+				"(ledger_sequence > $%d OR (ledger_sequence = $%d AND event_index > $%d))",
+				argIdx, argIdx, argIdx+1))
+		}
+		args = append(args, cursorLedger, cursorEvent)
+		argIdx += 2
 	}
 
-	return conditions, args, argIdx
+	return conditions, args, argIdx, nil
 }
 
-func (r *UnifiedDuckDBReader) queryExplorerEvents(ctx context.Context, whereClause string, args []any, argIdx int, order string, requestLimit, limit int, filters ExplorerEventFilters, classifier *EventClassifier) ([]ExplorerEvent, string, bool, error) {
+func (r *UnifiedDuckDBReader) queryExplorerEvents(ctx context.Context, whereClause string, args []any, argIdx int, order string, requestLimit, limit int, classifier *EventClassifier, typeFilter []string) ([]ExplorerEvent, string, bool, error) {
 	selectCols := `event_id, contract_id, ledger_sequence, transaction_hash, closed_at,
 		in_successful_contract_call, topic0_decoded, topic1_decoded, topic2_decoded, topic3_decoded,
 		topics_decoded, data_decoded, event_index, operation_index`
 
-	// Handle contract_name filter: pre-resolve matching C... IDs from token_registry,
-	// convert to hex, and add as IN clause for the bronze query
-	if filters.ContractName != nil && *filters.ContractName != "" {
-		hexIDs := r.resolveContractNameToHex(ctx, *filters.ContractName)
-		if len(hexIDs) == 0 {
-			// No matching contracts — return empty result
-			return nil, "", false, nil
-		}
-		placeholders := make([]string, len(hexIDs))
-		for i, hexID := range hexIDs {
-			placeholders[i] = fmt.Sprintf("$%d", argIdx)
-			args = append(args, hexID)
-			argIdx++
-		}
-		nameCondition := fmt.Sprintf("contract_id IN (%s)", strings.Join(placeholders, ","))
-		if whereClause == "" {
-			whereClause = "WHERE " + nameCondition
-		} else {
-			whereClause += " AND " + nameCondition
-		}
+	// Build type filter set for post-classification filtering
+	typeSet := make(map[string]bool)
+	for _, t := range typeFilter {
+		typeSet[t] = true
 	}
 
 	var innerParts []string
@@ -6313,6 +6318,13 @@ func (r *UnifiedDuckDBReader) queryExplorerEvents(ctx context.Context, whereClau
 		classification := classifier.Classify(e.ContractID, e.Topic0, e.TopicsDecoded)
 		e.Type = classification.EventType
 		e.Protocol = classification.Protocol
+
+		// Post-classification type filter: SQL pre-filters by topic0 but classification
+		// rules can also depend on contract_id, so some events may classify differently
+		// than the SQL filter expected. Drop events whose final type doesn't match.
+		if len(typeSet) > 0 && !typeSet[e.Type] {
+			continue
+		}
 
 		events = append(events, e)
 
@@ -6499,15 +6511,18 @@ func (r *UnifiedDuckDBReader) batchResolveFromTokenRegistry(ctx context.Context,
 // resolveContractNameToHex finds contracts matching a name in contract_registry
 // (with token_registry fallback) and returns their hex-encoded IDs for querying bronze tables
 func (r *UnifiedDuckDBReader) resolveContractNameToHex(ctx context.Context, name string) []string {
-	query := fmt.Sprintf(`
-		SELECT contract_id FROM (
-			SELECT contract_id FROM %s.contract_registry WHERE display_name ILIKE '%%' || $1 || '%%'
-			UNION
-			SELECT contract_id FROM %s.token_registry WHERE token_name ILIKE '%%' || $2 || '%%'
-		) combined
-	`, r.hotSchema, r.hotSchema)
+	// Search contract_registry + token_registry (hot and cold) for matching names
+	queryParts := []string{
+		fmt.Sprintf("SELECT contract_id FROM %s.contract_registry WHERE display_name ILIKE '%%' || $1 || '%%'", r.hotSchema),
+		fmt.Sprintf("SELECT contract_id FROM %s.token_registry WHERE token_name ILIKE '%%' || $1 || '%%'", r.hotSchema),
+	}
+	if r.coldSchema != "" {
+		queryParts = append(queryParts,
+			fmt.Sprintf("SELECT contract_id FROM %s.token_registry WHERE token_name ILIKE '%%' || $1 || '%%'", r.coldSchema))
+	}
+	query := fmt.Sprintf("SELECT contract_id FROM (%s) combined", strings.Join(queryParts, " UNION "))
 
-	rows, err := r.db.QueryContext(ctx, query, name, name)
+	rows, err := r.db.QueryContext(ctx, query, name)
 	if err != nil {
 		return nil
 	}
@@ -6540,11 +6555,14 @@ func (r *UnifiedDuckDBReader) queryExplorerEventMeta(ctx context.Context, whereC
 	}
 	innerQuery := strings.Join(innerParts, " UNION ALL ")
 
-	// Cap the count scan at 10001 rows for performance
+	// Cap count at 10001 for performance, but compute MIN/MAX over full filtered set
 	query := fmt.Sprintf(`
-		SELECT COUNT(*), MIN(ledger_sequence), MAX(ledger_sequence) FROM (
-			SELECT ledger_sequence FROM (%s) sub LIMIT 10001
-		) capped
+		WITH filtered AS (%s),
+		capped AS (SELECT ledger_sequence FROM filtered LIMIT 10001)
+		SELECT
+			(SELECT COUNT(*) FROM capped),
+			(SELECT MIN(ledger_sequence) FROM filtered),
+			(SELECT MAX(ledger_sequence) FROM filtered)
 	`, innerQuery)
 
 	var count int64

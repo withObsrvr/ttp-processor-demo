@@ -299,6 +299,146 @@ curl -X POST -H "Authorization: Api-Key YOUR_API_KEY" \
 
 ---
 
+## Contract Registry
+
+The contract registry gives every contract a human-readable name — tokens, DEXes, oracles, bridges, anything. Without it, Prism shows raw C... addresses or "Unknown".
+
+### How it works
+
+The `contract_registry` table is the single source of truth for contract identity:
+
+| Field | Description |
+|-------|-------------|
+| `contract_id` | C... address (primary key) |
+| `display_name` | Human-readable name shown in UIs |
+| `category` | Contract type: `token`, `dex`, `oracle`, `bridge`, `dao`, `nft`, `game`, `utility` |
+| `project` | Project name: `soroswap`, `redstone`, `aquarius`, `blend`, etc. |
+| `verified` | Manually verified by operators |
+| `source` | How the entry was created: `token_registry`, `manual`, `community` |
+
+The explorer events endpoint uses `contract_registry` to populate `contract_name`, `contract_symbol`, and `contract_category` in every event.
+
+**Relationship to classification rules**: Classification rules answer "what happened?" (event type + protocol). The contract registry answers "who is this?" (display name + category). They're separate concerns used together by the explorer endpoint.
+
+### Viewing registry entries
+
+Look up a single contract:
+
+```bash
+curl -H "Authorization: Api-Key YOUR_API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/explorer/contracts/CD4KFB23CQLJ47RIPESVBTQ444R75M6QVEZULWXHHFYYZT7SS2VGXOPW"
+```
+
+```json
+{
+  "contract_id": "CD4KFB23CQLJ47RIPESVBTQ444R75M6QVEZULWXHHFYYZT7SS2VGXOPW",
+  "display_name": "RedStone Oracle",
+  "category": "oracle",
+  "project": "redstone",
+  "verified": true,
+  "source": "manual",
+  "created_at": "2026-04-06T19:05:36Z",
+  "updated_at": "2026-04-06T19:05:36Z"
+}
+```
+
+List contracts by category:
+
+```bash
+curl -H "Authorization: Api-Key YOUR_API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/explorer/contracts?category=dex"
+```
+
+Search by name or project:
+
+```bash
+curl -H "Authorization: Api-Key YOUR_API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/explorer/contracts/search?q=soroswap"
+```
+
+### Adding a contract to the registry
+
+**Via API** (no database access needed):
+
+```bash
+curl -X POST -H "Authorization: Api-Key YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "contract_id": "CABC...XYZ",
+    "display_name": "Aquarius AMM",
+    "category": "dex",
+    "project": "aquarius"
+  }' \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/explorer/contracts"
+```
+
+**Via SQL** (for bulk operations):
+
+```sql
+INSERT INTO contract_registry (contract_id, display_name, category, project, verified, source)
+VALUES ('CABC...XYZ', 'Aquarius AMM', 'dex', 'aquarius', true, 'manual')
+ON CONFLICT (contract_id) DO UPDATE SET
+    display_name = EXCLUDED.display_name,
+    category = EXCLUDED.category,
+    project = EXCLUDED.project,
+    updated_at = NOW();
+```
+
+Changes take effect immediately — the explorer endpoint reads the registry on every request. No reload needed (unlike classification rules which are cached in memory).
+
+### Updating an existing entry
+
+POST the same `contract_id` with updated fields. Existing fields not provided in the request are preserved:
+
+```bash
+curl -X POST -H "Authorization: Api-Key YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "contract_id": "CD4KFB23CQLJ47RIPESVBTQ444R75M6QVEZULWXHHFYYZT7SS2VGXOPW",
+    "display_name": "RedStone Price Feed",
+    "verified": true
+  }' \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/explorer/contracts"
+```
+
+### Removing an entry
+
+```bash
+curl -X DELETE -H "Authorization: Api-Key YOUR_API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/explorer/contracts/CABC...XYZ"
+```
+
+### Auto-seeding from token registry
+
+New tokens added by the pipeline are not automatically added to the contract registry. To sync, call the seed endpoint:
+
+```bash
+curl -X POST -H "Authorization: Api-Key YOUR_API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/explorer/contracts/seed"
+```
+
+```json
+{
+  "status": "seeded",
+  "new_entries": 3
+}
+```
+
+This inserts any tokens from `token_registry` that don't already exist in `contract_registry`. It never overwrites existing entries.
+
+### Contract Registry API Reference
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/explorer/contracts/{id}` | GET | Look up a single contract |
+| `/api/v1/explorer/contracts` | GET | List entries. Filters: `?category=`, `?project=`, `?source=`, `?limit=` |
+| `/api/v1/explorer/contracts/search?q=` | GET | Search by display name or project |
+| `/api/v1/explorer/contracts` | POST | Add or update an entry (JSON body) |
+| `/api/v1/explorer/contracts/{id}` | DELETE | Remove an entry |
+| `/api/v1/explorer/contracts/seed` | POST | Re-seed from token_registry |
+
+---
+
 ## Examples
 
 ### Monitor all token activity for USDC
