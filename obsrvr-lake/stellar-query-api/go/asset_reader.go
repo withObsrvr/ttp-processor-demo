@@ -320,9 +320,70 @@ func formatBigNumericStroops(stroopsStr string) string {
 	return wholePart + "." + fracPart
 }
 
-// GetAssetCount returns the total count of assets matching the given filters (ignoring pagination)
+// GetAssetCount returns the total count of assets matching the given filters
+// (ignoring pagination).
+//
+// This query deliberately avoids the expensive asset_stats/transfer_stats CTE
+// pair used by GetAssetListWithCursor. The list query has to compute
+// holder_count / supply / first_seen / last_activity / volume_24h per asset,
+// but the count query only needs the number of distinct assets that match the
+// filters. For the common case (no MinVolume24h filter, token_transfers 24h
+// window empty) we can count distinct (asset_code, asset_issuer, asset_type)
+// directly from trustlines_current with a single index-friendly aggregate.
+//
+// If MinVolume24h is non-zero we fall back to the full CTE-based query since
+// the filter depends on transfer_stats that aren't available from trustlines
+// alone.
 func (r *SilverHotReader) GetAssetCount(ctx context.Context, filters AssetListFilters) (int, error) {
-	// Build count query with same filters as main query, but no pagination/sorting
+	// Fast path: volume filter is not in play, so we don't need the
+	// transfer_stats CTE at all. One aggregate over trustlines_current.
+	if filters.MinVolume24h == nil || *filters.MinVolume24h <= 0 {
+		query := `
+			SELECT COUNT(*) FROM (
+				SELECT asset_code, asset_issuer, asset_type
+				FROM trustlines_current
+				WHERE asset_code IS NOT NULL AND asset_code != ''
+				GROUP BY asset_code, asset_issuer, asset_type
+				HAVING COUNT(*) FILTER (WHERE balance > 0) > 0
+		`
+		args := []interface{}{}
+		argIndex := 1
+
+		if filters.MinHolders != nil && *filters.MinHolders > 0 {
+			query += fmt.Sprintf(" AND COUNT(*) FILTER (WHERE balance > 0) >= $%d", argIndex)
+			args = append(args, *filters.MinHolders)
+			argIndex++
+		}
+		query += ")"
+		// Filters that apply to the GROUP BY keys can be pushed into the
+		// outer WHERE by wrapping the inner query, so apply them there:
+		if filters.AssetType != "" || filters.Search != "" {
+			query += " sub WHERE 1=1"
+			if filters.AssetType != "" {
+				query += fmt.Sprintf(" AND asset_type = $%d", argIndex)
+				args = append(args, filters.AssetType)
+				argIndex++
+			}
+			if filters.Search != "" {
+				query += fmt.Sprintf(" AND UPPER(asset_code) LIKE UPPER($%d)", argIndex)
+				args = append(args, filters.Search+"%")
+				argIndex++
+			}
+		} else {
+			query += " sub"
+		}
+
+		var count int
+		err := r.db.QueryRowContext(ctx, query, args...).Scan(&count)
+		if err != nil {
+			return 0, fmt.Errorf("failed to count assets (fast path): %w", err)
+		}
+		return count, nil
+	}
+
+	// Slow path: volume filter is set, we need the transfer_stats CTE to
+	// evaluate it. This is the historical behavior, preserved here so the
+	// filter semantics don't change when it's used.
 	query := `
 		WITH asset_stats AS (
 			SELECT
@@ -355,18 +416,15 @@ func (r *SilverHotReader) GetAssetCount(ctx context.Context, filters AssetListFi
 	args := []interface{}{}
 	argIndex := 1
 
-	// Apply same filters as main query (excluding pagination/cursor)
 	if filters.MinHolders != nil && *filters.MinHolders > 0 {
 		query += fmt.Sprintf(" AND a.holder_count >= $%d", argIndex)
 		args = append(args, *filters.MinHolders)
 		argIndex++
 	}
 
-	if filters.MinVolume24h != nil && *filters.MinVolume24h > 0 {
-		query += fmt.Sprintf(" AND COALESCE(t.volume_24h, 0) >= $%d", argIndex)
-		args = append(args, *filters.MinVolume24h)
-		argIndex++
-	}
+	query += fmt.Sprintf(" AND COALESCE(t.volume_24h, 0) >= $%d", argIndex)
+	args = append(args, *filters.MinVolume24h)
+	argIndex++
 
 	if filters.AssetType != "" {
 		query += fmt.Sprintf(" AND a.asset_type = $%d", argIndex)

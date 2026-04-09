@@ -202,6 +202,30 @@ var explicitColumnTables = map[string]string{
 		operation_index, event_index,
 		topic0_decoded, topic1_decoded, topic2_decoded, topic3_decoded,
 		created_at, ledger_range, era_id, version_label`,
+	// effects_row_v1 must be explicit: PG has details_json at position 23
+	// and operation_id at position 24 (via ALTER TABLE ADD COLUMN), while
+	// v3_bronze_schema.sql defined them in the opposite order when the
+	// columns were first introduced. Without an explicit column list the
+	// flusher's positional SELECT * tries to cast a JSON string from
+	// details_json into a BIGINT and every flush fails.
+	"effects_row_v1": `
+		ledger_sequence, transaction_hash, operation_index, effect_index,
+		effect_type, effect_type_string, account_id,
+		amount, asset_code, asset_issuer, asset_type,
+		trustline_limit, authorize_flag, clawback_flag,
+		signer_account, signer_weight, offer_id, seller_account,
+		created_at, ledger_range, era_id, version_label,
+		details_json, operation_id`,
+	// token_transfers_stream_v1 was added via migration 004 and was missing
+	// from both BronzeTables and GetTablesToFlush() entirely; adding it here
+	// so the flusher uses a stable named column list from day one. "from"
+	// and "to" are SQL reserved words so they must be quoted.
+	"token_transfers_stream_v1": `
+		ledger_sequence, transaction_hash, transaction_id, operation_id,
+		operation_index, event_type, "from", "to",
+		asset, asset_type, asset_code, asset_issuer,
+		amount, amount_raw, contract_id,
+		closed_at, created_at, ledger_range`,
 }
 
 // buildFlushSQL constructs the INSERT...SELECT SQL for flushing a table.

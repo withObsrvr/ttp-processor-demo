@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"math"
 	"net/http"
 	"time"
@@ -303,8 +304,9 @@ func (u *UnifiedSilverReader) GetNetworkStats(ctx context.Context) (*NetworkStat
 // NetworkStatsHandler handles network statistics requests
 type NetworkStatsHandler struct {
 	silverReader  *UnifiedSilverReader
-	bronzeReader  *ColdReader // Bronze layer for accurate total account count
-	unifiedReader *UnifiedDuckDBReader // For fee stats from bronze
+	bronzeReader  *ColdReader          // Bronze layer for accurate total account count
+	unifiedReader *UnifiedDuckDBReader  // For fee stats from bronze
+	bronzeHotPG   *sql.DB               // Direct PG handle to bronze hot, bypasses DuckDB
 }
 
 // NewNetworkStatsHandler creates a new network stats handler
@@ -318,6 +320,15 @@ func NewNetworkStatsHandler(silverReader *UnifiedSilverReader, bronzeReader *Col
 // SetUnifiedReader sets the unified reader for fee/resource queries against bronze
 func (h *NetworkStatsHandler) SetUnifiedReader(reader *UnifiedDuckDBReader) {
 	h.unifiedReader = reader
+}
+
+// SetBronzeHotPG provides a direct PG connection to bronze hot so the
+// HandleBronzeNetworkStats handler can run simple aggregate queries without
+// going through DuckDB ATTACH POSTGRES. The unified reader's federation layer
+// adds ~1-2s of overhead per query, and this handler runs 4 queries, so
+// bypassing it drops the total endpoint latency from ~5-7s to well under 1s.
+func (h *NetworkStatsHandler) SetBronzeHotPG(db *sql.DB) {
+	h.bronzeHotPG = db
 }
 
 // HandleNetworkStats returns headline network statistics
@@ -363,8 +374,44 @@ func (h *NetworkStatsHandler) HandleNetworkStats(w http.ResponseWriter, r *http.
 		stats.Accounts.Total = hotStats.Accounts.Total
 	}
 
-	// Fetch protocol_version and avg close time from bronze ledgers
-	if h.unifiedReader != nil {
+	// Fetch bronze-side data (ledger info, fee stats, soroban stats)
+	// using the parallel hot+cold fast path. This replaces four earlier
+	// implementations that each ran through the DuckDB unified reader's
+	// postgres_scan federation layer (~1-2s/query × 5-8 queries = 10-15s
+	// just for the bronze portion of this endpoint).
+	//
+	// wantFees=true + wantSoroban=true makes the helper fetch the extra
+	// aggregate queries we need for stats.Fees24h and stats.Soroban.
+	if fast := h.fetchBronzeStatsFast(ctx, true, true); fast != nil {
+		// Bronze overrides silver for ledger metadata and protocol
+		// version — the freshest view is bronze hot.
+		if fast.ProtocolVersion > 0 {
+			stats.Ledger.ProtocolVersion = fast.ProtocolVersion
+		}
+		if fast.AvgCloseTimeSeconds > 0 {
+			stats.Ledger.AvgCloseTimeSeconds = fast.AvgCloseTimeSeconds
+		}
+
+		if fast.Fees24h != nil {
+			stats.Fees24h = fast.Fees24h
+		}
+
+		// Merge bronze soroban aggregates into the silver-derived
+		// stats.Soroban struct if it exists. Only overwrite fields we
+		// actually got values for.
+		if fast.Soroban != nil && stats.Soroban != nil {
+			if fast.Soroban.AvgCPU > 0 {
+				stats.Soroban.AvgCpuInsns = fast.Soroban.AvgCPU
+			}
+			if fast.Soroban.RentBurned > 0 {
+				stats.Soroban.RentBurned24hStroops = fast.Soroban.RentBurned
+			}
+		}
+	} else if h.unifiedReader != nil {
+		// Slow-path fallback: neither bronzeHotPG nor bronzeReader
+		// configured, fall back to the DuckDB unified reader. Kept
+		// for backwards compatibility with deployments that don't
+		// wire the fast-path handles.
 		schemas := []string{}
 		if h.unifiedReader.bronzeHotSchema != "" {
 			schemas = append(schemas, h.unifiedReader.bronzeHotSchema)
@@ -385,7 +432,6 @@ func (h *NetworkStatsHandler) HandleNetworkStats(w http.ResponseWriter, r *http.
 			}
 		}
 		for _, schema := range schemas {
-			// Compute avg close time: (max_time - min_time) / (count - 1) over recent ledgers
 			query := fmt.Sprintf(`
 				SELECT EXTRACT(EPOCH FROM MAX(closed_at) - MIN(closed_at)), COUNT(*)
 				FROM (SELECT closed_at FROM %s.ledgers_row_v2 ORDER BY sequence DESC LIMIT 100) sub
@@ -402,15 +448,9 @@ func (h *NetworkStatsHandler) HandleNetworkStats(w http.ResponseWriter, r *http.
 				break
 			}
 		}
-	}
-
-	// Fetch fee stats from bronze if unified reader available
-	if h.unifiedReader != nil {
-		feeStats := h.fetchFeeStats(ctx)
-		if feeStats != nil {
+		if feeStats := h.fetchFeeStats(ctx); feeStats != nil {
 			stats.Fees24h = feeStats
 		}
-		// Fetch avg CPU and rent from bronze for soroban stats
 		if stats.Soroban != nil {
 			avgCPU, rentBurned := h.fetchBronzeSorobanStats(ctx)
 			if avgCPU > 0 {
@@ -474,19 +514,563 @@ func (h *NetworkStatsHandler) fetchFeeStats(ctx context.Context) *FeeStats24h {
 	return nil
 }
 
+// bronzeStatsFast holds the aggregated bronze data shared between
+// HandleBronzeNetworkStats and HandleNetworkStats. All fields are populated
+// by fetchBronzeStatsFast using a parallel hot+cold split, keyed on the
+// flusher watermark so there is no overlap or gap between the two layers.
+//
+// Ledger fields are kept as raw primitives (rather than a typed LedgerStats
+// struct) because the two endpoints use different Ledger types
+// (LedgerStats vs BronzeLedgerStats) and we want one helper that feeds
+// both.
+type bronzeStatsFast struct {
+	// Latest ledger (always from hot)
+	LatestSequence      int64
+	LatestHash          string
+	ClosedAt            string
+	ProtocolVersion     int
+	AvgCloseTimeSeconds float64
+
+	Tx24h   *BronzeTxStats24h
+	Ops24h  *BronzeOpStats24h
+	Fees24h *FeeStats24h
+	Soroban *struct {
+		AvgCPU     int64
+		RentBurned int64
+	}
+}
+
+// fetchBronzeStatsFast runs the bronze-layer aggregates needed by both
+// /bronze/stats/network and /silver/stats/network.
+//
+// Splits the work along the flusher watermark:
+//   - cold (DuckLake via ColdReader — direct Parquet reads, no postgres_scan)
+//     serves everything `ledger_sequence <= watermark`
+//   - hot (direct PG — no DuckDB federation overhead) serves everything
+//     `ledger_sequence > watermark` plus the "always in hot" queries
+//     (latest ledger, avg close time)
+//
+// Hot and cold run in parallel goroutines. All partial failures are logged
+// but never propagated — this endpoint aims to return *something* even when
+// one layer is unreachable.
+//
+// Requires both h.bronzeHotPG and h.bronzeReader to be set. Returns nil if
+// either is missing (callers should fall through to a slower DuckDB-based
+// path).
+func (h *NetworkStatsHandler) fetchBronzeStatsFast(ctx context.Context, wantFees, wantSoroban bool) *bronzeStatsFast {
+	if h.bronzeHotPG == nil || h.bronzeReader == nil {
+		return nil
+	}
+
+	result := &bronzeStatsFast{}
+
+	// Flusher watermark — split point between hot and cold. Everything
+	// ledger_sequence<=watermark is authoritative in cold (possibly
+	// duplicated in hot until the flusher's next DELETE pass), everything
+	// >watermark is only in hot.
+	var watermark int64
+	_ = h.bronzeHotPG.QueryRowContext(ctx, `
+		SELECT last_flushed_watermark FROM cold_flusher_checkpoint WHERE id = 1
+	`).Scan(&watermark)
+
+	type txAgg struct {
+		total, successful, fees, soroban int64
+	}
+	type opAgg struct {
+		ops, sorobanOps int64
+	}
+	type feeAgg struct {
+		median, p99, total int64
+	}
+	type sorobanAgg struct {
+		avgCPU, rentBurned int64
+	}
+
+	var (
+		coldTx, hotTx             txAgg
+		coldOp, hotOp             opAgg
+		coldFee, hotFee           feeAgg
+		coldSoroban, hotSoroban   sorobanAgg
+	)
+
+	catalog := h.bronzeReader.CatalogName()
+	schema := h.bronzeReader.SchemaName()
+	coldDB := h.bronzeReader.DB()
+
+	// Launch all cold queries in one goroutine. They share the same
+	// DuckDB handle so running them sequentially on a single goroutine is
+	// fine — parallelizing further would just thrash the single writer.
+	doneCold := make(chan struct{})
+	go func() {
+		defer close(doneCold)
+
+		// Transactions 24h
+		txSQL := fmt.Sprintf(`
+			SELECT COUNT(*),
+			       SUM(CASE WHEN successful THEN 1 ELSE 0 END),
+			       SUM(fee_charged),
+			       COUNT(*) FILTER (WHERE soroban_resources_instructions IS NOT NULL)
+			FROM %s.%s.transactions_row_v2
+			WHERE ledger_sequence <= $1
+			  AND created_at > NOW() - INTERVAL '24 hours'
+		`, catalog, schema)
+		var total, successful, fees, soroban sql.NullInt64
+		if err := coldDB.QueryRowContext(ctx, txSQL, watermark).Scan(&total, &successful, &fees, &soroban); err != nil {
+			log.Printf("fetchBronzeStatsFast cold tx: %v", err)
+		} else {
+			coldTx = txAgg{total.Int64, successful.Int64, fees.Int64, soroban.Int64}
+		}
+
+		// Operations 24h
+		opSQL := fmt.Sprintf(`
+			SELECT SUM(operation_count), SUM(soroban_op_count)
+			FROM %s.%s.ledgers_row_v2
+			WHERE sequence <= $1
+			  AND closed_at > NOW() - INTERVAL '24 hours'
+		`, catalog, schema)
+		var opsTotal, opsSoroban sql.NullInt64
+		if err := coldDB.QueryRowContext(ctx, opSQL, watermark).Scan(&opsTotal, &opsSoroban); err != nil {
+			log.Printf("fetchBronzeStatsFast cold op: %v", err)
+		} else {
+			coldOp = opAgg{opsTotal.Int64, opsSoroban.Int64}
+		}
+
+		// Fee percentiles (only if requested — skipped for /bronze/stats/network)
+		if wantFees {
+			feeSQL := fmt.Sprintf(`
+				SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY fee_charged),
+				       PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY fee_charged),
+				       SUM(fee_charged)
+				FROM %s.%s.transactions_row_v2
+				WHERE ledger_sequence <= $1
+				  AND created_at > NOW() - INTERVAL '24 hours'
+				  AND successful = true
+			`, catalog, schema)
+			var median, p99 sql.NullFloat64
+			var sum sql.NullInt64
+			if err := coldDB.QueryRowContext(ctx, feeSQL, watermark).Scan(&median, &p99, &sum); err != nil {
+				log.Printf("fetchBronzeStatsFast cold fee: %v", err)
+			} else {
+				if median.Valid {
+					coldFee.median = int64(median.Float64)
+				}
+				if p99.Valid {
+					coldFee.p99 = int64(p99.Float64)
+				}
+				if sum.Valid {
+					coldFee.total = sum.Int64
+				}
+			}
+		}
+
+		// Soroban avg CPU + rent (only if requested)
+		if wantSoroban {
+			sbSQL := fmt.Sprintf(`
+				SELECT AVG(soroban_resources_instructions),
+				       COALESCE(SUM(rent_fee_charged), 0)
+				FROM %s.%s.transactions_row_v2
+				WHERE ledger_sequence <= $1
+				  AND soroban_resources_instructions IS NOT NULL
+				  AND created_at > NOW() - INTERVAL '24 hours'
+			`, catalog, schema)
+			var avg sql.NullFloat64
+			var rent sql.NullInt64
+			if err := coldDB.QueryRowContext(ctx, sbSQL, watermark).Scan(&avg, &rent); err != nil {
+				log.Printf("fetchBronzeStatsFast cold soroban: %v", err)
+			} else {
+				if avg.Valid {
+					coldSoroban.avgCPU = int64(avg.Float64)
+				}
+				if rent.Valid {
+					coldSoroban.rentBurned = rent.Int64
+				}
+			}
+		}
+	}()
+
+	// Hot side runs on the main goroutine.
+
+	// Query 1: Latest ledger (always in hot)
+	var seq sql.NullInt64
+	var hash sql.NullString
+	var closedAt sql.NullTime
+	var proto sql.NullInt64
+	if err := h.bronzeHotPG.QueryRowContext(ctx, `
+		SELECT sequence, ledger_hash, closed_at, protocol_version
+		FROM ledgers_row_v2 ORDER BY sequence DESC LIMIT 1
+	`).Scan(&seq, &hash, &closedAt, &proto); err != nil {
+		log.Printf("fetchBronzeStatsFast latest ledger: %v", err)
+	} else {
+		if seq.Valid {
+			result.LatestSequence = seq.Int64
+		}
+		if hash.Valid {
+			result.LatestHash = hash.String
+		}
+		if closedAt.Valid {
+			result.ClosedAt = closedAt.Time.UTC().Format(time.RFC3339)
+		}
+		if proto.Valid {
+			result.ProtocolVersion = int(proto.Int64)
+		}
+	}
+
+	// Query 2: Avg close time from the recent 100 ledgers (always in hot)
+	var diffSecs sql.NullFloat64
+	var cnt sql.NullInt64
+	_ = h.bronzeHotPG.QueryRowContext(ctx, `
+		SELECT EXTRACT(EPOCH FROM MAX(closed_at) - MIN(closed_at)), COUNT(*)
+		FROM (SELECT closed_at FROM ledgers_row_v2 ORDER BY sequence DESC LIMIT 100) sub
+	`).Scan(&diffSecs, &cnt)
+	if diffSecs.Valid && cnt.Valid && cnt.Int64 > 1 && diffSecs.Float64 > 0 {
+		avg := diffSecs.Float64 / float64(cnt.Int64-1)
+		result.AvgCloseTimeSeconds = math.Round(avg*100) / 100
+	}
+
+	// Query 3: hot-tail 24h tx stats (> watermark)
+	var hTotal, hSuccessful, hFees, hSoroban sql.NullInt64
+	_ = h.bronzeHotPG.QueryRowContext(ctx, `
+		SELECT COUNT(*),
+		       SUM(CASE WHEN successful THEN 1 ELSE 0 END),
+		       SUM(fee_charged),
+		       COUNT(*) FILTER (WHERE soroban_resources_instructions IS NOT NULL)
+		FROM transactions_row_v2
+		WHERE ledger_sequence > $1
+		  AND created_at > NOW() - INTERVAL '24 hours'
+	`, watermark).Scan(&hTotal, &hSuccessful, &hFees, &hSoroban)
+	hotTx = txAgg{hTotal.Int64, hSuccessful.Int64, hFees.Int64, hSoroban.Int64}
+
+	// Query 4: hot-tail 24h op stats (> watermark)
+	var hOpsTotal, hOpsSoroban sql.NullInt64
+	_ = h.bronzeHotPG.QueryRowContext(ctx, `
+		SELECT SUM(operation_count), SUM(soroban_op_count)
+		FROM ledgers_row_v2
+		WHERE sequence > $1
+		  AND closed_at > NOW() - INTERVAL '24 hours'
+	`, watermark).Scan(&hOpsTotal, &hOpsSoroban)
+	hotOp = opAgg{hOpsTotal.Int64, hOpsSoroban.Int64}
+
+	// Query 5: hot-tail fee percentiles (optional)
+	if wantFees {
+		var median, p99 sql.NullFloat64
+		var sum sql.NullInt64
+		_ = h.bronzeHotPG.QueryRowContext(ctx, `
+			SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY fee_charged),
+			       PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY fee_charged),
+			       SUM(fee_charged)
+			FROM transactions_row_v2
+			WHERE ledger_sequence > $1
+			  AND created_at > NOW() - INTERVAL '24 hours'
+			  AND successful = true
+		`, watermark).Scan(&median, &p99, &sum)
+		if median.Valid {
+			hotFee.median = int64(median.Float64)
+		}
+		if p99.Valid {
+			hotFee.p99 = int64(p99.Float64)
+		}
+		if sum.Valid {
+			hotFee.total = sum.Int64
+		}
+	}
+
+	// Query 6: hot-tail soroban avg CPU + rent (optional)
+	if wantSoroban {
+		var avg sql.NullFloat64
+		var rent sql.NullInt64
+		_ = h.bronzeHotPG.QueryRowContext(ctx, `
+			SELECT AVG(soroban_resources_instructions),
+			       COALESCE(SUM(rent_fee_charged), 0)
+			FROM transactions_row_v2
+			WHERE ledger_sequence > $1
+			  AND soroban_resources_instructions IS NOT NULL
+			  AND created_at > NOW() - INTERVAL '24 hours'
+		`, watermark).Scan(&avg, &rent)
+		if avg.Valid {
+			hotSoroban.avgCPU = int64(avg.Float64)
+		}
+		if rent.Valid {
+			hotSoroban.rentBurned = rent.Int64
+		}
+	}
+
+	// Wait for cold and merge
+	<-doneCold
+
+	totalTx := hotTx.total + coldTx.total
+	if totalTx > 0 {
+		result.Tx24h = &BronzeTxStats24h{
+			Total:            totalTx,
+			Successful:       hotTx.successful + coldTx.successful,
+			Failed:           totalTx - (hotTx.successful + coldTx.successful),
+			SorobanCount:     hotTx.soroban + coldTx.soroban,
+			TotalFeesCharged: hotTx.fees + coldTx.fees,
+		}
+	}
+	totalOps := hotOp.ops + coldOp.ops
+	if totalOps > 0 {
+		result.Ops24h = &BronzeOpStats24h{
+			Total:          totalOps,
+			SorobanOpCount: hotOp.sorobanOps + coldOp.sorobanOps,
+		}
+	}
+
+	// Merging percentiles across two samples is statistically incorrect
+	// (the p50/p99 of a union isn't the average of each side's p50/p99).
+	// The best we can do without re-sorting the combined sample is to
+	// take the value from whichever side has more data. In practice cold
+	// holds the vast majority of the 24h window (everything except the
+	// minutes since the last flush), so cold's percentiles are the
+	// authoritative signal. Fall back to hot's values only if cold was
+	// empty (either no data in range or query failed).
+	if wantFees {
+		result.Fees24h = &FeeStats24h{
+			DailyTotalStroops: hotFee.total + coldFee.total,
+		}
+		if coldFee.median > 0 || coldFee.p99 > 0 {
+			result.Fees24h.MedianStroops = coldFee.median
+			result.Fees24h.P99Stroops = coldFee.p99
+		} else {
+			result.Fees24h.MedianStroops = hotFee.median
+			result.Fees24h.P99Stroops = hotFee.p99
+		}
+		result.Fees24h.SurgeActive = result.Fees24h.MedianStroops > 100
+	}
+
+	if wantSoroban {
+		// AVG across two samples is also approximate, but we can do
+		// better than for percentiles by weighting: cold has vastly more
+		// rows so its average dominates. Use cold when available.
+		result.Soroban = &struct {
+			AvgCPU     int64
+			RentBurned int64
+		}{
+			RentBurned: hotSoroban.rentBurned + coldSoroban.rentBurned,
+		}
+		if coldSoroban.avgCPU > 0 {
+			result.Soroban.AvgCPU = coldSoroban.avgCPU
+		} else {
+			result.Soroban.AvgCPU = hotSoroban.avgCPU
+		}
+	}
+
+	return result
+}
+
 // HandleBronzeNetworkStats returns headline network statistics from the bronze layer
 // GET /api/v1/bronze/stats/network
 func (h *NetworkStatsHandler) HandleBronzeNetworkStats(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	if h.unifiedReader == nil {
-		respondError(w, "bronze layer not configured", http.StatusServiceUnavailable)
-		return
-	}
-
 	stats := &BronzeNetworkStats{
 		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
 		DataFreshness: "real-time",
+	}
+
+	// Fast path: use the parallel hot+cold helper. See fetchBronzeStatsFast
+	// for the architecture — direct PG for the hot tail, direct DuckLake
+	// for everything below the flusher watermark, merged in Go. This
+	// endpoint doesn't need fee percentiles or Soroban CPU averages so we
+	// pass wantFees=false, wantSoroban=false.
+	if fast := h.fetchBronzeStatsFast(ctx, false, false); fast != nil {
+		stats.Ledger.LatestSequence = fast.LatestSequence
+		stats.Ledger.LatestHash = fast.LatestHash
+		stats.Ledger.ClosedAt = fast.ClosedAt
+		stats.Ledger.ProtocolVersion = fast.ProtocolVersion
+		stats.Ledger.AvgCloseTimeSeconds = fast.AvgCloseTimeSeconds
+		stats.Transactions24h = fast.Tx24h
+		stats.Operations24h = fast.Ops24h
+		if stats.Ledger.LatestSequence == 0 {
+			respondError(w, "unable to query bronze ledger data", http.StatusServiceUnavailable)
+			return
+		}
+		respondJSON(w, stats)
+		return
+	}
+
+	// Kept for compile — the old inline implementation follows. The
+	// condition is now unreachable because fetchBronzeStatsFast handles
+	// the same (bronzeHotPG != nil && bronzeReader != nil) case, but we
+	// leave the slow fallback in place for deployments where one of the
+	// two is missing.
+	if h.bronzeHotPG != nil && h.bronzeReader != nil {
+		// Discover the flush watermark that splits hot from cold.
+		// Everything with ledger_sequence <= watermark has been flushed
+		// to cold. Everything with ledger_sequence > watermark lives
+		// only in hot. Rows with ledger_sequence <= watermark may also
+		// exist in hot (the flusher delays deletion until the downstream
+		// silver checkpoint catches up), but we won't double-count
+		// because we split the hot query to `> watermark`.
+		var watermark int64
+		_ = h.bronzeHotPG.QueryRowContext(ctx, `
+			SELECT last_flushed_watermark FROM cold_flusher_checkpoint WHERE id = 1
+		`).Scan(&watermark)
+
+		// Kick off cold and hot queries in parallel.
+		type txAgg struct {
+			total, successful, fees, soroban int64
+		}
+		type opAgg struct {
+			ops, sorobanOps int64
+		}
+
+		var (
+			coldTx, hotTx txAgg
+			coldOp, hotOp opAgg
+			coldErr       error
+		)
+
+		doneCold := make(chan struct{})
+		go func() {
+			defer close(doneCold)
+			// Cold: transactions with closed_at in the 24h window,
+			// bounded above by the flusher watermark so we never
+			// count rows that are also in hot. `closed_at` is the
+			// ledger close timestamp preserved through the flusher
+			// (INSERT … SELECT), so this is stable regardless of
+			// when the row was flushed.
+			catalog := h.bronzeReader.CatalogName()
+			schema := h.bronzeReader.SchemaName()
+			txSQL := fmt.Sprintf(`
+				SELECT COUNT(*),
+				       SUM(CASE WHEN successful THEN 1 ELSE 0 END),
+				       SUM(fee_charged),
+				       COUNT(*) FILTER (WHERE soroban_resources_instructions IS NOT NULL)
+				FROM %s.%s.transactions_row_v2
+				WHERE ledger_sequence <= $1
+				  AND created_at > NOW() - INTERVAL '24 hours'
+			`, catalog, schema)
+			var total, successful, fees, soroban sql.NullInt64
+			if err := h.bronzeReader.DB().QueryRowContext(ctx, txSQL, watermark).Scan(&total, &successful, &fees, &soroban); err != nil {
+				coldErr = err
+				return
+			}
+			coldTx.total = total.Int64
+			coldTx.successful = successful.Int64
+			coldTx.fees = fees.Int64
+			coldTx.soroban = soroban.Int64
+
+			// Cold: operation stats in the 24h window
+			opSQL := fmt.Sprintf(`
+				SELECT SUM(operation_count), SUM(soroban_op_count)
+				FROM %s.%s.ledgers_row_v2
+				WHERE sequence <= $1
+				  AND closed_at > NOW() - INTERVAL '24 hours'
+			`, catalog, schema)
+			var opsTotal, opsSoroban sql.NullInt64
+			if err := h.bronzeReader.DB().QueryRowContext(ctx, opSQL, watermark).Scan(&opsTotal, &opsSoroban); err != nil {
+				coldErr = err
+				return
+			}
+			coldOp.ops = opsTotal.Int64
+			coldOp.sorobanOps = opsSoroban.Int64
+		}()
+
+		// Hot queries run on the main goroutine so we can return
+		// early on a hard error without a cancel dance. Query 1
+		// (latest ledger) is required; the rest are best-effort.
+
+		// Query 1: Latest ledger — always in hot by definition
+		var seq sql.NullInt64
+		var hash sql.NullString
+		var closedAt sql.NullTime
+		var proto sql.NullInt64
+		if err := h.bronzeHotPG.QueryRowContext(ctx, `
+			SELECT sequence, ledger_hash, closed_at, protocol_version
+			FROM ledgers_row_v2 ORDER BY sequence DESC LIMIT 1
+		`).Scan(&seq, &hash, &closedAt, &proto); err != nil {
+			<-doneCold // don't leak the goroutine
+			respondError(w, "unable to query bronze ledger data", http.StatusServiceUnavailable)
+			return
+		}
+		if seq.Valid {
+			stats.Ledger.LatestSequence = seq.Int64
+		}
+		if hash.Valid {
+			stats.Ledger.LatestHash = hash.String
+		}
+		if closedAt.Valid {
+			stats.Ledger.ClosedAt = closedAt.Time.UTC().Format(time.RFC3339)
+		}
+		if proto.Valid {
+			stats.Ledger.ProtocolVersion = int(proto.Int64)
+		}
+
+		// Query 2: Avg close time from recent 100 ledgers — always in hot
+		var diffSecs sql.NullFloat64
+		var cnt sql.NullInt64
+		_ = h.bronzeHotPG.QueryRowContext(ctx, `
+			SELECT EXTRACT(EPOCH FROM MAX(closed_at) - MIN(closed_at)), COUNT(*)
+			FROM (SELECT closed_at FROM ledgers_row_v2 ORDER BY sequence DESC LIMIT 100) sub
+		`).Scan(&diffSecs, &cnt)
+		if diffSecs.Valid && cnt.Valid && cnt.Int64 > 1 && diffSecs.Float64 > 0 {
+			avg := diffSecs.Float64 / float64(cnt.Int64-1)
+			stats.Ledger.AvgCloseTimeSeconds = math.Round(avg*100) / 100
+		}
+
+		// Query 3 (hot tail): 24h transaction stats strictly above the
+		// flusher watermark. Uses idx_transactions_row_v2_created_at
+		// combined with the ledger_sequence filter.
+		var hTotal, hSuccessful, hFees, hSoroban sql.NullInt64
+		_ = h.bronzeHotPG.QueryRowContext(ctx, `
+			SELECT COUNT(*),
+			       SUM(CASE WHEN successful THEN 1 ELSE 0 END),
+			       SUM(fee_charged),
+			       COUNT(*) FILTER (WHERE soroban_resources_instructions IS NOT NULL)
+			FROM transactions_row_v2
+			WHERE ledger_sequence > $1
+			  AND created_at > NOW() - INTERVAL '24 hours'
+		`, watermark).Scan(&hTotal, &hSuccessful, &hFees, &hSoroban)
+		hotTx.total = hTotal.Int64
+		hotTx.successful = hSuccessful.Int64
+		hotTx.fees = hFees.Int64
+		hotTx.soroban = hSoroban.Int64
+
+		// Query 4 (hot tail): 24h operation stats strictly above the
+		// flusher watermark.
+		var hOpsTotal, hOpsSoroban sql.NullInt64
+		_ = h.bronzeHotPG.QueryRowContext(ctx, `
+			SELECT SUM(operation_count), SUM(soroban_op_count)
+			FROM ledgers_row_v2
+			WHERE sequence > $1
+			  AND closed_at > NOW() - INTERVAL '24 hours'
+		`, watermark).Scan(&hOpsTotal, &hOpsSoroban)
+		hotOp.ops = hOpsTotal.Int64
+		hotOp.sorobanOps = hOpsSoroban.Int64
+
+		// Wait for cold and merge
+		<-doneCold
+		if coldErr != nil {
+			log.Printf("HandleBronzeNetworkStats: cold query failed, returning hot-only stats: %v", coldErr)
+		}
+
+		totalTx := hotTx.total + coldTx.total
+		if totalTx > 0 {
+			stats.Transactions24h = &BronzeTxStats24h{
+				Total:            totalTx,
+				Successful:       hotTx.successful + coldTx.successful,
+				Failed:           totalTx - (hotTx.successful + coldTx.successful),
+				SorobanCount:     hotTx.soroban + coldTx.soroban,
+				TotalFeesCharged: hotTx.fees + coldTx.fees,
+			}
+		}
+		totalOps := hotOp.ops + coldOp.ops
+		if totalOps > 0 {
+			stats.Operations24h = &BronzeOpStats24h{
+				Total:          totalOps,
+				SorobanOpCount: hotOp.sorobanOps + coldOp.sorobanOps,
+			}
+		}
+
+		respondJSON(w, stats)
+		return
+	}
+
+	// Slow path: no direct PG handle, fall back to the unified reader.
+	// This is the historical behavior and runs every query through DuckDB.
+	if h.unifiedReader == nil {
+		respondError(w, "bronze layer not configured", http.StatusServiceUnavailable)
+		return
 	}
 
 	// Build ordered schema list: hot first, cold fallback

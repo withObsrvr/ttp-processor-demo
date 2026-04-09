@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -422,6 +423,7 @@ func (h *DecodeHandlers) resolveHashesFromLedger(ctx context.Context, ledgerSeq 
 
 		rows, err := h.reader.db.QueryContext(ctx, query, ledgerSeq, limit)
 		if err != nil {
+			log.Printf("resolveHashesFromLedger silver %s: %v", schema, err)
 			continue
 		}
 
@@ -441,44 +443,28 @@ func (h *DecodeHandlers) resolveHashesFromLedger(ctx context.Context, ledgerSeq 
 		}
 	}
 
-	// Also try bronze transactions_row_v2 as fallback
-	bronzeSchemas := []string{}
-	if h.reader.bronzeHotSchema != "" {
-		bronzeSchemas = append(bronzeSchemas, h.reader.bronzeHotSchema)
-	}
-	if h.reader.bronzeColdSchema != "" {
-		bronzeSchemas = append(bronzeSchemas, h.reader.bronzeColdSchema)
-	}
-
-	for _, schema := range bronzeSchemas {
-		query := fmt.Sprintf(`
-			SELECT transaction_hash
-			FROM %s.transactions_row_v2
-			WHERE ledger_sequence = $1
-			ORDER BY transaction_index
-			LIMIT $2
-		`, schema)
-
-		rows, err := h.reader.db.QueryContext(ctx, query, ledgerSeq, limit)
-		if err != nil {
-			continue
-		}
-
-		var hashes []string
-		for rows.Next() {
-			var hash string
-			if err := rows.Scan(&hash); err != nil {
-				rows.Close()
-				continue
-			}
-			hashes = append(hashes, hash)
-		}
-		rows.Close()
-
-		if len(hashes) > 0 {
-			return hashes, nil
-		}
-	}
+	// Bronze fallback intentionally disabled.
+	//
+	// Prior versions had a bronze fallback here that queried
+	// transactions_row_v2 with `ORDER BY transaction_index`, but that
+	// column only exists on operations_row_v2 (via migration 001). The
+	// query errored silently every call and the fallback never worked.
+	//
+	// Fixing the ORDER BY (use transaction_id, a packed TOID that encodes
+	// the TxOrder in its mid bits) makes the fallback discover hashes —
+	// but then GetTransactionForDecode queries silver tables for every
+	// hash, and when the silver-realtime-transformer is behind the
+	// ingester (common during catch-up) those queries are empty but still
+	// slow because silver_hot is IO-starved by the transformer's own
+	// catch-up batches. The per-request latency explodes from a fast 500
+	// ("no transactions found") to a 30+ second hang, which times out the
+	// gateway's HTTP client and blocks whichever UI fragment is waiting.
+	//
+	// Until GetTransactionForDecode gains a bronze-only code path that
+	// produces a usable DecodedTransaction without hitting silver, we
+	// return the not-found error fast. That's strictly worse data (the tx
+	// exists in bronze) but strictly better latency (fast 500 > 30s hang),
+	// and the caller can still fall back to its own bronze display path.
 
 	return nil, fmt.Errorf("no transactions found in ledger %d", ledgerSeq)
 }

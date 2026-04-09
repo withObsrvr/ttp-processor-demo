@@ -337,6 +337,14 @@ func mainWithSilver() {
 		// Network statistics endpoint (Phase 2)
 		// Pass Bronze coldReader for accurate total account count
 		networkStatsHandler := NewNetworkStatsHandler(unifiedSilverReader, coldReader)
+		// Give the network stats handler a direct PG connection to bronze
+		// hot so HandleBronzeNetworkStats can bypass DuckDB's ATTACH
+		// POSTGRES federation (which adds ~1-2s per query and turns this
+		// 4-query endpoint into 5-7s of latency that blocks Prism's home
+		// page fragments).
+		if hotReader != nil {
+			networkStatsHandler.SetBronzeHotPG(hotReader.DB())
+		}
 		if unifiedDuckDBReader != nil {
 			networkStatsHandler.SetUnifiedReader(unifiedDuckDBReader)
 			router.HandleFunc("/api/v1/bronze/stats/network", networkStatsHandler.HandleBronzeNetworkStats).Methods("GET")

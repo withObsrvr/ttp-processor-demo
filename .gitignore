@@ -309,3 +309,4 @@ docs/using-stellar-sdk-with-obsrvr.md
 obsrvr-lake/docs/multi-tenant-gold-layer-architecture.md
 obsrvr-lake/docs/semantic_layer_discussion_1.txt
 obsrvr-lake/postgres-ducklake-flusher/go/postgres-ducklake-flusher
+obsrvr-lake/silver-realtime-transformer/migrations/README.md

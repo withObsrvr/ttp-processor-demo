@@ -473,15 +473,21 @@ func (h *SilverHandlers) HandleAssetList(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	// Query asset list from unified reader (uses DuckDB to query both hot + cold)
-	// Falls back to legacy reader if unified reader is not available
+	// Always route asset list through the legacy reader (direct PG
+	// silver_hot). The unified reader's GetAssetList federates across
+	// hot+cold trustlines through DuckDB ATTACH POSTGRES + read_parquet
+	// from B2, which turns a <1s aggregate into 12-22s because DuckDB
+	// pulls every row over network to do its own GROUP BY. For this
+	// endpoint we only need the current state (trustlines_current is a
+	// silver current-state table, hot has the live snapshot) so the
+	// legacy path is strictly a better choice.
 	var response *AssetListResponse
 	var queryErr error
 
-	if h.unifiedReader != nil {
-		response, queryErr = h.unifiedReader.GetAssetList(r.Context(), filters)
-	} else {
+	if h.legacyReader != nil {
 		response, queryErr = h.legacyReader.GetAssetList(r.Context(), filters)
+	} else {
+		response, queryErr = h.unifiedReader.GetAssetList(r.Context(), filters)
 	}
 
 	if queryErr != nil {

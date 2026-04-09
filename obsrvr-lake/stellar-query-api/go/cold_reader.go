@@ -415,6 +415,27 @@ func (c *ColdReader) GetDistinctAccountCount(ctx context.Context) (int64, error)
 	return count, nil
 }
 
+// DB returns the underlying DuckDB handle. Callers can use it to run
+// ad-hoc DuckLake queries directly, bypassing the per-method wrappers.
+// Unlike the UnifiedDuckDBReader, this handle ONLY has DuckLake attached
+// (no ATTACH POSTGRES), so queries go straight to cold Parquet without
+// federation overhead.
+func (c *ColdReader) DB() *sql.DB {
+	return c.db
+}
+
+// CatalogName returns the configured DuckLake catalog name (e.g. "lake")
+// so callers can construct fully-qualified table references like
+// `<catalog>.<schema>.<table>`.
+func (c *ColdReader) CatalogName() string {
+	return c.config.CatalogName
+}
+
+// SchemaName returns the DuckLake schema name (e.g. "bronze").
+func (c *ColdReader) SchemaName() string {
+	return c.config.SchemaName
+}
+
 func (c *ColdReader) Close() error {
 	return c.db.Close()
 }
