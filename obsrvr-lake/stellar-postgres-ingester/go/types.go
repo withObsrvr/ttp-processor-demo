@@ -6,6 +6,7 @@ import "time"
 type TransactionData struct {
 	LedgerSequence        uint32
 	TransactionHash       string
+	TransactionID         int64 // TOID: packed [LedgerSeq:32][TxOrder:20][0:12]
 	SourceAccount         string
 	FeeCharged            int64
 	MaxFee                int64
@@ -30,6 +31,8 @@ type TransactionData struct {
 // OperationData represents a single operation (simplified - core fields only)
 type OperationData struct {
 	TransactionHash       string
+	TransactionID         int64 // TOID of parent transaction
+	OperationID           int64 // TOID: packed [LedgerSeq:32][TxOrder:20][OpIndex:12]
 	TransactionIndex      int
 	OperationIndex        int
 	LedgerSequence        uint32
@@ -62,6 +65,7 @@ type EffectData struct {
 	TransactionHash  string
 	OperationIndex   int
 	EffectIndex      int
+	OperationID      int64 // TOID of parent operation
 
 	// Effect type
 	EffectType       int
@@ -70,24 +74,23 @@ type EffectData struct {
 	// Account affected
 	AccountID *string
 
-	// Amount changes
+	// Common fields (extracted from details for backward compatibility)
 	Amount      *string
 	AssetCode   *string
 	AssetIssuer *string
 	AssetType   *string
 
-	// Trustline effects
+	// Rich details as JSON (covers all 50+ effect types)
+	DetailsJSON *string
+
+	// Legacy fields (kept for backward compat but no longer populated by new extractor)
 	TrustlineLimit *string
 	AuthorizeFlag  *bool
 	ClawbackFlag   *bool
-
-	// Signer effects
-	SignerAccount *string
-	SignerWeight  *int
-
-	// Offer effects
-	OfferID       *int64
-	SellerAccount *string
+	SignerAccount  *string
+	SignerWeight   *int
+	OfferID        *int64
+	SellerAccount  *string
 
 	// Metadata
 	CreatedAt   time.Time
@@ -568,6 +571,29 @@ type ContractCreationData struct {
 	CreatedLedger  uint32
 	CreatedAt      time.Time
 	LedgerRange    uint32
+}
+
+// TokenTransferData represents a unified token transfer event (token_transfers_stream_v1)
+// Covers: transfer, mint, burn, clawback, fee events from both classic and Soroban operations
+type TokenTransferData struct {
+	LedgerSequence  uint32
+	TransactionHash string
+	TransactionID   int64   // TOID of parent transaction
+	OperationID     *int64  // TOID of parent operation (nullable - fee events have no operation)
+	OperationIndex  *int32  // 1-indexed (nullable)
+	EventType       string  // transfer, mint, burn, clawback, fee
+	From            *string // nullable (mint has no from)
+	To              *string // nullable (burn/clawback/fee have no to)
+	Asset           string  // canonical: "native" or "credit_alphanum4:CODE:ISSUER"
+	AssetType       string  // native, credit_alphanum4, credit_alphanum12
+	AssetCode       *string // nullable (native has none)
+	AssetIssuer     *string // nullable
+	Amount          float64 // human-readable (stroops * 0.0000001)
+	AmountRaw       string  // raw stroops string from SDK
+	ContractID      string
+	ClosedAt        time.Time
+	CreatedAt       time.Time
+	LedgerRange     uint32
 }
 
 // Note: Cycle 2 MVP complete (5 of 19 Hubble tables): ledgers, transactions, operations, effects, trades

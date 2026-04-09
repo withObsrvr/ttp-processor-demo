@@ -2056,8 +2056,9 @@ func (rt *RealtimeTransformer) transformEffects(ctx context.Context, tx *sql.Tx,
 
 		err := rows.Scan(
 			&row.LedgerSequence, &row.TransactionHash, &row.OperationIndex, &row.EffectIndex,
-			&row.EffectType, &row.EffectTypeString, &row.AccountID,
+			&row.OperationID, &row.EffectType, &row.EffectTypeString, &row.AccountID,
 			&row.Amount, &row.AssetCode, &row.AssetIssuer, &row.AssetType,
+			&row.DetailsJSON,
 			&row.TrustlineLimit, &row.AuthorizeFlag, &row.ClawbackFlag,
 			&row.SignerAccount, &row.SignerWeight, &row.OfferID, &row.SellerAccount,
 			&row.CreatedAt, &row.LedgerRange,

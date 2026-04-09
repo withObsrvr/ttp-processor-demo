@@ -57,8 +57,8 @@ type TransactionData struct {
 	LedgerRange           uint32
 	SignaturesCount       int
 	NewAccount            bool
-	TimeboundsMinTime     *string
-	TimeboundsMaxTime     *string
+	TimeboundsMinTime     *int64
+	TimeboundsMaxTime     *int64
 	// Soroban fields
 	SorobanHostFunctionType *string
 	SorobanContractID       *string

@@ -17,8 +17,16 @@ func ExtractEntryFromChange(change ingest.Change) (xdr.LedgerEntry, xdr.LedgerEn
 		return *change.Post, changeType, false, nil
 	case xdr.LedgerEntryChangeTypeLedgerEntryRemoved:
 		return *change.Pre, changeType, true, nil
+	case xdr.LedgerEntryChangeTypeLedgerEntryState:
+		// State entries are the "before" snapshot in a state→updated pair.
+		// Skip them — the corresponding UPDATED change carries the new state.
+		return xdr.LedgerEntry{}, changeType, false, fmt.Errorf("skipping state entry (pre-image of update)")
+	case xdr.LedgerEntryChangeTypeLedgerEntryRestored:
+		// Restored entries are archived Soroban storage brought back via restoreFootprint.
+		// Treat like a create — the entry is now live again.
+		return *change.Post, changeType, false, nil
 	default:
-		return xdr.LedgerEntry{}, changeType, false, fmt.Errorf("unable to extract ledger entry type from change")
+		return xdr.LedgerEntry{}, changeType, false, fmt.Errorf("unable to extract ledger entry type from change (type=%d)", changeType)
 	}
 }
 

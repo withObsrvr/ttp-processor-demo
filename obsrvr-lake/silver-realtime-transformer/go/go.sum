@@ -70,10 +70,10 @@ github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2/go.mod h1:iKH
 github.com/rogpeppe/go-internal v1.9.0/go.mod h1:WtVeX8xhTBvf0smdhujwtBcq4Qrzq/fJaraNFVN+nFs=
 github.com/rogpeppe/go-internal v1.14.1 h1:UQB4HGPB6osV0SQTLymcB4TgvyWu6ZyliaW0tI/otEQ=
 github.com/rogpeppe/go-internal v1.14.1/go.mod h1:MaRKkUm5W0goXpeCfT7UZI6fk/L7L7so1lCWt35ZSgc=
-github.com/stellar/go-stellar-sdk v0.2.0 h1:7+C4SKAtxDRZ3H1Istr3Ctn6xVshoPF1MNsWw+iuGgU=
-github.com/stellar/go-stellar-sdk v0.2.0/go.mod h1:4osSHRDfb/D7zE2iNjmPdg2Gmbx0M/JLhTM4YcwPW5s=
-github.com/stellar/go-xdr v0.0.0-20231122183749-b53fb00bcac2 h1:OzCVd0SV5qE3ZcDeSFCmOWLZfEWZ3Oe8KtmSOYKEVWE=
-github.com/stellar/go-xdr v0.0.0-20231122183749-b53fb00bcac2/go.mod h1:yoxyU/M8nl9LKeWIoBrbDPQ7Cy+4jxRcWcOayZ4BMps=
+github.com/stellar/go-stellar-sdk v0.5.0 h1:xpOO+ZTyvGz54wTm7pwl2Gf1e6lZl0ExrJ/tKb+Roj4=
+github.com/stellar/go-stellar-sdk v0.5.0/go.mod h1:tLKAQPxa2I5UvGMabBbUXcY3fmgYnfDudrMeK7CDX4w=
+github.com/stellar/go-xdr v0.0.0-20260312225820-cc2b0611aabf h1:GY1RVbX3Hg7poPXEf6yojjP0hyypvgUgZmCqQU9D0xg=
+github.com/stellar/go-xdr v0.0.0-20260312225820-cc2b0611aabf/go.mod h1:If+U9Z1W5xU97VrOgJandQT+2dN7/iOpkCrxBJEyF80=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 github.com/withObsrvr/flow-proto v0.1.3 h1:L6uCl7HgnHS7g81TX2faQnYLjKJAXRjgudI0elCxW6M=

@@ -90,9 +90,12 @@ func (h *HotBufferLoader) LoadTail(ctx context.Context, tailLedgers uint32, endL
 			seqFilter: "ledger_sequence",
 		},
 		{
-			name:      "operations_row_v2",
+			name: "operations_row_v2",
 			bronzeDir: "operations",
-			columns:   "ledger_sequence, transaction_hash, operation_index, source_account, op_type, type_string, created_at, transaction_successful, operation_result_code, ledger_range, amount, asset, destination, soroban_operation, soroban_contract_id, soroban_function, soroban_arguments_json, contract_calls_json, max_call_depth",
+			// Column names match v3_bronze_schema.sql / streaming PG hot:
+			// the operation type column is `type`, not `op_type`. Loader's
+			// Parquet output also uses `type` (see ParquetOperation tag).
+			columns: "ledger_sequence, transaction_hash, operation_index, source_account, type, type_string, created_at, transaction_successful, operation_result_code, ledger_range, amount, asset, destination, soroban_operation, soroban_contract_id, soroban_function, soroban_arguments_json, contract_calls_json, max_call_depth",
 			seqFilter: "ledger_sequence",
 		},
 		{

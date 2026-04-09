@@ -148,7 +148,9 @@ func main() {
 	log.Println("Shutdown complete")
 }
 
-// streamLedgers streams ledgers from the gRPC source and processes them
+// streamLedgers streams ledgers from the gRPC source and processes them.
+// The receiver and writer run in separate goroutines connected by a buffered channel,
+// so slow batch writes don't cause the gRPC stream to time out.
 func streamLedgers(ctx context.Context, client pb.RawLedgerServiceClient, writer *Writer, startLedger, endLedger uint32) error {
 	req := &pb.StreamLedgersRequest{
 		StartLedger: startLedger,
@@ -161,64 +163,88 @@ func streamLedgers(ctx context.Context, client pb.RawLedgerServiceClient, writer
 
 	log.Printf("Streaming ledgers from %d to %d (0 = continuous)", startLedger, endLedger)
 
-	// Batch processing
-	batch := make([]*pb.RawLedger, 0, writer.config.Postgres.BatchSize)
-	lastCommit := time.Now()
+	// Buffer up to 200 ledgers (4 batches worth) between receiver and writer
+	ledgerCh := make(chan *pb.RawLedger, 200)
+	errCh := make(chan error, 2)
 
-	for {
-		select {
-		case <-ctx.Done():
-			// Flush remaining batch before shutdown
-			if len(batch) > 0 {
-				if err := writer.WriteBatch(ctx, batch); err != nil {
-					log.Printf("Error writing final batch: %v", err)
-				}
+	// Receiver goroutine: reads from gRPC stream as fast as possible
+	go func() {
+		defer close(ledgerCh)
+		for {
+			if ctx.Err() != nil {
+				return
 			}
-			return ctx.Err()
-
-		default:
 			ledger, err := stream.Recv()
 			if err != nil {
 				if err.Error() == "EOF" || ctx.Err() != nil {
-					log.Println("Stream ended")
-					return nil
+					return
 				}
-				return fmt.Errorf("stream receive error: %w", err)
+				errCh <- fmt.Errorf("stream receive error: %w", err)
+				return
 			}
+			select {
+			case ledgerCh <- ledger:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 
+	// Writer goroutine: batches and writes
+	go func() {
+		batch := make([]*pb.RawLedger, 0, writer.config.Postgres.BatchSize)
+		lastCommit := time.Now()
+
+		flushBatch := func() error {
+			if len(batch) == 0 {
+				return nil
+			}
+			if err := writer.WriteBatch(ctx, batch); err != nil {
+				log.Printf("Error writing batch: %v", err)
+				writer.healthServer.RecordError(err)
+
+				// Retry logic
+				for retries := 1; retries <= writer.config.Postgres.MaxRetries; retries++ {
+					log.Printf("Retrying batch write (attempt %d/%d)", retries, writer.config.Postgres.MaxRetries)
+					time.Sleep(time.Second * time.Duration(retries))
+					if err := writer.WriteBatch(ctx, batch); err == nil {
+						log.Printf("Batch write succeeded on retry %d", retries)
+						return nil
+					}
+				}
+				return fmt.Errorf("failed to write batch after %d retries: %w", writer.config.Postgres.MaxRetries, err)
+			}
+			batch = batch[:0]
+			lastCommit = time.Now()
+			return nil
+		}
+
+		for ledger := range ledgerCh {
 			batch = append(batch, ledger)
 
-			// Check if we should commit
 			shouldCommit := len(batch) >= writer.config.Postgres.BatchSize ||
 				time.Since(lastCommit).Seconds() >= float64(writer.config.Postgres.CommitIntervalSeconds)
 
 			if shouldCommit {
-				if err := writer.WriteBatch(ctx, batch); err != nil {
-					log.Printf("Error writing batch: %v", err)
-					writer.healthServer.RecordError(err)
-
-					// Retry logic
-					retries := 0
-					for retries < writer.config.Postgres.MaxRetries {
-						retries++
-						log.Printf("Retrying batch write (attempt %d/%d)", retries, writer.config.Postgres.MaxRetries)
-						time.Sleep(time.Second * time.Duration(retries))
-
-						if err := writer.WriteBatch(ctx, batch); err == nil {
-							log.Printf("Batch write succeeded on retry %d", retries)
-							break
-						}
-					}
-
-					if retries >= writer.config.Postgres.MaxRetries {
-						return fmt.Errorf("failed to write batch after %d retries: %w", retries, err)
-					}
+				if err := flushBatch(); err != nil {
+					errCh <- err
+					return
 				}
-
-				// Reset batch
-				batch = batch[:0]
-				lastCommit = time.Now()
 			}
 		}
+
+		// Flush remaining
+		if err := flushBatch(); err != nil {
+			errCh <- err
+			return
+		}
+	}()
+
+	// Wait for either goroutine to finish or error
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }

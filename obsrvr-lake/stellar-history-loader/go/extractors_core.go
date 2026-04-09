@@ -56,11 +56,13 @@ func extractTransactions(lcm xdr.LedgerCloseMeta, networkPassphrase string, ledg
 			NewAccount:            false,
 		}
 
-		// Extract timebounds
+		// Extract timebounds. Stored as BIGINT in v3_bronze_schema.sql, so
+		// we keep them as int64 (matching PG/DuckLake) instead of formatting
+		// to a string.
 		if tb := tx.Envelope.TimeBounds(); tb != nil {
-			minTime := fmt.Sprintf("%d", tb.MinTime)
+			minTime := int64(tb.MinTime)
 			txData.TimeboundsMinTime = &minTime
-			maxTime := fmt.Sprintf("%d", tb.MaxTime)
+			maxTime := int64(tb.MaxTime)
 			txData.TimeboundsMaxTime = &maxTime
 		}
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"golang.org/x/sync/errgroup"
 )
 
 // DecodeHandlers contains HTTP handlers for transaction decoding and human-readable summaries
@@ -345,20 +346,47 @@ func (h *DecodeHandlers) HandleBatchDecodedTransactions(w http.ResponseWriter, r
 		return
 	}
 
-	// Decode each transaction
+	// Decode transactions in parallel. Each GetTransactionForDecode call fans
+	// out to 4 separate DB queries, so doing them serially scales as ~4N round
+	// trips and easily exceeds the gateway HTTP timeout for large batches.
+	// Concurrency limit of 8 keeps DB pool pressure bounded while collapsing
+	// the wall-clock time to roughly ceil(N/8) sequential rounds.
+	type decodeResult struct {
+		decoded *DecodedTransaction
+		err     error
+	}
+	resultsByIndex := make([]decodeResult, len(hashes))
+
+	// Each goroutine writes to a unique index in resultsByIndex, so no
+	// synchronization is needed beyond errgroup's Wait.
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(8)
+	for i, txHash := range hashes {
+		i, txHash := i, txHash
+		g.Go(func() error {
+			decoded, err := h.reader.GetTransactionForDecode(gctx, txHash)
+			resultsByIndex[i] = decodeResult{decoded: decoded, err: err}
+			// Never propagate the error to errgroup — partial failures are
+			// reported per-tx in the response, just like the old serial loop.
+			return nil
+		})
+	}
+	_ = g.Wait()
+
+	// Assemble results in the original request order
 	var results []interface{}
 	var errors []map[string]string
-	for _, txHash := range hashes {
-		decoded, err := h.reader.GetTransactionForDecode(ctx, txHash)
-		if err != nil {
-			errors = append(errors, map[string]string{"tx_hash": txHash, "error": err.Error()})
+	for i, txHash := range hashes {
+		r := resultsByIndex[i]
+		if r.err != nil {
+			errors = append(errors, map[string]string{"tx_hash": txHash, "error": r.err.Error()})
 			continue
 		}
-		if decoded.OpCount == 0 && len(decoded.Events) == 0 {
+		if r.decoded.OpCount == 0 && len(r.decoded.Events) == 0 {
 			errors = append(errors, map[string]string{"tx_hash": txHash, "error": "transaction not found"})
 			continue
 		}
-		results = append(results, decoded)
+		results = append(results, r.decoded)
 	}
 
 	resp := map[string]interface{}{

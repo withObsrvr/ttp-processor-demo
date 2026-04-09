@@ -295,11 +295,6 @@ func (w *Writer) extractTrustlines(rawLedger *pb.RawLedger) ([]TrustlineData, er
 		trustlines = append(trustlines, *trustline)
 	}
 
-	// Debug logging
-	if len(trustlines) > 0 {
-		log.Printf("DEBUG: extractTrustlines found %d trustlines for ledger %d", len(trustlines), ledgerSeq)
-	}
-
 	return trustlines, nil
 }
 

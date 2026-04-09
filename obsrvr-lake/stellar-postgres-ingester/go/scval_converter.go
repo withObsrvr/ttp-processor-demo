@@ -134,11 +134,23 @@ func ConvertScValToJSON(val xdr.ScVal) (interface{}, error) {
 		if val.Bytes == nil {
 			return nil, fmt.Errorf("ScvBytes has nil value")
 		}
+		raw := *val.Bytes
+		// Try to decode as nested XDR ScVal (some contracts like Redstone oracles
+		// wrap structured data inside ScvBytes)
+		if len(raw) >= 4 {
+			var nested xdr.ScVal
+			if err := nested.UnmarshalBinary(raw); err == nil {
+				decoded, decodeErr := ConvertScValToJSON(nested)
+				if decodeErr == nil {
+					return decoded, nil
+				}
+			}
+		}
 		return map[string]interface{}{
 			"type":   "bytes",
-			"hex":    hex.EncodeToString(*val.Bytes),
-			"base64": base64.StdEncoding.EncodeToString(*val.Bytes),
-			"length": len(*val.Bytes),
+			"hex":    hex.EncodeToString(raw),
+			"base64": base64.StdEncoding.EncodeToString(raw),
+			"length": len(raw),
 		}, nil
 
 	case xdr.ScValTypeScvAddress:

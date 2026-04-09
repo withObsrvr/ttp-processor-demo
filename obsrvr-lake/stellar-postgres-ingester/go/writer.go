@@ -133,6 +133,9 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 	// Phase 5 accumulators (Day 11: restored_keys)
 	var allRestoredKeys []RestoredKeyData
 
+	// Token transfers (SDK-based unified extraction)
+	var allTokenTransfers []TokenTransferData
+
 	// Contract creation tracking (C11)
 	var allContractCreations []ContractCreationData
 
@@ -311,6 +314,14 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 			allContractCreations = append(allContractCreations, contractCreations...)
 		}
 
+		// Extract token transfers (SDK-based unified extraction)
+		tokenTransfers, err := w.extractTokenTransfers(rawLedger)
+		if err != nil {
+			log.Printf("Warning: Failed to extract token transfers for ledger %d: %v", rawLedger.Sequence, err)
+		} else {
+			allTokenTransfers = append(allTokenTransfers, tokenTransfers...)
+		}
+
 		// Update checkpoint
 		if err := w.checkpoint.Update(
 			ledgerData.Sequence,
@@ -476,6 +487,14 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 			return fmt.Errorf("failed to insert contract creations: %w", err)
 		}
 		log.Printf("Inserted %d contract creations", len(allContractCreations))
+	}
+
+	// Insert all token transfers
+	if len(allTokenTransfers) > 0 {
+		if err := w.insertTokenTransfers(ctx, tx, allTokenTransfers); err != nil {
+			return fmt.Errorf("failed to insert token transfers: %w", err)
+		}
+		log.Printf("Inserted %d token transfers", len(allTokenTransfers))
 	}
 
 	// Commit transaction
@@ -772,7 +791,7 @@ func (w *Writer) insertTransactions(ctx context.Context, tx pgx.Tx, transactions
 
 	query := `
 		INSERT INTO transactions_row_v2 (
-			ledger_sequence, transaction_hash, source_account, fee_charged,
+			ledger_sequence, transaction_hash, transaction_id, source_account, fee_charged,
 			max_fee, successful, transaction_result_code, operation_count,
 			memo_type, memo, created_at, account_sequence, ledger_range,
 			signatures_count, new_account, rent_fee_charged,
@@ -780,9 +799,10 @@ func (w *Writer) insertTransactions(ctx context.Context, tx pgx.Tx, transactions
 			soroban_resources_write_bytes
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-			$11, $12, $13, $14, $15, $16, $17, $18, $19
+			$11, $12, $13, $14, $15, $16, $17, $18, $19, $20
 		)
 		ON CONFLICT (ledger_sequence, transaction_hash) DO UPDATE SET
+			transaction_id = EXCLUDED.transaction_id,
 			successful = EXCLUDED.successful,
 			fee_charged = EXCLUDED.fee_charged,
 			rent_fee_charged = EXCLUDED.rent_fee_charged,
@@ -791,10 +811,18 @@ func (w *Writer) insertTransactions(ctx context.Context, tx pgx.Tx, transactions
 			soroban_resources_write_bytes = EXCLUDED.soroban_resources_write_bytes
 	`
 
-	for _, txData := range transactions {
+	for i := range transactions {
+		txData := &transactions[i]
+		// Sanitize text fields. Stellar text memos are arbitrary bytes
+		// (up to 28) and can legally contain NUL — PostgreSQL TEXT does
+		// not allow 0x00, so we strip it. MemoType and other free-form
+		// strings get the same treatment defensively.
+		txData.Memo = sanitizeStringPtr(txData.Memo)
+		txData.MemoType = sanitizeStringPtr(txData.MemoType)
 		_, err := tx.Exec(ctx, query,
 			txData.LedgerSequence,
 			txData.TransactionHash,
+			txData.TransactionID,
 			txData.SourceAccount,
 			txData.FeeCharged,
 			txData.MaxFee,
@@ -821,7 +849,7 @@ func (w *Writer) insertTransactions(ctx context.Context, tx pgx.Tx, transactions
 	return nil
 }
 
-// insertOperations inserts operations into PostgreSQL
+// insertOperations bulk-inserts operations using pgx Batch for efficiency.
 func (w *Writer) insertOperations(ctx context.Context, tx pgx.Tx, operations []OperationData) error {
 	if len(operations) == 0 {
 		return nil
@@ -829,16 +857,19 @@ func (w *Writer) insertOperations(ctx context.Context, tx pgx.Tx, operations []O
 
 	query := `
 		INSERT INTO operations_row_v2 (
-			transaction_hash, transaction_index, operation_index, ledger_sequence, source_account,
+			transaction_hash, transaction_id, operation_id,
+			transaction_index, operation_index, ledger_sequence, source_account,
 			type, type_string, created_at, transaction_successful,
 			operation_result_code, ledger_range, amount, asset, destination,
 			soroban_operation, soroban_contract_id, soroban_function, soroban_arguments_json,
 			contract_calls_json, contracts_involved, max_call_depth
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-			$11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+			$11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23
 		)
 		ON CONFLICT (ledger_sequence, transaction_hash, operation_index) DO UPDATE SET
+			transaction_id = EXCLUDED.transaction_id,
+			operation_id = EXCLUDED.operation_id,
 			transaction_successful = EXCLUDED.transaction_successful,
 			transaction_index = EXCLUDED.transaction_index,
 			soroban_operation = EXCLUDED.soroban_operation,
@@ -850,8 +881,10 @@ func (w *Writer) insertOperations(ctx context.Context, tx pgx.Tx, operations []O
 			max_call_depth = EXCLUDED.max_call_depth
 	`
 
-	for _, opData := range operations {
-		// Sanitize text fields: PostgreSQL rejects null bytes and invalid Unicode escapes
+	batch := &pgx.Batch{}
+	for i := range operations {
+		opData := &operations[i]
+		// Sanitize text fields
 		opData.Asset = sanitizeStringPtr(opData.Asset)
 		opData.Destination = sanitizeStringPtr(opData.Destination)
 		opData.SorobanOperation = sanitizeStringPtr(opData.SorobanOperation)
@@ -860,8 +893,10 @@ func (w *Writer) insertOperations(ctx context.Context, tx pgx.Tx, operations []O
 		opData.SorobanArgumentsJSON = sanitizeStringPtr(opData.SorobanArgumentsJSON)
 		opData.ContractCallsJSON = sanitizeStringPtr(opData.ContractCallsJSON)
 
-		_, err := tx.Exec(ctx, query,
+		batch.Queue(query,
 			opData.TransactionHash,
+			opData.TransactionID,
+			opData.OperationID,
 			opData.TransactionIndex,
 			opData.OperationIndex,
 			opData.LedgerSequence,
@@ -883,8 +918,13 @@ func (w *Writer) insertOperations(ctx context.Context, tx pgx.Tx, operations []O
 			opData.ContractsInvolved,
 			opData.MaxCallDepth,
 		)
-		if err != nil {
-			return fmt.Errorf("failed to insert operation %s:%d: %w", opData.TransactionHash, opData.OperationIndex, err)
+	}
+
+	br := tx.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := range operations {
+		if _, err := br.Exec(); err != nil {
+			return fmt.Errorf("failed to insert operation %s:%d: %w", operations[i].TransactionHash, operations[i].OperationIndex, err)
 		}
 	}
 
@@ -900,45 +940,67 @@ func (w *Writer) insertEffects(ctx context.Context, tx pgx.Tx, effects []EffectD
 	query := `
 		INSERT INTO effects_row_v1 (
 			ledger_sequence, transaction_hash, operation_index, effect_index,
-			effect_type, effect_type_string, account_id,
+			operation_id, effect_type, effect_type_string, account_id,
 			amount, asset_code, asset_issuer, asset_type,
+			details_json,
 			trustline_limit, authorize_flag, clawback_flag,
 			signer_account, signer_weight,
 			offer_id, seller_account,
 			created_at, ledger_range
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-			$11, $12, $13, $14, $15, $16, $17, $18, $19, $20
+			$11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22
 		)
 		ON CONFLICT (ledger_sequence, transaction_hash, operation_index, effect_index) DO NOTHING
 	`
 
-	for _, effData := range effects {
-		_, err := tx.Exec(ctx, query,
-			effData.LedgerSequence,
-			effData.TransactionHash,
-			effData.OperationIndex,
-			effData.EffectIndex,
-			effData.EffectType,
-			effData.EffectTypeString,
-			effData.AccountID,
-			effData.Amount,
-			effData.AssetCode,
-			effData.AssetIssuer,
-			effData.AssetType,
-			effData.TrustlineLimit,
-			effData.AuthorizeFlag,
-			effData.ClawbackFlag,
-			effData.SignerAccount,
-			effData.SignerWeight,
-			effData.OfferID,
-			effData.SellerAccount,
-			effData.CreatedAt,
-			effData.LedgerRange,
+	batch := &pgx.Batch{}
+	for i := range effects {
+		e := &effects[i]
+		// Sanitize text fields. DetailsJSON in particular is decoded
+		// scval data and can carry raw bytes (including 0x00) from
+		// contract storage; the rest are defensive cleanups for fields
+		// that are typically constrained but typed as *string.
+		e.DetailsJSON = sanitizeStringPtr(e.DetailsJSON)
+		e.Amount = sanitizeStringPtr(e.Amount)
+		e.AssetCode = sanitizeStringPtr(e.AssetCode)
+		e.AssetIssuer = sanitizeStringPtr(e.AssetIssuer)
+		e.AssetType = sanitizeStringPtr(e.AssetType)
+		e.TrustlineLimit = sanitizeStringPtr(e.TrustlineLimit)
+		e.SignerAccount = sanitizeStringPtr(e.SignerAccount)
+		e.SellerAccount = sanitizeStringPtr(e.SellerAccount)
+		batch.Queue(query,
+			e.LedgerSequence,
+			e.TransactionHash,
+			e.OperationIndex,
+			e.EffectIndex,
+			e.OperationID,
+			e.EffectType,
+			e.EffectTypeString,
+			e.AccountID,
+			e.Amount,
+			e.AssetCode,
+			e.AssetIssuer,
+			e.AssetType,
+			e.DetailsJSON,
+			e.TrustlineLimit,
+			e.AuthorizeFlag,
+			e.ClawbackFlag,
+			e.SignerAccount,
+			e.SignerWeight,
+			e.OfferID,
+			e.SellerAccount,
+			e.CreatedAt,
+			e.LedgerRange,
 		)
-		if err != nil {
+	}
+
+	br := tx.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := range effects {
+		if _, err := br.Exec(); err != nil {
 			return fmt.Errorf("failed to insert effect %s:%d:%d: %w",
-				effData.TransactionHash, effData.OperationIndex, effData.EffectIndex, err)
+				effects[i].TransactionHash, effects[i].OperationIndex, effects[i].EffectIndex, err)
 		}
 	}
 
@@ -1021,7 +1083,13 @@ func (w *Writer) insertAccounts(ctx context.Context, tx pgx.Tx, accounts []Accou
 			updated_at = EXCLUDED.updated_at
 	`
 
-	for _, acct := range accounts {
+	for i := range accounts {
+		acct := &accounts[i]
+		// HomeDomain is user-controlled (up to 32 bytes, no protocol-level
+		// validation of contents). Signers is a JSON array marshalled from
+		// account state. Both can carry NUL bytes that PG TEXT rejects.
+		acct.HomeDomain = sanitizeStringPtr(acct.HomeDomain)
+		acct.Signers = sanitizeStringPtr(acct.Signers)
 		_, err := tx.Exec(ctx, query,
 			acct.AccountID,
 			acct.LedgerSequence,
@@ -1452,42 +1520,38 @@ func (w *Writer) insertEvictedKeys(ctx context.Context, tx pgx.Tx, keys []Evicte
 	return nil
 }
 
-// insertContractEvents inserts contract events data into the database
+// insertContractEvents bulk-inserts contract events using COPY + upsert.
+// For large batches (18k+ events), this is orders of magnitude faster than row-by-row.
 func (w *Writer) insertContractEvents(ctx context.Context, tx pgx.Tx, events []ContractEventData) error {
 	if len(events) == 0 {
 		return nil
 	}
 
-	query := `
-		INSERT INTO contract_events_stream_v1 (
-			event_id, contract_id, ledger_sequence, transaction_hash, closed_at,
-			event_type, in_successful_contract_call,
-			topics_json, topics_decoded, data_xdr, data_decoded, topic_count,
-			topic0_decoded, topic1_decoded, topic2_decoded, topic3_decoded,
-			operation_index, event_index, created_at, ledger_range
-		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
-		)
-		ON CONFLICT (ledger_sequence, transaction_hash, event_index) DO UPDATE SET
-			contract_id = EXCLUDED.contract_id,
-			event_type = EXCLUDED.event_type,
-			in_successful_contract_call = EXCLUDED.in_successful_contract_call,
-			topics_json = EXCLUDED.topics_json,
-			topics_decoded = EXCLUDED.topics_decoded,
-			data_xdr = EXCLUDED.data_xdr,
-			data_decoded = EXCLUDED.data_decoded,
-			topic_count = EXCLUDED.topic_count,
-			topic0_decoded = EXCLUDED.topic0_decoded,
-			topic1_decoded = EXCLUDED.topic1_decoded,
-			topic2_decoded = EXCLUDED.topic2_decoded,
-			topic3_decoded = EXCLUDED.topic3_decoded
-	`
+	// Sanitize all events first
+	for i := range events {
+		sanitizeEventStrings(&events[i])
+	}
 
-	for _, event := range events {
-		// Sanitize text fields: PostgreSQL rejects null bytes (0x00) in UTF-8 text
-		sanitizeEventStrings(&event)
+	// Create temp table for bulk load
+	_, err := tx.Exec(ctx, `
+		CREATE TEMP TABLE _tmp_events (LIKE contract_events_stream_v1 INCLUDING DEFAULTS) ON COMMIT DROP
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create temp table: %w", err)
+	}
 
-		_, err := tx.Exec(ctx, query,
+	// COPY into temp table (no constraints — ultra fast)
+	columns := []string{
+		"event_id", "contract_id", "ledger_sequence", "transaction_hash", "closed_at",
+		"event_type", "in_successful_contract_call",
+		"topics_json", "topics_decoded", "data_xdr", "data_decoded", "topic_count",
+		"topic0_decoded", "topic1_decoded", "topic2_decoded", "topic3_decoded",
+		"operation_index", "event_index", "created_at", "ledger_range",
+	}
+
+	rows := make([][]interface{}, len(events))
+	for i, event := range events {
+		rows[i] = []interface{}{
 			event.EventID,
 			event.ContractID,
 			event.LedgerSequence,
@@ -1508,10 +1572,50 @@ func (w *Writer) insertContractEvents(ctx context.Context, tx pgx.Tx, events []C
 			event.EventIndex,
 			event.CreatedAt,
 			event.LedgerRange,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to insert contract event %s: %w", event.EventID, err)
 		}
+	}
+
+	copyCount, err := tx.CopyFrom(ctx, pgx.Identifier{"_tmp_events"}, columns,
+		pgx.CopyFromRows(rows))
+	if err != nil {
+		return fmt.Errorf("failed to COPY %d contract events: %w", len(events), err)
+	}
+	if int(copyCount) != len(events) {
+		log.Printf("WARNING: COPY expected %d rows but inserted %d", len(events), copyCount)
+	}
+
+	// Upsert from temp into target
+	_, err = tx.Exec(ctx, `
+		INSERT INTO contract_events_stream_v1 (
+			event_id, contract_id, ledger_sequence, transaction_hash, closed_at,
+			event_type, in_successful_contract_call,
+			topics_json, topics_decoded, data_xdr, data_decoded, topic_count,
+			topic0_decoded, topic1_decoded, topic2_decoded, topic3_decoded,
+			operation_index, event_index, created_at, ledger_range
+		)
+		SELECT DISTINCT ON (ledger_sequence, transaction_hash, event_index)
+			event_id, contract_id, ledger_sequence, transaction_hash, closed_at,
+			event_type, in_successful_contract_call,
+			topics_json, topics_decoded, data_xdr, data_decoded, topic_count,
+			topic0_decoded, topic1_decoded, topic2_decoded, topic3_decoded,
+			operation_index, event_index, created_at, ledger_range
+		FROM _tmp_events
+		ON CONFLICT (ledger_sequence, transaction_hash, event_index) DO UPDATE SET
+			contract_id = EXCLUDED.contract_id,
+			event_type = EXCLUDED.event_type,
+			in_successful_contract_call = EXCLUDED.in_successful_contract_call,
+			topics_json = EXCLUDED.topics_json,
+			topics_decoded = EXCLUDED.topics_decoded,
+			data_xdr = EXCLUDED.data_xdr,
+			data_decoded = EXCLUDED.data_decoded,
+			topic_count = EXCLUDED.topic_count,
+			topic0_decoded = EXCLUDED.topic0_decoded,
+			topic1_decoded = EXCLUDED.topic1_decoded,
+			topic2_decoded = EXCLUDED.topic2_decoded,
+			topic3_decoded = EXCLUDED.topic3_decoded
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to upsert contract events from temp: %w", err)
 	}
 
 	return nil
@@ -1552,7 +1656,17 @@ func (w *Writer) insertContractData(ctx context.Context, tx pgx.Tx, contractData
 			token_decimals = EXCLUDED.token_decimals
 	`
 
-	for _, data := range contractDataList {
+	for i := range contractDataList {
+		data := &contractDataList[i]
+		// TokenName/TokenSymbol come from SEP-41 contract instance storage
+		// METADATA — pure developer input, can contain anything. BalanceHolder
+		// is a decoded scval address. Sanitize all of these defensively.
+		data.TokenName = sanitizeStringPtr(data.TokenName)
+		data.TokenSymbol = sanitizeStringPtr(data.TokenSymbol)
+		data.BalanceHolder = sanitizeStringPtr(data.BalanceHolder)
+		data.Balance = sanitizeStringPtr(data.Balance)
+		data.AssetCode = sanitizeStringPtr(data.AssetCode)
+		data.AssetIssuer = sanitizeStringPtr(data.AssetIssuer)
 		_, err := tx.Exec(ctx, query,
 			data.ContractId,
 			data.LedgerSequence,
@@ -1768,9 +1882,11 @@ func (w *Writer) insertContractCreations(ctx context.Context, tx pgx.Tx, creatio
 	return nil
 }
 
-// sanitizeUTF8 strips null bytes and invalid Unicode escape sequences from strings.
-// PostgreSQL rejects null bytes (0x00) in text columns and \u0000 in JSON text.
+// sanitizeUTF8 ensures a string is valid UTF-8 for PostgreSQL.
+// Strips null bytes (0x00), invalid UTF-8 sequences (e.g. 0x95 from Windows-1252),
+// and JSON \u0000 escape sequences.
 func sanitizeUTF8(s string) string {
+	s = strings.ToValidUTF8(s, "")
 	s = strings.ReplaceAll(s, "\x00", "")
 	s = strings.ReplaceAll(s, "\\u0000", "")
 	return s
@@ -1794,4 +1910,71 @@ func sanitizeEventStrings(e *ContractEventData) {
 	e.Topic1Decoded = sanitizeStringPtr(e.Topic1Decoded)
 	e.Topic2Decoded = sanitizeStringPtr(e.Topic2Decoded)
 	e.Topic3Decoded = sanitizeStringPtr(e.Topic3Decoded)
+}
+
+// insertTokenTransfers bulk-inserts token transfers using pgx Batch
+func (w *Writer) insertTokenTransfers(ctx context.Context, tx pgx.Tx, transfers []TokenTransferData) error {
+	if len(transfers) == 0 {
+		return nil
+	}
+
+	query := `
+		INSERT INTO token_transfers_stream_v1 (
+			ledger_sequence, transaction_hash, transaction_id, operation_id,
+			operation_index, event_type, "from", "to", asset, asset_type,
+			asset_code, asset_issuer, amount, amount_raw, contract_id,
+			closed_at, created_at, ledger_range
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+			$11, $12, $13, $14, $15, $16, $17, $18
+		)
+		ON CONFLICT DO NOTHING
+	`
+
+	batch := &pgx.Batch{}
+	for i := range transfers {
+		t := &transfers[i]
+		// Defensive sanitization. Asset codes/issuers and account addresses
+		// are constrained in practice, but AmountRaw and Asset come straight
+		// out of SDK decoding so we strip NULs/invalid UTF-8 just in case.
+		t.EventType = sanitizeUTF8(t.EventType)
+		t.Asset = sanitizeUTF8(t.Asset)
+		t.AssetType = sanitizeUTF8(t.AssetType)
+		t.AmountRaw = sanitizeUTF8(t.AmountRaw)
+		t.From = sanitizeStringPtr(t.From)
+		t.To = sanitizeStringPtr(t.To)
+		t.AssetCode = sanitizeStringPtr(t.AssetCode)
+		t.AssetIssuer = sanitizeStringPtr(t.AssetIssuer)
+		batch.Queue(query,
+			t.LedgerSequence,
+			t.TransactionHash,
+			t.TransactionID,
+			t.OperationID,
+			t.OperationIndex,
+			t.EventType,
+			t.From,
+			t.To,
+			t.Asset,
+			t.AssetType,
+			t.AssetCode,
+			t.AssetIssuer,
+			t.Amount,
+			t.AmountRaw,
+			t.ContractID,
+			t.ClosedAt,
+			t.CreatedAt,
+			t.LedgerRange,
+		)
+	}
+
+	br := tx.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := range transfers {
+		if _, err := br.Exec(); err != nil {
+			return fmt.Errorf("failed to insert token transfer in ledger %d tx %s: %w",
+				transfers[i].LedgerSequence, transfers[i].TransactionHash, err)
+		}
+	}
+
+	return nil
 }

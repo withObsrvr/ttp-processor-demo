@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/big"
 	"strconv"
 	"strings"
 	"time"
@@ -2700,23 +2701,26 @@ func (r *UnifiedDuckDBReader) GetEffects(ctx context.Context, filters EffectFilt
 	// Unified query with hot+cold merge - effects are append-only so no dedup needed
 	query := fmt.Sprintf(`
 		SELECT ledger_sequence, transaction_hash, operation_index, effect_index,
-			   effect_type, effect_type_string, account_id,
+			   operation_id, effect_type, effect_type_string, account_id,
 			   amount, asset_code, asset_issuer, asset_type,
+			   details_json,
 			   trustline_limit, authorize_flag, clawback_flag,
 			   signer_account, signer_weight, offer_id, seller_account,
 			   created_at
 		FROM (
 			SELECT ledger_sequence, transaction_hash, operation_index, effect_index,
-				   effect_type, effect_type_string, account_id,
+				   operation_id, effect_type, effect_type_string, account_id,
 				   amount, asset_code, asset_issuer, asset_type,
+				   details_json,
 				   trustline_limit, authorize_flag, clawback_flag,
 				   signer_account, signer_weight, offer_id, seller_account,
 				   created_at
 			FROM %s.effects WHERE %s
 			UNION ALL
 			SELECT ledger_sequence, transaction_hash, operation_index, effect_index,
-				   effect_type, effect_type_string, account_id,
+				   operation_id, effect_type, effect_type_string, account_id,
 				   amount, asset_code, asset_issuer, asset_type,
+				   details_json,
 				   trustline_limit, authorize_flag, clawback_flag,
 				   signer_account, signer_weight, offer_id, seller_account,
 				   created_at
@@ -2729,25 +2733,22 @@ func (r *UnifiedDuckDBReader) GetEffects(ctx context.Context, filters EffectFilt
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		// Check if cold table doesn't exist, fall back to hot-only
-		if strings.Contains(err.Error(), "does not exist") && strings.Contains(err.Error(), "effects") {
-			hotOnlyQuery := fmt.Sprintf(`
-				SELECT ledger_sequence, transaction_hash, operation_index, effect_index,
-					   effect_type, effect_type_string, account_id,
-					   amount, asset_code, asset_issuer, asset_type,
-					   trustline_limit, authorize_flag, clawback_flag,
-					   signer_account, signer_weight, offer_id, seller_account,
-					   created_at
-				FROM %s.effects WHERE %s
-				ORDER BY ledger_sequence %s, transaction_hash %s, operation_index %s, effect_index %s
-				LIMIT $%d
-			`, r.hotSchema, whereClause, orderDir, orderDir, orderDir, orderDir, argNum)
-			rows, err = r.db.QueryContext(ctx, hotOnlyQuery, args...)
-			if err != nil {
-				return nil, "", false, fmt.Errorf("unified GetEffects (hot-only fallback): %w", err)
-			}
-		} else {
-			return nil, "", false, fmt.Errorf("unified GetEffects: %w", err)
+		// Fall back to hot-only on cold table/column errors
+		hotOnlyQuery := fmt.Sprintf(`
+			SELECT ledger_sequence, transaction_hash, operation_index, effect_index,
+				   operation_id, effect_type, effect_type_string, account_id,
+				   amount, asset_code, asset_issuer, asset_type,
+				   details_json,
+				   trustline_limit, authorize_flag, clawback_flag,
+				   signer_account, signer_weight, offer_id, seller_account,
+				   created_at
+			FROM %s.effects WHERE %s
+			ORDER BY ledger_sequence %s, transaction_hash %s, operation_index %s, effect_index %s
+			LIMIT $%d
+		`, r.hotSchema, whereClause, orderDir, orderDir, orderDir, orderDir, argNum)
+		rows, err = r.db.QueryContext(ctx, hotOnlyQuery, args...)
+		if err != nil {
+			return nil, "", false, fmt.Errorf("unified GetEffects (hot-only fallback): %w", err)
 		}
 	}
 	defer rows.Close()
@@ -2755,7 +2756,9 @@ func (r *UnifiedDuckDBReader) GetEffects(ctx context.Context, filters EffectFilt
 	var effects []SilverEffect
 	for rows.Next() {
 		var e SilverEffect
+		var operationID sql.NullInt64
 		var accountID, amount, assetCode, assetIssuer, assetType sql.NullString
+		var detailsJSON sql.NullString
 		var trustlineLimit, signerAccount, sellerAccount sql.NullString
 		var authorizeFlag, clawbackFlag sql.NullBool
 		var signerWeight sql.NullInt32
@@ -2763,8 +2766,9 @@ func (r *UnifiedDuckDBReader) GetEffects(ctx context.Context, filters EffectFilt
 
 		err := rows.Scan(
 			&e.LedgerSequence, &e.TransactionHash, &e.OperationIndex, &e.EffectIndex,
-			&e.EffectType, &e.EffectTypeString, &accountID,
+			&operationID, &e.EffectType, &e.EffectTypeString, &accountID,
 			&amount, &assetCode, &assetIssuer, &assetType,
+			&detailsJSON,
 			&trustlineLimit, &authorizeFlag, &clawbackFlag,
 			&signerAccount, &signerWeight, &offerID, &sellerAccount,
 			&e.Timestamp,
@@ -2773,6 +2777,9 @@ func (r *UnifiedDuckDBReader) GetEffects(ctx context.Context, filters EffectFilt
 			return nil, "", false, fmt.Errorf("unified GetEffects scan: %w", err)
 		}
 
+		if operationID.Valid {
+			e.OperationID = &operationID.Int64
+		}
 		if accountID.Valid {
 			e.AccountID = &accountID.String
 		}
@@ -2782,6 +2789,10 @@ func (r *UnifiedDuckDBReader) GetEffects(ctx context.Context, filters EffectFilt
 		if assetCode.Valid || assetType.Valid {
 			asset := buildAssetInfo(assetType.String, assetCode.String, assetIssuer.String)
 			e.Asset = &asset
+		}
+		if detailsJSON.Valid {
+			raw := json.RawMessage(detailsJSON.String)
+			e.Details = &raw
 		}
 		if trustlineLimit.Valid {
 			e.TrustlineLimit = &trustlineLimit.String
@@ -4184,7 +4195,7 @@ func (r *UnifiedDuckDBReader) GetUnifiedEvents(ctx context.Context, filters Unif
 			to_account,
 			asset_code,
 			asset_issuer,
-			CAST(amount AS BIGINT) as amount,
+			CAST(amount AS HUGEINT) as amount,
 			token_contract_id,
 			operation_type
 		FROM combined
@@ -4209,7 +4220,7 @@ func (r *UnifiedDuckDBReader) GetUnifiedEvents(ctx context.Context, filters Unif
 					to_account,
 					asset_code,
 					asset_issuer,
-					CAST(amount AS BIGINT) as amount,
+					CAST(amount AS HUGEINT) as amount,
 					token_contract_id,
 					operation_type
 				FROM %s.token_transfers_raw
@@ -4234,7 +4245,7 @@ func (r *UnifiedDuckDBReader) GetUnifiedEvents(ctx context.Context, filters Unif
 	for rows.Next() {
 		var e UnifiedEvent
 		var timestamp string
-		var amount *int64
+		var amount *big.Int
 		if err := rows.Scan(&timestamp, &e.TxHash, &e.LedgerSequence,
 			&e.SourceType, &e.From, &e.To, &e.AssetCode, &e.AssetIssuer,
 			&amount, &e.ContractID, &e.OperationType); err != nil {
@@ -4271,10 +4282,12 @@ func (r *UnifiedDuckDBReader) GetUnifiedEvents(ctx context.Context, filters Unif
 			e.EventType = "transfer"
 		}
 
-		// Format amount from stroops
+		// Pass raw amount as decimal string. Stored as HUGEINT (i128) since
+		// Soroban token amounts can exceed int64. We don't divide by 1e7 here
+		// because Soroban tokens have arbitrary decimal precision (not stroops).
 		if amount != nil {
-			formatted := formatStroopsLocal(*amount)
-			e.Amount = &formatted
+			s := amount.String()
+			e.Amount = &s
 		}
 
 		// Generate event ID

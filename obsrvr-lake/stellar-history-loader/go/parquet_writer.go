@@ -121,15 +121,15 @@ type ParquetTransaction struct {
 	LedgerRange                  uint32  `parquet:"ledger_range"`
 	SignaturesCount              int32   `parquet:"signatures_count"`
 	NewAccount                   bool    `parquet:"new_account"`
-	TimeboundsMinTime            *string `parquet:"timebounds_min_time,optional"`
-	TimeboundsMaxTime            *string `parquet:"timebounds_max_time,optional"`
+	TimeboundsMinTime            *int64  `parquet:"timebounds_min_time,optional"`
+	TimeboundsMaxTime            *int64  `parquet:"timebounds_max_time,optional"`
 	SorobanHostFunctionType      *string `parquet:"soroban_host_function_type,optional"`
 	SorobanContractID            *string `parquet:"soroban_contract_id,optional"`
 	RentFeeCharged               *int64  `parquet:"rent_fee_charged,optional"`
 	SorobanResourcesInstructions *int64  `parquet:"soroban_resources_instructions,optional"`
 	SorobanResourcesReadBytes    *int64  `parquet:"soroban_resources_read_bytes,optional"`
 	SorobanResourcesWriteBytes   *int64  `parquet:"soroban_resources_write_bytes,optional"`
-	PipelineVersion              string  `parquet:"pipeline_version"`
+	PipelineVersion              string  `parquet:"version_label"`
 }
 
 type ParquetOperation struct {
@@ -139,7 +139,7 @@ type ParquetOperation struct {
 	LedgerSequence        uint32  `parquet:"ledger_sequence"`
 	SourceAccount         string  `parquet:"source_account"`
 	SourceAccountMuxed    *string `parquet:"source_account_muxed,optional"`
-	OpType                int32   `parquet:"op_type"`
+	OpType                int32   `parquet:"type"`
 	TypeString            string  `parquet:"type_string"`
 	CreatedAt             int64   `parquet:"created_at,timestamp(microsecond)"`
 	TransactionSuccessful bool    `parquet:"transaction_successful"`
@@ -189,7 +189,7 @@ type ParquetOperation struct {
 	SorobanArgumentsJSON  *string `parquet:"soroban_arguments_json,optional"`
 	ContractCallsJSON     *string `parquet:"contract_calls_json,optional"`
 	MaxCallDepth          *int32  `parquet:"max_call_depth,optional"`
-	PipelineVersion       string  `parquet:"pipeline_version"`
+	PipelineVersion       string  `parquet:"version_label"`
 }
 
 type ParquetEffect struct {
@@ -213,7 +213,7 @@ type ParquetEffect struct {
 	SellerAccount    *string `parquet:"seller_account,optional"`
 	CreatedAt        int64   `parquet:"created_at,timestamp(microsecond)"`
 	LedgerRange      uint32  `parquet:"ledger_range"`
-	PipelineVersion  string  `parquet:"pipeline_version"`
+	PipelineVersion  string  `parquet:"version_label"`
 }
 
 type ParquetTrade struct {
@@ -234,7 +234,7 @@ type ParquetTrade struct {
 	Price              string  `parquet:"price"`
 	CreatedAt          int64   `parquet:"created_at,timestamp(microsecond)"`
 	LedgerRange        uint32  `parquet:"ledger_range"`
-	PipelineVersion    string  `parquet:"pipeline_version"`
+	PipelineVersion    string  `parquet:"version_label"`
 }
 
 type ParquetAccount struct {
@@ -259,7 +259,7 @@ type ParquetAccount struct {
 	Signers             *string `parquet:"signers,optional"`
 	SponsorAccount      *string `parquet:"sponsor_account,optional"`
 	LedgerRange         uint32  `parquet:"ledger_range"`
-	PipelineVersion     string  `parquet:"pipeline_version"`
+	PipelineVersion     string  `parquet:"version_label"`
 }
 
 type ParquetContractEvent struct {
@@ -282,7 +282,7 @@ type ParquetContractEvent struct {
 	OperationIndex           uint32  `parquet:"operation_index"`
 	EventIndex               uint32  `parquet:"event_index"`
 	LedgerRange              uint32  `parquet:"ledger_range"`
-	PipelineVersion          string  `parquet:"pipeline_version"`
+	PipelineVersion          string  `parquet:"version_label"`
 }
 
 type ParquetNativeBalance struct {
@@ -297,7 +297,7 @@ type ParquetNativeBalance struct {
 	LastModifiedLedger int64  `parquet:"last_modified_ledger"`
 	LedgerSequence     int64  `parquet:"ledger_sequence"`
 	LedgerRange        int64  `parquet:"ledger_range"`
-	PipelineVersion    string `parquet:"pipeline_version"`
+	PipelineVersion    string `parquet:"version_label"`
 }
 
 type ParquetOffer struct {
@@ -315,7 +315,7 @@ type ParquetOffer struct {
 	Price              string  `parquet:"price"`
 	Flags              uint32  `parquet:"flags"`
 	LedgerRange        uint32  `parquet:"ledger_range"`
-	PipelineVersion    string  `parquet:"pipeline_version"`
+	PipelineVersion    string  `parquet:"version_label"`
 }
 
 type ParquetTrustline struct {
@@ -332,7 +332,7 @@ type ParquetTrustline struct {
 	ClawbackEnabled                 bool   `parquet:"clawback_enabled"`
 	LedgerSequence                  uint32 `parquet:"ledger_sequence"`
 	LedgerRange                     uint32 `parquet:"ledger_range"`
-	PipelineVersion                 string `parquet:"pipeline_version"`
+	PipelineVersion                 string `parquet:"version_label"`
 }
 
 type ParquetAccountSigner struct {
@@ -344,7 +344,7 @@ type ParquetAccountSigner struct {
 	Deleted        bool   `parquet:"deleted"`
 	ClosedAt        int64  `parquet:"closed_at,timestamp(microsecond)"`
 	LedgerRange     uint32 `parquet:"ledger_range"`
-	PipelineVersion string `parquet:"pipeline_version"`
+	PipelineVersion string `parquet:"version_label"`
 }
 
 type ParquetClaimableBalance struct {
@@ -359,7 +359,7 @@ type ParquetClaimableBalance struct {
 	ClaimantsCount int32   `parquet:"claimants_count"`
 	Flags           uint32  `parquet:"flags"`
 	LedgerRange     uint32  `parquet:"ledger_range"`
-	PipelineVersion string  `parquet:"pipeline_version"`
+	PipelineVersion string  `parquet:"version_label"`
 }
 
 type ParquetLiquidityPool struct {
@@ -379,7 +379,7 @@ type ParquetLiquidityPool struct {
 	AssetBIssuer    *string `parquet:"asset_b_issuer,optional"`
 	AssetBAmount    int64   `parquet:"asset_b_amount"`
 	LedgerRange     uint32  `parquet:"ledger_range"`
-	PipelineVersion string  `parquet:"pipeline_version"`
+	PipelineVersion string  `parquet:"version_label"`
 }
 
 type ParquetTTL struct {
@@ -392,7 +392,7 @@ type ParquetTTL struct {
 	Deleted            bool   `parquet:"deleted"`
 	ClosedAt           int64  `parquet:"closed_at,timestamp(microsecond)"`
 	LedgerRange        uint32 `parquet:"ledger_range"`
-	PipelineVersion    string `parquet:"pipeline_version"`
+	PipelineVersion    string `parquet:"version_label"`
 }
 
 type ParquetEvictedKey struct {
@@ -403,7 +403,7 @@ type ParquetEvictedKey struct {
 	Durability      string `parquet:"durability"`
 	ClosedAt        int64  `parquet:"closed_at,timestamp(microsecond)"`
 	LedgerRange     uint32 `parquet:"ledger_range"`
-	PipelineVersion string `parquet:"pipeline_version"`
+	PipelineVersion string `parquet:"version_label"`
 }
 
 type ParquetContractData struct {
@@ -426,7 +426,7 @@ type ParquetContractData struct {
 	TokenSymbol        *string `parquet:"token_symbol,optional"`
 	TokenDecimals      *int32  `parquet:"token_decimals,optional"`
 	LedgerRange        uint32  `parquet:"ledger_range"`
-	PipelineVersion    string  `parquet:"pipeline_version"`
+	PipelineVersion    string  `parquet:"version_label"`
 }
 
 type ParquetContractCode struct {
@@ -449,7 +449,7 @@ type ParquetContractCode struct {
 	NExports           *int64 `parquet:"n_exports,optional"`
 	NDataSegmentBytes  *int64 `parquet:"n_data_segment_bytes,optional"`
 	LedgerRange        uint32 `parquet:"ledger_range"`
-	PipelineVersion    string `parquet:"pipeline_version"`
+	PipelineVersion    string `parquet:"version_label"`
 }
 
 type ParquetRestoredKey struct {
@@ -461,7 +461,7 @@ type ParquetRestoredKey struct {
 	RestoredFromLedger uint32 `parquet:"restored_from_ledger"`
 	ClosedAt           int64  `parquet:"closed_at,timestamp(microsecond)"`
 	LedgerRange        uint32 `parquet:"ledger_range"`
-	PipelineVersion    string `parquet:"pipeline_version"`
+	PipelineVersion    string `parquet:"version_label"`
 }
 
 type ParquetContractCreation struct {
@@ -471,7 +471,7 @@ type ParquetContractCreation struct {
 	CreatedLedger  uint32  `parquet:"created_ledger"`
 	CreatedAt       int64   `parquet:"created_at,timestamp(microsecond)"`
 	LedgerRange     uint32  `parquet:"ledger_range"`
-	PipelineVersion string  `parquet:"pipeline_version"`
+	PipelineVersion string  `parquet:"version_label"`
 }
 
 type ParquetConfigSetting struct {
@@ -482,7 +482,7 @@ type ParquetConfigSetting struct {
 	ClosedAt           int64  `parquet:"closed_at,timestamp(microsecond)"`
 	ConfigSettingXDR   string `parquet:"config_setting_xdr"`
 	LedgerRange        uint32 `parquet:"ledger_range"`
-	PipelineVersion    string `parquet:"pipeline_version"`
+	PipelineVersion    string `parquet:"version_label"`
 }
 
 // --- Full ParquetWriter implementation ---
@@ -506,7 +506,7 @@ type ParquetLedger struct {
 	TxSetOperationCount int32   `parquet:"tx_set_operation_count"`
 	IngestionTimestamp  int64   `parquet:"ingestion_timestamp,timestamp(microsecond)"`
 	LedgerRange         uint32  `parquet:"ledger_range"`
-	PipelineVersion     string  `parquet:"pipeline_version"`
+	PipelineVersion     string  `parquet:"version_label"`
 }
 
 type ParquetWriterFull struct {

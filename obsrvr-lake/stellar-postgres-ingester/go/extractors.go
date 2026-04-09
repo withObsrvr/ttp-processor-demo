@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/stellar/go-stellar-sdk/ingest"
+	"github.com/stellar/go-stellar-sdk/toid"
 	"github.com/stellar/go-stellar-sdk/xdr"
 	pb "github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/go/gen/raw_ledger_service"
 )
@@ -50,6 +51,7 @@ func (w *Writer) extractTransactions(rawLedger *pb.RawLedger) ([]TransactionData
 	defer reader.Close()
 
 	// Read all transactions
+	txIndex := int32(1) // 1-indexed per SEP-35/TOID convention
 	for {
 		tx, err := reader.Read()
 		if err == io.EOF {
@@ -64,6 +66,7 @@ func (w *Writer) extractTransactions(rawLedger *pb.RawLedger) ([]TransactionData
 		txData := TransactionData{
 			LedgerSequence:        ledgerSeq,
 			TransactionHash:       hex.EncodeToString(tx.Result.TransactionHash[:]),
+			TransactionID:         toid.New(int32(ledgerSeq), txIndex, 0).ToInt64(),
 			SourceAccount:         tx.Envelope.SourceAccount().ToAccountId().Address(),
 			FeeCharged:            int64(tx.Result.Result.FeeCharged),
 			MaxFee:                int64(tx.Envelope.Fee()),
@@ -144,6 +147,7 @@ func (w *Writer) extractTransactions(rawLedger *pb.RawLedger) ([]TransactionData
 		}
 
 		transactions = append(transactions, txData)
+		txIndex++
 	}
 
 	return transactions, nil
@@ -185,7 +189,7 @@ func (w *Writer) extractOperations(rawLedger *pb.RawLedger) ([]OperationData, er
 	defer reader.Close()
 
 	// Read all transactions and extract operations
-	txIndex := 0 // Track transaction index for TOID generation
+	txIndex := int32(1) // 1-indexed per SEP-35/TOID convention
 	for {
 		tx, err := reader.Read()
 		if err == io.EOF {
@@ -209,7 +213,9 @@ func (w *Writer) extractOperations(rawLedger *pb.RawLedger) ([]OperationData, er
 
 			opData := OperationData{
 				TransactionHash:       txHash,
-				TransactionIndex:      txIndex,
+				TransactionID:         toid.New(int32(ledgerSeq), txIndex, 0).ToInt64(),
+				OperationID:           toid.New(int32(ledgerSeq), txIndex, int32(i+1)).ToInt64(),
+				TransactionIndex:      int(txIndex),
 				OperationIndex:        i,
 				LedgerSequence:        ledgerSeq,
 				SourceAccount:         sourceAccount,
@@ -338,127 +344,7 @@ func marshalToBase64(v interface{ MarshalBinary() ([]byte, error) }) *string {
 	return nil
 }
 
-// extractEffects extracts basic effects from raw ledger (simplified version)
-// NOTE: This is a simplified implementation covering only the most common effect types:
-// - Account credited/debited (payment effects)
-// - Trustline created/removed
-// - Signer added/removed
-// For full effect extraction including offers, claimable balances, and liquidity pools,
-// see ducklake-ingestion-obsrvr-v3/go/effects.go (528 lines)
-func (w *Writer) extractEffects(rawLedger *pb.RawLedger) ([]EffectData, error) {
-	var effects []EffectData
-
-	// Unmarshal XDR
-	var lcm xdr.LedgerCloseMeta
-	if err := lcm.UnmarshalBinary(rawLedger.LedgerCloseMetaXdr); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal XDR: %w", err)
-	}
-
-	// Get closed_at timestamp and ledger sequence
-	var closedAt time.Time
-	var ledgerSeq uint32
-	switch lcm.V {
-	case 0:
-		header := lcm.MustV0().LedgerHeader
-		closedAt = time.Unix(int64(header.Header.ScpValue.CloseTime), 0).UTC()
-		ledgerSeq = uint32(header.Header.LedgerSeq)
-	case 1:
-		header := lcm.MustV1().LedgerHeader
-		closedAt = time.Unix(int64(header.Header.ScpValue.CloseTime), 0).UTC()
-		ledgerSeq = uint32(header.Header.LedgerSeq)
-	case 2:
-		header := lcm.MustV2().LedgerHeader
-		closedAt = time.Unix(int64(header.Header.ScpValue.CloseTime), 0).UTC()
-		ledgerSeq = uint32(header.Header.LedgerSeq)
-	}
-
-	// Use ingest package to read transactions
-	reader, err := ingest.NewLedgerTransactionReaderFromLedgerCloseMeta(w.config.Source.NetworkPassphrase, lcm)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create transaction reader: %w", err)
-	}
-	defer reader.Close()
-
-	// Read all transactions and extract basic effects
-	for {
-		tx, err := reader.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			log.Printf("Error reading transaction for effects in ledger %d: %v", ledgerSeq, err)
-			continue
-		}
-
-		txHash := hex.EncodeToString(tx.Result.TransactionHash[:])
-
-		// Extract effects from operations (simplified - only payment effects)
-		for opIdx := uint32(0); opIdx < tx.OperationCount(); opIdx++ {
-			changes, err := tx.GetOperationChanges(opIdx)
-			if err != nil {
-				log.Printf("Error getting operation changes: %v", err)
-				continue
-			}
-
-			effectIdx := 0
-			for _, change := range changes {
-				// Only track account balance changes (most common effect)
-				if change.Type == xdr.LedgerEntryTypeAccount {
-					if change.Pre != nil && change.Post != nil {
-						preAccount := change.Pre.Data.MustAccount()
-						postAccount := change.Post.Data.MustAccount()
-						preBal := int64(preAccount.Balance)
-						postBal := int64(postAccount.Balance)
-
-						if postBal > preBal {
-							// Account credited
-							amount := fmt.Sprintf("%d", postBal-preBal)
-							accountID := postAccount.AccountId.Address()
-							assetType := "native"
-
-							effects = append(effects, EffectData{
-								LedgerSequence:   ledgerSeq,
-								TransactionHash:  txHash,
-								OperationIndex:   int(opIdx),
-								EffectIndex:      effectIdx,
-								EffectType:       2, // EffectAccountCredited
-								EffectTypeString: "account_credited",
-								AccountID:        &accountID,
-								Amount:           &amount,
-								AssetType:        &assetType,
-								CreatedAt:        closedAt,
-								LedgerRange:      (ledgerSeq / 10000) * 10000,
-							})
-							effectIdx++
-						} else if postBal < preBal {
-							// Account debited
-							amount := fmt.Sprintf("%d", preBal-postBal)
-							accountID := postAccount.AccountId.Address()
-							assetType := "native"
-
-							effects = append(effects, EffectData{
-								LedgerSequence:   ledgerSeq,
-								TransactionHash:  txHash,
-								OperationIndex:   int(opIdx),
-								EffectIndex:      effectIdx,
-								EffectType:       3, // EffectAccountDebited
-								EffectTypeString: "account_debited",
-								AccountID:        &accountID,
-								Amount:           &amount,
-								AssetType:        &assetType,
-								CreatedAt:        closedAt,
-								LedgerRange:      (ledgerSeq / 10000) * 10000,
-							})
-							effectIdx++
-						}
-					}
-				}
-			}
-		}
-	}
-
-	return effects, nil
-}
+// extractEffects is now in extractors_effects.go with comprehensive support for all 50+ effect types
 
 // extractTrades extracts trades from raw ledger (simplified version)
 // NOTE: This is a simplified implementation that extracts basic trade data from

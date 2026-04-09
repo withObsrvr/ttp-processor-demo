@@ -9,19 +9,29 @@ import (
 	"strings"
 )
 
-// createBronzeTables creates all 19 Bronze tables from v3_bronze_schema.sql
+// createBronzeTables ensures the Bronze schema and tables exist, matching
+// v3_bronze_schema.sql. This function is NON-DESTRUCTIVE: if the schema and
+// all expected tables already exist, it does nothing. It will only create
+// tables that are missing.
+//
+// Why non-destructive: previously this function did `DROP SCHEMA … CASCADE`
+// followed by `CREATE TABLE IF NOT EXISTS`. In a regular database that would
+// be fine, but DuckLake treats DROP SCHEMA as "set end_snapshot on all
+// tables in the schema", which orphans every existing data file from the
+// query API's perspective (the API filters by `end_snapshot IS NULL`). On
+// every flusher restart we were silently rotating to a new generation of
+// table_ids and losing visibility of all historical Parquet files. To add
+// new columns going forward, write an ALTER TABLE migration in
+// applyBronzeMigrations rather than re-introducing the DROP.
 func (c *DuckDBClient) createBronzeTables(ctx context.Context) error {
-	log.Println("Creating Bronze tables from v3_bronze_schema.sql...")
+	log.Println("Ensuring Bronze tables exist (non-destructive)...")
 
-	// Drop existing Bronze schema and recreate it to ensure clean state
-	dropSchemaSQL := fmt.Sprintf("DROP SCHEMA IF EXISTS %s.%s CASCADE", c.config.CatalogName, c.config.SchemaName)
-	if _, err := c.db.ExecContext(ctx, dropSchemaSQL); err != nil {
-		log.Printf("Warning: Failed to drop existing schema: %v", err)
-	}
-
-	createSchemaSQL := fmt.Sprintf("CREATE SCHEMA %s.%s", c.config.CatalogName, c.config.SchemaName)
+	// Create the schema if it doesn't already exist. CREATE SCHEMA IF NOT
+	// EXISTS is a no-op when the schema is present, so existing tables and
+	// their data files are untouched.
+	createSchemaSQL := fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s.%s", c.config.CatalogName, c.config.SchemaName)
 	if _, err := c.db.ExecContext(ctx, createSchemaSQL); err != nil {
-		return fmt.Errorf("failed to recreate schema: %w", err)
+		return fmt.Errorf("failed to ensure schema exists: %w", err)
 	}
 
 	// Read the v3_bronze_schema.sql file
@@ -42,7 +52,9 @@ func (c *DuckDBClient) createBronzeTables(ctx context.Context) error {
 	// Replace bronze. with catalog.schema. prefix
 	schemaSQL = strings.ReplaceAll(schemaSQL, "bronze.", fmt.Sprintf("%s.%s.", c.config.CatalogName, c.config.SchemaName))
 
-	// Split into individual CREATE TABLE statements
+	// Split into individual CREATE TABLE statements. The schema file uses
+	// CREATE TABLE IF NOT EXISTS, so re-running these against an existing
+	// schema is a no-op for tables that already exist.
 	statements := splitSQLStatements(schemaSQL)
 
 	tableCount := 0
@@ -60,9 +72,10 @@ func (c *DuckDBClient) createBronzeTables(ctx context.Context) error {
 		}
 	}
 
-	log.Printf("Created %d Bronze tables successfully", tableCount)
+	log.Printf("Bronze schema ensured (%d CREATE TABLE statements processed)", tableCount)
 
-	// Add partitioning to all tables
+	// Add partitioning to all tables. ALTER TABLE … SET PARTITIONED BY is
+	// also idempotent — re-applying the same partition spec is a no-op.
 	if err := c.partitionBronzeTables(ctx); err != nil {
 		return fmt.Errorf("failed to partition Bronze tables: %w", err)
 	}

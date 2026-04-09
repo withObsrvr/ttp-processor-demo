@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"math/big"
+	"strings"
 	"time"
 
 	"github.com/stellar/go-stellar-sdk/ingest"
@@ -614,7 +615,10 @@ func (w *Writer) extractContractData(rawLedger *pb.RawLedger) ([]ContractDataDat
 			contractOutput, err, shouldContinue := transformer.TransformContractData(
 				change, w.config.Source.NetworkPassphrase, ledgerHeader)
 			if err != nil {
-				log.Printf("Failed to transform contract data: %v", err)
+				// State entries (pre-image of updates) are expected and skippable
+				if !strings.Contains(err.Error(), "skipping state entry") {
+					log.Printf("Failed to transform contract data: %v", err)
+				}
 				continue
 			}
 			if !shouldContinue {

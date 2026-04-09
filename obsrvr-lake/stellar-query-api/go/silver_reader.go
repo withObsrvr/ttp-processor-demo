@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -1328,23 +1329,25 @@ type TradePair struct {
 
 // SilverEffect represents an effect from the Silver effects table
 type SilverEffect struct {
-	LedgerSequence   int64     `json:"ledger_sequence"`
-	TransactionHash  string    `json:"transaction_hash"`
-	OperationIndex   int       `json:"operation_index"`
-	EffectIndex      int       `json:"effect_index"`
-	EffectType       int       `json:"effect_type"`
-	EffectTypeString string    `json:"effect_type_string"`
-	AccountID        *string   `json:"account_id,omitempty"`
-	Asset            *AssetInfo `json:"asset,omitempty"`
-	Amount           *string   `json:"amount,omitempty"`
-	TrustlineLimit   *string   `json:"trustline_limit,omitempty"`
-	AuthorizeFlag    *bool     `json:"authorize_flag,omitempty"`
-	ClawbackFlag     *bool     `json:"clawback_flag,omitempty"`
-	SignerAccount    *string   `json:"signer_account,omitempty"`
-	SignerWeight     *int      `json:"signer_weight,omitempty"`
-	OfferID          *int64    `json:"offer_id,omitempty"`
-	SellerAccount    *string   `json:"seller_account,omitempty"`
-	Timestamp        time.Time `json:"timestamp"`
+	LedgerSequence   int64              `json:"ledger_sequence"`
+	TransactionHash  string             `json:"transaction_hash"`
+	OperationIndex   int                `json:"operation_index"`
+	EffectIndex      int                `json:"effect_index"`
+	OperationID      *int64             `json:"operation_id,omitempty"`
+	EffectType       int                `json:"effect_type"`
+	EffectTypeString string             `json:"effect_type_string"`
+	AccountID        *string            `json:"account_id,omitempty"`
+	Asset            *AssetInfo         `json:"asset,omitempty"`
+	Amount           *string            `json:"amount,omitempty"`
+	Details          *json.RawMessage   `json:"details,omitempty"`
+	TrustlineLimit   *string            `json:"trustline_limit,omitempty"`
+	AuthorizeFlag    *bool              `json:"authorize_flag,omitempty"`
+	ClawbackFlag     *bool              `json:"clawback_flag,omitempty"`
+	SignerAccount    *string            `json:"signer_account,omitempty"`
+	SignerWeight     *int               `json:"signer_weight,omitempty"`
+	OfferID          *int64             `json:"offer_id,omitempty"`
+	SellerAccount    *string            `json:"seller_account,omitempty"`
+	Timestamp        time.Time          `json:"timestamp"`
 }
 
 // EffectFilters contains filter options for effect queries

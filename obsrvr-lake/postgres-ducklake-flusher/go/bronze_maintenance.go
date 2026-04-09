@@ -35,6 +35,10 @@ var BronzeTables = []string{
 	"evicted_keys_state_v1",
 	"config_settings_snapshot_v1",
 	"contract_creations_v1",
+	// Added via migration 004_add_toid_and_token_transfers. Without this
+	// entry the flusher never flushes or deletes token_transfers_stream_v1
+	// and PG hot accumulates rows unboundedly.
+	"token_transfers_stream_v1",
 }
 
 // HighVolumeBronzeTables are tables that accumulate files fastest and need
@@ -45,6 +49,7 @@ var HighVolumeBronzeTables = []string{
 	"transactions_row_v2",
 	"accounts_snapshot_v1",
 	"native_balances_snapshot_v1",
+	"token_transfers_stream_v1",
 }
 
 // RunCheckpoint performs automated DuckLake maintenance:

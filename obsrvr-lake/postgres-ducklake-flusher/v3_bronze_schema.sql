@@ -83,7 +83,9 @@ CREATE TABLE IF NOT EXISTS bronze.transactions_row_v2 (
     tx_signers TEXT,
     extra_signers TEXT,
     era_id TEXT,
-    version_label TEXT
+    version_label TEXT,
+    -- Added via migration 004_add_toid_and_token_transfers
+    transaction_id BIGINT
 );
 
 CREATE TABLE IF NOT EXISTS bronze.operations_row_v2 (
@@ -152,7 +154,10 @@ CREATE TABLE IF NOT EXISTS bronze.operations_row_v2 (
     soroban_arguments_json TEXT,
     contract_calls_json TEXT,
     contracts_involved TEXT,
-    max_call_depth INTEGER
+    max_call_depth INTEGER,
+    -- Added via migration 004_add_toid_and_token_transfers
+    transaction_id BIGINT,
+    operation_id BIGINT
 );
 
 -- Effects (FIXED: matches PostgreSQL exactly - 22 columns)
@@ -178,7 +183,13 @@ CREATE TABLE IF NOT EXISTS bronze.effects_row_v1 (
     created_at TIMESTAMP,
     ledger_range BIGINT,
     era_id TEXT,
-    version_label TEXT
+    version_label TEXT,
+    -- Added by ingester writer.go (effects details). Column order MUST
+    -- match stellar_hot.effects_row_v1 exactly because the bronze flusher
+    -- does a positional INSERT from PG into DuckLake. PG has these in the
+    -- order details_json, operation_id (details_json comes first).
+    details_json TEXT,
+    operation_id BIGINT
 );
 
 -- Trades (FIXED: matches PostgreSQL exactly - 19 columns)
@@ -493,4 +504,29 @@ CREATE TABLE IF NOT EXISTS bronze.contract_creations_v1 (
     ledger_range BIGINT,
     era_id TEXT,
     version_label TEXT
+);
+
+-- Added via migration 004_add_toid_and_token_transfers.
+-- Column order MUST match stellar_hot.token_transfers_stream_v1 exactly
+-- (positional INSERT by the bronze flusher). See the PG DDL in
+-- stellar-postgres-ingester/migrations/004_add_toid_and_token_transfers.sql.
+CREATE TABLE IF NOT EXISTS bronze.token_transfers_stream_v1 (
+    ledger_sequence   INTEGER,
+    transaction_hash  TEXT,
+    transaction_id    BIGINT,
+    operation_id      BIGINT,
+    operation_index   INTEGER,
+    event_type        TEXT,
+    "from"            TEXT,
+    "to"              TEXT,
+    asset             TEXT,
+    asset_type        TEXT,
+    asset_code        TEXT,
+    asset_issuer      TEXT,
+    amount            DOUBLE,
+    amount_raw        TEXT,
+    contract_id       TEXT,
+    closed_at         TIMESTAMP,
+    created_at        TIMESTAMP,
+    ledger_range      INTEGER
 );
