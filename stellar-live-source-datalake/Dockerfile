@@ -11,8 +11,8 @@ RUN mkdir -p /app/bin
 RUN addgroup -g 1000 -S app && \
     adduser -u 1000 -S app -G app
 
-# Copy the binary (built with Nix)
-COPY ./result/bin/stellar_live_source_datalake /app/bin/
+# Copy the binary (built locally or with Nix)
+COPY ./stellar_live_source_datalake /app/bin/
 
 # Set permissions
 RUN chmod +x /app/bin/stellar_live_source_datalake

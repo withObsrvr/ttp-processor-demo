@@ -195,7 +195,12 @@ func (p *DuckLakePusher) Push(ctx context.Context, outputDir string) error {
 
 		var insertSQL string
 		if len(cols) > 0 {
-			colList := strings.Join(cols, ", ")
+			// Quote every column name to handle reserved words like "from", "to".
+			quoted := make([]string, len(cols))
+			for i, c := range cols {
+				quoted[i] = fmt.Sprintf(`"%s"`, c)
+			}
+			colList := strings.Join(quoted, ", ")
 			insertSQL = fmt.Sprintf("INSERT INTO %s (%s) SELECT %s FROM read_parquet('%s')", fullTableName, colList, colList, parquetGlob)
 		} else {
 			insertSQL = fmt.Sprintf("INSERT INTO %s SELECT * FROM read_parquet('%s')", fullTableName, parquetGlob)
@@ -249,8 +254,19 @@ func (p *DuckLakePusher) createTables(ctx context.Context) error {
 	schemaSQL = strings.ReplaceAll(schemaSQL, "bronze.", fmt.Sprintf("%s.%s.", p.config.CatalogName, p.config.SchemaName))
 
 	for _, stmt := range strings.Split(schemaSQL, ";") {
-		stmt = strings.TrimSpace(stmt)
-		if stmt == "" || strings.HasPrefix(stmt, "--") {
+		// Strip comment lines before evaluating the fragment.
+		// A naive HasPrefix("--") check would skip the entire CREATE TABLE
+		// when a comment like "-- Core tables" sits between two semicolons.
+		var cleaned []string
+		for _, line := range strings.Split(stmt, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" || strings.HasPrefix(trimmed, "--") {
+				continue
+			}
+			cleaned = append(cleaned, line)
+		}
+		stmt = strings.TrimSpace(strings.Join(cleaned, "\n"))
+		if stmt == "" {
 			continue
 		}
 		if _, err := p.db.ExecContext(ctx, stmt+";"); err != nil {
@@ -283,6 +299,7 @@ func mapToDuckLakeTable(dirName string) string {
 		"native_balances":           "native_balances_snapshot_v1",
 		"restored_keys":             "restored_keys_state_v1",
 		"contract_creations":        "contract_creations_v1",
+		"token_transfers":           "token_transfers_stream_v1",
 	}
 	return mapping[dirName]
 }

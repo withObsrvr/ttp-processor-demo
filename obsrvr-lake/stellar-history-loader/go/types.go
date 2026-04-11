@@ -11,6 +11,7 @@ type LedgerMeta struct {
 	LedgerSequence uint32
 	ClosedAt       time.Time
 	LedgerRange    uint32
+	EraID          *string
 	LCM            xdr.LedgerCloseMeta
 }
 
@@ -37,6 +38,7 @@ type LedgerData struct {
 	RestoredKeys      []RestoredKeyData
 	ContractCreations []ContractCreationData
 	Ledgers           []LedgerRowData
+	TokenTransfers    []TokenTransferData
 }
 
 // TransactionData represents a single transaction
@@ -68,6 +70,10 @@ type TransactionData struct {
 	SorobanResourcesInstructions *int64
 	SorobanResourcesReadBytes    *int64
 	SorobanResourcesWriteBytes   *int64
+	// TOID
+	TransactionID int64
+	// Era tracking
+	EraID *string
 }
 
 // OperationData represents a single operation
@@ -143,6 +149,11 @@ type OperationData struct {
 	ContractCallsJSON *string  // JSON array of {from, to, function, depth, order}
 	ContractsInvolved []string // All contracts in the call chain
 	MaxCallDepth      *int     // Maximum depth of nested calls
+	// TOID
+	TransactionID int64
+	OperationID   int64
+	// Era tracking
+	EraID *string
 }
 
 // EffectData represents a single effect (state changes from operations)
@@ -179,9 +190,14 @@ type EffectData struct {
 	OfferID       *int64
 	SellerAccount *string
 
+	// TOID
+	OperationID *int64
+	DetailsJSON *string
+
 	// Metadata
 	CreatedAt   time.Time
 	LedgerRange uint32
+	EraID       *string
 }
 
 // TradeData represents a single trade execution (DEX trades)
@@ -214,6 +230,7 @@ type TradeData struct {
 	// Metadata
 	CreatedAt   time.Time
 	LedgerRange uint32
+	EraID       *string
 }
 
 // AccountData represents account snapshot state (accounts_snapshot_v1)
@@ -257,6 +274,7 @@ type AccountData struct {
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 	LedgerRange uint32
+	EraID       *string
 }
 
 // OfferData represents DEX offer snapshot state (offers_snapshot_v1)
@@ -288,6 +306,7 @@ type OfferData struct {
 	// Metadata (2 fields)
 	CreatedAt   time.Time
 	LedgerRange uint32
+	EraID       *string
 }
 
 // TrustlineData represents trustline snapshot state (trustlines_snapshot_v1)
@@ -314,6 +333,7 @@ type TrustlineData struct {
 	LedgerSequence uint32
 	CreatedAt      time.Time
 	LedgerRange    uint32
+	EraID          *string
 }
 
 // AccountSignerData represents account signer snapshot state (account_signers_snapshot_v1)
@@ -335,6 +355,7 @@ type AccountSignerData struct {
 	ClosedAt    time.Time
 	LedgerRange uint32
 	CreatedAt   time.Time
+	EraID       *string
 }
 
 // ClaimableBalanceData represents claimable balance snapshot state (claimable_balances_snapshot_v1)
@@ -361,6 +382,7 @@ type ClaimableBalanceData struct {
 	// Metadata (2 fields)
 	CreatedAt   time.Time
 	LedgerRange uint32
+	EraID       *string
 }
 
 // LiquidityPoolData represents liquidity pool snapshot state (liquidity_pools_snapshot_v1)
@@ -396,6 +418,7 @@ type LiquidityPoolData struct {
 	// Metadata (2 fields)
 	CreatedAt   time.Time
 	LedgerRange uint32
+	EraID       *string
 }
 
 // ConfigSettingData represents network configuration settings snapshot (config_settings_snapshot_v1)
@@ -435,6 +458,7 @@ type ConfigSettingData struct {
 	// Metadata (2 fields)
 	CreatedAt   time.Time
 	LedgerRange uint32
+	EraID       *string
 }
 
 // TTLData represents time-to-live entries snapshot (ttl_snapshot_v1)
@@ -457,6 +481,7 @@ type TTLData struct {
 	// Metadata (2 fields)
 	CreatedAt   time.Time
 	LedgerRange uint32
+	EraID       *string
 }
 
 // EvictedKeyData represents evicted storage keys state (evicted_keys_state_v1)
@@ -475,6 +500,7 @@ type EvictedKeyData struct {
 	ClosedAt    time.Time
 	LedgerRange uint32
 	CreatedAt   time.Time
+	EraID       *string
 }
 
 // ContractEventData represents Soroban contract events stream (contract_events_stream_v1)
@@ -511,6 +537,7 @@ type ContractEventData struct {
 	// Metadata (2 fields)
 	CreatedAt   time.Time
 	LedgerRange uint32
+	EraID       *string
 }
 
 // ContractCall represents a single cross-contract call in the call graph
@@ -570,6 +597,7 @@ type ContractDataData struct {
 	// Metadata (2 fields)
 	CreatedAt   time.Time
 	LedgerRange uint32
+	EraID       *string
 }
 
 // ContractCodeData represents Soroban contract code snapshot (contract_code_snapshot_v1)
@@ -606,6 +634,7 @@ type ContractCodeData struct {
 	// Metadata (2 fields)
 	CreatedAt   time.Time
 	LedgerRange uint32
+	EraID       *string
 }
 
 // NativeBalanceData represents XLM-only balances snapshot (native_balances_snapshot_v1)
@@ -629,6 +658,7 @@ type NativeBalanceData struct {
 
 	// Partition key (1 field)
 	LedgerRange int64
+	EraID       *string
 }
 
 // RestoredKeyData represents restored storage keys state (restored_keys_state_v1)
@@ -648,6 +678,7 @@ type RestoredKeyData struct {
 	ClosedAt    time.Time
 	LedgerRange uint32
 	CreatedAt   time.Time
+	EraID       *string
 }
 
 // LedgerRowData represents a single ledger row (ledgers_row_v2)
@@ -666,10 +697,21 @@ type LedgerRowData struct {
 	OperationCount      int
 	SuccessfulTxCount   int
 	FailedTxCount       int
-	TxSetOperationCount int
+	TxSetOperationCount  int
+	SorobanFeeWrite1kb   *int64
+	NodeID               *string
+	Signature            *string
+	LedgerHeader         *string
+	BucketListSize       *int64
+	LiveSorobanStateSize *int64
+	EvictedKeysCount     *int32
+	SorobanOpCount       *int32
+	TotalFeeCharged      *int64
+	ContractEventsCount  *int32
 	IngestionTimestamp   time.Time
 	LedgerRange         uint32
 	PipelineVersion     string
+	EraID               *string
 }
 
 // ContractCreationData represents a contract creation event
@@ -680,6 +722,31 @@ type ContractCreationData struct {
 	CreatedLedger  uint32
 	CreatedAt      time.Time
 	LedgerRange    uint32
+	EraID          *string
+}
+
+// TokenTransferData represents a unified token transfer event (token_transfers_stream_v1)
+// Covers: transfer, mint, burn, clawback, fee events from both classic and Soroban operations
+type TokenTransferData struct {
+	LedgerSequence  uint32
+	TransactionHash string
+	TransactionID   int64   // TOID of parent transaction
+	OperationID     *int64  // TOID of parent operation (nullable - fee events have no operation)
+	OperationIndex  *int32  // 1-indexed (nullable)
+	EventType       string  // transfer, mint, burn, clawback, fee
+	From            *string // nullable (mint has no from)
+	To              *string // nullable (burn/clawback/fee have no to)
+	Asset           string  // canonical: "native" or "credit_alphanum4:CODE:ISSUER"
+	AssetType       string  // native, credit_alphanum4, credit_alphanum12
+	AssetCode       *string // nullable (native has none)
+	AssetIssuer     *string // nullable
+	Amount          float64 // human-readable (stroops * 0.0000001)
+	AmountRaw       string  // raw stroops string from SDK
+	ContractID      string
+	ClosedAt        time.Time
+	CreatedAt       time.Time
+	LedgerRange     uint32
+	EraID           *string
 }
 
 // WASMMetadata holds parsed metadata from a WASM binary

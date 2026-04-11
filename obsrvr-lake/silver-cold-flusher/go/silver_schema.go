@@ -8,19 +8,19 @@ import (
 	"strings"
 )
 
-// createSilverTables creates all 17 Silver tables from silver_schema.sql
+// createSilverTables creates all Silver tables from silver_schema.sql if they
+// don't already exist. This is intentionally NON-destructive: it never drops
+// the schema or its tables, so cold storage data is preserved across restarts.
+//
+// All CREATE TABLE statements in silver_schema.sql use CREATE TABLE IF NOT
+// EXISTS, and CREATE SCHEMA IF NOT EXISTS ensures the schema is created only
+// once. Running this multiple times is a no-op after the first successful run.
 func (c *DuckDBClient) createSilverTables() error {
-	log.Println("Creating Silver tables from silver_schema.sql...")
+	log.Println("Ensuring Silver tables exist (non-destructive)...")
 
-	// Drop existing Silver schema and recreate it to ensure clean state
-	dropSchemaSQL := fmt.Sprintf("DROP SCHEMA IF EXISTS %s.%s CASCADE", c.config.CatalogName, c.config.SchemaName)
-	if _, err := c.db.Exec(dropSchemaSQL); err != nil {
-		log.Printf("Warning: Failed to drop existing schema: %v", err)
-	}
-
-	createSchemaSQL := fmt.Sprintf("CREATE SCHEMA %s.%s", c.config.CatalogName, c.config.SchemaName)
+	createSchemaSQL := fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s.%s", c.config.CatalogName, c.config.SchemaName)
 	if _, err := c.db.Exec(createSchemaSQL); err != nil {
-		return fmt.Errorf("failed to recreate schema: %w", err)
+		return fmt.Errorf("failed to create schema: %w", err)
 	}
 
 	// Read the silver_schema.sql file

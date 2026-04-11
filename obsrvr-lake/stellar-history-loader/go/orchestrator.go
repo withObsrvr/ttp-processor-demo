@@ -20,6 +20,7 @@ type OrchestratorConfig struct {
 	Bucket            string
 	LedgersPerFile    uint32
 	FilesPerPartition uint32
+	EraID             string
 }
 
 // Orchestrator manages parallel workers for history loading.

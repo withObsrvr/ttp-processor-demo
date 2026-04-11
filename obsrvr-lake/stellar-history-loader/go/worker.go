@@ -164,6 +164,7 @@ type BatchData struct {
 	RestoredKeys      []RestoredKeyData
 	ContractCreations []ContractCreationData
 	Ledgers           []LedgerRowData
+	TokenTransfers    []TokenTransferData
 }
 
 // mergeLedger appends all data from a single LedgerData into the batch.
@@ -188,6 +189,7 @@ func (b *BatchData) mergeLedger(ld *LedgerData) {
 	b.RestoredKeys = append(b.RestoredKeys, ld.RestoredKeys...)
 	b.ContractCreations = append(b.ContractCreations, ld.ContractCreations...)
 	b.Ledgers = append(b.Ledgers, ld.Ledgers...)
+	b.TokenTransfers = append(b.TokenTransfers, ld.TokenTransfers...)
 }
 
 // ---------------------------------------------------------------------------
@@ -308,7 +310,7 @@ func (w *Worker) Run(ctx context.Context) error {
 			return fmt.Errorf("[Worker %d] decode ledger %d: %w", w.id, item.sequence, err)
 		}
 
-		// Extract all 19 data types in parallel
+		// Extract all 21 data types in parallel
 		ledgerData, err := w.extractLedger(meta)
 		if err != nil {
 			return fmt.Errorf("[Worker %d] extract ledger %d: %w", w.id, item.sequence, err)
@@ -387,6 +389,7 @@ func (w *Worker) recordLineage(batch *BatchData, startSeq, endSeq uint32, durati
 		"restored_keys":             len(batch.RestoredKeys),
 		"contract_creations":        len(batch.ContractCreations),
 		"ledgers":                   len(batch.Ledgers),
+		"token_transfers":           len(batch.TokenTransfers),
 	}
 	for table, count := range tables {
 		if count > 0 {
@@ -449,11 +452,17 @@ func (w *Worker) decodeLedger(sequence uint32, rawXDR []byte) (LedgerMeta, error
 		return LedgerMeta{}, fmt.Errorf("sequence mismatch: expected %d, got %d", sequence, ledgerSeq)
 	}
 
+	var eraID *string
+	if w.config.EraID != "" {
+		eraID = &w.config.EraID
+	}
+
 	return LedgerMeta{
 		LCM:            lcm,
 		LedgerSequence: ledgerSeq,
 		ClosedAt:       closedAt,
 		LedgerRange:    ledgerRange,
+		EraID:          eraID,
 	}, nil
 }
 
@@ -464,7 +473,7 @@ type extractorResult struct {
 	err  error
 }
 
-// extractLedger fans out to all 20 extractors in parallel, each receiving the
+// extractLedger fans out to all 21 extractors in parallel, each receiving the
 // already-decoded LCM. Results are collected and merged into a single LedgerData.
 func (w *Worker) extractLedger(meta LedgerMeta) (*LedgerData, error) {
 	lcm := meta.LCM
@@ -473,7 +482,7 @@ func (w *Worker) extractLedger(meta LedgerMeta) (*LedgerData, error) {
 	t := meta.ClosedAt
 	lr := meta.LedgerRange
 
-	resultCh := make(chan extractorResult, 20)
+	resultCh := make(chan extractorResult, 21)
 	var wg sync.WaitGroup
 
 	// Helper to launch an extractor goroutine
@@ -486,7 +495,7 @@ func (w *Worker) extractLedger(meta LedgerMeta) (*LedgerData, error) {
 		}()
 	}
 
-	// Fan out to all 20 extractors
+	// Fan out to all 21 extractors
 	launch("transactions", func() (*LedgerData, error) {
 		rows, err := extractTransactions(lcm, np, seq, t, lr)
 		if err != nil {
@@ -502,7 +511,7 @@ func (w *Worker) extractLedger(meta LedgerMeta) (*LedgerData, error) {
 		return &LedgerData{Operations: rows}, nil
 	})
 	launch("effects", func() (*LedgerData, error) {
-		rows, err := extractEffects(lcm, np, seq, t, lr)
+		rows, err := extractEffects(lcm, np, seq, t, lr, meta.EraID)
 		if err != nil {
 			return nil, err
 		}
@@ -627,6 +636,13 @@ func (w *Worker) extractLedger(meta LedgerMeta) (*LedgerData, error) {
 		}
 		return &LedgerData{Ledgers: rows}, nil
 	})
+	launch("token_transfers", func() (*LedgerData, error) {
+		rows, err := extractTokenTransfers(lcm, np, seq, t, lr)
+		if err != nil {
+			return nil, err
+		}
+		return &LedgerData{TokenTransfers: rows}, nil
+	})
 
 	// Wait for all extractors to complete, then close the results channel
 	go func() {
@@ -664,6 +680,7 @@ func (w *Worker) extractLedger(meta LedgerMeta) (*LedgerData, error) {
 			merged.RestoredKeys = append(merged.RestoredKeys, result.data.RestoredKeys...)
 			merged.ContractCreations = append(merged.ContractCreations, result.data.ContractCreations...)
 			merged.Ledgers = append(merged.Ledgers, result.data.Ledgers...)
+			merged.TokenTransfers = append(merged.TokenTransfers, result.data.TokenTransfers...)
 		}
 	}
 
@@ -674,7 +691,80 @@ func (w *Worker) extractLedger(meta LedgerMeta) (*LedgerData, error) {
 		return nil, fmt.Errorf("%d extractor(s) failed for ledger %d", len(extractErrors), meta.LedgerSequence)
 	}
 
+	// Stamp era_id on all rows from config (avoids passing through every extractor)
+	stampEraID(merged, meta.EraID)
+
 	return merged, nil
+}
+
+// stampEraID sets the EraID field on every row in every table slice.
+func stampEraID(data *LedgerData, eraID *string) {
+	if eraID == nil {
+		return
+	}
+	for i := range data.Transactions {
+		data.Transactions[i].EraID = eraID
+	}
+	for i := range data.Operations {
+		data.Operations[i].EraID = eraID
+	}
+	for i := range data.Effects {
+		data.Effects[i].EraID = eraID
+	}
+	for i := range data.Trades {
+		data.Trades[i].EraID = eraID
+	}
+	for i := range data.Accounts {
+		data.Accounts[i].EraID = eraID
+	}
+	for i := range data.Offers {
+		data.Offers[i].EraID = eraID
+	}
+	for i := range data.Trustlines {
+		data.Trustlines[i].EraID = eraID
+	}
+	for i := range data.AccountSigners {
+		data.AccountSigners[i].EraID = eraID
+	}
+	for i := range data.ClaimableBalances {
+		data.ClaimableBalances[i].EraID = eraID
+	}
+	for i := range data.LiquidityPools {
+		data.LiquidityPools[i].EraID = eraID
+	}
+	for i := range data.ConfigSettings {
+		data.ConfigSettings[i].EraID = eraID
+	}
+	for i := range data.TTLEntries {
+		data.TTLEntries[i].EraID = eraID
+	}
+	for i := range data.EvictedKeys {
+		data.EvictedKeys[i].EraID = eraID
+	}
+	for i := range data.ContractEvents {
+		data.ContractEvents[i].EraID = eraID
+	}
+	for i := range data.ContractData {
+		data.ContractData[i].EraID = eraID
+	}
+	for i := range data.ContractCode {
+		data.ContractCode[i].EraID = eraID
+	}
+	for i := range data.NativeBalances {
+		data.NativeBalances[i].EraID = eraID
+	}
+	for i := range data.RestoredKeys {
+		data.RestoredKeys[i].EraID = eraID
+	}
+	for i := range data.ContractCreations {
+		data.ContractCreations[i].EraID = eraID
+	}
+	for i := range data.Ledgers {
+		data.Ledgers[i].EraID = eraID
+	}
+	for i := range data.TokenTransfers {
+		data.TokenTransfers[i].EraID = eraID
+	}
 }
 
 // ParquetWriter is an alias for ParquetWriterFull (see parquet_writer.go)
@@ -696,7 +786,7 @@ func NewParquetWriter(outputDir string, workerID int, pipelineVersion string) (*
 
 // extractTransactions — see extractors_core.go
 // extractOperations  — see extractors_core.go
-// extractEffects     — see extractors_core.go
+// extractEffects     — see extractors_effects.go
 // extractTrades      — see extractors_core.go
 
 // extractAccounts         — see extractors_accounts.go

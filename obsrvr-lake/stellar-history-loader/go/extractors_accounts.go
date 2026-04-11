@@ -333,6 +333,15 @@ func extractAccountSigners(lcm xdr.LedgerCloseMeta, networkPassphrase string, le
 	}
 	defer changeReader.Close()
 
+	// Map-based deduplication: the LedgerChangeReader can return the same
+	// account multiple times per ledger (fee processing, operation changes,
+	// post-apply, upgrades). Without dedup the signer row count depends on
+	// how many change stages the reader emits, which differs between
+	// TransactionMeta V3 and V4 — causing a parity gap between the
+	// history loader and the streaming ingester.
+	// Key: "accountID:signerKey"
+	signerMap := make(map[string]*AccountSignerData)
+
 	// Process all changes
 	for {
 		change, err := changeReader.Read()
@@ -382,7 +391,7 @@ func extractAccountSigners(lcm xdr.LedgerCloseMeta, networkPassphrase string, le
 			}
 		}
 
-		// Process each signer
+		// Process each signer — last-write-wins per (account, signer) pair
 		for i, signer := range accountEntry.Signers {
 			// Get sponsor if available (matches index in signers array)
 			var sponsor string
@@ -392,28 +401,26 @@ func extractAccountSigners(lcm xdr.LedgerCloseMeta, networkPassphrase string, le
 
 			// Extract signer key as string
 			signerKey := signer.Key.Address()
+			dedupeKey := accountID + ":" + signerKey
 
 			signerData := AccountSignerData{
-				// Identity (3 fields)
 				AccountID:      accountID,
 				Signer:         signerKey,
 				LedgerSequence: ledgerSeq,
-
-				// Signer details (2 fields)
-				Weight:  uint32(signer.Weight),
-				Sponsor: sponsor,
-
-				// Status (1 field)
-				Deleted: deleted,
-
-				// Metadata (3 fields)
-				ClosedAt:    closedAt,
-				LedgerRange: ledgerRange,
-				CreatedAt:   time.Now().UTC(),
+				Weight:         uint32(signer.Weight),
+				Sponsor:        sponsor,
+				Deleted:        deleted,
+				ClosedAt:       closedAt,
+				LedgerRange:    ledgerRange,
+				CreatedAt:      time.Now().UTC(),
 			}
 
-			signersList = append(signersList, signerData)
+			signerMap[dedupeKey] = &signerData
 		}
+	}
+
+	for _, s := range signerMap {
+		signersList = append(signersList, *s)
 	}
 
 	return signersList, nil
