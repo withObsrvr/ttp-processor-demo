@@ -282,6 +282,8 @@ type ParquetContractEvent struct {
 	ClosedAt                 int64   `parquet:"closed_at,timestamp(microsecond)"`
 	EventType                string  `parquet:"event_type"`
 	InSuccessfulContractCall bool    `parquet:"in_successful_contract_call"`
+	Successful               bool    `parquet:"successful"`
+	ContractEventXDR         string  `parquet:"contract_event_xdr"`
 	TopicsJSON               string  `parquet:"topics_json"`
 	TopicsDecoded            string  `parquet:"topics_decoded"`
 	DataXDR                  string  `parquet:"data_xdr"`
@@ -911,6 +913,8 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 				ClosedAt:                 e.ClosedAt.UnixMicro(),
 				EventType:                e.EventType,
 				InSuccessfulContractCall: e.InSuccessfulContractCall,
+				Successful:               e.Successful,
+				ContractEventXDR:         e.ContractEventXDR,
 				TopicsJSON:               e.TopicsJSON,
 				TopicsDecoded:            e.TopicsDecoded,
 				DataXDR:                  e.DataXDR,

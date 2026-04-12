@@ -513,9 +513,11 @@ type ContractEventData struct {
 	TransactionHash string
 	ClosedAt        time.Time
 
-	// Event Type (2 fields)
+	// Event Type (4 fields)
 	EventType                string
 	InSuccessfulContractCall bool
+	Successful               bool
+	ContractEventXDR         string
 
 	// Event Data (5 fields - Hubble compatible with decoded versions)
 	TopicsJSON    string

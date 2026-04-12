@@ -403,6 +403,8 @@ type ContractEventData struct {
 	// Event Type (2 fields)
 	EventType                string
 	InSuccessfulContractCall bool
+	Successful               bool
+	ContractEventXDR         string
 
 	// Event Data (5 fields - Hubble compatible with decoded versions)
 	TopicsJSON    string

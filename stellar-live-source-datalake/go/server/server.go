@@ -429,11 +429,19 @@ func (s *RawLedgerServer) createArchiveBackend() (ledgerbackend.LedgerBackend, e
 	)
 
 	// Create BufferedStorageBackend configuration
+	// BufferSize controls read-ahead: lower = less latency at tip, higher = faster catch-up.
+	// At 1 ledger/5s, BufferSize=5 adds ~25s max latency; BufferSize=100 adds ~500s.
+	bufferSize := uint32(getEnvAsUint("BUFFER_SIZE", 5))
+	numWorkers := uint32(getEnvAsUint("NUM_WORKERS", 2))
+	s.logger.Info("Archive backend buffer config",
+		zap.Uint32("buffer_size", bufferSize),
+		zap.Uint32("num_workers", numWorkers),
+	)
 	bufferedConfig := ledgerbackend.BufferedStorageBackendConfig{
-		BufferSize: 100,        // Process 100 ledgers in parallel
-		NumWorkers: 5,          // Use 5 worker goroutines
-		RetryLimit: 3,          // Retry failed operations 3 times
-		RetryWait:  time.Second, // Wait 1 second between retries
+		BufferSize: bufferSize,
+		NumWorkers: numWorkers,
+		RetryLimit: 3,
+		RetryWait:  time.Second,
 	}
 
 	// Create the BufferedStorageBackend

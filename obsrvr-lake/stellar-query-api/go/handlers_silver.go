@@ -2607,10 +2607,10 @@ func (h *SilverHandlers) HandleEffects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse and validate order parameter (default: asc for backward compatibility - effects historically sorted ASC)
+	// Parse and validate order parameter (default: desc for most-recent-first)
 	order := strings.ToLower(r.URL.Query().Get("order"))
 	if order == "" {
-		order = "asc"
+		order = "desc"
 	}
 	if order != "asc" && order != "desc" {
 		respondError(w, "order must be 'asc' or 'desc'", http.StatusBadRequest)
@@ -2638,11 +2638,14 @@ func (h *SilverHandlers) HandleEffects(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Parse time range
+	// Parse time range — default to last 24h to avoid full-table scan
 	if startStr := r.URL.Query().Get("start_time"); startStr != "" {
 		if start, err := time.Parse(time.RFC3339, startStr); err == nil {
 			filters.StartTime = start
 		}
+	} else if filters.LedgerSequence == 0 && filters.AccountID == "" && filters.Cursor == nil {
+		// No filter at all — default to recent data to prevent scanning entire history
+		filters.StartTime = time.Now().Add(-24 * time.Hour)
 	}
 	if endStr := r.URL.Query().Get("end_time"); endStr != "" {
 		if end, err := time.Parse(time.RFC3339, endStr); err == nil {
@@ -2654,7 +2657,19 @@ func (h *SilverHandlers) HandleEffects(w http.ResponseWriter, r *http.Request) {
 	var nextCursor string
 	var hasMore bool
 
-	if h.unifiedReader != nil {
+	// For recent queries (default 24h), query silver_hot PG directly to avoid
+	// DuckDB federation overhead. Fall back to unified reader for historical queries.
+	// Use the fast hot PG path for recent queries or queries with selective filters
+	// (account_id, transaction_hash). Only fall through to DuckDB for historical
+	// ledger-range queries that need cold data.
+	recentQuery := filters.LedgerSequence == 0 && (
+		(!filters.StartTime.IsZero() && filters.StartTime.After(time.Now().Add(-48*time.Hour))) ||
+		filters.AccountID != "" ||
+		filters.TransactionHash != "")
+	log.Printf("effects: recentQuery=%v legacyReader=%v startTime=%v", recentQuery, h.legacyReader != nil, filters.StartTime)
+	if recentQuery && h.legacyReader != nil && h.legacyReader.hot != nil {
+		effects, nextCursor, hasMore, err = h.legacyReader.hot.GetEffects(r.Context(), filters)
+	} else if h.unifiedReader != nil {
 		effects, nextCursor, hasMore, err = h.unifiedReader.GetEffects(r.Context(), filters)
 	} else {
 		respondError(w, "effects endpoint requires unified reader", http.StatusInternalServerError)
@@ -2677,7 +2692,9 @@ func (h *SilverHandlers) HandleEffects(w http.ResponseWriter, r *http.Request) {
 		}
 		meta.ScannedLedger = &maxLedger
 	}
-	if h.unifiedReader != nil {
+	// Only fetch available ledgers from DuckDB if we didn't use the fast hot path.
+	// GetAvailableLedgers goes through DuckDB which can be slow (30s+).
+	if !recentQuery && h.unifiedReader != nil {
 		if availableLedgers, err := h.unifiedReader.GetAvailableLedgers(r.Context()); err == nil {
 			meta.AvailableLedgers = availableLedgers
 		}

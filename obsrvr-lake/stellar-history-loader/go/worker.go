@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/stellar/go-stellar-sdk/xdr"
+	extract "github.com/withObsrvr/stellar-extract"
 )
 
 // ---------------------------------------------------------------------------
@@ -478,8 +479,6 @@ type extractorResult struct {
 func (w *Worker) extractLedger(meta LedgerMeta) (*LedgerData, error) {
 	lcm := meta.LCM
 	np := w.config.NetworkPassphrase
-	seq := meta.LedgerSequence
-	t := meta.ClosedAt
 	lr := meta.LedgerRange
 
 	resultCh := make(chan extractorResult, 21)
@@ -495,151 +494,240 @@ func (w *Worker) extractLedger(meta LedgerMeta) (*LedgerData, error) {
 		}()
 	}
 
-	// Fan out to all 21 extractors
+	// Create shared library input ONCE (read-only, safe for concurrent access)
+	libInput := extract.NewLedgerInput(lcm, np)
+	libInput.LedgerRange = lr
+	libInput.EraID = meta.EraID
+
+	// Fan out to all 21 extractors using the shared library
 	launch("transactions", func() (*LedgerData, error) {
-		rows, err := extractTransactions(lcm, np, seq, t, lr)
+		libRows, err := extract.ExtractTransactions(libInput)
 		if err != nil {
 			return nil, err
+		}
+		rows := make([]TransactionData, len(libRows))
+		for i, r := range libRows {
+			rows[i] = TransactionData(r)
 		}
 		return &LedgerData{Transactions: rows}, nil
 	})
 	launch("operations", func() (*LedgerData, error) {
-		rows, err := extractOperations(lcm, np, seq, t, lr)
+		libRows, err := extract.ExtractOperations(libInput)
 		if err != nil {
 			return nil, err
+		}
+		rows := make([]OperationData, len(libRows))
+		for i, r := range libRows {
+			rows[i] = OperationData(r)
 		}
 		return &LedgerData{Operations: rows}, nil
 	})
 	launch("effects", func() (*LedgerData, error) {
-		rows, err := extractEffects(lcm, np, seq, t, lr, meta.EraID)
+		libRows, err := extract.ExtractEffects(libInput)
 		if err != nil {
 			return nil, err
+		}
+		rows := make([]EffectData, len(libRows))
+		for i, r := range libRows {
+			rows[i] = EffectData(r)
 		}
 		return &LedgerData{Effects: rows}, nil
 	})
 	launch("trades", func() (*LedgerData, error) {
-		rows, err := extractTrades(lcm, np, seq, t, lr)
+		libRows, err := extract.ExtractTrades(libInput)
 		if err != nil {
 			return nil, err
+		}
+		rows := make([]TradeData, len(libRows))
+		for i, r := range libRows {
+			rows[i] = TradeData(r)
 		}
 		return &LedgerData{Trades: rows}, nil
 	})
 	launch("accounts", func() (*LedgerData, error) {
-		rows, err := extractAccounts(lcm, np, seq, t, lr)
+		libRows, err := extract.ExtractAccounts(libInput)
 		if err != nil {
 			return nil, err
+		}
+		rows := make([]AccountData, len(libRows))
+		for i, r := range libRows {
+			rows[i] = AccountData(r)
 		}
 		return &LedgerData{Accounts: rows}, nil
 	})
 	launch("offers", func() (*LedgerData, error) {
-		rows, err := extractOffers(lcm, np, seq, t, lr)
+		libRows, err := extract.ExtractOffers(libInput)
 		if err != nil {
 			return nil, err
+		}
+		rows := make([]OfferData, len(libRows))
+		for i, r := range libRows {
+			rows[i] = OfferData(r)
 		}
 		return &LedgerData{Offers: rows}, nil
 	})
 	launch("trustlines", func() (*LedgerData, error) {
-		rows, err := extractTrustlines(lcm, np, seq, t, lr)
+		libRows, err := extract.ExtractTrustlines(libInput)
 		if err != nil {
 			return nil, err
+		}
+		rows := make([]TrustlineData, len(libRows))
+		for i, r := range libRows {
+			rows[i] = TrustlineData(r)
 		}
 		return &LedgerData{Trustlines: rows}, nil
 	})
 	launch("account_signers", func() (*LedgerData, error) {
-		rows, err := extractAccountSigners(lcm, np, seq, t, lr)
+		libRows, err := extract.ExtractAccountSigners(libInput)
 		if err != nil {
 			return nil, err
+		}
+		rows := make([]AccountSignerData, len(libRows))
+		for i, r := range libRows {
+			rows[i] = AccountSignerData(r)
 		}
 		return &LedgerData{AccountSigners: rows}, nil
 	})
 	launch("claimable_balances", func() (*LedgerData, error) {
-		rows, err := extractClaimableBalances(lcm, np, seq, t, lr)
+		libRows, err := extract.ExtractClaimableBalances(libInput)
 		if err != nil {
 			return nil, err
+		}
+		rows := make([]ClaimableBalanceData, len(libRows))
+		for i, r := range libRows {
+			rows[i] = ClaimableBalanceData(r)
 		}
 		return &LedgerData{ClaimableBalances: rows}, nil
 	})
 	launch("liquidity_pools", func() (*LedgerData, error) {
-		rows, err := extractLiquidityPools(lcm, np, seq, t, lr)
+		libRows, err := extract.ExtractLiquidityPools(libInput)
 		if err != nil {
 			return nil, err
+		}
+		rows := make([]LiquidityPoolData, len(libRows))
+		for i, r := range libRows {
+			rows[i] = LiquidityPoolData(r)
 		}
 		return &LedgerData{LiquidityPools: rows}, nil
 	})
 	launch("config_settings", func() (*LedgerData, error) {
-		rows, err := extractConfigSettings(lcm, np, seq, t, lr)
+		libRows, err := extract.ExtractConfigSettings(libInput)
 		if err != nil {
 			return nil, err
+		}
+		rows := make([]ConfigSettingData, len(libRows))
+		for i, r := range libRows {
+			rows[i] = ConfigSettingData(r)
 		}
 		return &LedgerData{ConfigSettings: rows}, nil
 	})
 	launch("ttl", func() (*LedgerData, error) {
-		rows, err := extractTTL(lcm, np, seq, t, lr)
+		libRows, err := extract.ExtractTTL(libInput)
 		if err != nil {
 			return nil, err
+		}
+		rows := make([]TTLData, len(libRows))
+		for i, r := range libRows {
+			rows[i] = TTLData(r)
 		}
 		return &LedgerData{TTLEntries: rows}, nil
 	})
 	launch("evicted_keys", func() (*LedgerData, error) {
-		rows, err := extractEvictedKeys(lcm, seq, t, lr)
+		libRows, err := extract.ExtractEvictedKeys(libInput)
 		if err != nil {
 			return nil, err
+		}
+		rows := make([]EvictedKeyData, len(libRows))
+		for i, r := range libRows {
+			rows[i] = EvictedKeyData(r)
 		}
 		return &LedgerData{EvictedKeys: rows}, nil
 	})
 	launch("contract_events", func() (*LedgerData, error) {
-		rows, err := extractContractEvents(lcm, np, seq, t, lr)
+		libRows, err := extract.ExtractContractEvents(libInput)
 		if err != nil {
 			return nil, err
+		}
+		rows := make([]ContractEventData, len(libRows))
+		for i, r := range libRows {
+			rows[i] = ContractEventData(r)
 		}
 		return &LedgerData{ContractEvents: rows}, nil
 	})
 	launch("contract_data", func() (*LedgerData, error) {
-		rows, err := extractContractData(lcm, np, seq, t, lr)
+		libRows, err := extract.ExtractContractData(libInput)
 		if err != nil {
 			return nil, err
+		}
+		rows := make([]ContractDataData, len(libRows))
+		for i, r := range libRows {
+			rows[i] = ContractDataData(r)
 		}
 		return &LedgerData{ContractData: rows}, nil
 	})
 	launch("contract_code", func() (*LedgerData, error) {
-		rows, err := extractContractCode(lcm, np, seq, t, lr)
+		libRows, err := extract.ExtractContractCode(libInput)
 		if err != nil {
 			return nil, err
+		}
+		rows := make([]ContractCodeData, len(libRows))
+		for i, r := range libRows {
+			rows[i] = ContractCodeData(r)
 		}
 		return &LedgerData{ContractCode: rows}, nil
 	})
 	launch("native_balances", func() (*LedgerData, error) {
-		rows, err := extractNativeBalances(lcm, np, seq, t, lr)
+		libRows, err := extract.ExtractNativeBalances(libInput)
 		if err != nil {
 			return nil, err
+		}
+		rows := make([]NativeBalanceData, len(libRows))
+		for i, r := range libRows {
+			rows[i] = NativeBalanceData(r)
 		}
 		return &LedgerData{NativeBalances: rows}, nil
 	})
 	launch("restored_keys", func() (*LedgerData, error) {
-		rows, err := extractRestoredKeys(lcm, np, seq, t, lr)
+		libRows, err := extract.ExtractRestoredKeys(libInput)
 		if err != nil {
 			return nil, err
+		}
+		rows := make([]RestoredKeyData, len(libRows))
+		for i, r := range libRows {
+			rows[i] = RestoredKeyData(r)
 		}
 		return &LedgerData{RestoredKeys: rows}, nil
 	})
 	launch("contract_creations", func() (*LedgerData, error) {
-		rows, err := extractContractCreations(lcm, np, seq, t, lr)
+		libRows, err := extract.ExtractContractCreations(libInput)
 		if err != nil {
 			return nil, err
+		}
+		rows := make([]ContractCreationData, len(libRows))
+		for i, r := range libRows {
+			rows[i] = ContractCreationData(r)
 		}
 		return &LedgerData{ContractCreations: rows}, nil
 	})
 	launch("ledgers", func() (*LedgerData, error) {
-		rows, err := extractLedgers(lcm, np, seq, t, lr)
+		libRows, err := extract.ExtractLedgers(libInput)
 		if err != nil {
 			return nil, err
+		}
+		rows := make([]LedgerRowData, len(libRows))
+		for i, r := range libRows {
+			rows[i] = LedgerRowData(r)
 		}
 		return &LedgerData{Ledgers: rows}, nil
 	})
 	launch("token_transfers", func() (*LedgerData, error) {
-		rows, err := extractTokenTransfers(lcm, np, seq, t, lr)
+		libRows, err := extract.ExtractTokenTransfers(libInput)
 		if err != nil {
 			return nil, err
+		}
+		rows := make([]TokenTransferData, len(libRows))
+		for i, r := range libRows {
+			rows[i] = TokenTransferData(r)
 		}
 		return &LedgerData{TokenTransfers: rows}, nil
 	})

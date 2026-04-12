@@ -360,6 +360,8 @@ CREATE TABLE IF NOT EXISTS bronze.contract_events_stream_v1 (
     closed_at TIMESTAMP,
     event_type TEXT,
     in_successful_contract_call BOOLEAN,
+    successful BOOLEAN,
+    contract_event_xdr TEXT,
     topics_json TEXT,
     topics_decoded TEXT,
     data_xdr TEXT,

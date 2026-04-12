@@ -198,6 +198,7 @@ var explicitColumnTables = map[string]string{
 	"contract_events_stream_v1": `
 		event_id, contract_id, ledger_sequence, transaction_hash, closed_at,
 		event_type, in_successful_contract_call,
+		successful, contract_event_xdr,
 		topics_json, topics_decoded, data_xdr, data_decoded, topic_count,
 		operation_index, event_index,
 		topic0_decoded, topic1_decoded, topic2_decoded, topic3_decoded,

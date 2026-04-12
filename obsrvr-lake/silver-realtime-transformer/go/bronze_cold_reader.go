@@ -349,10 +349,12 @@ func (r *BronzeColdReader) QueryTokenTransfers(ctx context.Context, startLedger,
 			o.destination AS to_account,
 			CASE
 				WHEN o.asset IS NULL OR o.asset = 'native' THEN 'XLM'
+				WHEN o.asset = 'liquidity_pool_shares' THEN NULL
 				ELSE SPLIT_PART(o.asset, ':', 1)
 			END AS asset_code,
 			CASE
 				WHEN o.asset IS NULL OR o.asset = 'native' THEN NULL
+				WHEN o.asset = 'liquidity_pool_shares' THEN NULL
 				ELSE SPLIT_PART(o.asset, ':', 2)
 			END AS asset_issuer,
 			CAST(o.amount AS VARCHAR) AS amount,

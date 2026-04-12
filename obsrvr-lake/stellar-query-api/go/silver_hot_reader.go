@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -1520,6 +1521,11 @@ func (h *SilverHotReader) GetEffects(ctx context.Context, filters EffectFilters)
 		limit = 100
 	}
 
+	orderDir := "DESC"
+	if filters.Order == "asc" {
+		orderDir = "ASC"
+	}
+
 	query := fmt.Sprintf(`
 		SELECT ledger_sequence, transaction_hash, operation_index, effect_index,
 			   effect_type, effect_type_string, account_id,
@@ -1529,16 +1535,22 @@ func (h *SilverHotReader) GetEffects(ctx context.Context, filters EffectFilters)
 			   created_at
 		FROM effects
 		%s
-		ORDER BY ledger_sequence ASC, transaction_hash ASC, operation_index ASC, effect_index ASC
+		ORDER BY ledger_sequence %s, transaction_hash %s, operation_index %s, effect_index %s
 		LIMIT $%d
-	`, whereClause, argNum)
+	`, whereClause, orderDir, orderDir, orderDir, orderDir, argNum)
 	args = append(args, limit+1)
+
+	stats := h.db.Stats()
+	log.Printf("[effects-hot] pool: open=%d inUse=%d idle=%d waitCount=%d", stats.OpenConnections, stats.InUse, stats.Idle, stats.WaitCount)
+	log.Printf("[effects-hot] query: %s args: %v", query, args)
 
 	rows, err := h.db.QueryContext(ctx, query, args...)
 	if err != nil {
+		log.Printf("[effects-hot] query error: %v", err)
 		return nil, "", false, err
 	}
 	defer rows.Close()
+	log.Printf("[effects-hot] query returned, scanning rows...")
 
 	var effects []SilverEffect
 	for rows.Next() {

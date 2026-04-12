@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stellar/go-stellar-sdk/xdr"
+	extract "github.com/withObsrvr/stellar-extract"
 	pb "github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/go/gen/raw_ledger_service"
 )
 
@@ -140,32 +141,38 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 	var allContractCreations []ContractCreationData
 
 	for _, rawLedger := range rawLedgers {
-		// Extract ledger data
-		ledgerData, err := w.extractLedgerData(rawLedger)
+		// Create the library input ONCE per ledger (decodes XDR)
+		input, err := extract.NewLedgerInputFromXDR(rawLedger.LedgerCloseMetaXdr, w.config.Source.NetworkPassphrase)
+		if err != nil {
+			return fmt.Errorf("failed to decode ledger %d: %w", rawLedger.Sequence, err)
+		}
+
+		// Extract ledger data (local method — uses pre-decoded LCM)
+		ledgerData, err := w.extractLedgerDataFromLCM(input.LCM)
 		if err != nil {
 			return fmt.Errorf("failed to extract ledger %d: %w", rawLedger.Sequence, err)
 		}
 
-		// Extract transactions
-		transactions, err := w.extractTransactions(rawLedger)
+		// Extract transactions via library
+		libTransactions, err := extract.ExtractTransactions(input)
 		if err != nil {
 			log.Printf("Warning: Failed to extract transactions for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
-			allTransactions = append(allTransactions, transactions...)
+			for _, r := range libTransactions {
+				allTransactions = append(allTransactions, convertTransaction(r))
+			}
 		}
 
-		// Extract operations
-		operations, err := w.extractOperations(rawLedger)
+		// Extract operations via library + soroban counting
+		libOperations, err := extract.ExtractOperations(input)
 		if err != nil {
 			log.Printf("Warning: Failed to extract operations for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
-			allOperations = append(allOperations, operations...)
-			// Count Soroban operations for ledger aggregates
 			sorobanOps := 0
-			for _, op := range operations {
-				if op.LedgerSequence == ledgerData.Sequence {
-					// Soroban ops: 24=InvokeHostFunction, 25=ExtendFootprintTTL, 26=RestoreFootprint
-					if op.OpType == 24 || op.OpType == 25 || op.OpType == 26 {
+			for _, r := range libOperations {
+				allOperations = append(allOperations, convertOperation(r))
+				if r.LedgerSequence == ledgerData.Sequence {
+					if r.OpType == 24 || r.OpType == 25 || r.OpType == 26 {
 						sorobanOps++
 					}
 				}
@@ -178,148 +185,184 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 			return fmt.Errorf("failed to insert ledger %d: %w", ledgerData.Sequence, err)
 		}
 
-		// Extract effects
-		effects, err := w.extractEffects(rawLedger)
+		// Extract effects via library
+		libEffects, err := extract.ExtractEffects(input)
 		if err != nil {
 			log.Printf("Warning: Failed to extract effects for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
-			allEffects = append(allEffects, effects...)
+			for _, r := range libEffects {
+				allEffects = append(allEffects, convertEffect(r))
+			}
 		}
 
-		// Extract trades
-		trades, err := w.extractTrades(rawLedger)
+		// Extract trades via library
+		libTrades, err := extract.ExtractTrades(input)
 		if err != nil {
 			log.Printf("Warning: Failed to extract trades for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
-			allTrades = append(allTrades, trades...)
+			for _, r := range libTrades {
+				allTrades = append(allTrades, convertTrade(r))
+			}
 		}
 
-		// Extract accounts (Phase 1 - Day 1)
-		accounts, err := w.extractAccounts(rawLedger)
+		// Extract accounts via library
+		libAccounts, err := extract.ExtractAccounts(input)
 		if err != nil {
 			log.Printf("Warning: Failed to extract accounts for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
-			allAccounts = append(allAccounts, accounts...)
+			for _, r := range libAccounts {
+				allAccounts = append(allAccounts, convertAccount(r))
+			}
 		}
 
-		// Extract offers (Phase 1 - Day 1)
-		offers, err := w.extractOffers(rawLedger)
+		// Extract offers via library
+		libOffers, err := extract.ExtractOffers(input)
 		if err != nil {
 			log.Printf("Warning: Failed to extract offers for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
-			allOffers = append(allOffers, offers...)
+			for _, r := range libOffers {
+				allOffers = append(allOffers, convertOffer(r))
+			}
 		}
 
-		// Extract trustlines (Phase 1 - Day 2)
-		trustlines, err := w.extractTrustlines(rawLedger)
+		// Extract trustlines via library
+		libTrustlines, err := extract.ExtractTrustlines(input)
 		if err != nil {
 			log.Printf("Warning: Failed to extract trustlines for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
-			allTrustlines = append(allTrustlines, trustlines...)
+			for _, r := range libTrustlines {
+				allTrustlines = append(allTrustlines, convertTrustline(r))
+			}
 		}
 
-		// Extract account signers (Phase 1 - Day 3)
-		accountSigners, err := w.extractAccountSigners(rawLedger)
+		// Extract account signers via library
+		libAccountSigners, err := extract.ExtractAccountSigners(input)
 		if err != nil {
 			log.Printf("Warning: Failed to extract account signers for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
-			allAccountSigners = append(allAccountSigners, accountSigners...)
+			for _, r := range libAccountSigners {
+				allAccountSigners = append(allAccountSigners, convertAccountSigner(r))
+			}
 		}
 
-		// Extract claimable balances (Phase 2 - Day 4)
-		claimableBalances, err := w.extractClaimableBalances(rawLedger)
+		// Extract claimable balances via library
+		libClaimableBalances, err := extract.ExtractClaimableBalances(input)
 		if err != nil {
 			log.Printf("Warning: Failed to extract claimable balances for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
-			allClaimableBalances = append(allClaimableBalances, claimableBalances...)
+			for _, r := range libClaimableBalances {
+				allClaimableBalances = append(allClaimableBalances, convertClaimableBalance(r))
+			}
 		}
 
-		// Extract liquidity pools (Phase 2 - Day 4)
-		liquidityPools, err := w.extractLiquidityPools(rawLedger)
+		// Extract liquidity pools via library
+		libLiquidityPools, err := extract.ExtractLiquidityPools(input)
 		if err != nil {
 			log.Printf("Warning: Failed to extract liquidity pools for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
-			allLiquidityPools = append(allLiquidityPools, liquidityPools...)
+			for _, r := range libLiquidityPools {
+				allLiquidityPools = append(allLiquidityPools, convertLiquidityPool(r))
+			}
 		}
 
-		// Extract config settings (Phase 2 - Day 5)
-		configSettings, err := w.extractConfigSettings(rawLedger)
+		// Extract config settings via library
+		libConfigSettings, err := extract.ExtractConfigSettings(input)
 		if err != nil {
 			log.Printf("Warning: Failed to extract config settings for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
-			allConfigSettings = append(allConfigSettings, configSettings...)
+			for _, r := range libConfigSettings {
+				allConfigSettings = append(allConfigSettings, convertConfigSetting(r))
+			}
 		}
 
-		// Extract TTL (Phase 2 - Day 6)
-		ttl, err := w.extractTTL(rawLedger)
+		// Extract TTL via library
+		libTTL, err := extract.ExtractTTL(input)
 		if err != nil {
 			log.Printf("Warning: Failed to extract TTL for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
-			allTTL = append(allTTL, ttl...)
+			for _, r := range libTTL {
+				allTTL = append(allTTL, convertTTL(r))
+			}
 		}
 
-		// Extract evicted keys (Phase 3 - Day 7)
-		evictedKeys, err := w.extractEvictedKeys(rawLedger)
+		// Extract evicted keys via library
+		libEvictedKeys, err := extract.ExtractEvictedKeys(input)
 		if err != nil {
 			log.Printf("Warning: Failed to extract evicted keys for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
-			allEvictedKeys = append(allEvictedKeys, evictedKeys...)
+			for _, r := range libEvictedKeys {
+				allEvictedKeys = append(allEvictedKeys, convertEvictedKey(r))
+			}
 		}
 
-		// Extract contract events (Phase 4 - Day 8)
-		contractEvents, err := w.extractContractEvents(rawLedger)
+		// Extract contract events via library
+		libContractEvents, err := extract.ExtractContractEvents(input)
 		if err != nil {
 			log.Printf("Warning: Failed to extract contract events for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
-			allContractEvents = append(allContractEvents, contractEvents...)
+			for _, r := range libContractEvents {
+				allContractEvents = append(allContractEvents, convertContractEvent(r))
+			}
 		}
 
-		// Extract contract data (Phase 4 - Day 9)
-		contractData, err := w.extractContractData(rawLedger)
+		// Extract contract data via library
+		libContractData, err := extract.ExtractContractData(input)
 		if err != nil {
 			log.Printf("Warning: Failed to extract contract data for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
-			allContractData = append(allContractData, contractData...)
+			for _, r := range libContractData {
+				allContractData = append(allContractData, convertContractData(r))
+			}
 		}
 
-		// Extract contract code (Phase 4 - Day 10)
-		contractCode, err := w.extractContractCode(rawLedger)
+		// Extract contract code via library
+		libContractCode, err := extract.ExtractContractCode(input)
 		if err != nil {
 			log.Printf("Warning: Failed to extract contract code for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
-			allContractCode = append(allContractCode, contractCode...)
+			for _, r := range libContractCode {
+				allContractCode = append(allContractCode, convertContractCode(r))
+			}
 		}
 
-		// Extract native balances (Phase 5 - Day 11)
-		nativeBalances, err := w.extractNativeBalances(rawLedger)
+		// Extract native balances via library
+		libNativeBalances, err := extract.ExtractNativeBalances(input)
 		if err != nil {
 			log.Printf("Warning: Failed to extract native balances for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
-			allNativeBalances = append(allNativeBalances, nativeBalances...)
+			for _, r := range libNativeBalances {
+				allNativeBalances = append(allNativeBalances, convertNativeBalance(r))
+			}
 		}
 
-		// Extract restored keys (Phase 5 - Day 11)
-		restoredKeys, err := w.extractRestoredKeys(rawLedger)
+		// Extract restored keys via library
+		libRestoredKeys, err := extract.ExtractRestoredKeys(input)
 		if err != nil {
 			log.Printf("Warning: Failed to extract restored keys for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
-			allRestoredKeys = append(allRestoredKeys, restoredKeys...)
+			for _, r := range libRestoredKeys {
+				allRestoredKeys = append(allRestoredKeys, convertRestoredKey(r))
+			}
 		}
 
-		// Extract contract creations (C11)
-		contractCreations, err := w.extractContractCreations(rawLedger)
+		// Extract contract creations via library
+		libContractCreations, err := extract.ExtractContractCreations(input)
 		if err != nil {
 			log.Printf("Warning: Failed to extract contract creations for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
-			allContractCreations = append(allContractCreations, contractCreations...)
+			for _, r := range libContractCreations {
+				allContractCreations = append(allContractCreations, convertContractCreation(r))
+			}
 		}
 
-		// Extract token transfers (SDK-based unified extraction)
-		tokenTransfers, err := w.extractTokenTransfers(rawLedger)
+		// Extract token transfers via library
+		libTokenTransfers, err := extract.ExtractTokenTransfers(input)
 		if err != nil {
 			log.Printf("Warning: Failed to extract token transfers for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
-			allTokenTransfers = append(allTokenTransfers, tokenTransfers...)
+			for _, r := range libTokenTransfers {
+				allTokenTransfers = append(allTokenTransfers, convertTokenTransfer(r))
+			}
 		}
 
 		// Update checkpoint
@@ -719,6 +762,594 @@ func (w *Writer) extractLedgerData(rawLedger *pb.RawLedger) (*LedgerData, error)
 	}
 
 	return data, nil
+}
+
+// extractLedgerDataFromLCM extracts ledger data from an already-decoded LedgerCloseMeta.
+// This avoids redundant XDR unmarshaling when the LCM is already available from the library input.
+func (w *Writer) extractLedgerDataFromLCM(lcm xdr.LedgerCloseMeta) (*LedgerData, error) {
+	// Get ledger header based on version
+	var header xdr.LedgerHeaderHistoryEntry
+	switch lcm.V {
+	case 0:
+		header = lcm.MustV0().LedgerHeader
+	case 1:
+		header = lcm.MustV1().LedgerHeader
+	case 2:
+		header = lcm.MustV2().LedgerHeader
+	default:
+		return nil, fmt.Errorf("unknown LedgerCloseMeta version: %d", lcm.V)
+	}
+
+	// Extract core fields
+	data := &LedgerData{
+		Sequence:           uint32(header.Header.LedgerSeq),
+		LedgerHash:         hex.EncodeToString(header.Hash[:]),
+		PreviousLedgerHash: hex.EncodeToString(header.Header.PreviousLedgerHash[:]),
+		ClosedAt:           time.Unix(int64(header.Header.ScpValue.CloseTime), 0).UTC(),
+		ProtocolVersion:    uint32(header.Header.LedgerVersion),
+		TotalCoins:         int64(header.Header.TotalCoins),
+		FeePool:            int64(header.Header.FeePool),
+		BaseFee:            uint32(header.Header.BaseFee),
+		BaseReserve:        uint32(header.Header.BaseReserve),
+		MaxTxSetSize:       uint32(header.Header.MaxTxSetSize),
+		IngestionTimestamp: time.Now().UTC(),
+	}
+
+	// Calculate ledger_range (partition key)
+	data.LedgerRange = (data.Sequence / 10000) * 10000
+
+	// Count transactions and operations based on LedgerCloseMeta version
+	var txCount uint32
+	var failedCount uint32
+	var operationCount uint32
+	var txSetOperationCount uint32
+
+	switch lcm.V {
+	case 0:
+		v0 := lcm.MustV0()
+		txCount = uint32(len(v0.TxSet.Txs))
+		for _, tx := range v0.TxSet.Txs {
+			opCount := uint32(len(tx.Operations()))
+			txSetOperationCount += opCount
+			operationCount += opCount
+		}
+	case 1:
+		v1 := lcm.MustV1()
+		txCount = uint32(len(v1.TxProcessing))
+		for _, txApply := range v1.TxProcessing {
+			if opResults, ok := txApply.Result.Result.OperationResults(); ok {
+				opCount := uint32(len(opResults))
+				txSetOperationCount += opCount
+				if txApply.Result.Result.Successful() {
+					operationCount += opCount
+				} else {
+					failedCount++
+				}
+			} else {
+				failedCount++
+			}
+		}
+	case 2:
+		v2 := lcm.MustV2()
+		txCount = uint32(len(v2.TxProcessing))
+		for _, txApply := range v2.TxProcessing {
+			if opResults, ok := txApply.Result.Result.OperationResults(); ok {
+				opCount := uint32(len(opResults))
+				txSetOperationCount += opCount
+				if txApply.Result.Result.Successful() {
+					operationCount += opCount
+				} else {
+					failedCount++
+				}
+			} else {
+				failedCount++
+			}
+		}
+	}
+
+	data.TransactionCount = int(txCount)
+	data.SuccessfulTxCount = int(txCount - failedCount)
+	data.FailedTxCount = int(failedCount)
+	data.OperationCount = int(operationCount)
+	data.TxSetOperationCount = int(txSetOperationCount)
+
+	// Compute per-ledger aggregates from TxProcessing
+	var totalFeeCharged int64
+	var contractEventsCount int
+
+	switch lcm.V {
+	case 1:
+		for _, txApply := range lcm.MustV1().TxProcessing {
+			totalFeeCharged += int64(txApply.Result.Result.FeeCharged)
+			contractEventsCount += countContractEvents(&txApply.TxApplyProcessing)
+		}
+	case 2:
+		for _, txApply := range lcm.MustV2().TxProcessing {
+			totalFeeCharged += int64(txApply.Result.Result.FeeCharged)
+			contractEventsCount += countContractEvents(&txApply.TxApplyProcessing)
+		}
+	}
+
+	data.TotalFeeCharged = &totalFeeCharged
+	data.ContractEventsCount = &contractEventsCount
+
+	// Protocol 20+ Soroban fields
+	if lcmV1, ok := lcm.GetV1(); ok {
+		if extV1, ok := lcmV1.Ext.GetV1(); ok {
+			feeWrite := int64(extV1.SorobanFeeWrite1Kb)
+			data.SorobanFeeWrite1KB = &feeWrite
+		}
+	} else if lcmV2, ok := lcm.GetV2(); ok {
+		if extV1, ok := lcmV2.Ext.GetV1(); ok {
+			feeWrite := int64(extV1.SorobanFeeWrite1Kb)
+			data.SorobanFeeWrite1KB = &feeWrite
+		}
+	}
+
+	// Node ID and signature (from SCP value)
+	if lcValueSig, ok := header.Header.ScpValue.Ext.GetLcValueSignature(); ok {
+		nodeIDStr := base64.StdEncoding.EncodeToString(lcValueSig.NodeId.Ed25519[:])
+		data.NodeID = &nodeIDStr
+
+		sigStr := base64.StdEncoding.EncodeToString(lcValueSig.Signature[:])
+		data.Signature = &sigStr
+	}
+
+	// Ledger header XDR (base64 encoded)
+	headerXDR, err := header.Header.MarshalBinary()
+	if err == nil {
+		headerStr := base64.StdEncoding.EncodeToString(headerXDR)
+		data.LedgerHeader = &headerStr
+	}
+
+	// Bucket list size and live Soroban state size (Protocol 20+)
+	if lcmV1, ok := lcm.GetV1(); ok {
+		sorobanStateSize := int64(lcmV1.TotalByteSizeOfLiveSorobanState)
+		data.BucketListSize = &sorobanStateSize
+		data.LiveSorobanStateSize = &sorobanStateSize
+	} else if lcmV2, ok := lcm.GetV2(); ok {
+		sorobanStateSize := int64(lcmV2.TotalByteSizeOfLiveSorobanState)
+		data.BucketListSize = &sorobanStateSize
+		data.LiveSorobanStateSize = &sorobanStateSize
+	}
+
+	// Protocol 23+ Hot Archive fields (evicted keys count)
+	if lcmV1, ok := lcm.GetV1(); ok {
+		evicted := int(len(lcmV1.EvictedKeys))
+		data.EvictedKeysCount = &evicted
+	} else if lcmV2, ok := lcm.GetV2(); ok {
+		evicted := int(len(lcmV2.EvictedKeys))
+		data.EvictedKeysCount = &evicted
+	}
+
+	return data, nil
+}
+
+// ---------------------------------------------------------------------------
+// Type conversion helpers: extract library types -> local ingester types
+// The library types have additional fields (EraID, SourceAccountMuxed, etc.)
+// that are not present in the local types. These helpers map the common fields.
+// ---------------------------------------------------------------------------
+
+func convertTransaction(r extract.TransactionData) TransactionData {
+	return TransactionData{
+		LedgerSequence:               r.LedgerSequence,
+		TransactionHash:              r.TransactionHash,
+		TransactionID:                r.TransactionID,
+		SourceAccount:                r.SourceAccount,
+		FeeCharged:                   r.FeeCharged,
+		MaxFee:                       r.MaxFee,
+		Successful:                   r.Successful,
+		TransactionResultCode:        r.TransactionResultCode,
+		OperationCount:               r.OperationCount,
+		MemoType:                     r.MemoType,
+		Memo:                         r.Memo,
+		CreatedAt:                    r.CreatedAt,
+		AccountSequence:              r.AccountSequence,
+		LedgerRange:                  r.LedgerRange,
+		SignaturesCount:              r.SignaturesCount,
+		NewAccount:                   r.NewAccount,
+		RentFeeCharged:               r.RentFeeCharged,
+		SorobanResourcesInstructions: r.SorobanResourcesInstructions,
+		SorobanResourcesReadBytes:    r.SorobanResourcesReadBytes,
+		SorobanResourcesWriteBytes:   r.SorobanResourcesWriteBytes,
+	}
+}
+
+func convertOperation(r extract.OperationData) OperationData {
+	return OperationData{
+		TransactionHash:       r.TransactionHash,
+		TransactionID:         r.TransactionID,
+		OperationID:           r.OperationID,
+		TransactionIndex:      r.TransactionIndex,
+		OperationIndex:        r.OperationIndex,
+		LedgerSequence:        r.LedgerSequence,
+		SourceAccount:         r.SourceAccount,
+		OpType:                r.OpType,
+		TypeString:            r.TypeString,
+		CreatedAt:             r.CreatedAt,
+		TransactionSuccessful: r.TransactionSuccessful,
+		OperationResultCode:   r.OperationResultCode,
+		LedgerRange:           r.LedgerRange,
+		Amount:                r.Amount,
+		Asset:                 r.Asset,
+		Destination:           r.Destination,
+		SorobanOperation:      r.SorobanOperation,
+		SorobanContractID:     r.SorobanContractID,
+		SorobanFunction:       r.SorobanFunction,
+		SorobanArgumentsJSON:  r.SorobanArgumentsJSON,
+		ContractCallsJSON:     r.ContractCallsJSON,
+		ContractsInvolved:     r.ContractsInvolved,
+		MaxCallDepth:          r.MaxCallDepth,
+	}
+}
+
+func convertEffect(r extract.EffectData) EffectData {
+	var opID int64
+	if r.OperationID != nil {
+		opID = *r.OperationID
+	}
+	return EffectData{
+		LedgerSequence:   r.LedgerSequence,
+		TransactionHash:  r.TransactionHash,
+		OperationIndex:   r.OperationIndex,
+		EffectIndex:      r.EffectIndex,
+		OperationID:      opID,
+		EffectType:       r.EffectType,
+		EffectTypeString: r.EffectTypeString,
+		AccountID:        r.AccountID,
+		Amount:           r.Amount,
+		AssetCode:        r.AssetCode,
+		AssetIssuer:      r.AssetIssuer,
+		AssetType:        r.AssetType,
+		DetailsJSON:      r.DetailsJSON,
+		TrustlineLimit:   r.TrustlineLimit,
+		AuthorizeFlag:    r.AuthorizeFlag,
+		ClawbackFlag:     r.ClawbackFlag,
+		SignerAccount:    r.SignerAccount,
+		SignerWeight:     r.SignerWeight,
+		OfferID:          r.OfferID,
+		SellerAccount:    r.SellerAccount,
+		CreatedAt:        r.CreatedAt,
+		LedgerRange:      r.LedgerRange,
+	}
+}
+
+func convertTrade(r extract.TradeData) TradeData {
+	return TradeData{
+		LedgerSequence:     r.LedgerSequence,
+		TransactionHash:    r.TransactionHash,
+		OperationIndex:     r.OperationIndex,
+		TradeIndex:         r.TradeIndex,
+		TradeType:          r.TradeType,
+		TradeTimestamp:     r.TradeTimestamp,
+		SellerAccount:      r.SellerAccount,
+		SellingAssetCode:   r.SellingAssetCode,
+		SellingAssetIssuer: r.SellingAssetIssuer,
+		SellingAmount:      r.SellingAmount,
+		BuyerAccount:       r.BuyerAccount,
+		BuyingAssetCode:    r.BuyingAssetCode,
+		BuyingAssetIssuer:  r.BuyingAssetIssuer,
+		BuyingAmount:       r.BuyingAmount,
+		Price:              r.Price,
+		CreatedAt:          r.CreatedAt,
+		LedgerRange:        r.LedgerRange,
+	}
+}
+
+func convertAccount(r extract.AccountData) AccountData {
+	return AccountData{
+		AccountID:           r.AccountID,
+		LedgerSequence:      r.LedgerSequence,
+		ClosedAt:            r.ClosedAt,
+		Balance:             r.Balance,
+		SequenceNumber:      r.SequenceNumber,
+		NumSubentries:       r.NumSubentries,
+		NumSponsoring:       r.NumSponsoring,
+		NumSponsored:        r.NumSponsored,
+		HomeDomain:          r.HomeDomain,
+		MasterWeight:        r.MasterWeight,
+		LowThreshold:        r.LowThreshold,
+		MedThreshold:        r.MedThreshold,
+		HighThreshold:       r.HighThreshold,
+		Flags:               r.Flags,
+		AuthRequired:        r.AuthRequired,
+		AuthRevocable:       r.AuthRevocable,
+		AuthImmutable:       r.AuthImmutable,
+		AuthClawbackEnabled: r.AuthClawbackEnabled,
+		Signers:             r.Signers,
+		SponsorAccount:      r.SponsorAccount,
+		CreatedAt:           r.CreatedAt,
+		UpdatedAt:           r.UpdatedAt,
+		LedgerRange:         r.LedgerRange,
+	}
+}
+
+func convertOffer(r extract.OfferData) OfferData {
+	return OfferData{
+		OfferID:            r.OfferID,
+		SellerAccount:      r.SellerAccount,
+		LedgerSequence:     r.LedgerSequence,
+		ClosedAt:           r.ClosedAt,
+		SellingAssetType:   r.SellingAssetType,
+		SellingAssetCode:   r.SellingAssetCode,
+		SellingAssetIssuer: r.SellingAssetIssuer,
+		BuyingAssetType:    r.BuyingAssetType,
+		BuyingAssetCode:    r.BuyingAssetCode,
+		BuyingAssetIssuer:  r.BuyingAssetIssuer,
+		Amount:             r.Amount,
+		Price:              r.Price,
+		Flags:              r.Flags,
+		CreatedAt:          r.CreatedAt,
+		LedgerRange:        r.LedgerRange,
+	}
+}
+
+func convertTrustline(r extract.TrustlineData) TrustlineData {
+	return TrustlineData{
+		AccountID:                       r.AccountID,
+		AssetCode:                       r.AssetCode,
+		AssetIssuer:                     r.AssetIssuer,
+		AssetType:                       r.AssetType,
+		Balance:                         r.Balance,
+		TrustLimit:                      r.TrustLimit,
+		BuyingLiabilities:               r.BuyingLiabilities,
+		SellingLiabilities:              r.SellingLiabilities,
+		Authorized:                      r.Authorized,
+		AuthorizedToMaintainLiabilities: r.AuthorizedToMaintainLiabilities,
+		ClawbackEnabled:                 r.ClawbackEnabled,
+		LedgerSequence:                  r.LedgerSequence,
+		CreatedAt:                       r.CreatedAt,
+		LedgerRange:                     r.LedgerRange,
+	}
+}
+
+func convertAccountSigner(r extract.AccountSignerData) AccountSignerData {
+	return AccountSignerData{
+		AccountID:      r.AccountID,
+		Signer:         r.Signer,
+		LedgerSequence: r.LedgerSequence,
+		Weight:         r.Weight,
+		Sponsor:        r.Sponsor,
+		Deleted:        r.Deleted,
+		ClosedAt:       r.ClosedAt,
+		LedgerRange:    r.LedgerRange,
+		CreatedAt:      r.CreatedAt,
+	}
+}
+
+func convertClaimableBalance(r extract.ClaimableBalanceData) ClaimableBalanceData {
+	return ClaimableBalanceData{
+		BalanceID:      r.BalanceID,
+		Sponsor:        r.Sponsor,
+		LedgerSequence: r.LedgerSequence,
+		ClosedAt:       r.ClosedAt,
+		AssetType:      r.AssetType,
+		AssetCode:      r.AssetCode,
+		AssetIssuer:    r.AssetIssuer,
+		Amount:         r.Amount,
+		ClaimantsCount: r.ClaimantsCount,
+		Flags:          r.Flags,
+		CreatedAt:      r.CreatedAt,
+		LedgerRange:    r.LedgerRange,
+	}
+}
+
+func convertLiquidityPool(r extract.LiquidityPoolData) LiquidityPoolData {
+	return LiquidityPoolData{
+		LiquidityPoolID: r.LiquidityPoolID,
+		LedgerSequence:  r.LedgerSequence,
+		ClosedAt:        r.ClosedAt,
+		PoolType:        r.PoolType,
+		Fee:             r.Fee,
+		TrustlineCount:  r.TrustlineCount,
+		TotalPoolShares: r.TotalPoolShares,
+		AssetAType:      r.AssetAType,
+		AssetACode:      r.AssetACode,
+		AssetAIssuer:    r.AssetAIssuer,
+		AssetAAmount:    r.AssetAAmount,
+		AssetBType:      r.AssetBType,
+		AssetBCode:      r.AssetBCode,
+		AssetBIssuer:    r.AssetBIssuer,
+		AssetBAmount:    r.AssetBAmount,
+		CreatedAt:       r.CreatedAt,
+		LedgerRange:     r.LedgerRange,
+	}
+}
+
+func convertConfigSetting(r extract.ConfigSettingData) ConfigSettingData {
+	return ConfigSettingData{
+		ConfigSettingID:                 r.ConfigSettingID,
+		LedgerSequence:                  r.LedgerSequence,
+		LastModifiedLedger:              r.LastModifiedLedger,
+		Deleted:                         r.Deleted,
+		ClosedAt:                        r.ClosedAt,
+		LedgerMaxInstructions:           r.LedgerMaxInstructions,
+		TxMaxInstructions:               r.TxMaxInstructions,
+		FeeRatePerInstructionsIncrement: r.FeeRatePerInstructionsIncrement,
+		TxMemoryLimit:                   r.TxMemoryLimit,
+		LedgerMaxReadLedgerEntries:      r.LedgerMaxReadLedgerEntries,
+		LedgerMaxReadBytes:              r.LedgerMaxReadBytes,
+		LedgerMaxWriteLedgerEntries:     r.LedgerMaxWriteLedgerEntries,
+		LedgerMaxWriteBytes:             r.LedgerMaxWriteBytes,
+		TxMaxReadLedgerEntries:          r.TxMaxReadLedgerEntries,
+		TxMaxReadBytes:                  r.TxMaxReadBytes,
+		TxMaxWriteLedgerEntries:         r.TxMaxWriteLedgerEntries,
+		TxMaxWriteBytes:                 r.TxMaxWriteBytes,
+		ContractMaxSizeBytes:            r.ContractMaxSizeBytes,
+		ConfigSettingXDR:                r.ConfigSettingXDR,
+		CreatedAt:                       r.CreatedAt,
+		LedgerRange:                     r.LedgerRange,
+	}
+}
+
+func convertTTL(r extract.TTLData) TTLData {
+	return TTLData{
+		KeyHash:            r.KeyHash,
+		LedgerSequence:     r.LedgerSequence,
+		LiveUntilLedgerSeq: r.LiveUntilLedgerSeq,
+		TTLRemaining:       r.TTLRemaining,
+		Expired:            r.Expired,
+		LastModifiedLedger: r.LastModifiedLedger,
+		Deleted:            r.Deleted,
+		ClosedAt:           r.ClosedAt,
+		CreatedAt:          r.CreatedAt,
+		LedgerRange:        r.LedgerRange,
+	}
+}
+
+func convertEvictedKey(r extract.EvictedKeyData) EvictedKeyData {
+	return EvictedKeyData{
+		KeyHash:        r.KeyHash,
+		LedgerSequence: r.LedgerSequence,
+		ContractID:     r.ContractID,
+		KeyType:        r.KeyType,
+		Durability:     r.Durability,
+		ClosedAt:       r.ClosedAt,
+		LedgerRange:    r.LedgerRange,
+		CreatedAt:      r.CreatedAt,
+	}
+}
+
+func convertContractEvent(r extract.ContractEventData) ContractEventData {
+	return ContractEventData{
+		EventID:                  r.EventID,
+		ContractID:               r.ContractID,
+		LedgerSequence:           r.LedgerSequence,
+		TransactionHash:          r.TransactionHash,
+		ClosedAt:                 r.ClosedAt,
+		EventType:                r.EventType,
+		InSuccessfulContractCall: r.InSuccessfulContractCall,
+		Successful:               r.Successful,
+		ContractEventXDR:         r.ContractEventXDR,
+		TopicsJSON:               r.TopicsJSON,
+		TopicsDecoded:            r.TopicsDecoded,
+		DataXDR:                  r.DataXDR,
+		DataDecoded:              r.DataDecoded,
+		TopicCount:               r.TopicCount,
+		Topic0Decoded:            r.Topic0Decoded,
+		Topic1Decoded:            r.Topic1Decoded,
+		Topic2Decoded:            r.Topic2Decoded,
+		Topic3Decoded:            r.Topic3Decoded,
+		OperationIndex:           r.OperationIndex,
+		EventIndex:               r.EventIndex,
+		CreatedAt:                r.CreatedAt,
+		LedgerRange:              r.LedgerRange,
+	}
+}
+
+func convertContractData(r extract.ContractDataData) ContractDataData {
+	return ContractDataData{
+		ContractId:         r.ContractId,
+		LedgerSequence:     r.LedgerSequence,
+		LedgerKeyHash:      r.LedgerKeyHash,
+		ContractKeyType:    r.ContractKeyType,
+		ContractDurability: r.ContractDurability,
+		AssetCode:          r.AssetCode,
+		AssetIssuer:        r.AssetIssuer,
+		AssetType:          r.AssetType,
+		BalanceHolder:      r.BalanceHolder,
+		Balance:            r.Balance,
+		LastModifiedLedger: r.LastModifiedLedger,
+		LedgerEntryChange:  r.LedgerEntryChange,
+		Deleted:            r.Deleted,
+		ClosedAt:           r.ClosedAt,
+		ContractDataXDR:    r.ContractDataXDR,
+		TokenName:          r.TokenName,
+		TokenSymbol:        r.TokenSymbol,
+		TokenDecimals:      r.TokenDecimals,
+		CreatedAt:          r.CreatedAt,
+		LedgerRange:        r.LedgerRange,
+	}
+}
+
+func convertContractCode(r extract.ContractCodeData) ContractCodeData {
+	return ContractCodeData{
+		ContractCodeHash:   r.ContractCodeHash,
+		LedgerKeyHash:      r.LedgerKeyHash,
+		ContractCodeExtV:   r.ContractCodeExtV,
+		LastModifiedLedger: r.LastModifiedLedger,
+		LedgerEntryChange:  r.LedgerEntryChange,
+		Deleted:            r.Deleted,
+		ClosedAt:           r.ClosedAt,
+		LedgerSequence:     r.LedgerSequence,
+		NInstructions:      r.NInstructions,
+		NFunctions:         r.NFunctions,
+		NGlobals:           r.NGlobals,
+		NTableEntries:      r.NTableEntries,
+		NTypes:             r.NTypes,
+		NDataSegments:      r.NDataSegments,
+		NElemSegments:      r.NElemSegments,
+		NImports:           r.NImports,
+		NExports:           r.NExports,
+		NDataSegmentBytes:  r.NDataSegmentBytes,
+		CreatedAt:          r.CreatedAt,
+		LedgerRange:        r.LedgerRange,
+	}
+}
+
+func convertNativeBalance(r extract.NativeBalanceData) NativeBalanceData {
+	return NativeBalanceData{
+		AccountID:          r.AccountID,
+		Balance:            r.Balance,
+		BuyingLiabilities:  r.BuyingLiabilities,
+		SellingLiabilities: r.SellingLiabilities,
+		NumSubentries:      r.NumSubentries,
+		NumSponsoring:      r.NumSponsoring,
+		NumSponsored:       r.NumSponsored,
+		SequenceNumber:     r.SequenceNumber,
+		LastModifiedLedger: r.LastModifiedLedger,
+		LedgerSequence:     r.LedgerSequence,
+		LedgerRange:        r.LedgerRange,
+	}
+}
+
+func convertRestoredKey(r extract.RestoredKeyData) RestoredKeyData {
+	return RestoredKeyData{
+		KeyHash:            r.KeyHash,
+		LedgerSequence:     r.LedgerSequence,
+		ContractID:         r.ContractID,
+		KeyType:            r.KeyType,
+		Durability:         r.Durability,
+		RestoredFromLedger: r.RestoredFromLedger,
+		ClosedAt:           r.ClosedAt,
+		LedgerRange:        r.LedgerRange,
+		CreatedAt:          r.CreatedAt,
+	}
+}
+
+func convertContractCreation(r extract.ContractCreationData) ContractCreationData {
+	return ContractCreationData{
+		ContractID:     r.ContractID,
+		CreatorAddress: r.CreatorAddress,
+		WasmHash:       r.WasmHash,
+		CreatedLedger:  r.CreatedLedger,
+		CreatedAt:      r.CreatedAt,
+		LedgerRange:    r.LedgerRange,
+	}
+}
+
+func convertTokenTransfer(r extract.TokenTransferData) TokenTransferData {
+	return TokenTransferData{
+		LedgerSequence:  r.LedgerSequence,
+		TransactionHash: r.TransactionHash,
+		TransactionID:   r.TransactionID,
+		OperationID:     r.OperationID,
+		OperationIndex:  r.OperationIndex,
+		EventType:       r.EventType,
+		From:            r.From,
+		To:              r.To,
+		Asset:           r.Asset,
+		AssetType:       r.AssetType,
+		AssetCode:       r.AssetCode,
+		AssetIssuer:     r.AssetIssuer,
+		Amount:          r.Amount,
+		AmountRaw:       r.AmountRaw,
+		ContractID:      r.ContractID,
+		ClosedAt:        r.ClosedAt,
+		CreatedAt:       r.CreatedAt,
+		LedgerRange:     r.LedgerRange,
+	}
 }
 
 // insertLedger inserts a single ledger into PostgreSQL
@@ -1543,7 +2174,7 @@ func (w *Writer) insertContractEvents(ctx context.Context, tx pgx.Tx, events []C
 	// COPY into temp table (no constraints — ultra fast)
 	columns := []string{
 		"event_id", "contract_id", "ledger_sequence", "transaction_hash", "closed_at",
-		"event_type", "in_successful_contract_call",
+		"event_type", "in_successful_contract_call", "successful", "contract_event_xdr",
 		"topics_json", "topics_decoded", "data_xdr", "data_decoded", "topic_count",
 		"topic0_decoded", "topic1_decoded", "topic2_decoded", "topic3_decoded",
 		"operation_index", "event_index", "created_at", "ledger_range",
@@ -1559,6 +2190,8 @@ func (w *Writer) insertContractEvents(ctx context.Context, tx pgx.Tx, events []C
 			event.ClosedAt,
 			event.EventType,
 			event.InSuccessfulContractCall,
+			event.Successful,
+			event.ContractEventXDR,
 			event.TopicsJSON,
 			event.TopicsDecoded,
 			event.DataXDR,
@@ -1588,14 +2221,14 @@ func (w *Writer) insertContractEvents(ctx context.Context, tx pgx.Tx, events []C
 	_, err = tx.Exec(ctx, `
 		INSERT INTO contract_events_stream_v1 (
 			event_id, contract_id, ledger_sequence, transaction_hash, closed_at,
-			event_type, in_successful_contract_call,
+			event_type, in_successful_contract_call, successful, contract_event_xdr,
 			topics_json, topics_decoded, data_xdr, data_decoded, topic_count,
 			topic0_decoded, topic1_decoded, topic2_decoded, topic3_decoded,
 			operation_index, event_index, created_at, ledger_range
 		)
 		SELECT DISTINCT ON (ledger_sequence, transaction_hash, event_index)
 			event_id, contract_id, ledger_sequence, transaction_hash, closed_at,
-			event_type, in_successful_contract_call,
+			event_type, in_successful_contract_call, successful, contract_event_xdr,
 			topics_json, topics_decoded, data_xdr, data_decoded, topic_count,
 			topic0_decoded, topic1_decoded, topic2_decoded, topic3_decoded,
 			operation_index, event_index, created_at, ledger_range
@@ -1604,6 +2237,8 @@ func (w *Writer) insertContractEvents(ctx context.Context, tx pgx.Tx, events []C
 			contract_id = EXCLUDED.contract_id,
 			event_type = EXCLUDED.event_type,
 			in_successful_contract_call = EXCLUDED.in_successful_contract_call,
+			successful = EXCLUDED.successful,
+			contract_event_xdr = EXCLUDED.contract_event_xdr,
 			topics_json = EXCLUDED.topics_json,
 			topics_decoded = EXCLUDED.topics_decoded,
 			data_xdr = EXCLUDED.data_xdr,
