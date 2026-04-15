@@ -77,7 +77,11 @@ func (w *Writer) extractTokenTransfers(rawLedger *pb.RawLedger) ([]TokenTransfer
 			continue
 		}
 
-		amountFloat, _ := strconv.ParseFloat(amount, 64)
+		amountFloat, err := strconv.ParseFloat(amount, 64)
+		if err != nil {
+			log.Printf("Warning: failed to parse token transfer amount %q in ledger %d: %v", amount, ledgerSeq, err)
+			continue
+		}
 		amountFloat = amountFloat * 0.0000001
 
 		eventMeta := event.GetMeta()

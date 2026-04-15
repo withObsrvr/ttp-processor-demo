@@ -2,6 +2,7 @@ package utils
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"time"
 
@@ -9,6 +10,8 @@ import (
 	"github.com/stellar/go-stellar-sdk/ingest"
 	"github.com/stellar/go-stellar-sdk/xdr"
 )
+
+var ErrSkipStateEntry = errors.New("skip state entry")
 
 // ExtractEntryFromChange gets the most recent state of an entry from an ingestion change, as well as if the entry was deleted
 func ExtractEntryFromChange(change ingest.Change) (xdr.LedgerEntry, xdr.LedgerEntryChangeType, bool, error) {
@@ -20,7 +23,7 @@ func ExtractEntryFromChange(change ingest.Change) (xdr.LedgerEntry, xdr.LedgerEn
 	case xdr.LedgerEntryChangeTypeLedgerEntryState:
 		// State entries are the "before" snapshot in a state→updated pair.
 		// Skip them — the corresponding UPDATED change carries the new state.
-		return xdr.LedgerEntry{}, changeType, false, fmt.Errorf("skipping state entry (pre-image of update)")
+		return xdr.LedgerEntry{}, changeType, false, fmt.Errorf("%w: pre-image of update", ErrSkipStateEntry)
 	case xdr.LedgerEntryChangeTypeLedgerEntryRestored:
 		// Restored entries are archived Soroban storage brought back via restoreFootprint.
 		// Treat like a create — the entry is now live again.

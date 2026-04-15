@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"net/http"
 	"os"
 )
@@ -20,7 +21,7 @@ func requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		token := r.Header.Get("X-Admin-Token")
-		if token == "" || token != adminToken {
+		if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(adminToken)) != 1 {
 			respondError(w, "unauthorized: valid X-Admin-Token header required", http.StatusUnauthorized)
 			return
 		}

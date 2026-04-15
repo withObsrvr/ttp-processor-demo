@@ -171,7 +171,7 @@ func (h *EventHandlers) HandleTransactionEvents(w http.ResponseWriter, r *http.R
 	if h.hotPathReader != nil {
 		events, err = h.hotPathReader.GetTransactionEvents(r.Context(), txHash)
 	}
-	if err != nil || events == nil {
+	if err != nil || len(events) == 0 {
 		events, err = h.reader.GetTransactionEvents(r.Context(), txHash)
 	}
 	if err != nil {

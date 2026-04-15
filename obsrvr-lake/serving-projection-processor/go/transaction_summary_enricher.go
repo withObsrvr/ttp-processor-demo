@@ -29,6 +29,7 @@ type projectorUnifiedEvent struct {
 	To         *string
 	Amount     *string
 	AssetCode  *string
+	EventIndex *int
 }
 
 type summaryEnricher struct {
@@ -130,11 +131,11 @@ func (e *summaryEnricher) loadOperations(ctx context.Context, hashes []string) (
 
 func (e *summaryEnricher) loadEvents(ctx context.Context, hashes []string) (map[string][]projectorUnifiedEvent, error) {
 	rows, err := e.silverPool.Query(ctx, `
-		SELECT transaction_hash, token_contract_id, from_account, to_account, amount::text, asset_code
+		SELECT transaction_hash, token_contract_id, from_account, to_account, amount::text, asset_code, event_index
 		FROM token_transfers_raw
 		WHERE transaction_successful = true
 		  AND transaction_hash = ANY($1)
-		ORDER BY transaction_hash ASC, timestamp ASC
+		ORDER BY transaction_hash ASC, timestamp ASC, COALESCE(event_index, -1) ASC
 	`, hashes)
 	if err != nil {
 		return nil, fmt.Errorf("query token transfers: %w", err)
@@ -145,7 +146,7 @@ func (e *summaryEnricher) loadEvents(ctx context.Context, hashes []string) (map[
 	for rows.Next() {
 		var txHash string
 		var ev projectorUnifiedEvent
-		if err := rows.Scan(&txHash, &ev.ContractID, &ev.From, &ev.To, &ev.Amount, &ev.AssetCode); err != nil {
+		if err := rows.Scan(&txHash, &ev.ContractID, &ev.From, &ev.To, &ev.Amount, &ev.AssetCode, &ev.EventIndex); err != nil {
 			return nil, fmt.Errorf("scan token transfer: %w", err)
 		}
 		switch {

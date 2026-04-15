@@ -233,7 +233,7 @@ func (h *SilverHotReader) GetLedgerFeeStats(ctx context.Context, seq int64) (map
 func (h *SilverHotReader) GetLedgerSorobanStats(ctx context.Context, seq int64) (map[string]interface{}, error) {
 	query := `
 		SELECT
-			COUNT(*) FILTER (WHERE contract_id IS NOT NULL) AS soroban_tx_count,
+			COUNT(DISTINCT transaction_hash) FILTER (WHERE contract_id IS NOT NULL) AS soroban_tx_count,
 			COALESCE(COUNT(DISTINCT contract_id) FILTER (WHERE contract_id IS NOT NULL), 0) AS unique_contracts
 		FROM enriched_history_operations
 		WHERE ledger_sequence = $1

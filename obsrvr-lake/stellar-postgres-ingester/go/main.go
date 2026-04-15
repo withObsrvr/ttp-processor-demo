@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -105,7 +107,7 @@ func main() {
 	conn, err := grpc.Dial(
 		cfg.Source.Endpoint,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(100 * 1024 * 1024)), // 100MB
+		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(100*1024*1024)), // 100MB
 	)
 	if err != nil {
 		log.Fatalf("Failed to connect to gRPC source: %v", err)
@@ -176,7 +178,7 @@ func streamLedgers(ctx context.Context, client pb.RawLedgerServiceClient, writer
 			}
 			ledger, err := stream.Recv()
 			if err != nil {
-				if err.Error() == "EOF" || ctx.Err() != nil {
+				if errors.Is(err, io.EOF) || ctx.Err() != nil {
 					return
 				}
 				errCh <- fmt.Errorf("stream receive error: %w", err)
@@ -238,9 +240,11 @@ func streamLedgers(ctx context.Context, client pb.RawLedgerServiceClient, writer
 			errCh <- err
 			return
 		}
+
+		errCh <- nil
 	}()
 
-	// Wait for either goroutine to finish or error
+	// Wait for either successful completion, an error, or cancellation.
 	select {
 	case err := <-errCh:
 		return err

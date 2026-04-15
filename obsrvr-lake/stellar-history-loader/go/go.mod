@@ -99,7 +99,7 @@ require (
 	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/twpayne/go-geom v1.6.1 // indirect
-	github.com/withObsrvr/stellar-extract v0.0.0-20260411203436-c6aa2ac55fd5
+	github.com/withObsrvr/stellar-extract v0.1.1
 	github.com/zeebo/xxh3 v1.1.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/detectors/gcp v1.38.0 // indirect
@@ -132,5 +132,3 @@ require (
 	gopkg.in/djherbis/stream.v1 v1.3.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-replace github.com/withObsrvr/stellar-extract => /home/tillman/Documents/stellar-extract

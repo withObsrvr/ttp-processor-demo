@@ -640,7 +640,7 @@ func (h *ContractCallHandlers) HandleContractMetadata(w http.ResponseWriter, r *
 	resp := ContractMetadataResponse{ContractID: contractID}
 
 	// Query contract_metadata for creator info — try hot first, then unified (hot+cold)
-	if h.reader != nil {
+	if h.reader != nil && h.reader.hot != nil {
 		h.reader.hot.enrichContractMetadata(ctx, &resp)
 	}
 	if resp.CreatorAddress == nil && h.unifiedReader != nil {
@@ -648,7 +648,7 @@ func (h *ContractCallHandlers) HandleContractMetadata(w http.ResponseWriter, r *
 	}
 
 	// Query observed functions from contract_invocations_raw — try hot, then unified
-	if h.reader != nil {
+	if h.reader != nil && h.reader.hot != nil {
 		h.reader.hot.enrichContractFunctions(ctx, &resp)
 		h.reader.hot.enrichContractRegistry(ctx, &resp)
 	}
@@ -657,12 +657,12 @@ func (h *ContractCallHandlers) HandleContractMetadata(w http.ResponseWriter, r *
 	}
 
 	// Query storage summary from contract_data_current
-	if h.reader != nil {
+	if h.reader != nil && h.reader.hot != nil {
 		h.reader.hot.enrichContractStorage(ctx, &resp)
 	}
 
 	// Query WASM metrics from contract_code_current
-	if h.reader != nil && resp.WasmHash != nil {
+	if h.reader != nil && h.reader.hot != nil && resp.WasmHash != nil {
 		h.reader.hot.enrichContractWasm(ctx, &resp)
 	}
 

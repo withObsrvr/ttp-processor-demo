@@ -157,45 +157,40 @@ func (hs *HealthServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "# TYPE serving_projection_processor_uptime_seconds gauge\n")
 	fmt.Fprintf(w, "serving_projection_processor_uptime_seconds %.0f\n", time.Since(hs.startTime).Seconds())
 
+	fmt.Fprintf(w, "# HELP serving_projection_projector_last_duration_ms Last projector run duration in milliseconds\n")
+	fmt.Fprintf(w, "# TYPE serving_projection_projector_last_duration_ms gauge\n")
+	fmt.Fprintf(w, "# HELP serving_projection_projector_last_rows_applied Rows applied in the last successful run\n")
+	fmt.Fprintf(w, "# TYPE serving_projection_projector_last_rows_applied gauge\n")
+	fmt.Fprintf(w, "# HELP serving_projection_projector_last_rows_deleted Rows deleted in the last successful run\n")
+	fmt.Fprintf(w, "# TYPE serving_projection_projector_last_rows_deleted gauge\n")
+	fmt.Fprintf(w, "# HELP serving_projection_projector_total_runs Total projector runs\n")
+	fmt.Fprintf(w, "# TYPE serving_projection_projector_total_runs counter\n")
+	fmt.Fprintf(w, "# HELP serving_projection_projector_total_failures Total projector failures\n")
+	fmt.Fprintf(w, "# TYPE serving_projection_projector_total_failures counter\n")
+	fmt.Fprintf(w, "# HELP serving_projection_projector_last_checkpoint Last saved projector checkpoint\n")
+	fmt.Fprintf(w, "# TYPE serving_projection_projector_last_checkpoint gauge\n")
+	fmt.Fprintf(w, "# HELP serving_projection_projector_consecutive_errors Consecutive projector errors\n")
+	fmt.Fprintf(w, "# TYPE serving_projection_projector_consecutive_errors gauge\n")
+	fmt.Fprintf(w, "# HELP serving_projection_projector_last_success_timestamp_seconds Unix timestamp of last projector success\n")
+	fmt.Fprintf(w, "# TYPE serving_projection_projector_last_success_timestamp_seconds gauge\n")
+	fmt.Fprintf(w, "# HELP serving_projection_projector_last_error_timestamp_seconds Unix timestamp of last projector error\n")
+	fmt.Fprintf(w, "# TYPE serving_projection_projector_last_error_timestamp_seconds gauge\n")
+
 	for _, p := range projectors {
 		labels := fmt.Sprintf("projector=%q", p.Name)
-		fmt.Fprintf(w, "# HELP serving_projection_projector_last_duration_ms Last projector run duration in milliseconds\n")
-		fmt.Fprintf(w, "# TYPE serving_projection_projector_last_duration_ms gauge\n")
 		fmt.Fprintf(w, "serving_projection_projector_last_duration_ms{%s} %d\n", labels, p.LastDurationMs)
-
-		fmt.Fprintf(w, "# HELP serving_projection_projector_last_rows_applied Rows applied in the last successful run\n")
-		fmt.Fprintf(w, "# TYPE serving_projection_projector_last_rows_applied gauge\n")
 		fmt.Fprintf(w, "serving_projection_projector_last_rows_applied{%s} %d\n", labels, p.LastRowsApplied)
-
-		fmt.Fprintf(w, "# HELP serving_projection_projector_last_rows_deleted Rows deleted in the last successful run\n")
-		fmt.Fprintf(w, "# TYPE serving_projection_projector_last_rows_deleted gauge\n")
 		fmt.Fprintf(w, "serving_projection_projector_last_rows_deleted{%s} %d\n", labels, p.LastRowsDeleted)
-
-		fmt.Fprintf(w, "# HELP serving_projection_projector_total_runs Total projector runs\n")
-		fmt.Fprintf(w, "# TYPE serving_projection_projector_total_runs counter\n")
 		fmt.Fprintf(w, "serving_projection_projector_total_runs{%s} %d\n", labels, p.TotalRuns)
-
-		fmt.Fprintf(w, "# HELP serving_projection_projector_total_failures Total projector failures\n")
-		fmt.Fprintf(w, "# TYPE serving_projection_projector_total_failures counter\n")
 		fmt.Fprintf(w, "serving_projection_projector_total_failures{%s} %d\n", labels, p.TotalFailures)
-
-		fmt.Fprintf(w, "# HELP serving_projection_projector_last_checkpoint Last saved projector checkpoint\n")
-		fmt.Fprintf(w, "# TYPE serving_projection_projector_last_checkpoint gauge\n")
 		fmt.Fprintf(w, "serving_projection_projector_last_checkpoint{%s} %d\n", labels, p.LastCheckpoint)
-
-		fmt.Fprintf(w, "# HELP serving_projection_projector_consecutive_errors Consecutive projector errors\n")
-		fmt.Fprintf(w, "# TYPE serving_projection_projector_consecutive_errors gauge\n")
 		fmt.Fprintf(w, "serving_projection_projector_consecutive_errors{%s} %d\n", labels, p.ConsecutiveErrors)
 
 		if p.LastSuccessAt != nil {
-			fmt.Fprintf(w, "# HELP serving_projection_projector_last_success_timestamp_seconds Unix timestamp of last projector success\n")
-			fmt.Fprintf(w, "# TYPE serving_projection_projector_last_success_timestamp_seconds gauge\n")
 			fmt.Fprintf(w, "serving_projection_projector_last_success_timestamp_seconds{%s} %d\n", labels, p.LastSuccessAt.Unix())
 		}
 
 		if p.LastErrorAt != nil {
-			fmt.Fprintf(w, "# HELP serving_projection_projector_last_error_timestamp_seconds Unix timestamp of last projector error\n")
-			fmt.Fprintf(w, "# TYPE serving_projection_projector_last_error_timestamp_seconds gauge\n")
 			fmt.Fprintf(w, "serving_projection_projector_last_error_timestamp_seconds{%s} %d\n", labels, p.LastErrorAt.Unix())
 		}
 	}

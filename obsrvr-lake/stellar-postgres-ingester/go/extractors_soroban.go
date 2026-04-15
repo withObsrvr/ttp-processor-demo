@@ -5,11 +5,11 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"math/big"
-	"strings"
 	"time"
 
 	"github.com/stellar/go-stellar-sdk/ingest"
@@ -18,6 +18,7 @@ import (
 	"github.com/stellar/go-stellar-sdk/xdr"
 	pb "github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/go/gen/raw_ledger_service"
 	"github.com/withObsrvr/ttp-processor-demo/stellar-postgres-ingester/go/internal/processors/contract"
+	"github.com/withObsrvr/ttp-processor-demo/stellar-postgres-ingester/go/internal/processors/utils"
 )
 
 // extractContractEvents extracts Soroban contract events from raw ledger
@@ -619,8 +620,8 @@ func (w *Writer) extractContractData(rawLedger *pb.RawLedger) ([]ContractDataDat
 			contractOutput, err, shouldContinue := transformer.TransformContractData(
 				change, w.config.Source.NetworkPassphrase, ledgerHeader)
 			if err != nil {
-				// State entries (pre-image of updates) are expected and skippable
-				if !strings.Contains(err.Error(), "skipping state entry") {
+				// State entries (pre-image of updates) are expected and skippable.
+				if !errors.Is(err, utils.ErrSkipStateEntry) {
 					log.Printf("Failed to transform contract data: %v", err)
 				}
 				continue
