@@ -228,8 +228,9 @@ const tradeConflict = `ON CONFLICT (ledger_sequence, transaction_hash, operation
 
 var effectColumns = []string{
 	"ledger_sequence", "transaction_hash", "operation_index", "effect_index",
-	"effect_type", "effect_type_string", "account_id",
+	"operation_id", "effect_type", "effect_type_string", "account_id",
 	"amount", "asset_code", "asset_issuer", "asset_type",
+	"details_json",
 	"trustline_limit", "authorize_flag", "clawback_flag",
 	"signer_account", "signer_weight", "offer_id", "seller_account",
 	"created_at", "ledger_range",

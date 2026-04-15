@@ -5,7 +5,7 @@ go 1.26.1
 require (
 	github.com/duckdb/duckdb-go/v2 v2.10501.0
 	github.com/lib/pq v1.10.9
-	github.com/stellar/go-stellar-sdk v0.2.0
+	github.com/stellar/go-stellar-sdk v0.5.0
 	github.com/withObsrvr/flow-proto v0.1.3
 	google.golang.org/grpc v1.79.3
 	gopkg.in/yaml.v3 v3.0.1
@@ -29,7 +29,7 @@ require (
 	github.com/pierrec/lz4/v4 v4.1.25 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
-	github.com/stellar/go-xdr v0.0.0-20231122183749-b53fb00bcac2 // indirect
+	github.com/stellar/go-xdr v0.0.0-20260312225820-cc2b0611aabf // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
 	go.opentelemetry.io/otel v1.42.0 // indirect
 	go.opentelemetry.io/otel/sdk/metric v1.42.0 // indirect

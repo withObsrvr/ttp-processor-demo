@@ -1,0 +1,79 @@
+service:
+  name: serving-projection-processor
+  tick_interval_seconds: 10
+  log_level: info
+
+source:
+  bronze_hot:
+    host: private-obsrvr-lake-hot-buffer-prod-do-user-13721579-0.g.db.ondigitalocean.com
+    port: 25060
+    database: stellar_hot
+    user: doadmin
+    password: CHANGE_ME
+    sslmode: require
+  silver_hot:
+    host: private-obsrvr-lake-silver-hot-prod-do-user-13721579-0.g.db.ondigitalocean.com
+    port: 25060
+    database: silver_hot
+    user: doadmin
+    password: CHANGE_ME
+    sslmode: require
+
+target:
+  serving_postgres:
+    # Simple mode: use the existing silver_hot cluster and write into schema `serving`
+    host: private-obsrvr-lake-silver-hot-prod-do-user-13721579-0.g.db.ondigitalocean.com
+    port: 25060
+    database: silver_hot
+    user: doadmin
+    password: CHANGE_ME
+    sslmode: require
+
+schema:
+  auto_apply: true
+
+health:
+  port: 8097
+
+trigger:
+  mode: poll
+  endpoint: localhost:50055
+  fallback_poll_seconds: 60
+
+projectors:
+  ledgers_recent:
+    enabled: true
+    batch_size: 256
+  transactions_recent:
+    enabled: true
+    batch_size: 512
+  accounts_current:
+    enabled: true
+    batch_size: 512
+  account_balances:
+    enabled: true
+    batch_size: 256
+  network_stats:
+    enabled: true
+    batch_size: 1
+  asset_stats:
+    enabled: true
+    batch_size: 1
+  contracts_current:
+    enabled: true
+    batch_size: 1
+  contract_stats:
+    enabled: true
+    batch_size: 1
+  operations_recent:
+    enabled: true
+    batch_size: 2048
+  events_recent:
+    enabled: true
+    batch_size: 4096
+  explorer_events_recent:
+    enabled: true
+    batch_size: 4096
+  contract_calls_recent:
+    enabled: true
+    batch_size: 1024

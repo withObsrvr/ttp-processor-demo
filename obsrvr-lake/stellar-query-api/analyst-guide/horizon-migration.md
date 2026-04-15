@@ -2,34 +2,44 @@
 
 > **For developers migrating from Stellar Horizon to Obsrvr Gateway Query API**
 
-This guide helps you translate your existing Horizon API calls to equivalent Query API endpoints. The Query API provides ~75% coverage of Horizon's read-only functionality, plus additional analytics and Soroban-specific endpoints.
+This guide maps **currently deployed and verified** Query API routes to familiar Horizon use cases.
+
+Important:
+- Query API is **read-only**
+- Query API requires an API key
+- not every Horizon route has a 1:1 equivalent yet
+- where a direct equivalent is missing, this guide points to the closest supported route or marks it unsupported
 
 ## Quick Reference
 
 | What You Need | Horizon | Query API | Coverage |
 |---------------|---------|-----------|----------|
-| Account info | `/accounts/{id}` | `/silver/accounts/{id}` | Full |
-| Account transactions | `/accounts/{id}/transactions` | `/silver/accounts/{id}/transactions` | Full |
-| Account operations | `/accounts/{id}/operations` | `/silver/accounts/{id}/operations` | Full |
-| Account effects | `/accounts/{id}/effects` | `/silver/accounts/{id}/effects` | Full |
+| Account current state | `/accounts/{id}` | `/silver/accounts/current?account_id={id}` | Partial |
+| Account balances / trustlines | embedded in `/accounts/{id}` | `/silver/accounts/{id}/balances` | Full |
 | Account offers | `/accounts/{id}/offers` | `/silver/accounts/{id}/offers` | Full |
-| Account trades | `/accounts/{id}/trades` | `/silver/accounts/{id}/trades` | Full |
-| Assets | `/assets` | `/silver/assets` | Full |
-| Ledgers | `/ledgers` | `/silver/ledgers` | Full |
-| Transactions | `/transactions` | `/silver/transactions` | Full |
-| Operations | `/operations` | `/silver/operations/enriched` | Full |
-| Effects | `/effects` | `/silver/effects` | Full |
-| Trades | `/trades` | `/silver/trades` | Full |
-| Offers | `/offers` | `/silver/offers` | Full |
-| Liquidity Pools | `/liquidity_pools` | `/silver/liquidity-pools` | Partial* |
-| Claimable Balances | `/claimable_balances` | `/silver/claimable-balances` | Partial* |
-| Order Book | `/order_book` | Not available | Planned |
-| Fee Stats | `/fee_stats` | Not available | Planned |
-| Path Finding | `/paths/*` | Not available | N/A** |
-| Submit Transaction | `POST /transactions` | Not available | N/A** |
-
-*Sub-resource endpoints (trades, effects, operations) not yet available
-**Out of scope - Query API is read-only
+| Assets list | `/assets` | `/silver/assets` | Full |
+| Asset holders | `/assets?...` + client logic | `/silver/assets/{asset}/holders` | Full |
+| Asset stats | none | `/silver/assets/{asset}/stats` | Query API only |
+| Top accounts | none | `/silver/accounts/top` | Query API only |
+| Ledgers list | `/ledgers` | Not currently available as a silver route | Not supported |
+| Single ledger | `/ledgers/{seq}` | `/silver/ledgers/{seq}` or `/silver/ledger/{seq}` | Full |
+| Transactions list | `/transactions` | Not currently available as a silver route | Not supported |
+| Transaction decode | none | `/silver/tx/{hash}/decoded` | Query API only |
+| Transaction full receipt | none | `/silver/tx/{hash}/full` | Query API only |
+| Transaction diffs | none | `/silver/tx/{hash}/diffs` | Query API only |
+| Transaction effects | `/transactions/{hash}/effects` | `/silver/tx/{hash}/effects` or `/silver/effects/transaction/{tx_hash}` | Full |
+| Effects list | `/effects` | `/silver/effects` | Full |
+| Trades list | `/trades` | `/silver/trades` | Full |
+| Offers list | `/offers` | `/silver/offers` | Full |
+| Liquidity pools | `/liquidity_pools` | `/silver/liquidity-pools` | Partial |
+| Claimable balances | `/claimable_balances` | `/silver/claimable-balances` | Partial |
+| Fee stats | `/fee_stats` | `/silver/stats/fees` | Partial |
+| Top contracts | none | `/silver/contracts/top` or `/silver/stats/contracts` | Query API only |
+| Contract metadata | none | `/silver/contracts/{id}/metadata` | Query API only |
+| Contract recent calls | none | `/silver/contracts/{id}/recent-calls` | Query API only |
+| Generic contract events | none | `/silver/events/generic` | Query API only |
+| Path finding | `/paths/*` | Not available | Unsupported |
+| Submit transaction | `POST /transactions` | Not available | Unsupported |
 
 ---
 
@@ -37,27 +47,20 @@ This guide helps you translate your existing Horizon API calls to equivalent Que
 
 **Horizon (Public)**
 ```
-https://horizon.stellar.org          # Mainnet
-https://horizon-testnet.stellar.org  # Testnet
+https://horizon.stellar.org
+https://horizon-testnet.stellar.org
 ```
 
 **Obsrvr Gateway Query API**
 ```
-https://gateway.withobsrvr.com/lake/v1/mainnet  # Mainnet
-https://gateway.withobsrvr.com/lake/v1/testnet  # Testnet
+https://gateway.withobsrvr.com/lake/v1/testnet
 ```
 
 **Authentication**
 
-Horizon requires no authentication. Query API requires an API key:
-
 ```bash
-# Horizon
-curl "https://horizon.stellar.org/accounts/GABC..."
-
-# Query API
 curl -H "Authorization: Api-Key YOUR_API_KEY" \
-  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/accounts/GABC..."
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/accounts/current?account_id=G..."
 ```
 
 ---
@@ -74,46 +77,22 @@ curl "https://horizon.stellar.org/accounts/GABC..."
 **Query API**
 ```bash
 curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/silver/accounts/GABC..."
+  "$GATEWAY/api/v1/silver/accounts/current?account_id=GABC..."
 ```
 
-### Get Account Transactions
+> Query API does not currently expose a deployed `/silver/accounts/{id}` route.
+
+### Get Account Balances / Trustlines
 
 **Horizon**
 ```bash
-curl "https://horizon.stellar.org/accounts/GABC.../transactions?limit=10&order=desc"
+curl "https://horizon.stellar.org/accounts/GABC..." | jq '.balances'
 ```
 
 **Query API**
 ```bash
 curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/silver/accounts/GABC.../transactions?limit=10"
-```
-
-### Get Account Operations
-
-**Horizon**
-```bash
-curl "https://horizon.stellar.org/accounts/GABC.../operations?limit=20"
-```
-
-**Query API**
-```bash
-curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/silver/accounts/GABC.../operations?limit=20"
-```
-
-### Get Account Effects
-
-**Horizon**
-```bash
-curl "https://horizon.stellar.org/accounts/GABC.../effects?limit=20"
-```
-
-**Query API**
-```bash
-curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/silver/accounts/GABC.../effects?limit=20"
+  "$GATEWAY/api/v1/silver/accounts/GABC.../balances"
 ```
 
 ### Get Account Offers
@@ -129,31 +108,20 @@ curl -H "Authorization: Api-Key $API_KEY" \
   "$GATEWAY/api/v1/silver/accounts/GABC.../offers"
 ```
 
-### Get Account Trades
+### Account Transactions / Operations / Effects / Trades
 
-**Horizon**
-```bash
-curl "https://horizon.stellar.org/accounts/GABC.../trades?limit=20"
-```
+These Horizon-style account subresources are **not currently deployed** as 1:1 routes.
 
-**Query API**
-```bash
-curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/silver/accounts/GABC.../trades?limit=20"
-```
-
-### Get Account Balances (Trustlines)
-
-**Horizon** (embedded in account response)
-```bash
-curl "https://horizon.stellar.org/accounts/GABC..." | jq '.balances'
-```
-
-**Query API** (dedicated endpoint)
-```bash
-curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/silver/accounts/GABC.../trustlines"
-```
+Use these supported alternatives instead:
+- account activity timeline:
+  - `/api/v1/silver/accounts/{id}/activity`
+- effects filtered by account:
+  - `/api/v1/silver/effects?account_id={id}`
+- trades filtered by account:
+  - `/api/v1/silver/trades?account_id={id}`
+- transfers filtered by account:
+  - `/api/v1/silver/transfers?from_account={id}`
+  - `/api/v1/silver/transfers?to_account={id}`
 
 ---
 
@@ -172,18 +140,23 @@ curl -H "Authorization: Api-Key $API_KEY" \
   "$GATEWAY/api/v1/silver/assets?asset_code=USDC&limit=10"
 ```
 
-### Get Asset by Code and Issuer
-
-**Horizon**
-```bash
-curl "https://horizon.stellar.org/assets?asset_code=USDC&asset_issuer=GA5ZSE..."
-```
+### Get Asset Holders
 
 **Query API**
 ```bash
 curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/silver/assets/USDC:GA5ZSE..."
+  "$GATEWAY/api/v1/silver/assets/USDC:GA5ZSE.../holders?limit=10"
 ```
+
+### Get Asset Stats
+
+**Query API**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "$GATEWAY/api/v1/silver/assets/USDC:GA5ZSE.../stats"
+```
+
+> A direct deployed `/silver/assets/{asset}` route is not currently available.
 
 ---
 
@@ -197,10 +170,7 @@ curl "https://horizon.stellar.org/ledgers?limit=10&order=desc"
 ```
 
 **Query API**
-```bash
-curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/silver/ledgers?limit=10"
-```
+Not currently available as a deployed silver route.
 
 ### Get Ledger by Sequence
 
@@ -215,31 +185,15 @@ curl -H "Authorization: Api-Key $API_KEY" \
   "$GATEWAY/api/v1/silver/ledgers/54930000"
 ```
 
-### Get Ledger Transactions
-
-**Horizon**
-```bash
-curl "https://horizon.stellar.org/ledgers/54930000/transactions"
-```
-
-**Query API**
+Compatibility alias:
 ```bash
 curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/silver/ledgers/54930000/transactions"
+  "$GATEWAY/api/v1/silver/ledger/54930000"
 ```
 
-### Get Ledger Operations
+### Ledger Transactions / Operations
 
-**Horizon**
-```bash
-curl "https://horizon.stellar.org/ledgers/54930000/operations"
-```
-
-**Query API**
-```bash
-curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/silver/ledgers/54930000/operations"
-```
+These Horizon-style ledger subresources are **not currently deployed** as silver routes.
 
 ---
 
@@ -253,35 +207,20 @@ curl "https://horizon.stellar.org/transactions?limit=20&order=desc"
 ```
 
 **Query API**
-```bash
-curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/silver/transactions?limit=20"
-```
+Not currently available as a deployed silver route.
 
-### Get Transaction by Hash
-
-**Horizon**
-```bash
-curl "https://horizon.stellar.org/transactions/abc123..."
-```
+### Get Transaction Receipt / Decode
 
 **Query API**
 ```bash
 curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/silver/transactions/abc123..."
-```
+  "$GATEWAY/api/v1/silver/tx/{hash}/decoded"
 
-### Get Transaction Operations
-
-**Horizon**
-```bash
-curl "https://horizon.stellar.org/transactions/abc123.../operations"
-```
-
-**Query API**
-```bash
 curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/silver/transactions/abc123.../operations"
+  "$GATEWAY/api/v1/silver/tx/{hash}/full"
+
+curl -H "Authorization: Api-Key $API_KEY" \
+  "$GATEWAY/api/v1/silver/tx/{hash}/diffs"
 ```
 
 ### Get Transaction Effects
@@ -294,8 +233,22 @@ curl "https://horizon.stellar.org/transactions/abc123.../effects"
 **Query API**
 ```bash
 curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/silver/transactions/abc123.../effects"
+  "$GATEWAY/api/v1/silver/tx/abc123.../effects"
 ```
+
+Also supported:
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "$GATEWAY/api/v1/silver/effects/transaction/abc123..."
+```
+
+### Get Transaction Operations
+
+A direct deployed `/silver/transactions/{hash}/operations` route is not currently available.
+
+Closest alternatives:
+- `/api/v1/silver/tx/{hash}/decoded`
+- `/api/v1/silver/tx/{hash}/full`
 
 ---
 
@@ -308,7 +261,7 @@ curl -H "Authorization: Api-Key $API_KEY" \
 curl "https://horizon.stellar.org/operations?limit=20"
 ```
 
-**Query API** (enriched with additional context)
+**Query API**
 ```bash
 curl -H "Authorization: Api-Key $API_KEY" \
   "$GATEWAY/api/v1/silver/operations/enriched?limit=20"
@@ -316,29 +269,7 @@ curl -H "Authorization: Api-Key $API_KEY" \
 
 ### Get Operation by ID
 
-**Horizon**
-```bash
-curl "https://horizon.stellar.org/operations/12345"
-```
-
-**Query API**
-```bash
-curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/silver/operations/12345"
-```
-
-### Filter by Operation Type
-
-**Horizon**
-```bash
-# No direct filter - must iterate through results
-```
-
-**Query API** (native filtering)
-```bash
-curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/silver/operations/enriched?type=payment"
-```
+A direct deployed `/silver/operations/{id}` route is not currently available.
 
 ---
 
@@ -359,12 +290,6 @@ curl -H "Authorization: Api-Key $API_KEY" \
 
 ### Filter by Effect Type
 
-**Horizon**
-```bash
-# Limited filtering
-```
-
-**Query API** (native filtering)
 ```bash
 curl -H "Authorization: Api-Key $API_KEY" \
   "$GATEWAY/api/v1/silver/effects?type=account_credited"
@@ -389,29 +314,13 @@ curl -H "Authorization: Api-Key $API_KEY" \
 
 ### Filter Trades by Asset Pair
 
-**Horizon**
-```bash
-curl "https://horizon.stellar.org/trades?base_asset_type=native&counter_asset_type=credit_alphanum4&counter_asset_code=USDC&counter_asset_issuer=GA5ZSE..."
-```
-
 **Query API**
 ```bash
 curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/silver/trades?base_asset=native&counter_asset=USDC:GA5ZSE..."
+  "$GATEWAY/api/v1/silver/trades/by-pair?base_asset=native&counter_asset=USDC:GA5ZSE..."
 ```
 
-### Trade Aggregations (Candlesticks)
-
-**Horizon**
-```bash
-curl "https://horizon.stellar.org/trade_aggregations?base_asset_type=native&counter_asset_type=credit_alphanum4&counter_asset_code=USDC&counter_asset_issuer=GA5ZSE...&resolution=3600000"
-```
-
-**Query API**
-```bash
-curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/silver/trades/aggregations?base_asset=native&counter_asset=USDC:GA5ZSE...&resolution=1h"
-```
+> `/silver/trades/aggregations` is not currently deployed.
 
 ---
 
@@ -419,12 +328,6 @@ curl -H "Authorization: Api-Key $API_KEY" \
 
 ### List Offers
 
-**Horizon**
-```bash
-curl "https://horizon.stellar.org/offers?limit=20"
-```
-
-**Query API**
 ```bash
 curl -H "Authorization: Api-Key $API_KEY" \
   "$GATEWAY/api/v1/silver/offers?limit=20"
@@ -432,12 +335,6 @@ curl -H "Authorization: Api-Key $API_KEY" \
 
 ### Get Offer by ID
 
-**Horizon**
-```bash
-curl "https://horizon.stellar.org/offers/12345"
-```
-
-**Query API**
 ```bash
 curl -H "Authorization: Api-Key $API_KEY" \
   "$GATEWAY/api/v1/silver/offers/12345"
@@ -449,12 +346,6 @@ curl -H "Authorization: Api-Key $API_KEY" \
 
 ### List Liquidity Pools
 
-**Horizon**
-```bash
-curl "https://horizon.stellar.org/liquidity_pools?limit=20"
-```
-
-**Query API**
 ```bash
 curl -H "Authorization: Api-Key $API_KEY" \
   "$GATEWAY/api/v1/silver/liquidity-pools?limit=20"
@@ -462,30 +353,9 @@ curl -H "Authorization: Api-Key $API_KEY" \
 
 ### Get Liquidity Pool by ID
 
-**Horizon**
-```bash
-curl "https://horizon.stellar.org/liquidity_pools/abcd1234..."
-```
-
-**Query API**
 ```bash
 curl -H "Authorization: Api-Key $API_KEY" \
   "$GATEWAY/api/v1/silver/liquidity-pools/abcd1234..."
-```
-
-### Liquidity Pool Trades (Not Yet Available)
-
-**Horizon**
-```bash
-curl "https://horizon.stellar.org/liquidity_pools/abcd1234.../trades"
-```
-
-**Query API Workaround** - Filter trades endpoint:
-```bash
-# Coming soon: /silver/liquidity-pools/{id}/trades
-# Current workaround - filter trades by type:
-curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/silver/trades?trade_type=liquidity_pool&limit=100"
 ```
 
 ---
@@ -494,12 +364,6 @@ curl -H "Authorization: Api-Key $API_KEY" \
 
 ### List Claimable Balances
 
-**Horizon**
-```bash
-curl "https://horizon.stellar.org/claimable_balances?claimant=GABC..."
-```
-
-**Query API**
 ```bash
 curl -H "Authorization: Api-Key $API_KEY" \
   "$GATEWAY/api/v1/silver/claimable-balances?claimant=GABC..."
@@ -507,141 +371,65 @@ curl -H "Authorization: Api-Key $API_KEY" \
 
 ### Get Claimable Balance by ID
 
-**Horizon**
-```bash
-curl "https://horizon.stellar.org/claimable_balances/00000000..."
-```
-
-**Query API**
 ```bash
 curl -H "Authorization: Api-Key $API_KEY" \
   "$GATEWAY/api/v1/silver/claimable-balances/00000000..."
 ```
 
-### Claimable Balance Operations (Not Yet Available)
+---
 
-**Horizon**
-```bash
-curl "https://horizon.stellar.org/claimable_balances/00000000.../operations"
-```
+## Query API Exclusive Features
 
-**Query API Workaround** - Filter operations by type:
+### Contract Analytics
+
 ```bash
-# Coming soon: /silver/claimable-balances/{id}/operations
-# Current workaround - filter operations by CB types:
 curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/silver/operations/enriched?type=create_claimable_balance&limit=100"
+  "$GATEWAY/api/v1/silver/contracts/top?limit=20"
+
+curl -H "Authorization: Api-Key $API_KEY" \
+  "$GATEWAY/api/v1/silver/stats/contracts?limit=20"
+
+curl -H "Authorization: Api-Key $API_KEY" \
+  "$GATEWAY/api/v1/silver/contracts/{contract_id}/metadata"
+
+curl -H "Authorization: Api-Key $API_KEY" \
+  "$GATEWAY/api/v1/silver/contracts/{contract_id}/recent-calls"
 ```
+
+### Transfers
+
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "$GATEWAY/api/v1/silver/transfers?asset_code=USDC&limit=100"
+
+curl -H "Authorization: Api-Key $API_KEY" \
+  "$GATEWAY/api/v1/silver/transfers?from_account=GABC...&limit=100"
+
+curl -H "Authorization: Api-Key $API_KEY" \
+  "$GATEWAY/api/v1/silver/transfers?to_account=GABC...&limit=100"
+```
+
+### Generic Contract Events
+
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "$GATEWAY/api/v1/silver/events/generic?limit=100"
+```
+
+### Compliance & Snapshot Features
+
+See the current analyst guide and API reference for the actively supported Gold endpoints.
+Some older example paths that appeared in earlier docs are not currently deployed verbatim.
 
 ---
 
 ## Not Available in Query API
 
-### Order Book
-
-**Horizon**
-```bash
-curl "https://horizon.stellar.org/order_book?selling_asset_type=native&buying_asset_type=credit_alphanum4&buying_asset_code=USDC&buying_asset_issuer=GA5ZSE..."
-```
-
-**Workaround**: Query offers and aggregate client-side:
-```bash
-curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/silver/offers?selling_asset=native&buying_asset=USDC:GA5ZSE...&limit=200"
-```
-
-### Fee Stats
-
-**Horizon**
-```bash
-curl "https://horizon.stellar.org/fee_stats"
-```
-
-**Workaround**: Use Horizon for fee stats, or hardcode reasonable defaults:
-- Low priority: 100 stroops
-- Medium priority: 200 stroops
-- High priority: 1000 stroops
-
-### Path Finding
-
-**Horizon**
-```bash
-curl "https://horizon.stellar.org/paths/strict-receive?source_account=GABC...&destination_asset_type=credit_alphanum4&destination_asset_code=USDC&destination_asset_issuer=GA5ZSE...&destination_amount=100"
-```
-
-**Not Available**: Path finding requires real-time graph computation on live order book state. Continue using Horizon for this functionality.
-
-### Transaction Submission
-
-**Horizon**
-```bash
-curl -X POST "https://horizon.stellar.org/transactions" \
-  -d "tx=AAAA..."
-```
-
-**Not Available**: Query API is read-only. Use Horizon or Stellar RPC for transaction submission.
-
----
-
-## Query API Exclusive Features
-
-These endpoints have no Horizon equivalent:
-
-### Contract Events (Soroban)
-
-```bash
-# Get contract events
-curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/silver/contracts/{contract_id}/events"
-
-# Get contract invocations
-curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/silver/contracts/{contract_id}/invocations"
-```
-
-### Token Transfers (SAC)
-
-```bash
-# Get all token transfers
-curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/silver/transfers?asset=USDC:GA5ZSE...&limit=100"
-
-# Get transfers for an account
-curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/silver/accounts/{id}/transfers"
-```
-
-### Compliance Data
-
-```bash
-# Get OFAC screening status
-curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/gold/compliance/accounts/{id}"
-```
-
-### Analytics & Snapshots
-
-```bash
-# Account balance snapshots
-curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/gold/snapshots/accounts?at_ledger=54930000"
-
-# Asset statistics
-curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/gold/assets/{asset}/stats"
-```
-
-### Fast Hash Lookups (Index Layer)
-
-```bash
-# Lookup transaction by hash (faster than Silver)
-curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/index/transactions/abc123..."
-
-# Lookup operation by ID
-curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/index/operations/12345"
-```
+- order book
+- path finding
+- transaction submission
+- several Horizon-style account and ledger subresources
+- several singular transaction/operation list routes under `/silver/transactions/*`
 
 ---
 
@@ -650,46 +438,37 @@ curl -H "Authorization: Api-Key $API_KEY" \
 | Aspect | Horizon | Query API |
 |--------|---------|-----------|
 | Authentication | None required | API key required |
-| Rate Limits | Varies by instance | Varies by plan |
-| Data Freshness | Real-time (~5s) | Near real-time (~10-30s) |
-| Historical Data | Full history | Full history |
-| Streaming | SSE supported | Not yet available |
-| Write Operations | Yes (submit tx) | No (read-only) |
-| Soroban Support | Basic | Comprehensive |
-| Analytics | None | Built-in |
+| Write operations | Yes | No |
+| Soroban support | Basic | Extensive |
+| Analytics | Limited | Built-in |
+| Contract analytics | No | Yes |
+| Transaction receipts | Limited | Yes |
 
 ## Pagination Differences
 
-**Horizon** uses cursor-based pagination:
-```bash
-curl "https://horizon.stellar.org/transactions?cursor=12345&limit=20"
-```
+Query API primarily uses **cursor-based pagination** on feed endpoints.
+Keep the returned `cursor` and pass it back on the next request.
 
-**Query API** uses offset or ledger-based pagination:
+Example:
 ```bash
-# Offset-based
 curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/silver/transactions?offset=100&limit=20"
-
-# Ledger range
-curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/silver/transactions?start_ledger=54930000&end_ledger=54931000"
+  "$GATEWAY/api/v1/silver/transfers?limit=100"
 ```
 
 ---
 
 ## Migration Checklist
 
-- [ ] Get API key from Obsrvr Gateway
-- [ ] Update base URL in your application
-- [ ] Add Authorization header to all requests
-- [ ] Update pagination logic (cursor → offset/ledger)
-- [ ] Test all endpoints your application uses
-- [ ] Keep Horizon for: path finding, transaction submission, fee stats
-- [ ] Explore new Query API features: Soroban events, transfers, analytics
+- [ ] Get an API key from Obsrvr Gateway
+- [ ] Update base URL to `$GATEWAY/api/v1/...`
+- [ ] Add `Authorization: Api-Key ...` to all requests
+- [ ] Re-check every Horizon mapping against the **currently deployed** routes
+- [ ] Prefer silver analytics routes over trying to preserve Horizon path shapes
+- [ ] Keep Horizon or RPC for transaction submission and path finding
+- [ ] Use Query API-specific tx receipt and contract analytics endpoints where useful
 
 ## Getting Help
 
-- **Documentation**: See other guides in this folder
-- **API Reference**: Check swagger.yaml in the repository
-- **Support**: Contact Obsrvr support for API key issues
+- Use the analyst guide index and common queries reference for current routes
+- Treat this document as a migration aid, not a promise of strict Horizon parity
+- Verify uncertain routes against the live gateway before integrating

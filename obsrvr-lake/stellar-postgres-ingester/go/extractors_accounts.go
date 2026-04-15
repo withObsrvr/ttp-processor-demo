@@ -295,11 +295,6 @@ func (w *Writer) extractTrustlines(rawLedger *pb.RawLedger) ([]TrustlineData, er
 		trustlines = append(trustlines, *trustline)
 	}
 
-	// Debug logging
-	if len(trustlines) > 0 {
-		log.Printf("DEBUG: extractTrustlines found %d trustlines for ledger %d", len(trustlines), ledgerSeq)
-	}
-
 	return trustlines, nil
 }
 
@@ -411,6 +406,14 @@ func (w *Writer) extractAccountSigners(rawLedger *pb.RawLedger) ([]AccountSigner
 	}
 	defer changeReader.Close()
 
+	// Map-based deduplication: the LedgerChangeReader can return the same
+	// account multiple times per ledger (fee processing, operation changes,
+	// post-apply, upgrades). Without dedup the signer row count depends on
+	// how many change stages the reader emits, which differs between
+	// TransactionMeta V3 and V4.
+	// Key: "accountID:signerKey"
+	signerMap := make(map[string]*AccountSignerData)
+
 	// Process all changes
 	for {
 		change, err := changeReader.Read()
@@ -429,12 +432,10 @@ func (w *Writer) extractAccountSigners(rawLedger *pb.RawLedger) ([]AccountSigner
 		switch change.Type {
 		case xdr.LedgerEntryTypeAccount:
 			if change.Post != nil {
-				// Account exists (created or updated)
 				account := change.Post.Data.MustAccount()
 				accountEntry = &account
 				deleted = false
 			} else if change.Pre != nil {
-				// Account deleted (mark all signers as deleted)
 				account := change.Pre.Data.MustAccount()
 				accountEntry = &account
 				deleted = true
@@ -447,7 +448,6 @@ func (w *Writer) extractAccountSigners(rawLedger *pb.RawLedger) ([]AccountSigner
 			continue
 		}
 
-		// Extract account ID
 		accountID := accountEntry.AccountId.Address()
 
 		// Get signer sponsoring IDs if available (Protocol 14+)
@@ -460,38 +460,34 @@ func (w *Writer) extractAccountSigners(rawLedger *pb.RawLedger) ([]AccountSigner
 			}
 		}
 
-		// Process each signer
+		// Process each signer — last-write-wins per (account, signer) pair
 		for i, signer := range accountEntry.Signers {
-			// Get sponsor if available (matches index in signers array)
 			var sponsor string
 			if i < len(sponsorIDs) && sponsorIDs[i] != nil {
 				sponsor = sponsorIDs[i].Address()
 			}
 
-			// Extract signer key as string
 			signerKey := signer.Key.Address()
+			dedupeKey := accountID + ":" + signerKey
 
 			signerData := AccountSignerData{
-				// Identity (3 fields)
 				AccountID:      accountID,
 				Signer:         signerKey,
 				LedgerSequence: ledgerSeq,
-
-				// Signer details (2 fields)
-				Weight:  uint32(signer.Weight),
-				Sponsor: sponsor,
-
-				// Status (1 field)
-				Deleted: deleted,
-
-				// Metadata (3 fields)
-				ClosedAt:    closedAt,
-				LedgerRange: (ledgerSeq / 10000) * 10000,
-				CreatedAt:   time.Now().UTC(),
+				Weight:         uint32(signer.Weight),
+				Sponsor:        sponsor,
+				Deleted:        deleted,
+				ClosedAt:       closedAt,
+				LedgerRange:    (ledgerSeq / 10000) * 10000,
+				CreatedAt:      time.Now().UTC(),
 			}
 
-			signersList = append(signersList, signerData)
+			signerMap[dedupeKey] = &signerData
 		}
+	}
+
+	for _, s := range signerMap {
+		signersList = append(signersList, *s)
 	}
 
 	return signersList, nil

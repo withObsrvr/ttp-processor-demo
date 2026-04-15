@@ -349,10 +349,12 @@ func (r *BronzeColdReader) QueryTokenTransfers(ctx context.Context, startLedger,
 			o.destination AS to_account,
 			CASE
 				WHEN o.asset IS NULL OR o.asset = 'native' THEN 'XLM'
+				WHEN o.asset = 'liquidity_pool_shares' THEN NULL
 				ELSE SPLIT_PART(o.asset, ':', 1)
 			END AS asset_code,
 			CASE
 				WHEN o.asset IS NULL OR o.asset = 'native' THEN NULL
+				WHEN o.asset = 'liquidity_pool_shares' THEN NULL
 				ELSE SPLIT_PART(o.asset, ':', 2)
 			END AS asset_issuer,
 			CAST(o.amount AS VARCHAR) AS amount,
@@ -1002,6 +1004,7 @@ func (r *BronzeColdReader) QueryEffects(ctx context.Context, startLedger, endLed
 			transaction_hash,
 			operation_index,
 			effect_index,
+			NULL::BIGINT AS operation_id,
 			effect_type,
 			effect_type_string,
 			account_id,
@@ -1009,6 +1012,7 @@ func (r *BronzeColdReader) QueryEffects(ctx context.Context, startLedger, endLed
 			asset_code,
 			asset_issuer,
 			asset_type,
+			NULL AS details_json,
 			NULL AS trustline_limit,
 			NULL AS authorize_flag,
 			NULL AS clawback_flag,

@@ -957,21 +957,23 @@ func (sw *SilverWriter) WriteEffect(ctx context.Context, tx *sql.Tx, row *Effect
 	query := `
 		INSERT INTO effects (
 			ledger_sequence, transaction_hash, operation_index, effect_index,
-			effect_type, effect_type_string, account_id,
+			operation_id, effect_type, effect_type_string, account_id,
 			amount, asset_code, asset_issuer, asset_type,
+			details_json,
 			trustline_limit, authorize_flag, clawback_flag,
 			signer_account, signer_weight, offer_id, seller_account,
 			created_at, ledger_range
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22
 		)
 		ON CONFLICT (ledger_sequence, transaction_hash, operation_index, effect_index) DO NOTHING
 	`
 
 	_, err := tx.ExecContext(ctx, query,
 		row.LedgerSequence, row.TransactionHash, row.OperationIndex, row.EffectIndex,
-		row.EffectType, row.EffectTypeString, row.AccountID,
+		row.OperationID, row.EffectType, row.EffectTypeString, row.AccountID,
 		row.Amount, row.AssetCode, row.AssetIssuer, row.AssetType,
+		row.DetailsJSON,
 		row.TrustlineLimit, row.AuthorizeFlag, row.ClawbackFlag,
 		row.SignerAccount, row.SignerWeight, row.OfferID, row.SellerAccount,
 		row.CreatedAt, row.LedgerRange,

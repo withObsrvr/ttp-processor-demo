@@ -10,11 +10,11 @@ import (
 
 // PriceHandlers contains HTTP handlers for price data queries
 type PriceHandlers struct {
-	reader *UnifiedDuckDBReader
+	reader *SilverHotReader
 }
 
 // NewPriceHandlers creates new price API handlers
-func NewPriceHandlers(reader *UnifiedDuckDBReader) *PriceHandlers {
+func NewPriceHandlers(reader *SilverHotReader) *PriceHandlers {
 	return &PriceHandlers{reader: reader}
 }
 

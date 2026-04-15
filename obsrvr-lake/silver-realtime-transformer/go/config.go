@@ -54,9 +54,10 @@ type FallbackConfig struct {
 
 // ServiceConfig holds service-level settings
 type ServiceConfig struct {
-	Name               string `yaml:"name"`
-	HealthPort         string `yaml:"health_port"`
-	PollIntervalSeconds int   `yaml:"poll_interval_seconds"`
+	Name                string `yaml:"name"`
+	HealthPort          string `yaml:"health_port"`
+	GRPCPort            int    `yaml:"grpc_port"`
+	PollIntervalSeconds int    `yaml:"poll_interval_seconds"`
 }
 
 // DatabaseConfig holds database connection settings

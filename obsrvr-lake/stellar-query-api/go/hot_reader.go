@@ -367,6 +367,15 @@ func (h *HotReader) QueryContractEvents(ctx context.Context, start, end int64, l
 	return rows, nil
 }
 
+// DB returns the underlying *sql.DB for callers that need to run ad-hoc
+// queries directly against bronze hot PostgreSQL, bypassing the DuckDB
+// unified reader's ATTACH POSTGRES federation layer. Direct access is
+// ~5-10x faster for simple aggregate queries because it avoids DuckDB's
+// per-query postgres_scan row-streaming overhead.
+func (h *HotReader) DB() *sql.DB {
+	return h.db
+}
+
 func (h *HotReader) Close() error {
 	return h.db.Close()
 }

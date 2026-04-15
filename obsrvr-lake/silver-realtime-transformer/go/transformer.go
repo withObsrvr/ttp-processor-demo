@@ -19,6 +19,7 @@ type RealtimeTransformer struct {
 	silverWriter  *SilverWriter
 	checkpoint    *CheckpointManager
 	silverDB      *sql.DB
+	sourceServer  *SilverSourceServer
 	stopChan      chan struct{}
 
 	// Stats
@@ -44,6 +45,10 @@ func NewRealtimeTransformer(config *Config, sourceManager *SourceManager, silver
 		silverDB:      silverDB,
 		stopChan:      make(chan struct{}),
 	}
+}
+
+func (rt *RealtimeTransformer) SetSourceServer(sourceServer *SilverSourceServer) {
+	rt.sourceServer = sourceServer
 }
 
 // Start begins the real-time transformation loop.
@@ -967,6 +972,15 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 			totalRows, duration, startLedger, endLedger, progress, target)
 	} else {
 		log.Printf("🔥 Transformed %d rows in %v (ledgers %d-%d)", totalRows, duration, startLedger, endLedger)
+	}
+
+	if rt.sourceServer != nil {
+		rt.sourceServer.Broadcast(SilverBatchInfo{
+			StartLedger: uint32(startLedger),
+			EndLedger:   uint32(endLedger),
+			ClosedAt:    time.Now().UTC(),
+			RowCount:    uint64(totalRows),
+		})
 	}
 
 	// Check if we should switch modes (e.g., backfill complete → switch to hot)
@@ -2056,8 +2070,9 @@ func (rt *RealtimeTransformer) transformEffects(ctx context.Context, tx *sql.Tx,
 
 		err := rows.Scan(
 			&row.LedgerSequence, &row.TransactionHash, &row.OperationIndex, &row.EffectIndex,
-			&row.EffectType, &row.EffectTypeString, &row.AccountID,
+			&row.OperationID, &row.EffectType, &row.EffectTypeString, &row.AccountID,
 			&row.Amount, &row.AssetCode, &row.AssetIssuer, &row.AssetType,
+			&row.DetailsJSON,
 			&row.TrustlineLimit, &row.AuthorizeFlag, &row.ClawbackFlag,
 			&row.SignerAccount, &row.SignerWeight, &row.OfferID, &row.SellerAccount,
 			&row.CreatedAt, &row.LedgerRange,

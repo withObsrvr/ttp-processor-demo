@@ -121,15 +121,17 @@ type ParquetTransaction struct {
 	LedgerRange                  uint32  `parquet:"ledger_range"`
 	SignaturesCount              int32   `parquet:"signatures_count"`
 	NewAccount                   bool    `parquet:"new_account"`
-	TimeboundsMinTime            *string `parquet:"timebounds_min_time,optional"`
-	TimeboundsMaxTime            *string `parquet:"timebounds_max_time,optional"`
+	TimeboundsMinTime            *int64  `parquet:"timebounds_min_time,optional"`
+	TimeboundsMaxTime            *int64  `parquet:"timebounds_max_time,optional"`
 	SorobanHostFunctionType      *string `parquet:"soroban_host_function_type,optional"`
 	SorobanContractID            *string `parquet:"soroban_contract_id,optional"`
 	RentFeeCharged               *int64  `parquet:"rent_fee_charged,optional"`
 	SorobanResourcesInstructions *int64  `parquet:"soroban_resources_instructions,optional"`
 	SorobanResourcesReadBytes    *int64  `parquet:"soroban_resources_read_bytes,optional"`
 	SorobanResourcesWriteBytes   *int64  `parquet:"soroban_resources_write_bytes,optional"`
-	PipelineVersion              string  `parquet:"pipeline_version"`
+	TransactionID                int64   `parquet:"transaction_id"`
+	EraID                        *string `parquet:"era_id,optional"`
+	PipelineVersion              string  `parquet:"version_label"`
 }
 
 type ParquetOperation struct {
@@ -139,7 +141,7 @@ type ParquetOperation struct {
 	LedgerSequence        uint32  `parquet:"ledger_sequence"`
 	SourceAccount         string  `parquet:"source_account"`
 	SourceAccountMuxed    *string `parquet:"source_account_muxed,optional"`
-	OpType                int32   `parquet:"op_type"`
+	OpType                int32   `parquet:"type"`
 	TypeString            string  `parquet:"type_string"`
 	CreatedAt             int64   `parquet:"created_at,timestamp(microsecond)"`
 	TransactionSuccessful bool    `parquet:"transaction_successful"`
@@ -189,7 +191,10 @@ type ParquetOperation struct {
 	SorobanArgumentsJSON  *string `parquet:"soroban_arguments_json,optional"`
 	ContractCallsJSON     *string `parquet:"contract_calls_json,optional"`
 	MaxCallDepth          *int32  `parquet:"max_call_depth,optional"`
-	PipelineVersion       string  `parquet:"pipeline_version"`
+	TransactionID         int64   `parquet:"transaction_id"`
+	OperationID           int64   `parquet:"operation_id"`
+	EraID                 *string `parquet:"era_id,optional"`
+	PipelineVersion       string  `parquet:"version_label"`
 }
 
 type ParquetEffect struct {
@@ -211,9 +216,12 @@ type ParquetEffect struct {
 	SignerWeight     *int32  `parquet:"signer_weight,optional"`
 	OfferID          *int64  `parquet:"offer_id,optional"`
 	SellerAccount    *string `parquet:"seller_account,optional"`
+	OperationID      *int64  `parquet:"operation_id,optional"`
+	DetailsJSON      *string `parquet:"details_json,optional"`
 	CreatedAt        int64   `parquet:"created_at,timestamp(microsecond)"`
 	LedgerRange      uint32  `parquet:"ledger_range"`
-	PipelineVersion  string  `parquet:"pipeline_version"`
+	EraID            *string `parquet:"era_id,optional"`
+	PipelineVersion  string  `parquet:"version_label"`
 }
 
 type ParquetTrade struct {
@@ -234,7 +242,8 @@ type ParquetTrade struct {
 	Price              string  `parquet:"price"`
 	CreatedAt          int64   `parquet:"created_at,timestamp(microsecond)"`
 	LedgerRange        uint32  `parquet:"ledger_range"`
-	PipelineVersion    string  `parquet:"pipeline_version"`
+	EraID              *string `parquet:"era_id,optional"`
+	PipelineVersion    string  `parquet:"version_label"`
 }
 
 type ParquetAccount struct {
@@ -258,8 +267,11 @@ type ParquetAccount struct {
 	AuthClawbackEnabled bool    `parquet:"auth_clawback_enabled"`
 	Signers             *string `parquet:"signers,optional"`
 	SponsorAccount      *string `parquet:"sponsor_account,optional"`
+	CreatedAt           int64   `parquet:"created_at,timestamp(microsecond)"`
+	UpdatedAt           int64   `parquet:"updated_at,timestamp(microsecond)"`
 	LedgerRange         uint32  `parquet:"ledger_range"`
-	PipelineVersion     string  `parquet:"pipeline_version"`
+	EraID               *string `parquet:"era_id,optional"`
+	PipelineVersion     string  `parquet:"version_label"`
 }
 
 type ParquetContractEvent struct {
@@ -270,6 +282,8 @@ type ParquetContractEvent struct {
 	ClosedAt                 int64   `parquet:"closed_at,timestamp(microsecond)"`
 	EventType                string  `parquet:"event_type"`
 	InSuccessfulContractCall bool    `parquet:"in_successful_contract_call"`
+	Successful               bool    `parquet:"successful"`
+	ContractEventXDR         string  `parquet:"contract_event_xdr"`
 	TopicsJSON               string  `parquet:"topics_json"`
 	TopicsDecoded            string  `parquet:"topics_decoded"`
 	DataXDR                  string  `parquet:"data_xdr"`
@@ -281,8 +295,10 @@ type ParquetContractEvent struct {
 	Topic3Decoded            *string `parquet:"topic3_decoded,optional"`
 	OperationIndex           uint32  `parquet:"operation_index"`
 	EventIndex               uint32  `parquet:"event_index"`
+	CreatedAt                int64   `parquet:"created_at,timestamp(microsecond)"`
 	LedgerRange              uint32  `parquet:"ledger_range"`
-	PipelineVersion          string  `parquet:"pipeline_version"`
+	EraID                    *string `parquet:"era_id,optional"`
+	PipelineVersion          string  `parquet:"version_label"`
 }
 
 type ParquetNativeBalance struct {
@@ -295,9 +311,10 @@ type ParquetNativeBalance struct {
 	NumSponsored       int32  `parquet:"num_sponsored"`
 	SequenceNumber     *int64 `parquet:"sequence_number,optional"`
 	LastModifiedLedger int64  `parquet:"last_modified_ledger"`
-	LedgerSequence     int64  `parquet:"ledger_sequence"`
-	LedgerRange        int64  `parquet:"ledger_range"`
-	PipelineVersion    string `parquet:"pipeline_version"`
+	LedgerSequence     int64   `parquet:"ledger_sequence"`
+	LedgerRange        int64   `parquet:"ledger_range"`
+	EraID              *string `parquet:"era_id,optional"`
+	PipelineVersion    string  `parquet:"version_label"`
 }
 
 type ParquetOffer struct {
@@ -314,8 +331,10 @@ type ParquetOffer struct {
 	Amount             string  `parquet:"amount"`
 	Price              string  `parquet:"price"`
 	Flags              uint32  `parquet:"flags"`
+	CreatedAt          int64   `parquet:"created_at,timestamp(microsecond)"`
 	LedgerRange        uint32  `parquet:"ledger_range"`
-	PipelineVersion    string  `parquet:"pipeline_version"`
+	EraID              *string `parquet:"era_id,optional"`
+	PipelineVersion    string  `parquet:"version_label"`
 }
 
 type ParquetTrustline struct {
@@ -330,9 +349,11 @@ type ParquetTrustline struct {
 	Authorized                      bool   `parquet:"authorized"`
 	AuthorizedToMaintainLiabilities bool   `parquet:"authorized_to_maintain_liabilities"`
 	ClawbackEnabled                 bool   `parquet:"clawback_enabled"`
-	LedgerSequence                  uint32 `parquet:"ledger_sequence"`
-	LedgerRange                     uint32 `parquet:"ledger_range"`
-	PipelineVersion                 string `parquet:"pipeline_version"`
+	LedgerSequence                  uint32  `parquet:"ledger_sequence"`
+	CreatedAt                       int64   `parquet:"created_at,timestamp(microsecond)"`
+	LedgerRange                     uint32  `parquet:"ledger_range"`
+	EraID                           *string `parquet:"era_id,optional"`
+	PipelineVersion                 string  `parquet:"version_label"`
 }
 
 type ParquetAccountSigner struct {
@@ -342,9 +363,11 @@ type ParquetAccountSigner struct {
 	Weight         uint32 `parquet:"weight"`
 	Sponsor        string `parquet:"sponsor"`
 	Deleted        bool   `parquet:"deleted"`
-	ClosedAt        int64  `parquet:"closed_at,timestamp(microsecond)"`
-	LedgerRange     uint32 `parquet:"ledger_range"`
-	PipelineVersion string `parquet:"pipeline_version"`
+	ClosedAt        int64   `parquet:"closed_at,timestamp(microsecond)"`
+	CreatedAt       int64   `parquet:"created_at,timestamp(microsecond)"`
+	LedgerRange     uint32  `parquet:"ledger_range"`
+	EraID           *string `parquet:"era_id,optional"`
+	PipelineVersion string  `parquet:"version_label"`
 }
 
 type ParquetClaimableBalance struct {
@@ -359,7 +382,8 @@ type ParquetClaimableBalance struct {
 	ClaimantsCount int32   `parquet:"claimants_count"`
 	Flags           uint32  `parquet:"flags"`
 	LedgerRange     uint32  `parquet:"ledger_range"`
-	PipelineVersion string  `parquet:"pipeline_version"`
+	EraID           *string `parquet:"era_id,optional"`
+	PipelineVersion string  `parquet:"version_label"`
 }
 
 type ParquetLiquidityPool struct {
@@ -378,8 +402,10 @@ type ParquetLiquidityPool struct {
 	AssetBCode      *string `parquet:"asset_b_code,optional"`
 	AssetBIssuer    *string `parquet:"asset_b_issuer,optional"`
 	AssetBAmount    int64   `parquet:"asset_b_amount"`
+	CreatedAt       int64   `parquet:"created_at,timestamp(microsecond)"`
 	LedgerRange     uint32  `parquet:"ledger_range"`
-	PipelineVersion string  `parquet:"pipeline_version"`
+	EraID           *string `parquet:"era_id,optional"`
+	PipelineVersion string  `parquet:"version_label"`
 }
 
 type ParquetTTL struct {
@@ -390,9 +416,11 @@ type ParquetTTL struct {
 	Expired            bool   `parquet:"expired"`
 	LastModifiedLedger int32  `parquet:"last_modified_ledger"`
 	Deleted            bool   `parquet:"deleted"`
-	ClosedAt           int64  `parquet:"closed_at,timestamp(microsecond)"`
-	LedgerRange        uint32 `parquet:"ledger_range"`
-	PipelineVersion    string `parquet:"pipeline_version"`
+	ClosedAt           int64   `parquet:"closed_at,timestamp(microsecond)"`
+	CreatedAt          int64   `parquet:"created_at,timestamp(microsecond)"`
+	LedgerRange        uint32  `parquet:"ledger_range"`
+	EraID              *string `parquet:"era_id,optional"`
+	PipelineVersion    string  `parquet:"version_label"`
 }
 
 type ParquetEvictedKey struct {
@@ -400,10 +428,12 @@ type ParquetEvictedKey struct {
 	LedgerSequence uint32 `parquet:"ledger_sequence"`
 	ContractID     string `parquet:"contract_id"`
 	KeyType        string `parquet:"key_type"`
-	Durability      string `parquet:"durability"`
-	ClosedAt        int64  `parquet:"closed_at,timestamp(microsecond)"`
-	LedgerRange     uint32 `parquet:"ledger_range"`
-	PipelineVersion string `parquet:"pipeline_version"`
+	Durability      string  `parquet:"durability"`
+	ClosedAt        int64   `parquet:"closed_at,timestamp(microsecond)"`
+	CreatedAt       int64   `parquet:"created_at,timestamp(microsecond)"`
+	LedgerRange     uint32  `parquet:"ledger_range"`
+	EraID           *string `parquet:"era_id,optional"`
+	PipelineVersion string  `parquet:"version_label"`
 }
 
 type ParquetContractData struct {
@@ -425,8 +455,10 @@ type ParquetContractData struct {
 	TokenName          *string `parquet:"token_name,optional"`
 	TokenSymbol        *string `parquet:"token_symbol,optional"`
 	TokenDecimals      *int32  `parquet:"token_decimals,optional"`
+	CreatedAt          int64   `parquet:"created_at,timestamp(microsecond)"`
 	LedgerRange        uint32  `parquet:"ledger_range"`
-	PipelineVersion    string  `parquet:"pipeline_version"`
+	EraID              *string `parquet:"era_id,optional"`
+	PipelineVersion    string  `parquet:"version_label"`
 }
 
 type ParquetContractCode struct {
@@ -447,9 +479,11 @@ type ParquetContractCode struct {
 	NElemSegments      *int64 `parquet:"n_elem_segments,optional"`
 	NImports           *int64 `parquet:"n_imports,optional"`
 	NExports           *int64 `parquet:"n_exports,optional"`
-	NDataSegmentBytes  *int64 `parquet:"n_data_segment_bytes,optional"`
-	LedgerRange        uint32 `parquet:"ledger_range"`
-	PipelineVersion    string `parquet:"pipeline_version"`
+	NDataSegmentBytes  *int64  `parquet:"n_data_segment_bytes,optional"`
+	CreatedAt          int64   `parquet:"created_at,timestamp(microsecond)"`
+	LedgerRange        uint32  `parquet:"ledger_range"`
+	EraID              *string `parquet:"era_id,optional"`
+	PipelineVersion    string  `parquet:"version_label"`
 }
 
 type ParquetRestoredKey struct {
@@ -459,9 +493,11 @@ type ParquetRestoredKey struct {
 	KeyType            string `parquet:"key_type"`
 	Durability         string `parquet:"durability"`
 	RestoredFromLedger uint32 `parquet:"restored_from_ledger"`
-	ClosedAt           int64  `parquet:"closed_at,timestamp(microsecond)"`
-	LedgerRange        uint32 `parquet:"ledger_range"`
-	PipelineVersion    string `parquet:"pipeline_version"`
+	ClosedAt           int64   `parquet:"closed_at,timestamp(microsecond)"`
+	CreatedAt          int64   `parquet:"created_at,timestamp(microsecond)"`
+	LedgerRange        uint32  `parquet:"ledger_range"`
+	EraID              *string `parquet:"era_id,optional"`
+	PipelineVersion    string  `parquet:"version_label"`
 }
 
 type ParquetContractCreation struct {
@@ -471,18 +507,57 @@ type ParquetContractCreation struct {
 	CreatedLedger  uint32  `parquet:"created_ledger"`
 	CreatedAt       int64   `parquet:"created_at,timestamp(microsecond)"`
 	LedgerRange     uint32  `parquet:"ledger_range"`
-	PipelineVersion string  `parquet:"pipeline_version"`
+	EraID           *string `parquet:"era_id,optional"`
+	PipelineVersion string  `parquet:"version_label"`
 }
 
 type ParquetConfigSetting struct {
-	ConfigSettingID    int32  `parquet:"config_setting_id"`
-	LedgerSequence     uint32 `parquet:"ledger_sequence"`
-	LastModifiedLedger int32  `parquet:"last_modified_ledger"`
-	Deleted            bool   `parquet:"deleted"`
-	ClosedAt           int64  `parquet:"closed_at,timestamp(microsecond)"`
-	ConfigSettingXDR   string `parquet:"config_setting_xdr"`
-	LedgerRange        uint32 `parquet:"ledger_range"`
-	PipelineVersion    string `parquet:"pipeline_version"`
+	ConfigSettingID                 int32   `parquet:"config_setting_id"`
+	LedgerSequence                  uint32  `parquet:"ledger_sequence"`
+	LastModifiedLedger              int32   `parquet:"last_modified_ledger"`
+	Deleted                         bool    `parquet:"deleted"`
+	ClosedAt                        int64   `parquet:"closed_at,timestamp(microsecond)"`
+	LedgerMaxInstructions           *int64  `parquet:"ledger_max_instructions,optional"`
+	TxMaxInstructions               *int64  `parquet:"tx_max_instructions,optional"`
+	FeeRatePerInstructionsIncrement *int64  `parquet:"fee_rate_per_instructions_increment,optional"`
+	TxMemoryLimit                   *int64  `parquet:"tx_memory_limit,optional"`
+	LedgerMaxReadLedgerEntries      *int64  `parquet:"ledger_max_read_ledger_entries,optional"`
+	LedgerMaxReadBytes              *int64  `parquet:"ledger_max_read_bytes,optional"`
+	LedgerMaxWriteLedgerEntries     *int64  `parquet:"ledger_max_write_ledger_entries,optional"`
+	LedgerMaxWriteBytes             *int64  `parquet:"ledger_max_write_bytes,optional"`
+	TxMaxReadLedgerEntries          *int64  `parquet:"tx_max_read_ledger_entries,optional"`
+	TxMaxReadBytes                  *int64  `parquet:"tx_max_read_bytes,optional"`
+	TxMaxWriteLedgerEntries         *int64  `parquet:"tx_max_write_ledger_entries,optional"`
+	TxMaxWriteBytes                 *int64  `parquet:"tx_max_write_bytes,optional"`
+	ContractMaxSizeBytes            *int64  `parquet:"contract_max_size_bytes,optional"`
+	ConfigSettingXDR                string  `parquet:"config_setting_xdr"`
+	CreatedAt                       int64   `parquet:"created_at,timestamp(microsecond)"`
+	LedgerRange                     uint32  `parquet:"ledger_range"`
+	EraID                           *string `parquet:"era_id,optional"`
+	PipelineVersion                 string  `parquet:"version_label"`
+}
+
+type ParquetTokenTransfer struct {
+	LedgerSequence  uint32  `parquet:"ledger_sequence"`
+	TransactionHash string  `parquet:"transaction_hash"`
+	TransactionID   int64   `parquet:"transaction_id"`
+	OperationID     *int64  `parquet:"operation_id,optional"`
+	OperationIndex  *int32  `parquet:"operation_index,optional"`
+	EventType       string  `parquet:"event_type"`
+	From            *string `parquet:"from,optional"`
+	To              *string `parquet:"to,optional"`
+	Asset           string  `parquet:"asset"`
+	AssetType       string  `parquet:"asset_type"`
+	AssetCode       *string `parquet:"asset_code,optional"`
+	AssetIssuer     *string `parquet:"asset_issuer,optional"`
+	Amount          float64 `parquet:"amount"`
+	AmountRaw       string  `parquet:"amount_raw"`
+	ContractID      string  `parquet:"contract_id"`
+	ClosedAt        int64   `parquet:"closed_at,timestamp(microsecond)"`
+	CreatedAt       int64   `parquet:"created_at,timestamp(microsecond)"`
+	LedgerRange     uint32  `parquet:"ledger_range"`
+	EraID           *string `parquet:"era_id,optional"`
+	PipelineVersion string  `parquet:"version_label"`
 }
 
 // --- Full ParquetWriter implementation ---
@@ -503,10 +578,21 @@ type ParquetLedger struct {
 	OperationCount      int32   `parquet:"operation_count"`
 	SuccessfulTxCount   int32   `parquet:"successful_tx_count"`
 	FailedTxCount       int32   `parquet:"failed_tx_count"`
-	TxSetOperationCount int32   `parquet:"tx_set_operation_count"`
+	TxSetOperationCount  int32   `parquet:"tx_set_operation_count"`
+	SorobanFeeWrite1kb   *int64  `parquet:"soroban_fee_write1kb,optional"`
+	NodeID               *string `parquet:"node_id,optional"`
+	Signature            *string `parquet:"signature,optional"`
+	LedgerHeader         *string `parquet:"ledger_header,optional"`
+	BucketListSize       *int64  `parquet:"bucket_list_size,optional"`
+	LiveSorobanStateSize *int64  `parquet:"live_soroban_state_size,optional"`
+	EvictedKeysCount     *int32  `parquet:"evicted_keys_count,optional"`
+	SorobanOpCount       *int32  `parquet:"soroban_op_count,optional"`
+	TotalFeeCharged      *int64  `parquet:"total_fee_charged,optional"`
+	ContractEventsCount  *int32  `parquet:"contract_events_count,optional"`
 	IngestionTimestamp  int64   `parquet:"ingestion_timestamp,timestamp(microsecond)"`
 	LedgerRange         uint32  `parquet:"ledger_range"`
-	PipelineVersion     string  `parquet:"pipeline_version"`
+	EraID               *string `parquet:"era_id,optional"`
+	PipelineVersion     string  `parquet:"version_label"`
 }
 
 type ParquetWriterFull struct {
@@ -532,6 +618,7 @@ type ParquetWriterFull struct {
 	restoredKeys       *ParquetTableWriter[ParquetRestoredKey]
 	contractCreations  *ParquetTableWriter[ParquetContractCreation]
 	ledgers            *ParquetTableWriter[ParquetLedger]
+	tokenTransfers     *ParquetTableWriter[ParquetTokenTransfer]
 }
 
 func NewParquetWriterFull(outputDir string, workerID int, pipelineVersion string) *ParquetWriterFull {
@@ -558,6 +645,7 @@ func NewParquetWriterFull(outputDir string, workerID int, pipelineVersion string
 		restoredKeys:      NewParquetTableWriter[ParquetRestoredKey](outputDir, "restored_keys", workerID),
 		contractCreations: NewParquetTableWriter[ParquetContractCreation](outputDir, "contract_creations", workerID),
 		ledgers:           NewParquetTableWriter[ParquetLedger](outputDir, "ledgers", workerID),
+		tokenTransfers:    NewParquetTableWriter[ParquetTokenTransfer](outputDir, "token_transfers", workerID),
 	}
 }
 
@@ -591,6 +679,8 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 				SorobanResourcesInstructions: t.SorobanResourcesInstructions,
 				SorobanResourcesReadBytes:    t.SorobanResourcesReadBytes,
 				SorobanResourcesWriteBytes:   t.SorobanResourcesWriteBytes,
+				TransactionID:                t.TransactionID,
+				EraID:                        t.EraID,
 				PipelineVersion:              pw.pipelineVersion,
 			}
 		}
@@ -691,6 +781,9 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 				SorobanArgumentsJSON:  o.SorobanArgumentsJSON,
 				ContractCallsJSON:     o.ContractCallsJSON,
 				MaxCallDepth:          maxDepth,
+				TransactionID:         o.TransactionID,
+				OperationID:           o.OperationID,
+				EraID:                 o.EraID,
 				PipelineVersion:       pw.pipelineVersion,
 			}
 		}
@@ -727,8 +820,11 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 				SignerWeight:     signerWeight,
 				OfferID:          e.OfferID,
 				SellerAccount:    e.SellerAccount,
+				OperationID:      e.OperationID,
+				DetailsJSON:      e.DetailsJSON,
 				CreatedAt:        e.CreatedAt.UnixMicro(),
 				LedgerRange:      e.LedgerRange,
+				EraID:            e.EraID,
 				PipelineVersion:  pw.pipelineVersion,
 			}
 		}
@@ -759,6 +855,7 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 				Price:              t.Price,
 				CreatedAt:          t.CreatedAt.UnixMicro(),
 				LedgerRange:        t.LedgerRange,
+				EraID:              t.EraID,
 				PipelineVersion:    pw.pipelineVersion,
 			}
 		}
@@ -792,7 +889,10 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 				AuthClawbackEnabled: a.AuthClawbackEnabled,
 				Signers:             a.Signers,
 				SponsorAccount:      a.SponsorAccount,
+				CreatedAt:           a.CreatedAt.UnixMicro(),
+				UpdatedAt:           a.UpdatedAt.UnixMicro(),
 				LedgerRange:         a.LedgerRange,
+				EraID:               a.EraID,
 				PipelineVersion:     pw.pipelineVersion,
 			}
 		}
@@ -813,6 +913,8 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 				ClosedAt:                 e.ClosedAt.UnixMicro(),
 				EventType:                e.EventType,
 				InSuccessfulContractCall: e.InSuccessfulContractCall,
+				Successful:               e.Successful,
+				ContractEventXDR:         e.ContractEventXDR,
 				TopicsJSON:               e.TopicsJSON,
 				TopicsDecoded:            e.TopicsDecoded,
 				DataXDR:                  e.DataXDR,
@@ -824,7 +926,9 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 				Topic3Decoded:            e.Topic3Decoded,
 				OperationIndex:           e.OperationIndex,
 				EventIndex:               e.EventIndex,
+				CreatedAt:                e.CreatedAt.UnixMicro(),
 				LedgerRange:              e.LedgerRange,
+				EraID:                    e.EraID,
 				PipelineVersion:          pw.pipelineVersion,
 			}
 		}
@@ -841,8 +945,9 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 				OfferID: o.OfferID, SellerAccount: o.SellerAccount, LedgerSequence: o.LedgerSequence,
 				ClosedAt: o.ClosedAt.UnixMicro(), SellingAssetType: o.SellingAssetType, SellingAssetCode: o.SellingAssetCode,
 				SellingAssetIssuer: o.SellingAssetIssuer, BuyingAssetType: o.BuyingAssetType, BuyingAssetCode: o.BuyingAssetCode,
-				BuyingAssetIssuer: o.BuyingAssetIssuer, Amount: o.Amount, Price: o.Price, Flags: o.Flags, LedgerRange: o.LedgerRange,
-				PipelineVersion: pw.pipelineVersion,
+				BuyingAssetIssuer: o.BuyingAssetIssuer, Amount: o.Amount, Price: o.Price, Flags: o.Flags,
+				CreatedAt: o.CreatedAt.UnixMicro(), LedgerRange: o.LedgerRange,
+				EraID: o.EraID, PipelineVersion: pw.pipelineVersion,
 			}
 		}
 		if err := pw.offers.Write(rows, func(r ParquetOffer) uint32 { return r.LedgerRange }); err != nil {
@@ -859,8 +964,8 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 				Balance: t.Balance, TrustLimit: t.TrustLimit, BuyingLiabilities: t.BuyingLiabilities,
 				SellingLiabilities: t.SellingLiabilities, Authorized: t.Authorized,
 				AuthorizedToMaintainLiabilities: t.AuthorizedToMaintainLiabilities, ClawbackEnabled: t.ClawbackEnabled,
-				LedgerSequence: t.LedgerSequence, LedgerRange: t.LedgerRange,
-				PipelineVersion: pw.pipelineVersion,
+				LedgerSequence: t.LedgerSequence, CreatedAt: t.CreatedAt.UnixMicro(), LedgerRange: t.LedgerRange,
+				EraID: t.EraID, PipelineVersion: pw.pipelineVersion,
 			}
 		}
 		if err := pw.trustlines.Write(rows, func(r ParquetTrustline) uint32 { return r.LedgerRange }); err != nil {
@@ -875,8 +980,8 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 			rows[i] = ParquetAccountSigner{
 				AccountID: s.AccountID, Signer: s.Signer, LedgerSequence: s.LedgerSequence,
 				Weight: s.Weight, Sponsor: s.Sponsor, Deleted: s.Deleted,
-				ClosedAt: s.ClosedAt.UnixMicro(), LedgerRange: s.LedgerRange,
-				PipelineVersion: pw.pipelineVersion,
+				ClosedAt: s.ClosedAt.UnixMicro(), CreatedAt: s.CreatedAt.UnixMicro(), LedgerRange: s.LedgerRange,
+				EraID: s.EraID, PipelineVersion: pw.pipelineVersion,
 			}
 		}
 		if err := pw.accountSigners.Write(rows, func(r ParquetAccountSigner) uint32 { return r.LedgerRange }); err != nil {
@@ -893,7 +998,7 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 				ClosedAt: b.ClosedAt.UnixMicro(), AssetType: b.AssetType, AssetCode: b.AssetCode,
 				AssetIssuer: b.AssetIssuer, Amount: b.Amount, ClaimantsCount: b.ClaimantsCount,
 				Flags: b.Flags, LedgerRange: b.LedgerRange,
-				PipelineVersion: pw.pipelineVersion,
+				EraID: b.EraID, PipelineVersion: pw.pipelineVersion,
 			}
 		}
 		if err := pw.claimableBalances.Write(rows, func(r ParquetClaimableBalance) uint32 { return r.LedgerRange }); err != nil {
@@ -910,8 +1015,8 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 				PoolType: p.PoolType, Fee: p.Fee, TrustlineCount: p.TrustlineCount, TotalPoolShares: p.TotalPoolShares,
 				AssetAType: p.AssetAType, AssetACode: p.AssetACode, AssetAIssuer: p.AssetAIssuer, AssetAAmount: p.AssetAAmount,
 				AssetBType: p.AssetBType, AssetBCode: p.AssetBCode, AssetBIssuer: p.AssetBIssuer, AssetBAmount: p.AssetBAmount,
-				LedgerRange: p.LedgerRange,
-				PipelineVersion: pw.pipelineVersion,
+				CreatedAt: p.CreatedAt.UnixMicro(), LedgerRange: p.LedgerRange,
+				EraID: p.EraID, PipelineVersion: pw.pipelineVersion,
 			}
 		}
 		if err := pw.liquidityPools.Write(rows, func(r ParquetLiquidityPool) uint32 { return r.LedgerRange }); err != nil {
@@ -924,10 +1029,29 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 		rows := make([]ParquetConfigSetting, len(batch.ConfigSettings))
 		for i, c := range batch.ConfigSettings {
 			rows[i] = ParquetConfigSetting{
-				ConfigSettingID: c.ConfigSettingID, LedgerSequence: c.LedgerSequence,
-				LastModifiedLedger: c.LastModifiedLedger, Deleted: c.Deleted, ClosedAt: c.ClosedAt.UnixMicro(),
-				ConfigSettingXDR: c.ConfigSettingXDR, LedgerRange: c.LedgerRange,
-				PipelineVersion: pw.pipelineVersion,
+				ConfigSettingID:    c.ConfigSettingID,
+				LedgerSequence:     c.LedgerSequence,
+				LastModifiedLedger: c.LastModifiedLedger,
+				Deleted:            c.Deleted,
+				ClosedAt:           c.ClosedAt.UnixMicro(),
+				LedgerMaxInstructions:           toInt64Ptr(c.LedgerMaxInstructions),
+				TxMaxInstructions:               toInt64Ptr(c.TxMaxInstructions),
+				FeeRatePerInstructionsIncrement: toInt64Ptr(c.FeeRatePerInstructionsIncrement),
+				TxMemoryLimit:                   uint32ToInt64Ptr(c.TxMemoryLimit),
+				LedgerMaxReadLedgerEntries:      uint32ToInt64Ptr(c.LedgerMaxReadLedgerEntries),
+				LedgerMaxReadBytes:              uint32ToInt64Ptr(c.LedgerMaxReadBytes),
+				LedgerMaxWriteLedgerEntries:     uint32ToInt64Ptr(c.LedgerMaxWriteLedgerEntries),
+				LedgerMaxWriteBytes:             uint32ToInt64Ptr(c.LedgerMaxWriteBytes),
+				TxMaxReadLedgerEntries:          uint32ToInt64Ptr(c.TxMaxReadLedgerEntries),
+				TxMaxReadBytes:                  uint32ToInt64Ptr(c.TxMaxReadBytes),
+				TxMaxWriteLedgerEntries:         uint32ToInt64Ptr(c.TxMaxWriteLedgerEntries),
+				TxMaxWriteBytes:                 uint32ToInt64Ptr(c.TxMaxWriteBytes),
+				ContractMaxSizeBytes:            uint32ToInt64Ptr(c.ContractMaxSizeBytes),
+				ConfigSettingXDR: c.ConfigSettingXDR,
+				CreatedAt:        c.CreatedAt.UnixMicro(),
+				LedgerRange:      c.LedgerRange,
+				EraID:            c.EraID,
+				PipelineVersion:  pw.pipelineVersion,
 			}
 		}
 		if err := pw.configSettings.Write(rows, func(r ParquetConfigSetting) uint32 { return r.LedgerRange }); err != nil {
@@ -942,8 +1066,8 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 			rows[i] = ParquetTTL{
 				KeyHash: t.KeyHash, LedgerSequence: t.LedgerSequence, LiveUntilLedgerSeq: t.LiveUntilLedgerSeq,
 				TTLRemaining: t.TTLRemaining, Expired: t.Expired, LastModifiedLedger: t.LastModifiedLedger,
-				Deleted: t.Deleted, ClosedAt: t.ClosedAt.UnixMicro(), LedgerRange: t.LedgerRange,
-				PipelineVersion: pw.pipelineVersion,
+				Deleted: t.Deleted, ClosedAt: t.ClosedAt.UnixMicro(), CreatedAt: t.CreatedAt.UnixMicro(), LedgerRange: t.LedgerRange,
+				EraID: t.EraID, PipelineVersion: pw.pipelineVersion,
 			}
 		}
 		if err := pw.ttl.Write(rows, func(r ParquetTTL) uint32 { return r.LedgerRange }); err != nil {
@@ -957,8 +1081,8 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 		for i, e := range batch.EvictedKeys {
 			rows[i] = ParquetEvictedKey{
 				KeyHash: e.KeyHash, LedgerSequence: e.LedgerSequence, ContractID: e.ContractID,
-				KeyType: e.KeyType, Durability: e.Durability, ClosedAt: e.ClosedAt.UnixMicro(), LedgerRange: e.LedgerRange,
-				PipelineVersion: pw.pipelineVersion,
+				KeyType: e.KeyType, Durability: e.Durability, ClosedAt: e.ClosedAt.UnixMicro(), CreatedAt: e.CreatedAt.UnixMicro(), LedgerRange: e.LedgerRange,
+				EraID: e.EraID, PipelineVersion: pw.pipelineVersion,
 			}
 		}
 		if err := pw.evictedKeys.Write(rows, func(r ParquetEvictedKey) uint32 { return r.LedgerRange }); err != nil {
@@ -978,8 +1102,8 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 				LastModifiedLedger: d.LastModifiedLedger, LedgerEntryChange: d.LedgerEntryChange,
 				Deleted: d.Deleted, ClosedAt: d.ClosedAt.UnixMicro(), ContractDataXDR: d.ContractDataXDR,
 				TokenName: d.TokenName, TokenSymbol: d.TokenSymbol, TokenDecimals: d.TokenDecimals,
-				LedgerRange: d.LedgerRange,
-				PipelineVersion: pw.pipelineVersion,
+				CreatedAt: d.CreatedAt.UnixMicro(), LedgerRange: d.LedgerRange,
+				EraID: d.EraID, PipelineVersion: pw.pipelineVersion,
 			}
 		}
 		if err := pw.contractData.Write(rows, func(r ParquetContractData) uint32 { return r.LedgerRange }); err != nil {
@@ -998,8 +1122,8 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 				NInstructions: c.NInstructions, NFunctions: c.NFunctions, NGlobals: c.NGlobals,
 				NTableEntries: c.NTableEntries, NTypes: c.NTypes, NDataSegments: c.NDataSegments,
 				NElemSegments: c.NElemSegments, NImports: c.NImports, NExports: c.NExports,
-				NDataSegmentBytes: c.NDataSegmentBytes, LedgerRange: c.LedgerRange,
-				PipelineVersion: pw.pipelineVersion,
+				NDataSegmentBytes: c.NDataSegmentBytes, CreatedAt: c.CreatedAt.UnixMicro(), LedgerRange: c.LedgerRange,
+				EraID: c.EraID, PipelineVersion: pw.pipelineVersion,
 			}
 		}
 		if err := pw.contractCode.Write(rows, func(r ParquetContractCode) uint32 { return r.LedgerRange }); err != nil {
@@ -1014,8 +1138,8 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 			rows[i] = ParquetRestoredKey{
 				KeyHash: r.KeyHash, LedgerSequence: r.LedgerSequence, ContractID: r.ContractID,
 				KeyType: r.KeyType, Durability: r.Durability, RestoredFromLedger: r.RestoredFromLedger,
-				ClosedAt: r.ClosedAt.UnixMicro(), LedgerRange: r.LedgerRange,
-				PipelineVersion: pw.pipelineVersion,
+				ClosedAt: r.ClosedAt.UnixMicro(), CreatedAt: r.CreatedAt.UnixMicro(), LedgerRange: r.LedgerRange,
+				EraID: r.EraID, PipelineVersion: pw.pipelineVersion,
 			}
 		}
 		if err := pw.restoredKeys.Write(rows, func(r ParquetRestoredKey) uint32 { return r.LedgerRange }); err != nil {
@@ -1030,7 +1154,7 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 			rows[i] = ParquetContractCreation{
 				ContractID: c.ContractID, CreatorAddress: c.CreatorAddress, WasmHash: c.WasmHash,
 				CreatedLedger: c.CreatedLedger, CreatedAt: c.CreatedAt.UnixMicro(), LedgerRange: c.LedgerRange,
-				PipelineVersion: pw.pipelineVersion,
+				EraID: c.EraID, PipelineVersion: pw.pipelineVersion,
 			}
 		}
 		if err := pw.contractCreations.Write(rows, func(r ParquetContractCreation) uint32 { return r.LedgerRange }); err != nil {
@@ -1054,6 +1178,7 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 				LastModifiedLedger: n.LastModifiedLedger,
 				LedgerSequence:     n.LedgerSequence,
 				LedgerRange:        n.LedgerRange,
+				EraID:              n.EraID,
 				PipelineVersion:    pw.pipelineVersion,
 			}
 		}
@@ -1081,9 +1206,20 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 				OperationCount:      int32(l.OperationCount),
 				SuccessfulTxCount:   int32(l.SuccessfulTxCount),
 				FailedTxCount:       int32(l.FailedTxCount),
-				TxSetOperationCount: int32(l.TxSetOperationCount),
+				TxSetOperationCount:  int32(l.TxSetOperationCount),
+				SorobanFeeWrite1kb:   l.SorobanFeeWrite1kb,
+				NodeID:               l.NodeID,
+				Signature:            l.Signature,
+				LedgerHeader:         l.LedgerHeader,
+				BucketListSize:       l.BucketListSize,
+				LiveSorobanStateSize: l.LiveSorobanStateSize,
+				EvictedKeysCount:     l.EvictedKeysCount,
+				SorobanOpCount:       l.SorobanOpCount,
+				TotalFeeCharged:      l.TotalFeeCharged,
+				ContractEventsCount:  l.ContractEventsCount,
 				IngestionTimestamp:  l.IngestionTimestamp.UnixMicro(),
 				LedgerRange:         l.LedgerRange,
+				EraID:               l.EraID,
 				PipelineVersion:     pw.pipelineVersion,
 			}
 		}
@@ -1092,7 +1228,53 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 		}
 	}
 
+	// Token Transfers
+	if len(batch.TokenTransfers) > 0 {
+		rows := make([]ParquetTokenTransfer, len(batch.TokenTransfers))
+		for i, t := range batch.TokenTransfers {
+			rows[i] = ParquetTokenTransfer{
+				LedgerSequence:  t.LedgerSequence,
+				TransactionHash: t.TransactionHash,
+				TransactionID:   t.TransactionID,
+				OperationID:     t.OperationID,
+				OperationIndex:  t.OperationIndex,
+				EventType:       t.EventType,
+				From:            t.From,
+				To:              t.To,
+				Asset:           t.Asset,
+				AssetType:       t.AssetType,
+				AssetCode:       t.AssetCode,
+				AssetIssuer:     t.AssetIssuer,
+				Amount:          t.Amount,
+				AmountRaw:       t.AmountRaw,
+				ContractID:      t.ContractID,
+				ClosedAt:        t.ClosedAt.UnixMicro(),
+				CreatedAt:       t.CreatedAt.UnixMicro(),
+				LedgerRange:     t.LedgerRange,
+				EraID:           t.EraID,
+				PipelineVersion: pw.pipelineVersion,
+			}
+		}
+		if err := pw.tokenTransfers.Write(rows, func(r ParquetTokenTransfer) uint32 { return r.LedgerRange }); err != nil {
+			return fmt.Errorf("write token_transfers: %w", err)
+		}
+	}
+
 	return nil
+}
+
+// toInt64Ptr converts *int64 to *int64 (passthrough, for consistency with uint32ToInt64Ptr).
+func toInt64Ptr(v *int64) *int64 {
+	return v
+}
+
+// uint32ToInt64Ptr widens a *uint32 to *int64 for Parquet BIGINT columns.
+func uint32ToInt64Ptr(v *uint32) *int64 {
+	if v == nil {
+		return nil
+	}
+	val := int64(*v)
+	return &val
 }
 
 func (pw *ParquetWriterFull) Close() error {
@@ -1103,7 +1285,7 @@ func (pw *ParquetWriterFull) Close() error {
 		pw.claimableBalances, pw.liquidityPools, pw.configSettings,
 		pw.ttl, pw.evictedKeys, pw.contractEvents, pw.contractData,
 		pw.contractCode, pw.nativeBalances, pw.restoredKeys, pw.contractCreations,
-		pw.ledgers,
+		pw.ledgers, pw.tokenTransfers,
 	} {
 		if err := closer.Close(); err != nil && firstErr == nil {
 			firstErr = err

@@ -9,12 +9,13 @@ import (
 
 // GenericEventHandlers contains HTTP handlers for generic CAP-67 contract events
 type GenericEventHandlers struct {
-	reader *UnifiedDuckDBReader
+	reader    *ColdReader
+	hotReader *SilverHotReader
 }
 
 // NewGenericEventHandlers creates new generic event API handlers
-func NewGenericEventHandlers(reader *UnifiedDuckDBReader) *GenericEventHandlers {
-	return &GenericEventHandlers{reader: reader}
+func NewGenericEventHandlers(reader *ColdReader, hotReader *SilverHotReader) *GenericEventHandlers {
+	return &GenericEventHandlers{reader: reader, hotReader: hotReader}
 }
 
 // HandleGenericEvents returns all contract events with filters
@@ -39,6 +40,19 @@ func NewGenericEventHandlers(reader *UnifiedDuckDBReader) *GenericEventHandlers 
 // @Router /api/v1/silver/events/generic [get]
 func (h *GenericEventHandlers) HandleGenericEvents(w http.ResponseWriter, r *http.Request) {
 	filters := parseGenericEventFilters(r)
+
+	if h.hotReader != nil {
+		events, nextCursor, hasMore, err := h.hotReader.GetServingGenericEvents(r.Context(), filters)
+		if err == nil && len(events) > 0 {
+			respondJSON(w, map[string]interface{}{
+				"events":      events,
+				"count":       len(events),
+				"has_more":    hasMore,
+				"next_cursor": nextCursor,
+			})
+			return
+		}
+	}
 
 	events, nextCursor, hasMore, err := h.reader.GetGenericEvents(r.Context(), filters)
 	if err != nil {
@@ -77,6 +91,21 @@ func (h *GenericEventHandlers) HandleContractGenericEvents(w http.ResponseWriter
 	}
 
 	filters := parseGenericEventFilters(r)
+
+	filters.ContractID = &contractID
+	if h.hotReader != nil {
+		events, nextCursor, hasMore, err := h.hotReader.GetServingGenericEvents(r.Context(), filters)
+		if err == nil && len(events) > 0 {
+			respondJSON(w, map[string]interface{}{
+				"contract_id": contractID,
+				"events":      events,
+				"count":       len(events),
+				"has_more":    hasMore,
+				"next_cursor": nextCursor,
+			})
+			return
+		}
+	}
 
 	events, nextCursor, hasMore, err := h.reader.GetContractGenericEvents(r.Context(), contractID, filters)
 	if err != nil {

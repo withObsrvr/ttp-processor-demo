@@ -88,7 +88,16 @@ func (f *Flusher) updateLastFlushedWatermark(watermark int64) error {
 	return err
 }
 
-// ExecuteFlush performs a single flush cycle
+// chunkSizeLedgers caps how many ledgers a single flush statement covers.
+// This prevents a huge catch-up flush (e.g. after an outage) from running as
+// one gigantic INSERT that blows past DuckDB memory limits or stalls on a
+// cursor for hours. Each chunk's checkpoint is persisted individually, so a
+// crash mid-catchup only loses one chunk's worth of work.
+const chunkSizeLedgers int64 = 50_000
+
+// ExecuteFlush performs a full flush cycle, splitting any large gap between
+// the last flushed watermark and the transformer's current watermark into
+// bounded chunks of chunkSizeLedgers ledgers.
 func (f *Flusher) ExecuteFlush() error {
 	// Acquire read lock - allows concurrent flushes but blocks maintenance
 	f.mu.RLock()
@@ -117,33 +126,60 @@ func (f *Flusher) ExecuteFlush() error {
 		log.Printf("Nothing new to flush (lastFlushed=%d >= watermark=%d)", lastFlushed, watermark)
 		return nil
 	}
-	log.Printf("📍 Incremental flush: ledgers %d..%d", lastFlushed+1, watermark)
 
-	// Step 2: FLUSH - Flush all tables to DuckLake
-	rowsFlushed, successfullyFlushedTables, err := f.flushAllTables(watermark, lastFlushed)
-	if err != nil {
-		return fmt.Errorf("flush failed: %w", err)
-	}
+	totalGap := watermark - lastFlushed
+	expectedChunks := (totalGap + chunkSizeLedgers - 1) / chunkSizeLedgers
+	log.Printf("📍 Flush range: ledgers %d..%d (gap=%d, chunks=%d, chunk_size=%d)",
+		lastFlushed+1, watermark, totalGap, expectedChunks, chunkSizeLedgers)
 
-	log.Printf("✅ Flushed %d rows to DuckLake", rowsFlushed)
-
-	// Step 2b: Update checkpoint after successful flush
-	if err := f.updateLastFlushedWatermark(watermark); err != nil {
-		return fmt.Errorf("failed to update flush checkpoint: %w", err)
-	}
-
-	// Step 3: DELETE - Remove flushed data from PostgreSQL (ONLY for successfully flushed tables)
-	var rowsDeleted int64
-	if len(successfullyFlushedTables) > 0 {
-		rowsDeleted, err = f.deleteFlushedData(watermark, successfullyFlushedTables)
-		if err != nil {
-			return fmt.Errorf("failed to delete flushed data: %w", err)
+	// Step 2: FLUSH in chunks - each chunk is flushed, checkpointed, and
+	// deleted before moving to the next. On failure, we stop and surface
+	// the error; subsequent runs will resume from the latest checkpoint.
+	var (
+		cycleRows    int64
+		cycleDeleted int64
+		chunkIdx     int64
+	)
+	for lastFlushed < watermark {
+		chunkIdx++
+		chunkEnd := lastFlushed + chunkSizeLedgers
+		if chunkEnd > watermark {
+			chunkEnd = watermark
 		}
-	} else {
-		log.Println("⚠️  No tables flushed successfully, skipping deletion")
+		log.Printf("   ▶ Chunk %d/%d: ledgers %d..%d", chunkIdx, expectedChunks, lastFlushed+1, chunkEnd)
+
+		rowsFlushed, successfullyFlushedTables, err := f.flushAllTables(chunkEnd, lastFlushed)
+		if err != nil {
+			return fmt.Errorf("flush failed at chunk %d (ledgers %d..%d): %w",
+				chunkIdx, lastFlushed+1, chunkEnd, err)
+		}
+		log.Printf("   ✓ Chunk %d flushed %d rows to DuckLake", chunkIdx, rowsFlushed)
+
+		// Persist the chunk's end as the new checkpoint before deleting from PG.
+		// If we crash between here and the DELETE, the next run will re-run the
+		// DELETE for this range and skip the INSERT (idempotent at the range).
+		if err := f.updateLastFlushedWatermark(chunkEnd); err != nil {
+			return fmt.Errorf("failed to update flush checkpoint at chunk %d: %w", chunkIdx, err)
+		}
+
+		var rowsDeleted int64
+		if len(successfullyFlushedTables) > 0 {
+			rowsDeleted, err = f.deleteFlushedData(chunkEnd, successfullyFlushedTables)
+			if err != nil {
+				return fmt.Errorf("failed to delete flushed data at chunk %d: %w", chunkIdx, err)
+			}
+		} else {
+			log.Printf("   ⚠️  Chunk %d: no tables flushed successfully, skipping deletion", chunkIdx)
+		}
+		log.Printf("   🗑️  Chunk %d deleted %d rows from PostgreSQL", chunkIdx, rowsDeleted)
+
+		cycleRows += rowsFlushed
+		cycleDeleted += rowsDeleted
+		lastFlushed = chunkEnd
 	}
 
-	log.Printf("🗑️  Deleted %d rows from PostgreSQL", rowsDeleted)
+	log.Printf("✅ Flushed %d rows to DuckLake across %d chunk(s)", cycleRows, chunkIdx)
+	log.Printf("🗑️  Deleted %d rows from PostgreSQL", cycleDeleted)
 
 	// Step 4: VACUUM (every Nth flush)
 	f.flushCount++
@@ -170,11 +206,11 @@ func (f *Flusher) ExecuteFlush() error {
 		f.mu.RLock()
 	}
 
-	f.totalRows += rowsFlushed
+	f.totalRows += cycleRows
 
 	duration := time.Since(startTime)
-	log.Printf("✅ Flush cycle #%d completed in %v (watermark=%d, flushed=%d, deleted=%d, total=%d)",
-		f.flushCount, duration, watermark, rowsFlushed, rowsDeleted, f.totalRows)
+	log.Printf("✅ Flush cycle #%d completed in %v (watermark=%d, chunks=%d, flushed=%d, deleted=%d, total=%d)",
+		f.flushCount, duration, watermark, chunkIdx, cycleRows, cycleDeleted, f.totalRows)
 
 	return nil
 }

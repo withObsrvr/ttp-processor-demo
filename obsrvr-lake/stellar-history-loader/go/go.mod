@@ -1,12 +1,12 @@
 module github.com/withObsrvr/stellar-history-loader
 
-go 1.25.0
+go 1.25.4
 
 require (
 	github.com/duckdb/duckdb-go/v2 v2.10501.0
 	github.com/jackc/pgx/v5 v5.9.1
 	github.com/parquet-go/parquet-go v0.29.0
-	github.com/stellar/go-stellar-sdk v0.3.0
+	github.com/stellar/go-stellar-sdk v0.5.0
 )
 
 require (
@@ -68,6 +68,7 @@ require (
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/goccy/go-json v0.10.5 // indirect
 	github.com/google/flatbuffers v25.12.19+incompatible // indirect
+	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.6 // indirect
@@ -98,6 +99,7 @@ require (
 	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/twpayne/go-geom v1.6.1 // indirect
+	github.com/withObsrvr/stellar-extract v0.1.1
 	github.com/zeebo/xxh3 v1.1.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/detectors/gcp v1.38.0 // indirect

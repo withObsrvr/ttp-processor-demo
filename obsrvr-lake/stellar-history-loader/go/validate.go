@@ -144,12 +144,14 @@ func (v *Validator) checkTxOpConsistency(ctx context.Context) (bool, string, err
 	return false, fmt.Sprintf("%d orphaned operation transaction hashes", orphans), nil
 }
 
-// checkPipelineVersion verifies pipeline_version is populated.
+// checkPipelineVersion verifies version_label is populated. (Column was
+// renamed from pipeline_version to version_label so the loader matches
+// v3_bronze_schema.sql / streaming PG hot.)
 func (v *Validator) checkPipelineVersion(ctx context.Context) (bool, string, error) {
 	glob := filepath.Join(v.bronzeDir, "transactions", "**", "*.parquet")
 	query := fmt.Sprintf(`
-		SELECT COUNT(DISTINCT pipeline_version) as versions,
-			COUNT(*) FILTER (WHERE pipeline_version IS NULL OR pipeline_version = '') as missing
+		SELECT COUNT(DISTINCT version_label) as versions,
+			COUNT(*) FILTER (WHERE version_label IS NULL OR version_label = '') as missing
 		FROM read_parquet('%s')
 	`, glob)
 
@@ -159,7 +161,7 @@ func (v *Validator) checkPipelineVersion(ctx context.Context) (bool, string, err
 	}
 
 	if missing > 0 {
-		return false, fmt.Sprintf("%d rows missing pipeline_version", missing), nil
+		return false, fmt.Sprintf("%d rows missing version_label", missing), nil
 	}
 	return true, fmt.Sprintf("%d distinct version(s)", versions), nil
 }

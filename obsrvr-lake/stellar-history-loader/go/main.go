@@ -24,7 +24,6 @@ func main() {
 	bucket := flag.String("bucket", "", "Storage bucket/path for ledger data (required)")
 	ledgersPerFile := flag.Uint("ledgers-per-file", 1, "Ledgers per archive file (GCS/S3)")
 	filesPerPartition := flag.Uint("files-per-partition", 64000, "Files per archive partition (GCS/S3)")
-	runSilver := flag.Bool("silver", false, "Run silver transforms after bronze extraction")
 	runValidate := flag.Bool("validate", false, "Run quality validation checks after extraction")
 	runDuckLake := flag.Bool("ducklake", false, "Push bronze Parquet to DuckLake (B2 + catalog)")
 	dlCatalog := flag.String("ducklake-catalog", "", "PostgreSQL catalog DSN for DuckLake")
@@ -42,6 +41,7 @@ func main() {
 	pgPassword := flag.String("pg-password", "", "PostgreSQL password")
 	pgSSL := flag.String("pg-sslmode", "require", "PostgreSQL SSL mode")
 	tailLedgers := flag.Uint("tail-ledgers", 100000, "Number of recent ledgers to load into hot buffer")
+	eraID := flag.String("era-id", "", "Era identifier for DuckLake partitioning (optional)")
 
 	flag.Parse()
 
@@ -111,6 +111,7 @@ func main() {
 			Bucket:            *bucket,
 			LedgersPerFile:    uint32(*ledgersPerFile),
 			FilesPerPartition: uint32(*filesPerPartition),
+			EraID:             *eraID,
 		}
 
 		orchestrator := NewOrchestrator(config)
@@ -131,25 +132,6 @@ func main() {
 		fmt.Printf("Throughput:             %.1f ledgers/sec\n", throughput)
 	} else {
 		fmt.Println("Skipping extraction (no --bucket specified, using existing output)")
-	}
-
-	// Run silver transforms if requested
-	if *runSilver {
-		fmt.Println()
-		fmt.Println("=== Silver Transforms ===")
-		silverStart := time.Now()
-
-		st, err := NewSilverTransformer(*output)
-		if err != nil {
-			log.Fatalf("Failed to create silver transformer: %v", err)
-		}
-		defer st.Close()
-
-		if err := st.RunAll(context.Background()); err != nil {
-			log.Printf("Silver transforms had errors: %v", err)
-		}
-
-		fmt.Printf("Silver transforms completed in %s\n", time.Since(silverStart).Round(time.Millisecond))
 	}
 
 	// Run quality validation if requested

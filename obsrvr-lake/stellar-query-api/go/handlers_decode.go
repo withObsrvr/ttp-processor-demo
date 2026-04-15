@@ -5,23 +5,28 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
+	"golang.org/x/sync/errgroup"
 )
 
 // DecodeHandlers contains HTTP handlers for transaction decoding and human-readable summaries
 type DecodeHandlers struct {
-	reader       *UnifiedDuckDBReader
-	silverReader *UnifiedSilverReader
+	hotReader     *SilverHotReader
+	coldReader    *SilverColdReader
+	bronzeCold    *ColdReader
+	silverReader  *UnifiedSilverReader
+	hotPathReader *TxHotPathReader
 }
 
 // NewDecodeHandlers creates new transaction decode API handlers
-func NewDecodeHandlers(reader *UnifiedDuckDBReader, silverReader *UnifiedSilverReader) *DecodeHandlers {
-	return &DecodeHandlers{reader: reader, silverReader: silverReader}
+func NewDecodeHandlers(hotReader *SilverHotReader, coldReader *SilverColdReader, bronzeCold *ColdReader, silverReader *UnifiedSilverReader, hotPathReader *TxHotPathReader) *DecodeHandlers {
+	return &DecodeHandlers{hotReader: hotReader, coldReader: coldReader, bronzeCold: bronzeCold, silverReader: silverReader, hotPathReader: hotPathReader}
 }
 
 // HandleDecodedTransaction returns a human-readable decoded transaction
@@ -44,7 +49,7 @@ func (h *DecodeHandlers) HandleDecodedTransaction(w http.ResponseWriter, r *http
 		return
 	}
 
-	decoded, err := h.reader.GetTransactionForDecode(r.Context(), txHash)
+	decoded, err := h.getTransactionForDecode(r.Context(), txHash)
 	if err != nil {
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -78,7 +83,18 @@ func (h *DecodeHandlers) HandleContractInterface(w http.ResponseWriter, r *http.
 	}
 
 	// Get observed function names
-	functions, err := h.reader.GetContractFunctions(r.Context(), contractID)
+	var functions []string
+	var err error
+	if h.hotReader != nil {
+		functions, err = h.hotReader.GetContractFunctions(r.Context(), contractID)
+	}
+	if err != nil || len(functions) == 0 {
+		if h.coldReader == nil {
+			respondError(w, "contract interface detection requires cold reader", http.StatusInternalServerError)
+			return
+		}
+		functions, err = h.coldReader.GetContractFunctions(r.Context(), contractID)
+	}
 	if err != nil {
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -174,7 +190,7 @@ func (h *DecodeHandlers) HandleFullTransaction(w http.ResponseWriter, r *http.Re
 	ctx := r.Context()
 
 	// 1. Get decoded transaction (summary + ops + events)
-	decoded, err := h.reader.GetTransactionForDecode(ctx, txHash)
+	decoded, err := h.getTransactionForDecode(ctx, txHash)
 	if err != nil {
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -265,8 +281,8 @@ func (h *DecodeHandlers) HandleFullTransaction(w http.ResponseWriter, r *http.Re
 // @Router /api/v1/silver/tx/batch/decoded [get]
 // @Router /api/v1/silver/tx/batch/decoded [post]
 func (h *DecodeHandlers) HandleBatchDecodedTransactions(w http.ResponseWriter, r *http.Request) {
-	if h.reader == nil {
-		respondError(w, "batch decoded requires unified reader", http.StatusInternalServerError)
+	if h.coldReader == nil {
+		respondError(w, "batch decoded requires cold reader", http.StatusInternalServerError)
 		return
 	}
 
@@ -345,20 +361,47 @@ func (h *DecodeHandlers) HandleBatchDecodedTransactions(w http.ResponseWriter, r
 		return
 	}
 
-	// Decode each transaction
+	// Decode transactions in parallel. Each GetTransactionForDecode call fans
+	// out to 4 separate DB queries, so doing them serially scales as ~4N round
+	// trips and easily exceeds the gateway HTTP timeout for large batches.
+	// Concurrency limit of 8 keeps DB pool pressure bounded while collapsing
+	// the wall-clock time to roughly ceil(N/8) sequential rounds.
+	type decodeResult struct {
+		decoded *DecodedTransaction
+		err     error
+	}
+	resultsByIndex := make([]decodeResult, len(hashes))
+
+	// Each goroutine writes to a unique index in resultsByIndex, so no
+	// synchronization is needed beyond errgroup's Wait.
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(8)
+	for i, txHash := range hashes {
+		i, txHash := i, txHash
+		g.Go(func() error {
+			decoded, err := h.getTransactionForDecode(gctx, txHash)
+			resultsByIndex[i] = decodeResult{decoded: decoded, err: err}
+			// Never propagate the error to errgroup — partial failures are
+			// reported per-tx in the response, just like the old serial loop.
+			return nil
+		})
+	}
+	_ = g.Wait()
+
+	// Assemble results in the original request order
 	var results []interface{}
 	var errors []map[string]string
-	for _, txHash := range hashes {
-		decoded, err := h.reader.GetTransactionForDecode(ctx, txHash)
-		if err != nil {
-			errors = append(errors, map[string]string{"tx_hash": txHash, "error": err.Error()})
+	for i, txHash := range hashes {
+		r := resultsByIndex[i]
+		if r.err != nil {
+			errors = append(errors, map[string]string{"tx_hash": txHash, "error": r.err.Error()})
 			continue
 		}
-		if decoded.OpCount == 0 && len(decoded.Events) == 0 {
+		if r.decoded.OpCount == 0 && len(r.decoded.Events) == 0 {
 			errors = append(errors, map[string]string{"tx_hash": txHash, "error": "transaction not found"})
 			continue
 		}
-		results = append(results, decoded)
+		results = append(results, r.decoded)
 	}
 
 	resp := map[string]interface{}{
@@ -374,84 +417,78 @@ func (h *DecodeHandlers) HandleBatchDecodedTransactions(w http.ResponseWriter, r
 
 // resolveHashesFromLedger finds distinct transaction hashes in a ledger
 func (h *DecodeHandlers) resolveHashesFromLedger(ctx context.Context, ledgerSeq int64, limit int) ([]string, error) {
-	// Try hot schema first, then cold
-	schemas := []string{}
-	if h.reader.hotSchema != "" {
-		schemas = append(schemas, h.reader.hotSchema)
-	}
-	if h.reader.coldSchema != "" {
-		schemas = append(schemas, h.reader.coldSchema)
+	if h.hotPathReader != nil {
+		if hashes, err := h.hotPathReader.ResolveHashesFromLedger(ctx, ledgerSeq, limit); err == nil && len(hashes) > 0 {
+			return hashes, nil
+		}
 	}
 
-	for _, schema := range schemas {
+	if h.coldReader != nil {
 		query := fmt.Sprintf(`
 			SELECT DISTINCT transaction_hash
-			FROM %s.enriched_history_operations
-			WHERE ledger_sequence = $1
+			FROM %s.%s.enriched_history_operations
+			WHERE ledger_sequence = ?
 			ORDER BY transaction_hash
-			LIMIT $2
-		`, schema)
-
-		rows, err := h.reader.db.QueryContext(ctx, query, ledgerSeq, limit)
-		if err != nil {
-			continue
-		}
-
-		var hashes []string
-		for rows.Next() {
-			var hash string
-			if err := rows.Scan(&hash); err != nil {
-				rows.Close()
-				continue
+			LIMIT ?
+		`, h.coldReader.catalogName, h.coldReader.schemaName)
+		rows, err := h.coldReader.db.QueryContext(ctx, query, ledgerSeq, limit)
+		if err == nil {
+			var hashes []string
+			for rows.Next() {
+				var hash string
+				if err := rows.Scan(&hash); err != nil {
+					rows.Close()
+					break
+				}
+				hashes = append(hashes, hash)
 			}
-			hashes = append(hashes, hash)
-		}
-		rows.Close()
-
-		if len(hashes) > 0 {
-			return hashes, nil
-		}
-	}
-
-	// Also try bronze transactions_row_v2 as fallback
-	bronzeSchemas := []string{}
-	if h.reader.bronzeHotSchema != "" {
-		bronzeSchemas = append(bronzeSchemas, h.reader.bronzeHotSchema)
-	}
-	if h.reader.bronzeColdSchema != "" {
-		bronzeSchemas = append(bronzeSchemas, h.reader.bronzeColdSchema)
-	}
-
-	for _, schema := range bronzeSchemas {
-		query := fmt.Sprintf(`
-			SELECT transaction_hash
-			FROM %s.transactions_row_v2
-			WHERE ledger_sequence = $1
-			ORDER BY transaction_index
-			LIMIT $2
-		`, schema)
-
-		rows, err := h.reader.db.QueryContext(ctx, query, ledgerSeq, limit)
-		if err != nil {
-			continue
-		}
-
-		var hashes []string
-		for rows.Next() {
-			var hash string
-			if err := rows.Scan(&hash); err != nil {
-				rows.Close()
-				continue
+			rows.Close()
+			if len(hashes) > 0 {
+				return hashes, nil
 			}
-			hashes = append(hashes, hash)
-		}
-		rows.Close()
-
-		if len(hashes) > 0 {
-			return hashes, nil
+		} else {
+			log.Printf("resolveHashesFromLedger silver cold: %v", err)
 		}
 	}
+
+	// Bronze fallback intentionally disabled.
+	//
+	// Prior versions had a bronze fallback here that queried
+	// transactions_row_v2 with `ORDER BY transaction_index`, but that
+	// column only exists on operations_row_v2 (via migration 001). The
+	// query errored silently every call and the fallback never worked.
+	//
+	// Fixing the ORDER BY (use transaction_id, a packed TOID that encodes
+	// the TxOrder in its mid bits) makes the fallback discover hashes —
+	// but then GetTransactionForDecode queries silver tables for every
+	// hash, and when the silver-realtime-transformer is behind the
+	// ingester (common during catch-up) those queries are empty but still
+	// slow because silver_hot is IO-starved by the transformer's own
+	// catch-up batches. The per-request latency explodes from a fast 500
+	// ("no transactions found") to a 30+ second hang, which times out the
+	// gateway's HTTP client and blocks whichever UI fragment is waiting.
+	//
+	// Until GetTransactionForDecode gains a bronze-only code path that
+	// produces a usable DecodedTransaction without hitting silver, we
+	// return the not-found error fast. That's strictly worse data (the tx
+	// exists in bronze) but strictly better latency (fast 500 > 30s hang),
+	// and the caller can still fall back to its own bronze display path.
 
 	return nil, fmt.Errorf("no transactions found in ledger %d", ledgerSeq)
 }
 
+func (h *DecodeHandlers) getTransactionForDecode(ctx context.Context, txHash string) (*DecodedTransaction, error) {
+	if h.hotPathReader != nil {
+		decoded, err := h.hotPathReader.GetTransactionForDecode(ctx, txHash)
+		if err == nil {
+			return decoded, nil
+		}
+		if !strings.Contains(err.Error(), ErrTxNotFound.Error()) {
+			log.Printf("decode hot-path fallback tx=%s err=%v", txHash, err)
+		}
+	}
+	if h.coldReader == nil {
+		return nil, fmt.Errorf("transaction decode requires cold reader")
+	}
+	return h.coldReader.GetTransactionForDecode(ctx, txHash, h.bronzeCold)
+}

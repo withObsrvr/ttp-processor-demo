@@ -19,9 +19,9 @@ type ContractAnalyticsSummary struct {
 	Stats ContractStats `json:"stats"`
 
 	// Enhanced analytics
-	SuccessRate  float64 `json:"success_rate"`
-	TotalCalls7d  int64  `json:"total_calls_7d"`
-	TotalCalls30d int64  `json:"total_calls_30d"`
+	SuccessRate   float64 `json:"success_rate"`
+	TotalCalls7d  int64   `json:"total_calls_7d"`
+	TotalCalls30d int64   `json:"total_calls_30d"`
 
 	// Timeline info
 	Timeline ContractTimeline `json:"timeline"`
@@ -54,6 +54,7 @@ type ContractTimeline struct {
 type FunctionCount struct {
 	Name        string  `json:"name"`
 	Count       int     `json:"count"`
+	Calls24h    int64   `json:"calls_24h,omitempty"`
 	Calls7d     int64   `json:"calls_7d,omitempty"`
 	Calls30d    int64   `json:"calls_30d,omitempty"`
 	SuccessRate float64 `json:"success_rate,omitempty"`
@@ -206,6 +207,7 @@ func (h *SilverHotReader) GetContractAnalyticsSummary(ctx context.Context, contr
 		SELECT
 			function_name,
 			COUNT(*) as total_count,
+			COUNT(*) FILTER (WHERE closed_at >= NOW() - INTERVAL '24 hours') as calls_24h,
 			COUNT(*) FILTER (WHERE closed_at >= NOW() - INTERVAL '7 days') as calls_7d,
 			COUNT(*) FILTER (WHERE closed_at >= NOW() - INTERVAL '30 days') as calls_30d,
 			COUNT(*) FILTER (WHERE successful)::float / NULLIF(COUNT(*), 0) as success_rate,
@@ -224,7 +226,7 @@ func (h *SilverHotReader) GetContractAnalyticsSummary(ctx context.Context, contr
 			var fc FunctionCount
 			var successRate sql.NullFloat64
 			var lastCalled sql.NullTime
-			if err := funcRows.Scan(&fc.Name, &fc.Count, &fc.Calls7d, &fc.Calls30d, &successRate, &lastCalled); err != nil {
+			if err := funcRows.Scan(&fc.Name, &fc.Count, &fc.Calls24h, &fc.Calls7d, &fc.Calls30d, &successRate, &lastCalled); err != nil {
 				break
 			}
 			if successRate.Valid {

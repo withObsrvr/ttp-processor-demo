@@ -473,6 +473,7 @@ type EffectRow struct {
 	TransactionHash  string
 	OperationIndex   int
 	EffectIndex      int
+	OperationID      sql.NullInt64
 	EffectType       int
 	EffectTypeString string
 	AccountID        sql.NullString
@@ -480,6 +481,7 @@ type EffectRow struct {
 	AssetCode        sql.NullString
 	AssetIssuer      sql.NullString
 	AssetType        sql.NullString
+	DetailsJSON      sql.NullString
 	TrustlineLimit   sql.NullString
 	AuthorizeFlag    sql.NullBool
 	ClawbackFlag     sql.NullBool
@@ -863,8 +865,9 @@ func (row *TradeRow) TradeValues() ([]interface{}, error) {
 func (row *EffectRow) Values() []interface{} {
 	return []interface{}{
 		row.LedgerSequence, row.TransactionHash, row.OperationIndex, row.EffectIndex,
-		row.EffectType, row.EffectTypeString, row.AccountID,
+		row.OperationID, row.EffectType, row.EffectTypeString, row.AccountID,
 		row.Amount, row.AssetCode, row.AssetIssuer, row.AssetType,
+		row.DetailsJSON,
 		row.TrustlineLimit, row.AuthorizeFlag, row.ClawbackFlag,
 		row.SignerAccount, row.SignerWeight, row.OfferID, row.SellerAccount,
 		row.CreatedAt, row.LedgerRange,

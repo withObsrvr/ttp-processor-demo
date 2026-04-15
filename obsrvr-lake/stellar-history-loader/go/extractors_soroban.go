@@ -63,6 +63,15 @@ func extractContractEvents(lcm xdr.LedgerCloseMeta, networkPassphrase string, le
 				events = append(events, eventData)
 			}
 		}
+
+		// Extract transaction-level events (V4 / CAP-67 unified events).
+		// These are contract events emitted at the transaction level rather
+		// than tied to a specific operation. Classic operations can produce
+		// these in TransactionMetaV4+.
+		for txEvtIdx, txEvt := range txEvents.TransactionEvents {
+			eventData := extractContractEvent(txEvt.Event, txHash, ledgerSeq, closedAt, ledgerRange, 0, uint32(txEvtIdx), true)
+			events = append(events, eventData)
+		}
 	}
 
 	return events, nil

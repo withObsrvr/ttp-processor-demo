@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -123,13 +124,13 @@ type AccountSignersResponse struct {
 
 // Balance represents a single balance (XLM or trustline)
 type Balance struct {
-	AssetType     string  `json:"asset_type"`
-	AssetCode     string  `json:"asset_code"`
-	AssetIssuer   *string `json:"asset_issuer,omitempty"`
-	Balance       string  `json:"balance"`
-	BalanceStroops int64  `json:"balance_stroops"`
-	Limit         *string `json:"limit,omitempty"`
-	IsAuthorized  *bool   `json:"is_authorized,omitempty"`
+	AssetType      string  `json:"asset_type"`
+	AssetCode      string  `json:"asset_code"`
+	AssetIssuer    *string `json:"asset_issuer,omitempty"`
+	Balance        string  `json:"balance"`
+	BalanceStroops int64   `json:"balance_stroops"`
+	Limit          *string `json:"limit,omitempty"`
+	IsAuthorized   *bool   `json:"is_authorized,omitempty"`
 }
 
 // AccountBalancesResponse contains all balances for an account
@@ -174,13 +175,13 @@ type TokenHoldersFilters struct {
 
 // TokenStats contains aggregated statistics for a token
 type TokenStats struct {
-	TotalHolders        int64   `json:"total_holders"`         // Accounts with balance > 0
-	TotalTrustlines     int64   `json:"total_trustlines"`      // All trustlines (including 0 balance)
-	CirculatingSupply   string  `json:"circulating_supply"`    // Total supply in circulation
-	Top10Concentration  float64 `json:"top_10_concentration"`  // Fraction held by top 10 holders
-	Transfers24h        int64   `json:"transfers_24h"`         // Transfer count in last 24h
-	Volume24h           string  `json:"volume_24h"`            // Transfer volume in last 24h
-	UniqueAccounts24h   int64   `json:"unique_accounts_24h"`   // Unique accounts in last 24h
+	TotalHolders       int64   `json:"total_holders"`        // Accounts with balance > 0
+	TotalTrustlines    int64   `json:"total_trustlines"`     // All trustlines (including 0 balance)
+	CirculatingSupply  string  `json:"circulating_supply"`   // Total supply in circulation
+	Top10Concentration float64 `json:"top_10_concentration"` // Fraction held by top 10 holders
+	Transfers24h       int64   `json:"transfers_24h"`        // Transfer count in last 24h
+	Volume24h          string  `json:"volume_24h"`           // Transfer volume in last 24h
+	UniqueAccounts24h  int64   `json:"unique_accounts_24h"`  // Unique accounts in last 24h
 }
 
 // TokenStatsResponse contains token statistics with asset info
@@ -435,24 +436,24 @@ func (r *SilverColdReader) GetAccountsListWithCursor(ctx context.Context, filter
 // ============================================
 
 type EnrichedOperation struct {
-	TransactionHash    string  `json:"transaction_hash"`
-	OperationID        int64   `json:"operation_id"`
-	LedgerSequence     int64   `json:"ledger_sequence"`
-	LedgerClosedAt     string  `json:"ledger_closed_at"`
-	SourceAccount      string  `json:"source_account"`
-	Type               int32   `json:"type"`
-	TypeName           string  `json:"type_name"`
-	Destination        *string `json:"destination,omitempty"`
-	AssetCode          *string `json:"asset_code,omitempty"`
-	AssetIssuer        *string `json:"asset_issuer,omitempty"`
-	Amount             *string `json:"amount,omitempty"`
-	TxSuccessful       bool    `json:"tx_successful"`
-	TxFeeCharged       int64   `json:"tx_fee_charged"`
-	IsPaymentOp        bool    `json:"is_payment_op"`
-	IsSorobanOp        bool    `json:"is_soroban_op"`
-	SorobanContractID  *string `json:"soroban_contract_id,omitempty"`
-	SorobanFunction    *string `json:"soroban_function,omitempty"`
-	SorobanArgsJSON    *string `json:"soroban_arguments_json,omitempty"`
+	TransactionHash   string  `json:"transaction_hash"`
+	OperationID       int64   `json:"operation_id"`
+	LedgerSequence    int64   `json:"ledger_sequence"`
+	LedgerClosedAt    string  `json:"ledger_closed_at"`
+	SourceAccount     string  `json:"source_account"`
+	Type              int32   `json:"type"`
+	TypeName          string  `json:"type_name"`
+	Destination       *string `json:"destination,omitempty"`
+	AssetCode         *string `json:"asset_code,omitempty"`
+	AssetIssuer       *string `json:"asset_issuer,omitempty"`
+	Amount            *string `json:"amount,omitempty"`
+	TxSuccessful      bool    `json:"tx_successful"`
+	TxFeeCharged      int64   `json:"tx_fee_charged"`
+	IsPaymentOp       bool    `json:"is_payment_op"`
+	IsSorobanOp       bool    `json:"is_soroban_op"`
+	SorobanContractID *string `json:"soroban_contract_id,omitempty"`
+	SorobanFunction   *string `json:"soroban_function,omitempty"`
+	SorobanArgsJSON   *string `json:"soroban_arguments_json,omitempty"`
 }
 
 // GetEnrichedOperations returns enriched operations with filters
@@ -768,17 +769,17 @@ type DecodedTransaction struct {
 
 // DecodedOperation represents a single decoded operation within a transaction
 type DecodedOperation struct {
-	Index          int     `json:"index"`
-	Type           int32   `json:"type"`
-	TypeName       string  `json:"type_name"`
-	SourceAccount  string  `json:"source_account"`
-	ContractID     *string `json:"contract_id,omitempty"`
-	FunctionName   *string `json:"function_name,omitempty"`
-	ArgumentsJSON  *string `json:"arguments_json,omitempty"`
-	Destination    *string `json:"destination,omitempty"`
-	AssetCode      *string `json:"asset_code,omitempty"`
-	Amount         *string `json:"amount,omitempty"`
-	IsSorobanOp    bool    `json:"is_soroban_op"`
+	Index         int     `json:"index"`
+	Type          int32   `json:"type"`
+	TypeName      string  `json:"type_name"`
+	SourceAccount string  `json:"source_account"`
+	ContractID    *string `json:"contract_id,omitempty"`
+	FunctionName  *string `json:"function_name,omitempty"`
+	ArgumentsJSON *string `json:"arguments_json,omitempty"`
+	Destination   *string `json:"destination,omitempty"`
+	AssetCode     *string `json:"asset_code,omitempty"`
+	Amount        *string `json:"amount,omitempty"`
+	IsSorobanOp   bool    `json:"is_soroban_op"`
 }
 
 // ============================================
@@ -799,6 +800,10 @@ type UnifiedEvent struct {
 	Amount         *string `json:"amount,omitempty"`
 	AssetCode      *string `json:"asset_code,omitempty"`
 	AssetIssuer    *string `json:"asset_issuer,omitempty"`
+	TokenName      *string `json:"token_name,omitempty"`
+	TokenSymbol    *string `json:"token_symbol,omitempty"`
+	TokenDecimals  *int    `json:"token_decimals,omitempty"`
+	TokenType      *string `json:"token_type,omitempty"`
 	SourceType     string  `json:"source_type"` // classic, soroban
 	OperationType  *int32  `json:"operation_type,omitempty"`
 	EventIndex     int     `json:"event_index"`
@@ -840,14 +845,14 @@ type SEP41TokenMetadata struct {
 
 // SEP41Balance represents a token holder's balance derived from transfer history
 type SEP41Balance struct {
-	Address     string `json:"address"`
-	Balance     string `json:"balance"` // net balance in stroops formatted
-	BalanceRaw  int64  `json:"balance_raw"`
-	Received    int64  `json:"total_received"`
-	Sent        int64  `json:"total_sent"`
-	TxCount     int64  `json:"tx_count"`
-	LastLedger  int64  `json:"last_activity_ledger"`
-	LastSeen    string `json:"last_activity"`
+	Address    string `json:"address"`
+	Balance    string `json:"balance"` // net balance in stroops formatted
+	BalanceRaw int64  `json:"balance_raw"`
+	Received   int64  `json:"total_received"`
+	Sent       int64  `json:"total_sent"`
+	TxCount    int64  `json:"tx_count"`
+	LastLedger int64  `json:"last_activity_ledger"`
+	LastSeen   string `json:"last_activity"`
 }
 
 // SEP41Transfer is an alias for unified events filtered to a single token contract
@@ -943,25 +948,25 @@ type GenericEventFilters struct {
 // ExplorerEvent represents an enriched contract event for the Prism explorer
 type ExplorerEvent struct {
 	EventID          string  `json:"event_id"`
-	Type             string  `json:"type"`                        // transfer, swap, mint, burn, approve, contract_call
-	Protocol         *string `json:"protocol,omitempty"`          // soroswap, aquarius, sep41, etc.
+	Type             string  `json:"type"`               // transfer, swap, mint, burn, approve, contract_call
+	Protocol         *string `json:"protocol,omitempty"` // soroswap, aquarius, sep41, etc.
 	ContractID       *string `json:"contract_id,omitempty"`
 	ContractName     *string `json:"contract_name,omitempty"`
 	ContractSymbol   *string `json:"contract_symbol,omitempty"`
 	ContractCategory *string `json:"contract_category,omitempty"` // token, dex, oracle, bridge, etc.
 	LedgerSequence   int64   `json:"ledger_sequence"`
-	TxHash         string  `json:"transaction_hash"`
-	ClosedAt       string  `json:"closed_at"`
-	Successful     bool    `json:"successful"`
-	Topic0         *string `json:"topic0,omitempty"`
-	Topic1         *string `json:"topic1,omitempty"`
-	Topic2         *string `json:"topic2,omitempty"`
-	Topic3         *string `json:"topic3,omitempty"`
-	TopicsDecoded  *string `json:"topics_decoded,omitempty"`
-	Data           *string `json:"data,omitempty"`
-	DataDecoded    *string `json:"data_decoded,omitempty"`
-	EventIndex     int     `json:"event_index"`
-	OpIndex        int     `json:"operation_index"`
+	TxHash           string  `json:"transaction_hash"`
+	ClosedAt         string  `json:"closed_at"`
+	Successful       bool    `json:"successful"`
+	Topic0           *string `json:"topic0,omitempty"`
+	Topic1           *string `json:"topic1,omitempty"`
+	Topic2           *string `json:"topic2,omitempty"`
+	Topic3           *string `json:"topic3,omitempty"`
+	TopicsDecoded    *string `json:"topics_decoded,omitempty"`
+	Data             *string `json:"data,omitempty"`
+	DataDecoded      *string `json:"data_decoded,omitempty"`
+	EventIndex       int     `json:"event_index"`
+	OpIndex          int     `json:"operation_index"`
 }
 
 // ExplorerEventMeta contains aggregate stats for the current filter set
@@ -1054,8 +1059,8 @@ type TxDiffs struct {
 type SmartWalletInfo struct {
 	ContractID     string             `json:"contract_id"`
 	IsSmartWallet  bool               `json:"is_smart_wallet"`
-	WalletType     string             `json:"wallet_type,omitempty"`      // "crossmint", "openzeppelin", "sep50_generic"
-	Implementation string             `json:"implementation,omitempty"`   // human-readable detector name
+	WalletType     string             `json:"wallet_type,omitempty"`    // "crossmint", "openzeppelin", "sep50_generic"
+	Implementation string             `json:"implementation,omitempty"` // human-readable detector name
 	HasCheckAuth   bool               `json:"has_check_auth"`
 	Confidence     float64            `json:"confidence"`
 	SignerCount    int                `json:"signer_count"`
@@ -1163,15 +1168,15 @@ func operationTypeName(opType int32) string {
 
 // OfferCurrent represents the current state of a DEX offer
 type OfferCurrent struct {
-	OfferID            int64    `json:"offer_id"`
-	SellerID           string   `json:"seller_id"`
+	OfferID            int64     `json:"offer_id"`
+	SellerID           string    `json:"seller_id"`
 	Selling            AssetInfo `json:"selling"`
 	Buying             AssetInfo `json:"buying"`
-	Amount             string   `json:"amount"`
-	Price              string   `json:"price"`
-	PriceR             PriceR   `json:"price_r"`
-	LastModifiedLedger int64    `json:"last_modified_ledger"`
-	Sponsor            *string  `json:"sponsor,omitempty"`
+	Amount             string    `json:"amount"`
+	Price              string    `json:"price"`
+	PriceR             PriceR    `json:"price_r"`
+	LastModifiedLedger int64     `json:"last_modified_ledger"`
+	Sponsor            *string   `json:"sponsor,omitempty"`
 }
 
 // PriceR represents a rational price (numerator/denominator)
@@ -1193,13 +1198,13 @@ type OfferFilters struct {
 
 // LiquidityPoolCurrent represents the current state of a liquidity pool
 type LiquidityPoolCurrent struct {
-	PoolID             string            `json:"pool_id"`
-	PoolType           string            `json:"pool_type"`
-	FeeBP              int               `json:"fee_bp"`
-	TrustlineCount     int               `json:"trustline_count"`
-	TotalShares        string            `json:"total_shares"`
-	Reserves           []PoolReserve     `json:"reserves"`
-	LastModifiedLedger int64             `json:"last_modified_ledger"`
+	PoolID             string        `json:"pool_id"`
+	PoolType           string        `json:"pool_type"`
+	FeeBP              int           `json:"fee_bp"`
+	TrustlineCount     int           `json:"trustline_count"`
+	TotalShares        string        `json:"total_shares"`
+	Reserves           []PoolReserve `json:"reserves"`
+	LastModifiedLedger int64         `json:"last_modified_ledger"`
 }
 
 // PoolReserve represents a reserve in a liquidity pool
@@ -1309,12 +1314,12 @@ type OHLCCandle struct {
 
 // LatestPrice represents the most recent price for a trading pair
 type LatestPrice struct {
-	BaseAsset    string  `json:"base_asset"`
-	CounterAsset string  `json:"counter_asset"`
-	Price        float64 `json:"price"`
-	Timestamp    string  `json:"timestamp"`
-	Volume24h    float64 `json:"volume_24h"`
-	TradeCount24h int64  `json:"trade_count_24h"`
+	BaseAsset     string  `json:"base_asset"`
+	CounterAsset  string  `json:"counter_asset"`
+	Price         float64 `json:"price"`
+	Timestamp     string  `json:"timestamp"`
+	Volume24h     float64 `json:"volume_24h"`
+	TradeCount24h int64   `json:"trade_count_24h"`
 }
 
 // TradePair represents an available trading pair
@@ -1328,23 +1333,25 @@ type TradePair struct {
 
 // SilverEffect represents an effect from the Silver effects table
 type SilverEffect struct {
-	LedgerSequence   int64     `json:"ledger_sequence"`
-	TransactionHash  string    `json:"transaction_hash"`
-	OperationIndex   int       `json:"operation_index"`
-	EffectIndex      int       `json:"effect_index"`
-	EffectType       int       `json:"effect_type"`
-	EffectTypeString string    `json:"effect_type_string"`
-	AccountID        *string   `json:"account_id,omitempty"`
-	Asset            *AssetInfo `json:"asset,omitempty"`
-	Amount           *string   `json:"amount,omitempty"`
-	TrustlineLimit   *string   `json:"trustline_limit,omitempty"`
-	AuthorizeFlag    *bool     `json:"authorize_flag,omitempty"`
-	ClawbackFlag     *bool     `json:"clawback_flag,omitempty"`
-	SignerAccount    *string   `json:"signer_account,omitempty"`
-	SignerWeight     *int      `json:"signer_weight,omitempty"`
-	OfferID          *int64    `json:"offer_id,omitempty"`
-	SellerAccount    *string   `json:"seller_account,omitempty"`
-	Timestamp        time.Time `json:"timestamp"`
+	LedgerSequence   int64            `json:"ledger_sequence"`
+	TransactionHash  string           `json:"transaction_hash"`
+	OperationIndex   int              `json:"operation_index"`
+	EffectIndex      int              `json:"effect_index"`
+	OperationID      *int64           `json:"operation_id,omitempty"`
+	EffectType       int              `json:"effect_type"`
+	EffectTypeString string           `json:"effect_type_string"`
+	AccountID        *string          `json:"account_id,omitempty"`
+	Asset            *AssetInfo       `json:"asset,omitempty"`
+	Amount           *string          `json:"amount,omitempty"`
+	Details          *json.RawMessage `json:"details,omitempty"`
+	TrustlineLimit   *string          `json:"trustline_limit,omitempty"`
+	AuthorizeFlag    *bool            `json:"authorize_flag,omitempty"`
+	ClawbackFlag     *bool            `json:"clawback_flag,omitempty"`
+	SignerAccount    *string          `json:"signer_account,omitempty"`
+	SignerWeight     *int             `json:"signer_weight,omitempty"`
+	OfferID          *int64           `json:"offer_id,omitempty"`
+	SellerAccount    *string          `json:"seller_account,omitempty"`
+	Timestamp        time.Time        `json:"timestamp"`
 }
 
 // EffectFilters contains filter options for effect queries
@@ -1373,10 +1380,10 @@ type EffectTypeCount struct {
 
 // ContractCode represents a deployed Soroban WASM contract
 type ContractCode struct {
-	Hash    string              `json:"hash"`
-	Metrics ContractCodeMetrics `json:"metrics"`
-	LastModifiedLedger int64   `json:"last_modified_ledger"`
-	CreatedAt          time.Time `json:"created_at"`
+	Hash               string              `json:"hash"`
+	Metrics            ContractCodeMetrics `json:"metrics"`
+	LastModifiedLedger int64               `json:"last_modified_ledger"`
+	CreatedAt          time.Time           `json:"created_at"`
 }
 
 // ContractCodeMetrics contains WASM complexity metrics
@@ -1406,8 +1413,8 @@ type TTLEntry struct {
 // TTLFilters contains filter options for TTL queries
 type TTLFilters struct {
 	KeyHash       string
-	WithinLedgers int64  // Entries expiring within N ledgers
-	ExpiredOnly   bool   // Only show expired entries
+	WithinLedgers int64 // Entries expiring within N ledgers
+	ExpiredOnly   bool  // Only show expired entries
 	Limit         int
 	Cursor        *TTLCursor
 }
@@ -1437,19 +1444,19 @@ type RestoredKey struct {
 
 // SorobanConfig represents Soroban network configuration
 type SorobanConfig struct {
-	Instructions  SorobanInstructionLimits `json:"instructions"`
-	Memory        SorobanMemoryLimits      `json:"memory"`
-	LedgerLimits  SorobanIOLimits          `json:"ledger_limits"`
-	TxLimits      SorobanIOLimits          `json:"tx_limits"`
-	Contract      SorobanContractLimits    `json:"contract"`
-	LastModifiedLedger int64               `json:"last_modified_ledger"`
-	UpdatedAt     time.Time                `json:"updated_at"`
+	Instructions       SorobanInstructionLimits `json:"instructions"`
+	Memory             SorobanMemoryLimits      `json:"memory"`
+	LedgerLimits       SorobanIOLimits          `json:"ledger_limits"`
+	TxLimits           SorobanIOLimits          `json:"tx_limits"`
+	Contract           SorobanContractLimits    `json:"contract"`
+	LastModifiedLedger int64                    `json:"last_modified_ledger"`
+	UpdatedAt          time.Time                `json:"updated_at"`
 }
 
 // SorobanInstructionLimits contains instruction-related limits
 type SorobanInstructionLimits struct {
-	LedgerMax          int64 `json:"ledger_max"`
-	TxMax              int64 `json:"tx_max"`
+	LedgerMax           int64 `json:"ledger_max"`
+	TxMax               int64 `json:"tx_max"`
 	FeeRatePerIncrement int64 `json:"fee_rate_per_increment"`
 }
 

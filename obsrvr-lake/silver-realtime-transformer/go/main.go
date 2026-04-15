@@ -4,12 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"flag"
+	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
 
 	_ "github.com/lib/pq"
+	"google.golang.org/grpc"
 )
 
 func main() {
@@ -97,6 +100,27 @@ func main() {
 
 	// Create transformer
 	transformer := NewRealtimeTransformer(config, sourceManager, silverWriter, checkpoint, silverDB)
+
+	// Start downstream flowctl SourceService gRPC server for serving subscribers (optional)
+	var silverSource *SilverSourceServer
+	if config.Service.GRPCPort > 0 {
+		silverSource = NewSilverSourceServer(checkpoint)
+		transformer.SetSourceServer(silverSource)
+
+		grpcServer := grpc.NewServer()
+		silverSource.Register(grpcServer)
+		lis, err := net.Listen("tcp", fmt.Sprintf(":%d", config.Service.GRPCPort))
+		if err != nil {
+			log.Fatalf("Failed to listen on downstream gRPC port %d: %v", config.Service.GRPCPort, err)
+		}
+		go func() {
+			log.Printf("flowctl SourceService gRPC server listening on :%d", config.Service.GRPCPort)
+			if err := grpcServer.Serve(lis); err != nil {
+				log.Fatalf("downstream gRPC server failed: %v", err)
+			}
+		}()
+		defer grpcServer.GracefulStop()
+	}
 
 	// Cold replay mode: one-shot batch processing from bronze cold → silver hot
 	if *coldReplay {

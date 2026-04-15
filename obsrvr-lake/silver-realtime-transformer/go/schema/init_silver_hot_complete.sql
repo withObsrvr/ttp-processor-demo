@@ -447,6 +447,7 @@ CREATE TABLE IF NOT EXISTS effects (
     transaction_hash TEXT NOT NULL,
     operation_index INTEGER NOT NULL,
     effect_index INTEGER NOT NULL,
+    operation_id BIGINT,
     effect_type INTEGER NOT NULL,
     effect_type_string TEXT NOT NULL,
     account_id TEXT,
@@ -454,6 +455,7 @@ CREATE TABLE IF NOT EXISTS effects (
     asset_code TEXT,
     asset_issuer TEXT,
     asset_type TEXT,
+    details_json TEXT,
     trustline_limit TEXT,
     authorize_flag BOOLEAN,
     clawback_flag BOOLEAN,
@@ -470,6 +472,7 @@ CREATE TABLE IF NOT EXISTS effects (
 CREATE INDEX IF NOT EXISTS idx_effects_account_id ON effects(account_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_effects_type ON effects(effect_type, created_at);
 CREATE INDEX IF NOT EXISTS idx_effects_ledger_range ON effects(ledger_range);
+CREATE INDEX IF NOT EXISTS idx_effects_operation_id ON effects(operation_id);
 
 -- ============================================================================
 -- PHASE 3: SOROBAN TABLES (5 tables)

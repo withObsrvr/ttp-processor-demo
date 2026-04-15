@@ -10,13 +10,14 @@ import (
 
 // ExplorerEventHandlers contains HTTP handlers for the Prism explorer events endpoint
 type ExplorerEventHandlers struct {
-	reader     *UnifiedDuckDBReader
+	reader     *ColdReader
+	hotReader  *SilverHotReader
 	classifier *EventClassifier
 }
 
 // NewExplorerEventHandlers creates new explorer event API handlers
-func NewExplorerEventHandlers(reader *UnifiedDuckDBReader, classifier *EventClassifier) *ExplorerEventHandlers {
-	return &ExplorerEventHandlers{reader: reader, classifier: classifier}
+func NewExplorerEventHandlers(reader *ColdReader, hotReader *SilverHotReader, classifier *EventClassifier) *ExplorerEventHandlers {
+	return &ExplorerEventHandlers{reader: reader, hotReader: hotReader, classifier: classifier}
 }
 
 // tabToTypes maps UI tab shortcuts to type filter values
@@ -58,7 +59,24 @@ func (h *ExplorerEventHandlers) HandleExplorerEvents(w http.ResponseWriter, r *h
 		return
 	}
 
-	events, meta, nextCursor, hasMore, err := h.reader.GetExplorerEvents(r.Context(), filters, h.classifier)
+	if h.shouldUseServingFastPath(filters) {
+		events, meta, nextCursor, hasMore, err := h.hotReader.GetServingExplorerEvents(r.Context(), filters, h.classifier)
+		if err == nil && len(events) > 0 {
+			response := map[string]interface{}{
+				"meta":     meta,
+				"events":   events,
+				"count":    len(events),
+				"has_more": hasMore,
+			}
+			if nextCursor != "" {
+				response["next_cursor"] = nextCursor
+			}
+			respondJSON(w, response)
+			return
+		}
+	}
+
+	events, meta, nextCursor, hasMore, err := h.reader.GetExplorerEvents(r.Context(), filters, h.hotReader, h.classifier)
 	if err != nil {
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -111,6 +129,16 @@ func (h *ExplorerEventHandlers) HandleExplorerEventRulesReload(w http.ResponseWr
 		"count":  len(rules),
 		"rules":  rules,
 	})
+}
+
+func (h *ExplorerEventHandlers) shouldUseServingFastPath(filters ExplorerEventFilters) bool {
+	if h.hotReader == nil || h.classifier == nil {
+		return false
+	}
+	if filters.StartLedger != nil || filters.EndLedger != nil {
+		return false
+	}
+	return true
 }
 
 func (h *ExplorerEventHandlers) parseExplorerEventFilters(r *http.Request) (ExplorerEventFilters, error) {

@@ -9,12 +9,14 @@ import (
 
 // TxDiffHandlers contains HTTP handlers for transaction diff queries
 type TxDiffHandlers struct {
-	reader *UnifiedDuckDBReader
+	coldReader    *ColdReader
+	hotPathReader *TxHotPathReader
+	indexReader   *IndexReader
 }
 
 // NewTxDiffHandlers creates new transaction diff API handlers
-func NewTxDiffHandlers(reader *UnifiedDuckDBReader) *TxDiffHandlers {
-	return &TxDiffHandlers{reader: reader}
+func NewTxDiffHandlers(coldReader *ColdReader, hotPathReader *TxHotPathReader, indexReader *IndexReader) *TxDiffHandlers {
+	return &TxDiffHandlers{coldReader: coldReader, hotPathReader: hotPathReader, indexReader: indexReader}
 }
 
 // HandleTransactionDiffs returns balance and state changes for a transaction
@@ -36,7 +38,27 @@ func (h *TxDiffHandlers) HandleTransactionDiffs(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	diffs, err := h.reader.GetTransactionDiffs(r.Context(), txHash)
+	var diffs *TxDiffs
+	var err error
+	if h.hotPathReader != nil {
+		diffs, err = h.hotPathReader.GetTransactionDiffs(r.Context(), txHash)
+		if err == nil {
+			respondJSON(w, diffs)
+			return
+		}
+	}
+	if h.coldReader == nil {
+		respondError(w, "transaction diffs require cold reader", http.StatusInternalServerError)
+		return
+	}
+	// Use index to resolve tx hash → ledger_sequence for partition-pruned cold lookup.
+	// Without this, DuckLake scans ALL Parquet files looking for the hash (30s+).
+	// With the ledger hint, it reads one partition (~100ms).
+	if h.indexReader != nil {
+		diffs, err = h.coldReader.GetTransactionDiffsWithLedgerHint(r.Context(), txHash, h.indexReader)
+	} else {
+		diffs, err = h.coldReader.GetTransactionDiffs(r.Context(), txHash)
+	}
 	if err != nil {
 		if errors.Is(err, ErrTxNotFound) {
 			respondError(w, err.Error(), http.StatusNotFound)
@@ -51,12 +73,14 @@ func (h *TxDiffHandlers) HandleTransactionDiffs(w http.ResponseWriter, r *http.R
 
 // SmartWalletHandlers contains HTTP handlers for SEP-50 smart wallet detection
 type SmartWalletHandlers struct {
-	reader *UnifiedDuckDBReader
+	hotReader  *SilverHotReader
+	coldReader *SilverColdReader
+	bronzeCold *ColdReader
 }
 
 // NewSmartWalletHandlers creates new smart wallet API handlers
-func NewSmartWalletHandlers(reader *UnifiedDuckDBReader) *SmartWalletHandlers {
-	return &SmartWalletHandlers{reader: reader}
+func NewSmartWalletHandlers(hotReader *SilverHotReader, coldReader *SilverColdReader, bronzeCold *ColdReader) *SmartWalletHandlers {
+	return &SmartWalletHandlers{hotReader: hotReader, coldReader: coldReader, bronzeCold: bronzeCold}
 }
 
 // HandleSmartWalletInfo detects if a contract is a SEP-50 smart wallet
@@ -77,7 +101,7 @@ func (h *SmartWalletHandlers) HandleSmartWalletInfo(w http.ResponseWriter, r *ht
 		return
 	}
 
-	info, err := h.reader.GetSmartWalletInfo(r.Context(), contractID)
+	info, err := h.GetSmartWalletInfo(r.Context(), contractID)
 	if err != nil {
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return

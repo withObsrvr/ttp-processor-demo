@@ -9,12 +9,13 @@ import (
 
 // EventHandlers contains HTTP handlers for CAP-67 unified event stream queries
 type EventHandlers struct {
-	reader *UnifiedDuckDBReader
+	reader        *SilverColdReader
+	hotPathReader *TxHotPathReader
 }
 
 // NewEventHandlers creates new CAP-67 event API handlers
-func NewEventHandlers(reader *UnifiedDuckDBReader) *EventHandlers {
-	return &EventHandlers{reader: reader}
+func NewEventHandlers(reader *SilverColdReader, hotPathReader *TxHotPathReader) *EventHandlers {
+	return &EventHandlers{reader: reader, hotPathReader: hotPathReader}
 }
 
 // HandleUnifiedEvents returns the unified CAP-67 event stream with filters
@@ -165,7 +166,14 @@ func (h *EventHandlers) HandleTransactionEvents(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	events, err := h.reader.GetTransactionEvents(r.Context(), txHash)
+	var events []UnifiedEvent
+	var err error
+	if h.hotPathReader != nil {
+		events, err = h.hotPathReader.GetTransactionEvents(r.Context(), txHash)
+	}
+	if err != nil || len(events) == 0 {
+		events, err = h.reader.GetTransactionEvents(r.Context(), txHash)
+	}
 	if err != nil {
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -26,7 +27,7 @@ type TransferDetail struct {
 // TxSummary represents a human-readable summary of a transaction
 type TxSummary struct {
 	Description       string          `json:"description"`
-	Type              string          `json:"type"` // transfer, mint, burn, swap, contract_call, classic
+	Type              string          `json:"type"` // transfer, mint, burn, swap, contract_call, create_account, payment, etc.
 	InvolvedContracts []string        `json:"involved_contracts,omitempty"`
 	Swap              *SwapDetail     `json:"swap,omitempty"`
 	Transfer          *TransferDetail `json:"transfer,omitempty"`
@@ -35,10 +36,6 @@ type TxSummary struct {
 }
 
 // GenerateTxSummary creates a human-readable summary from decoded operations and events.
-// Pattern matches known operation types to produce summaries like:
-// - "Transferred 100 USDC to GXYZ..."
-// - "Minted 100 tokens to GXYZ..."
-// - "Called swap on contract CABCD..."
 func GenerateTxSummary(ops []DecodedOperation, events []UnifiedEvent) TxSummary {
 	if len(ops) == 0 && len(events) == 0 {
 		return TxSummary{Description: "Empty transaction", Type: "unknown"}
@@ -48,6 +45,14 @@ func GenerateTxSummary(ops []DecodedOperation, events []UnifiedEvent) TxSummary 
 	for _, op := range ops {
 		if op.ContractID != nil {
 			contracts = appendUnique(contracts, *op.ContractID)
+		}
+	}
+
+	// Single classic operation — use human-readable templates
+	if len(ops) == 1 && !ops[0].IsSorobanOp {
+		if summary := summarizeClassicOp(ops[0]); summary != nil {
+			summary.InvolvedContracts = contracts
+			return *summary
 		}
 	}
 
@@ -64,7 +69,7 @@ func GenerateTxSummary(ops []DecodedOperation, events []UnifiedEvent) TxSummary 
 		}
 	}
 
-	// Single operation with function name
+	// Single Soroban operation with function name
 	if len(ops) == 1 && ops[0].FunctionName != nil {
 		op := ops[0]
 		contractDisplay := "contract"
@@ -78,25 +83,9 @@ func GenerateTxSummary(ops []DecodedOperation, events []UnifiedEvent) TxSummary 
 		}
 	}
 
-	// Multiple operations — summarize count
+	// Multiple operations — try to summarize classic ops
 	if len(ops) > 1 {
-		sorobanCount := 0
-		for _, op := range ops {
-			if op.IsSorobanOp {
-				sorobanCount++
-			}
-		}
-		if sorobanCount > 0 {
-			return TxSummary{
-				Description:       fmt.Sprintf("Transaction with %d operations (%d Soroban)", len(ops), sorobanCount),
-				Type:              "multi_op",
-				InvolvedContracts: contracts,
-			}
-		}
-		return TxSummary{
-			Description: fmt.Sprintf("Transaction with %d operations", len(ops)),
-			Type:        "multi_op",
-		}
+		return summarizeMultiOp(ops, events, contracts)
 	}
 
 	// Fallback: summarize from events
@@ -117,6 +106,254 @@ func GenerateTxSummary(ops []DecodedOperation, events []UnifiedEvent) TxSummary 
 	}
 
 	return TxSummary{Description: "Transaction", Type: "unknown"}
+}
+
+// summarizeClassicOp generates a human-readable description for a single classic Stellar operation
+func summarizeClassicOp(op DecodedOperation) *TxSummary {
+	amount := formatAmountForDisplay(op.Amount)
+	asset := assetForDisplay(op.AssetCode)
+	dest := abbreviateAddrSafe(op.Destination)
+	source := abbreviateAddr(op.SourceAccount)
+
+	switch op.TypeName {
+	case "create_account":
+		return &TxSummary{
+			Description: fmt.Sprintf("Created account %s with %s XLM", dest, amount),
+			Type:        "create_account",
+			Transfer: &TransferDetail{
+				Asset:  "XLM",
+				Amount: derefStr(op.Amount),
+				From:   op.SourceAccount,
+				To:     derefStr(op.Destination),
+			},
+		}
+
+	case "payment":
+		return &TxSummary{
+			Description: fmt.Sprintf("Sent %s %s to %s", amount, asset, dest),
+			Type:        "payment",
+			Transfer: &TransferDetail{
+				Asset:  asset,
+				Amount: derefStr(op.Amount),
+				From:   op.SourceAccount,
+				To:     derefStr(op.Destination),
+			},
+		}
+
+	case "path_payment_strict_receive", "path_payment_strict_send":
+		return &TxSummary{
+			Description: fmt.Sprintf("Path payment of %s %s to %s", amount, asset, dest),
+			Type:        "path_payment",
+			Transfer: &TransferDetail{
+				Asset:  asset,
+				Amount: derefStr(op.Amount),
+				From:   op.SourceAccount,
+				To:     derefStr(op.Destination),
+			},
+		}
+
+	case "change_trust":
+		if asset != "" {
+			return &TxSummary{
+				Description: fmt.Sprintf("Added trustline for %s", asset),
+				Type:        "change_trust",
+			}
+		}
+		return &TxSummary{
+			Description: "Updated trustline",
+			Type:        "change_trust",
+		}
+
+	case "account_merge":
+		return &TxSummary{
+			Description: fmt.Sprintf("Merged %s into %s", source, dest),
+			Type:        "account_merge",
+		}
+
+	case "manage_sell_offer":
+		if amount != "" && asset != "" {
+			return &TxSummary{
+				Description: fmt.Sprintf("Sell offer: %s %s", amount, asset),
+				Type:        "manage_sell_offer",
+			}
+		}
+		return &TxSummary{
+			Description: "Created or updated sell offer",
+			Type:        "manage_sell_offer",
+		}
+
+	case "manage_buy_offer":
+		if amount != "" && asset != "" {
+			return &TxSummary{
+				Description: fmt.Sprintf("Buy offer: %s %s", amount, asset),
+				Type:        "manage_buy_offer",
+			}
+		}
+		return &TxSummary{
+			Description: "Created or updated buy offer",
+			Type:        "manage_buy_offer",
+		}
+
+	case "create_passive_sell_offer":
+		if amount != "" && asset != "" {
+			return &TxSummary{
+				Description: fmt.Sprintf("Passive sell offer: %s %s", amount, asset),
+				Type:        "create_passive_sell_offer",
+			}
+		}
+		return &TxSummary{
+			Description: "Created passive sell offer",
+			Type:        "create_passive_sell_offer",
+		}
+
+	case "set_options":
+		return &TxSummary{
+			Description: "Updated account settings",
+			Type:        "set_options",
+		}
+
+	case "manage_data":
+		return &TxSummary{
+			Description: "Updated account data entry",
+			Type:        "manage_data",
+		}
+
+	case "bump_sequence":
+		return &TxSummary{
+			Description: "Bumped account sequence number",
+			Type:        "bump_sequence",
+		}
+
+	case "allow_trust":
+		return &TxSummary{
+			Description: fmt.Sprintf("Updated trust authorization for %s", dest),
+			Type:        "allow_trust",
+		}
+
+	case "set_trust_line_flags":
+		return &TxSummary{
+			Description: "Updated trustline flags",
+			Type:        "set_trust_line_flags",
+		}
+
+	case "create_claimable_balance":
+		if amount != "" && asset != "" {
+			return &TxSummary{
+				Description: fmt.Sprintf("Created claimable balance of %s %s", amount, asset),
+				Type:        "create_claimable_balance",
+			}
+		}
+		return &TxSummary{
+			Description: "Created claimable balance",
+			Type:        "create_claimable_balance",
+		}
+
+	case "claim_claimable_balance":
+		return &TxSummary{
+			Description: "Claimed a claimable balance",
+			Type:        "claim_claimable_balance",
+		}
+
+	case "clawback":
+		if amount != "" && asset != "" {
+			return &TxSummary{
+				Description: fmt.Sprintf("Clawed back %s %s from %s", amount, asset, dest),
+				Type:        "clawback",
+			}
+		}
+		return &TxSummary{
+			Description: "Clawed back assets",
+			Type:        "clawback",
+		}
+
+	case "begin_sponsoring_future_reserves":
+		return &TxSummary{
+			Description: fmt.Sprintf("Began sponsoring reserves for %s", dest),
+			Type:        "begin_sponsoring",
+		}
+
+	case "end_sponsoring_future_reserves":
+		return &TxSummary{
+			Description: "Ended reserve sponsorship",
+			Type:        "end_sponsoring",
+		}
+
+	case "revoke_sponsorship":
+		return &TxSummary{
+			Description: "Revoked sponsorship",
+			Type:        "revoke_sponsorship",
+		}
+
+	case "inflation":
+		return &TxSummary{
+			Description: "Triggered inflation payout",
+			Type:        "inflation",
+		}
+
+	case "liquidity_pool_deposit":
+		return &TxSummary{
+			Description: "Deposited into liquidity pool",
+			Type:        "liquidity_pool_deposit",
+		}
+
+	case "liquidity_pool_withdraw":
+		return &TxSummary{
+			Description: "Withdrew from liquidity pool",
+			Type:        "liquidity_pool_withdraw",
+		}
+
+	case "extend_footprint_ttl":
+		return &TxSummary{
+			Description: "Extended contract storage TTL",
+			Type:        "extend_footprint_ttl",
+		}
+
+	case "restore_footprint":
+		return &TxSummary{
+			Description: "Restored expired contract storage",
+			Type:        "restore_footprint",
+		}
+	}
+
+	return nil
+}
+
+func summarizeMultiOp(ops []DecodedOperation, events []UnifiedEvent, contracts []string) TxSummary {
+	sorobanCount := 0
+	classicTypes := make(map[string]int)
+	for _, op := range ops {
+		if op.IsSorobanOp {
+			sorobanCount++
+		} else {
+			classicTypes[op.TypeName]++
+		}
+	}
+
+	// All same classic type
+	if sorobanCount == 0 && len(classicTypes) == 1 {
+		for typeName, count := range classicTypes {
+			label := humanizeOpType(typeName)
+			if count > 1 {
+				return TxSummary{
+					Description: fmt.Sprintf("%d %s operations", count, label),
+					Type:        typeName,
+				}
+			}
+		}
+	}
+
+	if sorobanCount > 0 {
+		return TxSummary{
+			Description:       fmt.Sprintf("Transaction with %d operations (%d Soroban)", len(ops), sorobanCount),
+			Type:              "multi_op",
+			InvolvedContracts: contracts,
+		}
+	}
+
+	return TxSummary{
+		Description: fmt.Sprintf("Transaction with %d operations", len(ops)),
+		Type:        "multi_op",
+	}
 }
 
 func summarizeSingleEvent(e UnifiedEvent, contracts []string) TxSummary {
@@ -148,7 +385,7 @@ func summarizeSingleEvent(e UnifiedEvent, contracts []string) TxSummary {
 			detail.To = *e.To
 		}
 		return TxSummary{
-			Description:       fmt.Sprintf("Transferred %s%s to %s", amountStr, assetStr, toAddr),
+			Description:       fmt.Sprintf("Sent %s %s to %s", amountStr, asset, toAddr),
 			Type:              "transfer",
 			InvolvedContracts: contracts,
 			Transfer:          detail,
@@ -163,7 +400,7 @@ func summarizeSingleEvent(e UnifiedEvent, contracts []string) TxSummary {
 			detail.To = *e.To
 		}
 		return TxSummary{
-			Description:       fmt.Sprintf("Minted %s%s to %s", amountStr, assetStr, toAddr),
+			Description:       fmt.Sprintf("Minted %s %s to %s", amountStr, asset, toAddr),
 			Type:              "mint",
 			InvolvedContracts: contracts,
 			Mint:              detail,
@@ -178,7 +415,7 @@ func summarizeSingleEvent(e UnifiedEvent, contracts []string) TxSummary {
 			detail.From = *e.From
 		}
 		return TxSummary{
-			Description:       fmt.Sprintf("Burned %s%s from %s", amountStr, assetStr, fromAddr),
+			Description:       fmt.Sprintf("Burned %s %s from %s", amountStr, asset, fromAddr),
 			Type:              "burn",
 			InvolvedContracts: contracts,
 			Burn:              detail,
@@ -193,13 +430,11 @@ func summarizeSingleEvent(e UnifiedEvent, contracts []string) TxSummary {
 }
 
 func detectSwapPattern(events []UnifiedEvent, contracts []string) *TxSummary {
-	// Swap pattern: one transfer in, one transfer out, same address involved
 	e0, e1 := events[0], events[1]
 	if e0.EventType != "transfer" || e1.EventType != "transfer" {
 		return nil
 	}
 
-	// Check if same address is sender of one and receiver of another
 	if e0.From != nil && e1.To != nil && *e0.From == *e1.To {
 		return buildSwapSummary(e0, e1, contracts)
 	}
@@ -246,6 +481,84 @@ func buildSwapSummary(outgoing, incoming UnifiedEvent, contracts []string) *TxSu
 	}
 }
 
+// formatAmountForDisplay converts a stroops string to human-readable format (e.g. "10,000")
+func formatAmountForDisplay(amount *string) string {
+	if amount == nil || *amount == "" {
+		return ""
+	}
+	stroops, err := strconv.ParseInt(*amount, 10, 64)
+	if err != nil {
+		return *amount // return as-is if not parseable
+	}
+	whole := stroops / 10_000_000
+	frac := stroops % 10_000_000
+	if frac == 0 {
+		return formatWithCommas(whole)
+	}
+	// Trim trailing zeros from fractional part
+	fracStr := fmt.Sprintf("%07d", frac)
+	fracStr = strings.TrimRight(fracStr, "0")
+	return fmt.Sprintf("%s.%s", formatWithCommas(whole), fracStr)
+}
+
+// formatWithCommas adds thousand separators to an integer
+func formatWithCommas(n int64) string {
+	s := strconv.FormatInt(n, 10)
+	if len(s) <= 3 {
+		return s
+	}
+	var result []byte
+	for i, c := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			result = append(result, ',')
+		}
+		result = append(result, byte(c))
+	}
+	return string(result)
+}
+
+func assetForDisplay(assetCode *string) string {
+	if assetCode == nil || *assetCode == "" {
+		return ""
+	}
+	return *assetCode
+}
+
+func abbreviateAddrSafe(addr *string) string {
+	if addr == nil || *addr == "" {
+		return "unknown"
+	}
+	return abbreviateAddr(*addr)
+}
+
+func derefStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+func humanizeOpType(typeName string) string {
+	switch typeName {
+	case "create_account":
+		return "account creation"
+	case "payment":
+		return "payment"
+	case "path_payment_strict_receive", "path_payment_strict_send":
+		return "path payment"
+	case "change_trust":
+		return "trustline"
+	case "manage_sell_offer":
+		return "sell offer"
+	case "manage_buy_offer":
+		return "buy offer"
+	case "set_options":
+		return "settings"
+	default:
+		return strings.ReplaceAll(typeName, "_", " ")
+	}
+}
+
 func abbreviateAddr(addr string) string {
 	if len(addr) <= 10 {
 		return addr
@@ -284,6 +597,5 @@ func operationTypeNameDecode(opType int32) string {
 
 // FormatFunctionCall formats a function name for display, handling common patterns
 func FormatFunctionCall(functionName string) string {
-	// Replace underscores with spaces for display
 	return strings.ReplaceAll(functionName, "_", " ")
 }

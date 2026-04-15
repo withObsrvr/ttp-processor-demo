@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/stellar/go-stellar-sdk/ingest"
+	"github.com/stellar/go-stellar-sdk/toid"
 	"github.com/stellar/go-stellar-sdk/xdr"
 )
 
@@ -29,6 +30,7 @@ func extractTransactions(lcm xdr.LedgerCloseMeta, networkPassphrase string, ledg
 	}
 	defer reader.Close()
 
+	var txIndex int32 = 1 // 1-indexed per TOID convention
 	for {
 		tx, err := reader.Read()
 		if err == io.EOF {
@@ -56,11 +58,13 @@ func extractTransactions(lcm xdr.LedgerCloseMeta, networkPassphrase string, ledg
 			NewAccount:            false,
 		}
 
-		// Extract timebounds
+		// Extract timebounds. Stored as BIGINT in v3_bronze_schema.sql, so
+		// we keep them as int64 (matching PG/DuckLake) instead of formatting
+		// to a string.
 		if tb := tx.Envelope.TimeBounds(); tb != nil {
-			minTime := fmt.Sprintf("%d", tb.MinTime)
+			minTime := int64(tb.MinTime)
 			txData.TimeboundsMinTime = &minTime
-			maxTime := fmt.Sprintf("%d", tb.MaxTime)
+			maxTime := int64(tb.MaxTime)
 			txData.TimeboundsMaxTime = &maxTime
 		}
 
@@ -148,7 +152,11 @@ func extractTransactions(lcm xdr.LedgerCloseMeta, networkPassphrase string, ledg
 			txData.SorobanResourcesWriteBytes = &val
 		}
 
+		// Compute TOID
+		txData.TransactionID = toid.New(int32(ledgerSeq), txIndex, 0).ToInt64()
+
 		transactions = append(transactions, txData)
+		txIndex++
 	}
 
 	return transactions, nil
@@ -164,7 +172,7 @@ func extractOperations(lcm xdr.LedgerCloseMeta, networkPassphrase string, ledger
 	}
 	defer reader.Close()
 
-	txIndex := 0
+	var txIndex int32 = 1 // 1-indexed per TOID convention
 	for {
 		tx, err := reader.Read()
 		if err == io.EOF {
@@ -177,6 +185,7 @@ func extractOperations(lcm xdr.LedgerCloseMeta, networkPassphrase string, ledger
 
 		txHash := hex.EncodeToString(tx.Result.TransactionHash[:])
 		txSuccessful := tx.Result.Successful()
+		txTOID := toid.New(int32(ledgerSeq), txIndex, 0).ToInt64()
 
 		for i, op := range tx.Envelope.Operations() {
 			// Get source account (defaults to transaction source if not specified)
@@ -191,7 +200,7 @@ func extractOperations(lcm xdr.LedgerCloseMeta, networkPassphrase string, ledger
 
 			opData := OperationData{
 				TransactionHash:       txHash,
-				TransactionIndex:      txIndex,
+				TransactionIndex:      int(txIndex),
 				OperationIndex:        i,
 				LedgerSequence:        ledgerSeq,
 				SourceAccount:         sourceAccount,
@@ -201,6 +210,8 @@ func extractOperations(lcm xdr.LedgerCloseMeta, networkPassphrase string, ledger
 				CreatedAt:             closedAt,
 				TransactionSuccessful: txSuccessful,
 				LedgerRange:           ledgerRange,
+				TransactionID:         txTOID,
+				OperationID:           toid.New(int32(ledgerSeq), txIndex, int32(i+1)).ToInt64(),
 			}
 
 			// Extract operation-specific fields
@@ -488,96 +499,6 @@ func extractOperations(lcm xdr.LedgerCloseMeta, networkPassphrase string, ledger
 	}
 
 	return operations, nil
-}
-
-// extractEffects extracts basic effects from a pre-decoded ledger.
-// Simplified implementation covering account credited/debited effects from balance changes.
-func extractEffects(lcm xdr.LedgerCloseMeta, networkPassphrase string, ledgerSeq uint32, closedAt time.Time, ledgerRange uint32) ([]EffectData, error) {
-	var effects []EffectData
-
-	reader, err := ingest.NewLedgerTransactionReaderFromLedgerCloseMeta(networkPassphrase, lcm)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create transaction reader: %w", err)
-	}
-	defer reader.Close()
-
-	for {
-		tx, err := reader.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			log.Printf("Error reading transaction for effects in ledger %d: %v", ledgerSeq, err)
-			continue
-		}
-
-		txHash := hex.EncodeToString(tx.Result.TransactionHash[:])
-
-		for opIdx := uint32(0); opIdx < tx.OperationCount(); opIdx++ {
-			changes, err := tx.GetOperationChanges(opIdx)
-			if err != nil {
-				log.Printf("Error getting operation changes: %v", err)
-				continue
-			}
-
-			effectIdx := 0
-			for _, change := range changes {
-				// Only track account balance changes (most common effect)
-				if change.Type == xdr.LedgerEntryTypeAccount {
-					if change.Pre != nil && change.Post != nil {
-						preAccount := change.Pre.Data.MustAccount()
-						postAccount := change.Post.Data.MustAccount()
-						preBal := int64(preAccount.Balance)
-						postBal := int64(postAccount.Balance)
-
-						if postBal > preBal {
-							// Account credited
-							amount := fmt.Sprintf("%d", postBal-preBal)
-							accountID := postAccount.AccountId.Address()
-							assetType := "native"
-
-							effects = append(effects, EffectData{
-								LedgerSequence:   ledgerSeq,
-								TransactionHash:  txHash,
-								OperationIndex:   int(opIdx),
-								EffectIndex:      effectIdx,
-								EffectType:       2, // EffectAccountCredited
-								EffectTypeString: "account_credited",
-								AccountID:        &accountID,
-								Amount:           &amount,
-								AssetType:        &assetType,
-								CreatedAt:        closedAt,
-								LedgerRange:      ledgerRange,
-							})
-							effectIdx++
-						} else if postBal < preBal {
-							// Account debited
-							amount := fmt.Sprintf("%d", preBal-postBal)
-							accountID := postAccount.AccountId.Address()
-							assetType := "native"
-
-							effects = append(effects, EffectData{
-								LedgerSequence:   ledgerSeq,
-								TransactionHash:  txHash,
-								OperationIndex:   int(opIdx),
-								EffectIndex:      effectIdx,
-								EffectType:       3, // EffectAccountDebited
-								EffectTypeString: "account_debited",
-								AccountID:        &accountID,
-								Amount:           &amount,
-								AssetType:        &assetType,
-								CreatedAt:        closedAt,
-								LedgerRange:      ledgerRange,
-							})
-							effectIdx++
-						}
-					}
-				}
-			}
-		}
-	}
-
-	return effects, nil
 }
 
 // extractTrades extracts trades from a pre-decoded ledger.

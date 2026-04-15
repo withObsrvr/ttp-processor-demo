@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -17,6 +18,7 @@ import (
 	"github.com/stellar/go-stellar-sdk/xdr"
 	pb "github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/go/gen/raw_ledger_service"
 	"github.com/withObsrvr/ttp-processor-demo/stellar-postgres-ingester/go/internal/processors/contract"
+	"github.com/withObsrvr/ttp-processor-demo/stellar-postgres-ingester/go/internal/processors/utils"
 )
 
 // extractContractEvents extracts Soroban contract events from raw ledger
@@ -72,7 +74,6 @@ func (w *Writer) extractContractEvents(rawLedger *pb.RawLedger) ([]ContractEvent
 		// Extract events from this transaction
 		txEvents, err := tx.GetTransactionEvents()
 		if err != nil {
-			// No events or error - continue to next transaction
 			continue
 		}
 
@@ -83,12 +84,17 @@ func (w *Writer) extractContractEvents(rawLedger *pb.RawLedger) ([]ContractEvent
 		}
 
 		// Extract operation-level contract events
-		// Operation events only appear for successful operations, so in_successful_contract_call is always true
 		for opIdx, opEvents := range txEvents.OperationEvents {
 			for eventIdx, contractEvent := range opEvents {
 				eventData := extractContractEvent(contractEvent, txHash, ledgerSeq, closedAt, uint32(opIdx), uint32(eventIdx), true)
 				events = append(events, eventData)
 			}
+		}
+
+		// Extract transaction-level events (V4 / CAP-67 unified events).
+		for txEvtIdx, txEvt := range txEvents.TransactionEvents {
+			eventData := extractContractEvent(txEvt.Event, txHash, ledgerSeq, closedAt, 0, uint32(txEvtIdx), true)
+			events = append(events, eventData)
 		}
 	}
 
@@ -614,7 +620,10 @@ func (w *Writer) extractContractData(rawLedger *pb.RawLedger) ([]ContractDataDat
 			contractOutput, err, shouldContinue := transformer.TransformContractData(
 				change, w.config.Source.NetworkPassphrase, ledgerHeader)
 			if err != nil {
-				log.Printf("Failed to transform contract data: %v", err)
+				// State entries (pre-image of updates) are expected and skippable.
+				if !errors.Is(err, utils.ErrSkipStateEntry) {
+					log.Printf("Failed to transform contract data: %v", err)
+				}
 				continue
 			}
 			if !shouldContinue {

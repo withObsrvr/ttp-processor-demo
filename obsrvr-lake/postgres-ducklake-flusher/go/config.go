@@ -166,5 +166,10 @@ func GetTablesToFlush() []string {
 
 		// Contract creation tracking
 		"contract_creations_v1",
+
+		// Token transfers (migration 004). Without this entry the flusher
+		// never flushes or deletes token_transfers_stream_v1 and PG hot
+		// accumulates unboundedly.
+		"token_transfers_stream_v1",
 	}
 }
