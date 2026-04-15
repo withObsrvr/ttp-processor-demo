@@ -902,8 +902,12 @@ curl -H "Authorization: Api-Key $API_KEY" \
 ```json
 {
   "contract_id": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+  "display_name": "Example Token",
+  "contract_type": "sep41_token",
+  "verified": true,
   "creator_address": "GABC...",
   "wasm_hash": "abc123...",
+  "wasm_size_bytes": 48213,
   "created_ledger": 1200000,
   "created_at": "2025-12-17T18:49:47Z",
   "n_instructions": 50000,
@@ -911,6 +915,10 @@ curl -H "Authorization: Api-Key $API_KEY" \
   "n_exports": 8,
   "total_entries": 9,
   "persistent_entries": 7,
+  "temporary_entries": 1,
+  "instance_entries": 1,
+  "total_state_size_bytes": 9384,
+  "estimated_monthly_rent_stroops": 12000,
   "exported_functions": [
     {"name": "transfer", "call_count": 3057},
     {"name": "approve", "call_count": 932},
@@ -953,8 +961,11 @@ curl -H "Authorization: Api-Key $API_KEY" \
   "entries": [
     {
       "contract_id": "CDLZFC3...",
+      "key": "07b864d2...",
       "key_hash": "07b864d2...",
-      "durability": "ContractDataDurabilityPersistent",
+      "type": "persistent",
+      "durability": "persistent",
+      "size_bytes": 128,
       "data_value": "AAAAAAAAAA...",
       "last_modified_ledger": 1362432,
       "closed_at": "2026-03-06T15:49:14Z",
@@ -2051,7 +2062,7 @@ curl -H "Authorization: Api-Key $API_KEY" \
 
 #### Get Bronze Network Stats
 
-Returns headline network statistics directly from the bronze layer (raw ledger data). This endpoint has the freshest data with no polling delay — ideal for monitoring the latest ledger, protocol version, and real-time network activity.
+Returns headline network statistics directly from the bronze layer (raw ledger data). This endpoint is useful for raw network monitoring, but for Prism-style home-page recent-ledger widgets prefer the serving-backed `GET /api/v1/silver/ledgers/recent` endpoint.
 
 ```bash
 GET /api/v1/bronze/stats/network
@@ -3656,6 +3667,10 @@ GET /api/v1/bronze/trustlines
 GET /api/v1/bronze/offers
 GET /api/v1/bronze/contract_events
 ```
+
+For recent home/explorer feeds, also see serving-backed endpoints:
+- `GET /api/v1/silver/ledgers/recent`
+- `GET /api/v1/silver/transactions/recent`
 
 All Bronze endpoints support:
 - `limit` - Max results

@@ -112,6 +112,9 @@ func mainWithSilver() {
 		// Create legacy unified reader (always needed for legacy/hybrid modes)
 		unifiedSilverReader = NewUnifiedSilverReader(silverHotReader, silverColdReader)
 		log.Println("✅ Legacy UnifiedSilverReader initialized (Go-layer merge)")
+		if hotReader != nil {
+			silverHotReader.SetBronzeHotPG(hotReader.DB())
+		}
 
 		// Create new unified DuckDB reader if configured and mode requires it
 		if (readerMode == ReaderModeUnified || readerMode == ReaderModeHybrid) && config.Unified != nil {
@@ -139,11 +142,14 @@ func mainWithSilver() {
 
 	// Create Index Plane reader if configured
 	var indexHandlers *IndexHandlers
+	var indexReader *IndexReader
 	if config.Index != nil && config.Index.Enabled {
-		indexReader, err := NewIndexReader(*config.Index)
+		var err error
+		indexReader, err = NewIndexReader(*config.Index)
 		if err != nil {
 			log.Printf("⚠️  Failed to create Index Plane reader: %v", err)
 			log.Println("     Index Plane endpoints will be disabled")
+			indexReader = nil
 		} else {
 			defer indexReader.Close()
 			log.Println("✅ Connected to Index Plane (fast transaction lookups)")
@@ -300,9 +306,11 @@ func mainWithSilver() {
 		router.HandleFunc("/api/v1/silver/effects", silverHandlers.HandleEffects).Methods("GET")
 		router.HandleFunc("/api/v1/silver/effects/types", silverHandlers.HandleEffectTypes).Methods("GET")
 		router.HandleFunc("/api/v1/silver/effects/transaction/{tx_hash}", silverHandlers.HandleEffectsByTransaction).Methods("GET")
+		router.HandleFunc("/api/v1/silver/tx/{hash}/effects", silverHandlers.HandleEffectsByTransactionAlias).Methods("GET")
 		log.Println("  ✓ /api/v1/silver/effects (list, filter by account/type/time)")
 		log.Println("  ✓ /api/v1/silver/effects/types (effect type counts)")
 		log.Println("  ✓ /api/v1/silver/effects/transaction/{tx_hash} (effects by transaction)")
+		log.Println("  ✓ /api/v1/silver/tx/{hash}/effects (effects by transaction alias)")
 
 		// Phase 8: Soroban Table Endpoints - Contract Code
 		router.HandleFunc("/api/v1/silver/soroban/contract-code", silverHandlers.HandleContractCode).Methods("GET")
@@ -333,6 +341,19 @@ func mainWithSilver() {
 		router.HandleFunc("/api/v1/silver/soroban/contract-data/entry", silverHandlers.HandleContractDataEntry).Methods("GET")
 		log.Println("  ✓ /api/v1/silver/soroban/contract-data (contract storage)")
 		log.Println("  ✓ /api/v1/silver/soroban/contract-data/entry (single entry lookup)")
+
+		// Ledger compatibility routes
+		router.HandleFunc("/api/v1/silver/ledgers/{seq:[0-9]+}", queryService.HandleLedgerBySequence).Methods("GET")
+		router.HandleFunc("/api/v1/silver/ledger/{seq:[0-9]+}", queryService.HandleLedgerBySequence).Methods("GET")
+		log.Println("  ✓ /api/v1/silver/ledgers/{seq} (single ledger lookup)")
+		log.Println("  ✓ /api/v1/silver/ledger/{seq} (compat alias for single ledger lookup)")
+
+		// Composite ledger detail endpoint — replaces 6 separate calls for Prism ledger page
+		ledgerFullHandler := NewLedgerFullHandler(queryService, silverHotReader, unifiedSilverReader)
+		router.HandleFunc("/api/v1/silver/ledger/{seq:[0-9]+}/full", ledgerFullHandler.HandleLedgerFull).Methods("GET")
+		router.HandleFunc("/api/v1/silver/ledgers/{seq:[0-9]+}/full", ledgerFullHandler.HandleLedgerFull).Methods("GET")
+		log.Println("  ✓ /api/v1/silver/ledger/{seq}/full (composite ledger detail)")
+		log.Println("  ✓ /api/v1/silver/ledgers/{seq}/full (composite ledger detail alias)")
 
 		// Network statistics endpoint (Phase 2)
 		// Pass Bronze coldReader for accurate total account count
@@ -382,7 +403,9 @@ func mainWithSilver() {
 
 		// Contract analytics endpoints (Phase 1)
 		router.HandleFunc("/api/v1/silver/contracts/top", contractCallHandlers.HandleTopContracts).Methods("GET")
+		router.HandleFunc("/api/v1/silver/stats/contracts", contractCallHandlers.HandleTopContracts).Methods("GET")
 		log.Println("  ✓ /api/v1/silver/contracts/top (top active contracts)")
+		log.Println("  ✓ /api/v1/silver/stats/contracts (compat alias for top contracts)")
 
 		// Contract-centric endpoints with path parameters
 		router.HandleFunc("/api/v1/silver/contracts/{id}/recent-calls", contractCallHandlers.HandleRecentCalls).Methods("GET")
@@ -422,37 +445,46 @@ func mainWithSilver() {
 			router.HandleFunc("/api/v1/silver/stats/soroban", sorobanStatsHandler.HandleSorobanStats).Methods("GET")
 			log.Println("  ✓ /api/v1/silver/stats/soroban (Soroban network statistics)")
 
-			// Transaction summaries endpoint
+			// Recent feed endpoints
+			router.HandleFunc("/api/v1/silver/ledgers/recent", silverHandlers.HandleRecentLedgers).Methods("GET")
+			router.HandleFunc("/api/v1/silver/transactions/recent", silverHandlers.HandleRecentTransactions).Methods("GET")
 			router.HandleFunc("/api/v1/silver/transactions/summaries", silverHandlers.HandleTransactionSummaries).Methods("GET")
+			log.Println("  ✓ /api/v1/silver/ledgers/recent (recent ledgers for latest-ledgers UI)")
+			log.Println("  ✓ /api/v1/silver/transactions/recent (recent transactions for latest-activity UI)")
 			log.Println("  ✓ /api/v1/silver/transactions/summaries (batch tx summaries)")
 		}
 
-		// Prism Block Explorer endpoints (require unified reader)
+		var txHotPathReader *TxHotPathReader
+		if hotReader != nil && silverHotReader != nil {
+			txHotPathReader = NewTxHotPathReader(hotReader.DB(), silverHotReader.DB())
+		}
+
+		// Prism Block Explorer endpoints
+		// Generic CAP-67 events now read bronze cold directly (DuckLake only)
+		genericEventHandlers := NewGenericEventHandlers(coldReader, silverHotReader)
+		router.HandleFunc("/api/v1/silver/events/generic", genericEventHandlers.HandleGenericEvents).Methods("GET")
+		router.HandleFunc("/api/v1/silver/events/contract/{contract_id}", genericEventHandlers.HandleContractGenericEvents).Methods("GET")
+		log.Println("  ✓ /api/v1/silver/events/generic (all contract events from bronze cold)")
+		log.Println("  ✓ /api/v1/silver/events/contract/{contract_id} (contract events)")
+
+		// Explorer Events (Prism block explorer)
+		eventClassifier, err := NewEventClassifier(silverHotReader.DB())
+		if err != nil {
+			log.Printf("WARNING: failed to create event classifier: %v (explorer events will use fallback)", err)
+		}
+		if eventClassifier != nil {
+			explorerEventHandlers := NewExplorerEventHandlers(coldReader, silverHotReader, eventClassifier)
+			router.HandleFunc("/api/v1/explorer/events", explorerEventHandlers.HandleExplorerEvents).Methods("GET")
+			router.HandleFunc("/api/v1/explorer/events/rules", explorerEventHandlers.HandleExplorerEventRules).Methods("GET")
+			router.HandleFunc("/api/v1/explorer/events/rules/reload", requireAdmin(explorerEventHandlers.HandleExplorerEventRulesReload)).Methods("POST")
+			log.Println("  ✓ /api/v1/explorer/events (Prism explorer events)")
+			log.Println("  ✓ /api/v1/explorer/events/rules (view classification rules)")
+			log.Println("  ✓ /api/v1/explorer/events/rules/reload (hot-reload rules, admin)")
+		}
+
 		if unifiedDuckDBReader != nil {
-			// Feature 1: Generic CAP-67 Events (from bronze)
-			genericEventHandlers := NewGenericEventHandlers(unifiedDuckDBReader)
-			router.HandleFunc("/api/v1/silver/events/generic", genericEventHandlers.HandleGenericEvents).Methods("GET")
-			router.HandleFunc("/api/v1/silver/events/contract/{contract_id}", genericEventHandlers.HandleContractGenericEvents).Methods("GET")
-			log.Println("  ✓ /api/v1/silver/events/generic (all contract events from bronze)")
-			log.Println("  ✓ /api/v1/silver/events/contract/{contract_id} (contract events)")
-
-			// Explorer Events (Prism block explorer)
-			eventClassifier, err := NewEventClassifier(silverHotReader.DB())
-			if err != nil {
-				log.Printf("WARNING: failed to create event classifier: %v (explorer events will use fallback)", err)
-			}
-			if eventClassifier != nil {
-				explorerEventHandlers := NewExplorerEventHandlers(unifiedDuckDBReader, eventClassifier)
-				router.HandleFunc("/api/v1/explorer/events", explorerEventHandlers.HandleExplorerEvents).Methods("GET")
-				router.HandleFunc("/api/v1/explorer/events/rules", explorerEventHandlers.HandleExplorerEventRules).Methods("GET")
-				router.HandleFunc("/api/v1/explorer/events/rules/reload", requireAdmin(explorerEventHandlers.HandleExplorerEventRulesReload)).Methods("POST")
-				log.Println("  ✓ /api/v1/explorer/events (Prism explorer events)")
-				log.Println("  ✓ /api/v1/explorer/events/rules (view classification rules)")
-				log.Println("  ✓ /api/v1/explorer/events/rules/reload (hot-reload rules, admin)")
-			}
-
 			// Contract Registry (Prism contract identity)
-			registryHandlers := NewContractRegistryHandlers(silverHotReader.DB(), unifiedDuckDBReader)
+			registryHandlers := NewContractRegistryHandlers(silverHotReader.DB())
 			router.HandleFunc("/api/v1/explorer/contracts/search", registryHandlers.HandleSearchContracts).Methods("GET")
 			router.HandleFunc("/api/v1/explorer/contracts/seed", requireAdmin(registryHandlers.HandleSeedRegistry)).Methods("POST")
 			router.HandleFunc("/api/v1/explorer/contracts/{id}", registryHandlers.HandleGetContract).Methods("GET")
@@ -462,17 +494,17 @@ func mainWithSilver() {
 			log.Println("  ✓ /api/v1/explorer/contracts (contract registry, admin for mutations)")
 
 			// Feature 2: Unified Search
-			searchHandlers := NewSearchHandlers(unifiedDuckDBReader)
+			searchHandlers := NewSearchHandlers(silverHotReader, unifiedSilverReader.cold)
 			router.HandleFunc("/api/v1/silver/search", searchHandlers.HandleSearch).Methods("GET")
 			log.Println("  ✓ /api/v1/silver/search (unified search)")
 
 			// Feature 4: Transaction Diffs (balance/state changes)
-			txDiffHandlers := NewTxDiffHandlers(unifiedDuckDBReader)
+			txDiffHandlers := NewTxDiffHandlers(coldReader, txHotPathReader, indexReader)
 			router.HandleFunc("/api/v1/silver/tx/{hash}/diffs", txDiffHandlers.HandleTransactionDiffs).Methods("GET")
 			log.Println("  ✓ /api/v1/silver/tx/{hash}/diffs (balance/state changes)")
 
 			// Feature 3: Price Data (OHLC & Latest)
-			priceHandlers := NewPriceHandlers(unifiedDuckDBReader)
+			priceHandlers := NewPriceHandlers(silverHotReader)
 			router.HandleFunc("/api/v1/silver/prices/pairs", priceHandlers.HandleTradePairs).Methods("GET")
 			router.HandleFunc("/api/v1/silver/prices/{base}/{counter}/ohlc", priceHandlers.HandleOHLCCandles).Methods("GET")
 			router.HandleFunc("/api/v1/silver/prices/{base}/{counter}/latest", priceHandlers.HandleLatestPrice).Methods("GET")
@@ -481,58 +513,55 @@ func mainWithSilver() {
 			log.Println("  ✓ /api/v1/silver/prices/{base}/{counter}/latest (latest price)")
 
 			// Feature 5: Smart Wallet Detection (SEP-50)
-			smartWalletHandlers := NewSmartWalletHandlers(unifiedDuckDBReader)
+			smartWalletHandlers := NewSmartWalletHandlers(silverHotReader, unifiedSilverReader.cold, coldReader)
 			router.HandleFunc("/api/v1/silver/smart-wallet/{contract_id}", smartWalletHandlers.HandleSmartWalletInfo).Methods("GET")
 			log.Println("  ✓ /api/v1/silver/smart-wallet/{contract_id} (SEP-50 detection)")
 		}
 
-		// CAP-67 Unified Event Stream + SEP-41 Token endpoints
-		if unifiedDuckDBReader != nil {
-			eventHandlers := NewEventHandlers(unifiedDuckDBReader)
-			log.Println("Registering CAP-67 Event Stream endpoints:")
+		// CAP-67 Unified Event Stream + SEP-41 Token endpoints now read silver cold directly.
+		eventHandlers := NewEventHandlers(unifiedSilverReader.cold, txHotPathReader)
+		log.Println("Registering CAP-67 Event Stream endpoints:")
 
-			router.HandleFunc("/api/v1/silver/events", eventHandlers.HandleUnifiedEvents).Methods("GET")
-			router.HandleFunc("/api/v1/silver/events/by-contract", eventHandlers.HandleContractEvents).Methods("GET")
-			router.HandleFunc("/api/v1/silver/address/{addr}/events", eventHandlers.HandleAddressEvents).Methods("GET")
-			router.HandleFunc("/api/v1/silver/tx/{hash}/events", eventHandlers.HandleTransactionEvents).Methods("GET")
-			log.Println("  ✓ /api/v1/silver/events (unified CAP-67 event stream)")
-			log.Println("  ✓ /api/v1/silver/events/by-contract (filter by contract)")
-			log.Println("  ✓ /api/v1/silver/address/{addr}/events (address events)")
-			log.Println("  ✓ /api/v1/silver/tx/{hash}/events (transaction events)")
+		router.HandleFunc("/api/v1/silver/events", eventHandlers.HandleUnifiedEvents).Methods("GET")
+		router.HandleFunc("/api/v1/silver/events/by-contract", eventHandlers.HandleContractEvents).Methods("GET")
+		router.HandleFunc("/api/v1/silver/address/{addr}/events", eventHandlers.HandleAddressEvents).Methods("GET")
+		router.HandleFunc("/api/v1/silver/tx/{hash}/events", eventHandlers.HandleTransactionEvents).Methods("GET")
+		log.Println("  ✓ /api/v1/silver/events (unified CAP-67 event stream)")
+		log.Println("  ✓ /api/v1/silver/events/by-contract (filter by contract)")
+		log.Println("  ✓ /api/v1/silver/address/{addr}/events (address events)")
+		log.Println("  ✓ /api/v1/silver/tx/{hash}/events (transaction events)")
 
-			// SEP-41 Token API endpoints
-			sep41Handlers := NewSEP41Handlers(unifiedDuckDBReader)
-			log.Println("Registering SEP-41 Token API endpoints:")
+		sep41Handlers := NewSEP41Handlers(unifiedSilverReader.cold)
+		log.Println("Registering SEP-41 Token API endpoints:")
 
-			router.HandleFunc("/api/v1/silver/tokens/{contract_id}/balances", sep41Handlers.HandleTokenBalances).Methods("GET")
-			router.HandleFunc("/api/v1/silver/tokens/{contract_id}/balance/{address}", sep41Handlers.HandleSingleBalance).Methods("GET")
-			router.HandleFunc("/api/v1/silver/tokens/{contract_id}/transfers", sep41Handlers.HandleTokenTransfers).Methods("GET")
-			router.HandleFunc("/api/v1/silver/tokens/{contract_id}/stats", sep41Handlers.HandleTokenStats).Methods("GET")
-			router.HandleFunc("/api/v1/silver/tokens/{contract_id}", sep41Handlers.HandleTokenMetadata).Methods("GET")
-			router.HandleFunc("/api/v1/silver/address/{addr}/token-balances", sep41Handlers.HandleAddressTokenPortfolio).Methods("GET")
-			log.Println("  ✓ /api/v1/silver/tokens/{contract_id} (SEP-41 metadata)")
-			log.Println("  ✓ /api/v1/silver/tokens/{contract_id}/balances (token holders)")
-			log.Println("  ✓ /api/v1/silver/tokens/{contract_id}/balance/{address} (single balance)")
-			log.Println("  ✓ /api/v1/silver/tokens/{contract_id}/transfers (token transfers)")
-			log.Println("  ✓ /api/v1/silver/tokens/{contract_id}/stats (token statistics)")
-			log.Println("  ✓ /api/v1/silver/address/{addr}/token-balances (address portfolio)")
+		router.HandleFunc("/api/v1/silver/tokens/{contract_id}/balances", sep41Handlers.HandleTokenBalances).Methods("GET")
+		router.HandleFunc("/api/v1/silver/tokens/{contract_id}/balance/{address}", sep41Handlers.HandleSingleBalance).Methods("GET")
+		router.HandleFunc("/api/v1/silver/tokens/{contract_id}/transfers", sep41Handlers.HandleTokenTransfers).Methods("GET")
+		router.HandleFunc("/api/v1/silver/tokens/{contract_id}/stats", sep41Handlers.HandleTokenStats).Methods("GET")
+		router.HandleFunc("/api/v1/silver/tokens/{contract_id}", sep41Handlers.HandleTokenMetadata).Methods("GET")
+		router.HandleFunc("/api/v1/silver/address/{addr}/token-balances", sep41Handlers.HandleAddressTokenPortfolio).Methods("GET")
+		log.Println("  ✓ /api/v1/silver/tokens/{contract_id} (SEP-41 metadata)")
+		log.Println("  ✓ /api/v1/silver/tokens/{contract_id}/balances (token holders)")
+		log.Println("  ✓ /api/v1/silver/tokens/{contract_id}/balance/{address} (single balance)")
+		log.Println("  ✓ /api/v1/silver/tokens/{contract_id}/transfers (token transfers)")
+		log.Println("  ✓ /api/v1/silver/tokens/{contract_id}/stats (token statistics)")
+		log.Println("  ✓ /api/v1/silver/address/{addr}/token-balances (address portfolio)")
 
-			// Transaction Decode + Human-Readable Summary endpoints
-			decodeHandlers := NewDecodeHandlers(unifiedDuckDBReader, unifiedSilverReader)
-			log.Println("Registering Transaction Decode endpoints:")
+		// Transaction Decode + Human-Readable Summary endpoints
+		decodeHandlers := NewDecodeHandlers(silverHotReader, unifiedSilverReader.cold, coldReader, unifiedSilverReader, txHotPathReader)
+		log.Println("Registering Transaction Decode endpoints:")
 
-			// batch route must be registered before {hash} routes to avoid matching "batch" as a hash
-			router.HandleFunc("/api/v1/silver/tx/batch/decoded", decodeHandlers.HandleBatchDecodedTransactions).Methods("GET", "POST")
-			router.HandleFunc("/api/v1/silver/tx/{hash}/decoded", decodeHandlers.HandleDecodedTransaction).Methods("GET")
-			router.HandleFunc("/api/v1/silver/tx/{hash}/full", decodeHandlers.HandleFullTransaction).Methods("GET")
-			router.HandleFunc("/api/v1/silver/contracts/{id}/interface", decodeHandlers.HandleContractInterface).Methods("GET")
-			router.HandleFunc("/api/v1/silver/decode/scval", decodeHandlers.HandleDecodeScVal).Methods("POST")
-			log.Println("  ✓ /api/v1/silver/tx/batch/decoded (batch decoded transactions)")
-			log.Println("  ✓ /api/v1/silver/tx/{hash}/decoded (human-readable transaction)")
-			log.Println("  ✓ /api/v1/silver/tx/{hash}/full (composite transaction analysis)")
-			log.Println("  ✓ /api/v1/silver/contracts/{id}/interface (contract ABI)")
-			log.Println("  ✓ /api/v1/silver/decode/scval (ScVal decoder)")
-		}
+		// batch route must be registered before {hash} routes to avoid matching "batch" as a hash
+		router.HandleFunc("/api/v1/silver/tx/batch/decoded", decodeHandlers.HandleBatchDecodedTransactions).Methods("GET", "POST")
+		router.HandleFunc("/api/v1/silver/tx/{hash}/decoded", decodeHandlers.HandleDecodedTransaction).Methods("GET")
+		router.HandleFunc("/api/v1/silver/tx/{hash}/full", decodeHandlers.HandleFullTransaction).Methods("GET")
+		router.HandleFunc("/api/v1/silver/contracts/{id}/interface", decodeHandlers.HandleContractInterface).Methods("GET")
+		router.HandleFunc("/api/v1/silver/decode/scval", decodeHandlers.HandleDecodeScVal).Methods("POST")
+		log.Println("  ✓ /api/v1/silver/tx/batch/decoded (batch decoded transactions)")
+		log.Println("  ✓ /api/v1/silver/tx/{hash}/decoded (human-readable transaction)")
+		log.Println("  ✓ /api/v1/silver/tx/{hash}/full (composite transaction analysis)")
+		log.Println("  ✓ /api/v1/silver/contracts/{id}/interface (contract ABI)")
+		log.Println("  ✓ /api/v1/silver/decode/scval (ScVal decoder)")
 
 		// Gold layer endpoints (Snapshot API) - uses Silver data
 		goldHandlers := NewGoldHandlers(unifiedSilverReader)

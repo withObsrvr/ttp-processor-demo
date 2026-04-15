@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -67,9 +68,12 @@ func decodeActivityCursor(s string) (*ActivityCursor, error) {
 
 // GetAccountActivity returns unified activity feed for an account
 func (h *SilverHotReader) GetAccountActivity(ctx context.Context, accountID string, limit int, cursor *ActivityCursor) ([]ActivityItem, error) {
+	if activity, err := h.getServingAccountActivity(ctx, accountID, limit, cursor); err == nil && len(activity) > 0 {
+		return activity, nil
+	}
+
 	// Query multiple sources in parallel and merge
 	// For simplicity, we'll query sequentially and merge
-
 	var allActivity []ActivityItem
 
 	// 1. Get payments sent/received from enriched_operations
@@ -98,6 +102,91 @@ func (h *SilverHotReader) GetAccountActivity(ctx context.Context, accountID stri
 	}
 
 	return allActivity, nil
+}
+
+func (h *SilverHotReader) getServingAccountActivity(ctx context.Context, accountID string, limit int, cursor *ActivityCursor) ([]ActivityItem, error) {
+	query := `
+		SELECT
+			created_at,
+			ledger_sequence,
+			tx_hash,
+			source_account,
+			destination_account,
+			amount_stroops,
+			contract_id,
+			function_name,
+			is_payment_op,
+			is_soroban_op,
+			op_index
+		FROM serving.sv_operations_recent
+		WHERE (source_account = $1 OR destination_account = $1)
+		  AND (is_payment_op = true OR (is_soroban_op = true AND source_account = $1))
+	`
+	args := []interface{}{accountID}
+	if cursor != nil && cursor.Timestamp != "" {
+		query += " AND (ledger_sequence < $2 OR (ledger_sequence = $2 AND created_at < $3))"
+		args = append(args, cursor.LedgerSequence, cursor.Timestamp)
+	}
+	query += " ORDER BY ledger_sequence DESC, created_at DESC, op_index DESC LIMIT $" + strconv.Itoa(len(args)+1)
+	args = append(args, limit)
+
+	rows, err := h.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var activities []ActivityItem
+	for rows.Next() {
+		var createdAt string
+		var ledgerSeq int64
+		var txHash string
+		var sourceAccount, destinationAccount, contractID, functionName sql.NullString
+		var amountStroops sql.NullInt64
+		var isPaymentOp, isSorobanOp bool
+		var opIndex int64
+		if err := rows.Scan(&createdAt, &ledgerSeq, &txHash, &sourceAccount, &destinationAccount, &amountStroops, &contractID, &functionName, &isPaymentOp, &isSorobanOp, &opIndex); err != nil {
+			continue
+		}
+
+		details := make(map[string]interface{})
+		activityType := "operation"
+		if isPaymentOp {
+			if sourceAccount.Valid && sourceAccount.String == accountID {
+				activityType = "payment_sent"
+				if destinationAccount.Valid {
+					details["to"] = destinationAccount.String
+				}
+			} else {
+				activityType = "payment_received"
+				if sourceAccount.Valid {
+					details["from"] = sourceAccount.String
+				}
+			}
+			if amountStroops.Valid {
+				details["amount"] = formatStroopsToDecimal(amountStroops.Int64)
+			}
+			details["asset_code"] = "XLM"
+		} else if isSorobanOp {
+			activityType = "contract_call"
+			if contractID.Valid {
+				details["contract_id"] = contractID.String
+			}
+			if functionName.Valid && functionName.String != "" {
+				details["function"] = functionName.String
+			}
+			details["role"] = "caller"
+		}
+
+		activities = append(activities, ActivityItem{
+			Type:           activityType,
+			Timestamp:      createdAt,
+			LedgerSequence: ledgerSeq,
+			TxHash:         txHash,
+			Details:        details,
+		})
+	}
+	return activities, rows.Err()
 }
 
 // getPaymentActivity retrieves payment-related activity

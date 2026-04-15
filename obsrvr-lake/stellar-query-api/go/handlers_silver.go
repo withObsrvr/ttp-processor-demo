@@ -66,6 +66,16 @@ func (h *SilverHandlers) HandleAccountCurrent(w http.ResponseWriter, r *http.Req
 	var account *AccountCurrent
 	var err error
 
+	// Fast path: serving projection in silver_hot. This avoids DuckDB federation
+	// and broad silver scans for the explorer's hottest account lookup path.
+	if h.legacyReader != nil && h.legacyReader.hot != nil {
+		account, err = h.legacyReader.hot.GetServingAccountCurrent(r.Context(), accountID)
+		if err == nil && account != nil {
+			respondJSON(w, map[string]interface{}{"account": account})
+			return
+		}
+	}
+
 	switch h.readerMode {
 	case ReaderModeUnified:
 		account, err = h.unifiedReader.GetAccountCurrent(r.Context(), accountID)
@@ -204,6 +214,19 @@ func (h *SilverHandlers) HandleTopAccounts(w http.ResponseWriter, r *http.Reques
 
 	var accounts []AccountCurrent
 	var err error
+
+	// Fast path: serving projection in silver_hot. Top accounts is a leaderboard
+	// query that should be an indexed read, not a federated hot+cold query.
+	if h.legacyReader != nil && h.legacyReader.hot != nil {
+		accounts, err = h.legacyReader.hot.GetServingTopAccounts(r.Context(), limit)
+		if err == nil && len(accounts) > 0 {
+			respondJSON(w, map[string]interface{}{
+				"accounts": accounts,
+				"count":    len(accounts),
+			})
+			return
+		}
+	}
 
 	switch h.readerMode {
 	case ReaderModeUnified:
@@ -473,16 +496,18 @@ func (h *SilverHandlers) HandleAssetList(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	// Always route asset list through the legacy reader (direct PG
-	// silver_hot). The unified reader's GetAssetList federates across
-	// hot+cold trustlines through DuckDB ATTACH POSTGRES + read_parquet
-	// from B2, which turns a <1s aggregate into 12-22s because DuckDB
-	// pulls every row over network to do its own GROUP BY. For this
-	// endpoint we only need the current state (trustlines_current is a
-	// silver current-state table, hot has the live snapshot) so the
-	// legacy path is strictly a better choice.
+	// Fast path: serving projection first. Fall back to the pre-existing legacy
+	// hot PG path if serving asset tables are not populated yet.
 	var response *AssetListResponse
 	var queryErr error
+
+	if h.legacyReader != nil && h.legacyReader.hot != nil {
+		response, queryErr = h.legacyReader.hot.GetServingAssetList(r.Context(), filters)
+		if queryErr == nil && response != nil && len(response.Assets) > 0 {
+			respondJSON(w, response)
+			return
+		}
+	}
 
 	if h.legacyReader != nil {
 		response, queryErr = h.legacyReader.GetAssetList(r.Context(), filters)
@@ -536,7 +561,15 @@ func (h *SilverHandlers) HandleTokenStats(w http.ResponseWriter, r *http.Request
 	var response *TokenStatsResponse
 	var err error
 
-	// Use unified reader
+	// Fast path: serving projection first.
+	if h.legacyReader != nil && h.legacyReader.hot != nil {
+		response, err = h.legacyReader.hot.GetServingTokenStats(r.Context(), assetCode, assetIssuer)
+		if err == nil && response != nil {
+			respondJSON(w, response)
+			return
+		}
+	}
+
 	if h.unifiedReader != nil {
 		response, err = h.unifiedReader.GetTokenStats(r.Context(), assetCode, assetIssuer)
 	} else {
@@ -616,7 +649,15 @@ func (h *SilverHandlers) HandleTokenHolders(w http.ResponseWriter, r *http.Reque
 
 	var response *TokenHoldersResponse
 
-	// Use unified reader
+	// Fast path: serving projection first.
+	if h.legacyReader != nil && h.legacyReader.hot != nil {
+		response, err = h.legacyReader.hot.GetServingTokenHolders(r.Context(), filters)
+		if err == nil && response != nil {
+			respondJSON(w, response)
+			return
+		}
+	}
+
 	if h.unifiedReader != nil {
 		response, err = h.unifiedReader.GetTokenHolders(r.Context(), filters)
 	} else {
@@ -660,7 +701,17 @@ func (h *SilverHandlers) HandleAccountBalances(w http.ResponseWriter, r *http.Re
 	var response *AccountBalancesResponse
 	var err error
 
-	// Use unified reader
+	// Fast path: serving projection in silver_hot. Account balances is one of the
+	// primary endpoints that timed out through unified DuckDB hot+cold federation.
+	if h.legacyReader != nil && h.legacyReader.hot != nil {
+		response, err = h.legacyReader.hot.GetServingAccountBalances(r.Context(), accountID)
+		if err == nil && response != nil {
+			respondJSON(w, response)
+			return
+		}
+	}
+
+	// Fall back to legacy unified DuckDB path until all serving projections exist.
 	if h.unifiedReader != nil {
 		response, err = h.unifiedReader.GetAccountBalances(r.Context(), accountID)
 	} else {
@@ -1285,24 +1336,40 @@ func (h *SilverHandlers) HandleTokenTransfers(w http.ResponseWriter, r *http.Req
 	var nextCursor string
 	var hasMore bool
 
+	// Explorer/default transfer queries are usually recent and/or selective.
+	// Prefer direct hot PG via the legacy reader for those cases instead of
+	// unified DuckDB federation over enriched_history_operations.
+	recentQuery := (!filters.StartTime.IsZero() && filters.StartTime.After(time.Now().Add(-48*time.Hour))) ||
+		filters.FromAccount != "" || filters.ToAccount != "" || filters.Cursor != nil
+
 	switch h.readerMode {
 	case ReaderModeUnified:
-		transfers, nextCursor, hasMore, err = h.unifiedReader.GetTokenTransfersWithCursor(r.Context(), filters)
+		if recentQuery && h.legacyReader != nil {
+			transfers, nextCursor, hasMore, err = h.legacyReader.GetTokenTransfersWithCursor(r.Context(), filters)
+		} else {
+			transfers, nextCursor, hasMore, err = h.unifiedReader.GetTokenTransfersWithCursor(r.Context(), filters)
+		}
 	case ReaderModeHybrid:
 		legacyTransfers, legacyNextCursor, legacyHasMore, legacyErr := h.legacyReader.GetTokenTransfersWithCursor(r.Context(), filters)
-		unifiedTransfers, _, _, unifiedErr := h.unifiedReader.GetTokenTransfersWithCursor(r.Context(), filters)
+		var unifiedTransfers []TokenTransfer
+		var unifiedErr error
+		if !recentQuery {
+			unifiedTransfers, _, _, unifiedErr = h.unifiedReader.GetTokenTransfersWithCursor(r.Context(), filters)
+		}
 
-		if legacyErr != nil && unifiedErr != nil {
-			log.Printf("⚠️ HYBRID [HandleTokenTransfers]: both failed - legacy: %v, unified: %v", legacyErr, unifiedErr)
-		} else if legacyErr != nil {
-			log.Printf("⚠️ HYBRID [HandleTokenTransfers]: legacy failed: %v, unified succeeded with %d results", legacyErr, len(unifiedTransfers))
-		} else if unifiedErr != nil {
-			log.Printf("⚠️ HYBRID [HandleTokenTransfers]: unified failed: %v, legacy succeeded with %d results", unifiedErr, len(legacyTransfers))
-		} else {
-			if len(legacyTransfers) != len(unifiedTransfers) {
-				logMismatch("HandleTokenTransfers", len(legacyTransfers), len(unifiedTransfers), "asset="+filters.AssetCode)
+		if !recentQuery {
+			if legacyErr != nil && unifiedErr != nil {
+				log.Printf("⚠️ HYBRID [HandleTokenTransfers]: both failed - legacy: %v, unified: %v", legacyErr, unifiedErr)
+			} else if legacyErr != nil {
+				log.Printf("⚠️ HYBRID [HandleTokenTransfers]: legacy failed: %v, unified succeeded with %d results", legacyErr, len(unifiedTransfers))
+			} else if unifiedErr != nil {
+				log.Printf("⚠️ HYBRID [HandleTokenTransfers]: unified failed: %v, legacy succeeded with %d results", unifiedErr, len(legacyTransfers))
 			} else {
-				logHybridMatch("HandleTokenTransfers", len(legacyTransfers))
+				if len(legacyTransfers) != len(unifiedTransfers) {
+					logMismatch("HandleTokenTransfers", len(legacyTransfers), len(unifiedTransfers), "asset="+filters.AssetCode)
+				} else {
+					logHybridMatch("HandleTokenTransfers", len(legacyTransfers))
+				}
 			}
 		}
 		transfers, nextCursor, hasMore, err = legacyTransfers, legacyNextCursor, legacyHasMore, legacyErr
@@ -1326,7 +1393,7 @@ func (h *SilverHandlers) HandleTokenTransfers(w http.ResponseWriter, r *http.Req
 		}
 		meta.ScannedLedger = &maxLedger
 	}
-	if h.unifiedReader != nil {
+	if !recentQuery && h.unifiedReader != nil {
 		if availableLedgers, err := h.unifiedReader.GetAvailableLedgers(r.Context()); err == nil {
 			meta.AvailableLedgers = availableLedgers
 		}
@@ -2662,11 +2729,9 @@ func (h *SilverHandlers) HandleEffects(w http.ResponseWriter, r *http.Request) {
 	// Use the fast hot PG path for recent queries or queries with selective filters
 	// (account_id, transaction_hash). Only fall through to DuckDB for historical
 	// ledger-range queries that need cold data.
-	recentQuery := filters.LedgerSequence == 0 && (
-		(!filters.StartTime.IsZero() && filters.StartTime.After(time.Now().Add(-48*time.Hour))) ||
+	recentQuery := filters.LedgerSequence == 0 && ((!filters.StartTime.IsZero() && filters.StartTime.After(time.Now().Add(-48*time.Hour))) ||
 		filters.AccountID != "" ||
 		filters.TransactionHash != "")
-	log.Printf("effects: recentQuery=%v legacyReader=%v startTime=%v", recentQuery, h.legacyReader != nil, filters.StartTime)
 	if recentQuery && h.legacyReader != nil && h.legacyReader.hot != nil {
 		effects, nextCursor, hasMore, err = h.legacyReader.hot.GetEffects(r.Context(), filters)
 	} else if h.unifiedReader != nil {
@@ -2757,11 +2822,26 @@ func (h *SilverHandlers) HandleEffectsByTransaction(w http.ResponseWriter, r *ht
 	var effects []SilverEffect
 	var err error
 
-	if h.unifiedReader != nil {
-		effects, _, _, err = h.unifiedReader.GetEffects(r.Context(), filters)
-	} else {
-		respondError(w, "effects endpoint requires unified reader", http.StatusInternalServerError)
-		return
+	if h.legacyReader != nil && h.legacyReader.hot != nil {
+		effects, err = h.legacyReader.hot.GetEffectsByTransactionFast(r.Context(), txHash)
+		if err != nil {
+			log.Printf("effects-by-tx hot-path fallback tx=%s err=%v", txHash, err)
+		} else {
+			respondJSON(w, map[string]interface{}{
+				"transaction_hash": txHash,
+				"effects":          effects,
+				"count":            len(effects),
+			})
+			return
+		}
+	}
+	if err != nil || effects == nil {
+		if h.unifiedReader != nil {
+			effects, _, _, err = h.unifiedReader.GetEffects(r.Context(), filters)
+		} else {
+			respondError(w, "effects endpoint requires unified reader", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	if err != nil {
@@ -2769,6 +2849,50 @@ func (h *SilverHandlers) HandleEffectsByTransaction(w http.ResponseWriter, r *ht
 		return
 	}
 
+	respondJSON(w, map[string]interface{}{
+		"transaction_hash": txHash,
+		"effects":          effects,
+		"count":            len(effects),
+	})
+}
+
+// HandleEffectsByTransactionAlias provides Prism-compatible route shape.
+// GET /api/v1/silver/tx/{hash}/effects
+func (h *SilverHandlers) HandleEffectsByTransactionAlias(w http.ResponseWriter, r *http.Request) {
+	txHash := mux.Vars(r)["hash"]
+	if txHash == "" {
+		respondError(w, "hash required", http.StatusBadRequest)
+		return
+	}
+
+	filters := EffectFilters{
+		TransactionHash: txHash,
+		Limit:           1000,
+	}
+
+	var effects []SilverEffect
+	var err error
+	if h.legacyReader != nil && h.legacyReader.hot != nil {
+		effects, err = h.legacyReader.hot.GetEffectsByTransactionFast(r.Context(), txHash)
+		if err == nil {
+			respondJSON(w, map[string]interface{}{
+				"transaction_hash": txHash,
+				"effects":          effects,
+				"count":            len(effects),
+			})
+			return
+		}
+		log.Printf("effects-by-tx alias hot-path fallback tx=%s err=%v", txHash, err)
+	}
+	if h.unifiedReader == nil {
+		respondError(w, "effects endpoint requires unified reader", http.StatusInternalServerError)
+		return
+	}
+	effects, _, _, err = h.unifiedReader.GetEffects(r.Context(), filters)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	respondJSON(w, map[string]interface{}{
 		"transaction_hash": txHash,
 		"effects":          effects,
@@ -3229,16 +3353,76 @@ func (h *SilverHandlers) HandleContractDataEntry(w http.ResponseWriter, r *http.
 
 // TransactionSummaryItem represents a summary of a single transaction
 type TransactionSummaryItem struct {
-	TxHash         string  `json:"tx_hash"`
-	LedgerSequence int64   `json:"ledger_sequence"`
-	ClosedAt       string  `json:"closed_at"`
-	SourceAccount  string  `json:"source_account"`
-	FeeCharged     int64   `json:"fee_charged"`
-	OpCount        int64   `json:"op_count"`
-	Successful     bool    `json:"successful"`
-	HasSoroban     bool    `json:"has_soroban"`
+	TxHash          string  `json:"tx_hash"`
+	LedgerSequence  int64   `json:"ledger_sequence"`
+	ClosedAt        string  `json:"closed_at"`
+	SourceAccount   string  `json:"source_account"`
+	FeeCharged      int64   `json:"fee_charged"`
+	OpCount         int64   `json:"op_count"`
+	Successful      bool    `json:"successful"`
+	HasSoroban      bool    `json:"has_soroban"`
 	PrimaryContract *string `json:"primary_contract,omitempty"`
-	TxType         string  `json:"tx_type"`
+	TxType          string  `json:"tx_type"`
+}
+
+// HandleRecentLedgers returns the most recent ledgers from the serving layer.
+// @Summary Get recent ledgers
+// @Description Returns the newest ledgers for latest-ledgers UIs from serving projections
+// @Tags Ledgers
+// @Accept json
+// @Produce json
+// @Param limit query int false "Maximum results (default: 6, max: 25)"
+// @Success 200 {object} map[string]interface{} "Recent ledgers"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/ledgers/recent [get]
+func (h *SilverHandlers) HandleRecentLedgers(w http.ResponseWriter, r *http.Request) {
+	if h.legacyReader == nil || h.legacyReader.hot == nil {
+		respondError(w, "recent ledgers endpoint requires silver hot reader", http.StatusInternalServerError)
+		return
+	}
+
+	limit := parseLimit(r, 6, 25)
+	latestSequence, ledgers, err := h.legacyReader.hot.GetServingRecentLedgers(r.Context(), limit)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	respondJSON(w, map[string]interface{}{
+		"latest_sequence": latestSequence,
+		"count":           len(ledgers),
+		"ledgers":         ledgers,
+	})
+}
+
+// HandleRecentTransactions returns the most recent transactions from the serving layer.
+// @Summary Get recent transactions
+// @Description Returns the newest transactions with serving-backed summaries for latest-activity UIs
+// @Tags Transactions
+// @Accept json
+// @Produce json
+// @Param limit query int false "Maximum results (default: 6, max: 25)"
+// @Success 200 {object} map[string]interface{} "Recent transactions"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /api/v1/silver/transactions/recent [get]
+func (h *SilverHandlers) HandleRecentTransactions(w http.ResponseWriter, r *http.Request) {
+	if h.legacyReader == nil || h.legacyReader.hot == nil {
+		respondError(w, "recent transactions endpoint requires silver hot reader", http.StatusInternalServerError)
+		return
+	}
+
+	limit := parseLimit(r, 6, 25)
+	latestSequence, transactions, err := h.legacyReader.hot.GetServingRecentTransactions(r.Context(), limit)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	respondJSON(w, map[string]interface{}{
+		"latest_sequence": latestSequence,
+		"count":           len(transactions),
+		"transactions":    transactions,
+	})
 }
 
 // HandleTransactionSummaries returns batch transaction summaries
@@ -3391,15 +3575,18 @@ func (h *SilverHandlers) HandleTransactionSummaries(w http.ResponseWriter, r *ht
 
 // ContractStorageEntry represents a contract storage entry with TTL info
 type ContractStorageEntry struct {
-	ContractID          string  `json:"contract_id"`
-	KeyHash             string  `json:"key_hash"`
-	Durability          string  `json:"durability"`
-	DataValue           *string `json:"data_value,omitempty"`
-	LastModifiedLedger  int64   `json:"last_modified_ledger"`
-	ClosedAt            string  `json:"closed_at"`
-	LiveUntilLedgerSeq  *int64  `json:"live_until_ledger_seq,omitempty"`
-	TTLRemaining        *int    `json:"ttl_remaining,omitempty"`
-	Expired             *bool   `json:"expired,omitempty"`
+	ContractID         string  `json:"contract_id"`
+	Key                string  `json:"key"`
+	KeyHash            string  `json:"key_hash"`
+	Type               string  `json:"type"`
+	Durability         string  `json:"durability"`
+	SizeBytes          *int    `json:"size_bytes,omitempty"`
+	DataValue          *string `json:"data_value,omitempty"`
+	LastModifiedLedger int64   `json:"last_modified_ledger"`
+	ClosedAt           string  `json:"closed_at"`
+	LiveUntilLedgerSeq *int64  `json:"live_until_ledger_seq,omitempty"`
+	TTLRemaining       *int    `json:"ttl_remaining,omitempty"`
+	Expired            *bool   `json:"expired,omitempty"`
 }
 
 // HandleContractStorage returns storage entries for a contract
@@ -3444,7 +3631,7 @@ func (h *SilverHandlers) HandleContractStorage(w http.ResponseWriter, r *http.Re
 	// Build query against silver hot
 	query := fmt.Sprintf(`
 		SELECT cd.contract_id, cd.key_hash, cd.durability,
-		       cd.data_value, cd.last_modified_ledger, cd.closed_at,
+		       LENGTH(cd.data_value), cd.data_value, cd.last_modified_ledger, cd.closed_at,
 		       t.live_until_ledger_seq, t.ttl_remaining, t.expired
 		FROM %s.contract_data_current cd
 		LEFT JOIN %s.ttl_current t ON cd.key_hash = t.key_hash
@@ -3474,6 +3661,7 @@ func (h *SilverHandlers) HandleContractStorage(w http.ResponseWriter, r *http.Re
 	var entries []ContractStorageEntry
 	for rows.Next() {
 		var entry ContractStorageEntry
+		var sizeBytes sql.NullInt32
 		var dataValue sql.NullString
 		var closedAt sql.NullString
 		var liveUntil sql.NullInt64
@@ -3482,13 +3670,19 @@ func (h *SilverHandlers) HandleContractStorage(w http.ResponseWriter, r *http.Re
 
 		if err := rows.Scan(
 			&entry.ContractID, &entry.KeyHash, &entry.Durability,
-			&dataValue, &entry.LastModifiedLedger, &closedAt,
+			&sizeBytes, &dataValue, &entry.LastModifiedLedger, &closedAt,
 			&liveUntil, &ttlRemaining, &expired,
 		); err != nil {
 			respondError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
+		entry.Key = entry.KeyHash
+		entry.Type = normalizeContractStorageType(entry.Durability)
+		if sizeBytes.Valid {
+			sz := int(sizeBytes.Int32)
+			entry.SizeBytes = &sz
+		}
 		if dataValue.Valid {
 			entry.DataValue = &dataValue.String
 		}
@@ -3521,6 +3715,19 @@ func (h *SilverHandlers) HandleContractStorage(w http.ResponseWriter, r *http.Re
 // ============================================
 // HELPER FUNCTIONS
 // ============================================
+
+func normalizeContractStorageType(durability string) string {
+	switch strings.ToLower(durability) {
+	case "contractdatadurabilitypersistent", "persistent":
+		return "persistent"
+	case "contractdatadurabilitytemporary", "temporary":
+		return "temporary"
+	case "contractdatadurabilityinstance", "instance":
+		return "instance"
+	default:
+		return durability
+	}
+}
 
 // parseAssetParam parses an asset parameter in format CODE:ISSUER or XLM/native
 func parseAssetParam(assetParam string) (code string, issuer string) {

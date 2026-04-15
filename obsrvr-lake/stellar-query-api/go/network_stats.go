@@ -336,6 +336,16 @@ func (h *NetworkStatsHandler) SetBronzeHotPG(db *sql.DB) {
 func (h *NetworkStatsHandler) HandleNetworkStats(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
+	// Fast path: serving projection in silver_hot. This gives Prism and other
+	// explorer clients a single-row read for network stats instead of stitching
+	// multiple hot/cold queries at request time.
+	if h.silverReader != nil && h.silverReader.hot != nil {
+		if servingStats, err := h.silverReader.hot.GetServingNetworkStats(ctx); err == nil && servingStats != nil {
+			respondJSON(w, servingStats)
+			return
+		}
+	}
+
 	stats := &NetworkStats{
 		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
 		DataFreshness: "real-time",

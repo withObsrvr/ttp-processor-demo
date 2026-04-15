@@ -293,14 +293,19 @@ curl -H "Authorization: Api-Key YOUR_API_KEY" "..."
 | Liquidity pools | `/silver/liquidity-pools` |
 
 ### Response Pattern
+Most list endpoints return a resource-specific top-level key rather than a generic `data` field.
+
+Example:
 ```json
 {
-  "data": [...],
+  "transfers": [...],
   "count": 10,
   "cursor": "abc123...",
   "has_more": true
 }
 ```
+
+Other endpoints may use keys such as `accounts`, `contracts`, `effects`, or `trades`.
 
 ---
 

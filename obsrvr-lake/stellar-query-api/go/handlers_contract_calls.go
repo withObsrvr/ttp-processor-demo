@@ -182,21 +182,38 @@ func (h *ContractCallHandlers) HandleRecentCalls(w http.ResponseWriter, r *http.
 	}
 
 	limit := parseLimit(r, 100, 1000)
+	cursorStr := r.URL.Query().Get("cursor")
+	cursor, err := DecodeOperationCursor(cursorStr)
+	if err != nil {
+		respondError(w, "invalid cursor: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	order := strings.ToLower(r.URL.Query().Get("order"))
+	if order == "" {
+		order = "desc"
+	}
+
+	// Fast path: serving recent contract calls first.
+	if h.reader != nil && h.reader.hot != nil {
+		calls, nextCursor, hasMore, err := h.reader.hot.GetServingContractRecentCalls(r.Context(), contractID, limit, cursor, order)
+		if err == nil && len(calls) > 0 {
+			response := map[string]interface{}{
+				"contract_id": contractID,
+				"calls":       calls,
+				"total":       len(calls),
+				"has_more":    hasMore,
+			}
+			if nextCursor != "" {
+				response["cursor"] = nextCursor
+			}
+			respondJSON(w, response)
+			return
+		}
+	}
 
 	// If unified reader is available, use it for hot+cold combined results
 	if h.unifiedReader != nil {
-		cursorStr := r.URL.Query().Get("cursor")
-		cursor, err := DecodeOperationCursor(cursorStr)
-		if err != nil {
-			respondError(w, "invalid cursor: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		order := strings.ToLower(r.URL.Query().Get("order"))
-		if order == "" {
-			order = "desc"
-		}
-
 		calls, nextCursor, hasMore, err := h.unifiedReader.GetRecentContractCallsWithCursor(r.Context(), contractID, limit, cursor, order)
 		if err != nil {
 			respondError(w, err.Error(), http.StatusInternalServerError)
@@ -449,7 +466,7 @@ func (h *ContractCallHandlers) HandleContractAnalyticsSummary(w http.ResponseWri
 		return
 	}
 
-	if summary.Stats.TotalCallsAsCaller == 0 && summary.Stats.TotalCallsAsCallee == 0 {
+	if summary.Stats.TotalCallsAsCaller == 0 && summary.Stats.TotalCallsAsCallee == 0 && len(summary.TopFunctions) == 0 && len(summary.DailyCalls7d) == 0 && len(summary.DailyCalls30d) == 0 {
 		respondError(w, "no activity found for contract", http.StatusNotFound)
 		return
 	}
@@ -484,6 +501,19 @@ func (h *ContractCallHandlers) HandleTopContracts(w http.ResponseWriter, r *http
 	}
 
 	limit := parseLimit(r, 20, 100)
+
+	if h.reader != nil && h.reader.hot != nil {
+		contracts, err := h.reader.hot.GetServingTopContracts(r.Context(), period, limit)
+		if err == nil && len(contracts) > 0 {
+			respondJSON(w, map[string]interface{}{
+				"period":       period,
+				"contracts":    contracts,
+				"count":        len(contracts),
+				"generated_at": time.Now().UTC().Format(time.RFC3339),
+			})
+			return
+		}
+	}
 
 	contracts, err := h.reader.GetTopContracts(r.Context(), period, limit)
 	if err != nil {
@@ -545,17 +575,25 @@ type ContractCallSummary struct {
 
 // ContractMetadataResponse represents contract metadata with storage summary
 type ContractMetadataResponse struct {
-	ContractID       string   `json:"contract_id"`
-	CreatorAddress   *string  `json:"creator_address,omitempty"`
-	WasmHash         *string  `json:"wasm_hash,omitempty"`
-	CreatedLedger    *int64   `json:"created_ledger,omitempty"`
-	CreatedAt        *string  `json:"created_at,omitempty"`
-	NInstructions    *int     `json:"n_instructions,omitempty"`
-	NFunctions       *int     `json:"n_functions,omitempty"`
-	NExports         *int     `json:"n_exports,omitempty"`
-	TotalEntries     int      `json:"total_entries"`
-	PersistentEntries int     `json:"persistent_entries"`
-	ExportedFunctions []FunctionCallCount `json:"exported_functions,omitempty"`
+	ContractID                  string              `json:"contract_id"`
+	DisplayName                 *string             `json:"display_name,omitempty"`
+	ContractType                *string             `json:"contract_type,omitempty"`
+	Verified                    *bool               `json:"verified,omitempty"`
+	CreatorAddress              *string             `json:"creator_address,omitempty"`
+	WasmHash                    *string             `json:"wasm_hash,omitempty"`
+	WasmSizeBytes               *int64              `json:"wasm_size_bytes,omitempty"`
+	CreatedLedger               *int64              `json:"created_ledger,omitempty"`
+	CreatedAt                   *string             `json:"created_at,omitempty"`
+	NInstructions               *int                `json:"n_instructions,omitempty"`
+	NFunctions                  *int                `json:"n_functions,omitempty"`
+	NExports                    *int                `json:"n_exports,omitempty"`
+	TotalEntries                int                 `json:"total_entries"`
+	PersistentEntries           int                 `json:"persistent_entries"`
+	TemporaryEntries            int                 `json:"temporary_entries,omitempty"`
+	InstanceEntries             int                 `json:"instance_entries,omitempty"`
+	TotalStateSizeBytes         *int64              `json:"total_state_size_bytes,omitempty"`
+	EstimatedMonthlyRentStroops *int64              `json:"estimated_monthly_rent_stroops,omitempty"`
+	ExportedFunctions           []FunctionCallCount `json:"exported_functions,omitempty"`
 }
 
 // FunctionCallCount represents a function name and its observed call count
@@ -585,6 +623,20 @@ func (h *ContractCallHandlers) HandleContractMetadata(w http.ResponseWriter, r *
 	}
 
 	ctx := r.Context()
+
+	// Fast path: serving contract projections first, but only accept the result
+	// if it is materially populated. If the serving row exists but only has
+	// sparse function stats without creator/storage metadata, fall back to the
+	// legacy enrichment path to preserve better detail during rollout.
+	if h.reader != nil && h.reader.hot != nil {
+		if resp, err := h.reader.hot.GetServingContractMetadata(ctx, contractID); err == nil && resp != nil {
+			if contractMetadataHasSufficientDetail(resp) {
+				respondJSON(w, resp)
+				return
+			}
+		}
+	}
+
 	resp := ContractMetadataResponse{ContractID: contractID}
 
 	// Query contract_metadata for creator info — try hot first, then unified (hot+cold)
@@ -598,6 +650,7 @@ func (h *ContractCallHandlers) HandleContractMetadata(w http.ResponseWriter, r *
 	// Query observed functions from contract_invocations_raw — try hot, then unified
 	if h.reader != nil {
 		h.reader.hot.enrichContractFunctions(ctx, &resp)
+		h.reader.hot.enrichContractRegistry(ctx, &resp)
 	}
 	if len(resp.ExportedFunctions) == 0 && h.unifiedReader != nil {
 		h.unifiedReader.enrichContractFunctions(ctx, &resp)
@@ -623,6 +676,19 @@ func (h *ContractCallHandlers) HandleContractMetadata(w http.ResponseWriter, r *
 }
 
 // Helper function for JSON encoding (mirrors handlers_silver.go)
+func contractMetadataHasSufficientDetail(resp *ContractMetadataResponse) bool {
+	if resp == nil {
+		return false
+	}
+	if resp.CreatorAddress != nil || resp.WasmHash != nil || resp.CreatedLedger != nil || resp.CreatedAt != nil {
+		return true
+	}
+	if resp.TotalEntries > 0 || resp.PersistentEntries > 0 {
+		return true
+	}
+	return false
+}
+
 func respondJSONContractCall(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")

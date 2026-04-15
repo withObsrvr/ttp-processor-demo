@@ -14,6 +14,7 @@ use (
 	./obsrvr-lake/postgres-ducklake-flusher/go
 	./obsrvr-lake/radar-network-ingester/go
 	./obsrvr-lake/radar-network-source/go
+	./obsrvr-lake/serving-projection-processor/go
 	./obsrvr-lake/silver-cold-flusher/go
 	./obsrvr-lake/silver-realtime-transformer/go
 	./obsrvr-lake/stellar-postgres-ingester/go

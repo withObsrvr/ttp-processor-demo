@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/gorilla/mux"
 )
 
 type QueryService struct {
@@ -123,11 +125,11 @@ func (qs *QueryService) HandleLedgers(w http.ResponseWriter, r *http.Request) {
 
 	// Validate and normalize sort parameter
 	validSorts := map[string]bool{
-		"sequence_asc":    true,
-		"sequence_desc":   true,
-		"closed_at_asc":   true,
-		"closed_at_desc":  true,
-		"tx_count_desc":   true,
+		"sequence_asc":   true,
+		"sequence_desc":  true,
+		"closed_at_asc":  true,
+		"closed_at_desc": true,
+		"tx_count_desc":  true,
 	}
 	if sortParam == "" {
 		sortParam = "sequence_asc" // default
@@ -225,6 +227,53 @@ func (qs *QueryService) HandleLedgers(w http.ResponseWriter, r *http.Request) {
 		"end":     end,
 		"sort":    sortParam,
 	})
+}
+
+// HandleLedgerBySequence returns a single ledger by exact sequence.
+func (qs *QueryService) HandleLedgerBySequence(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	seqStr := vars["seq"]
+	if seqStr == "" {
+		http.Error(w, "Missing required path parameter: seq", http.StatusBadRequest)
+		return
+	}
+
+	seq, err := strconv.ParseInt(seqStr, 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid seq parameter", http.StatusBadRequest)
+		return
+	}
+
+	queryHot, queryCold, hotStart, hotEnd, coldStart, coldEnd := qs.determineSource(seq, seq)
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	var ledger map[string]interface{}
+	if queryHot {
+		rows, err := qs.hot.QueryLedgers(ctx, hotStart, hotEnd, 1, "sequence_asc")
+		if err == nil {
+			results, scanErr := scanLedgers(rows)
+			rows.Close()
+			if scanErr == nil && len(results) > 0 {
+				ledger = results[0]
+			}
+		}
+	}
+	if ledger == nil && queryCold {
+		rows, err := qs.cold.QueryLedgers(ctx, coldStart, coldEnd, 1, "sequence_asc")
+		if err == nil {
+			results, scanErr := scanLedgers(rows)
+			rows.Close()
+			if scanErr == nil && len(results) > 0 {
+				ledger = results[0]
+			}
+		}
+	}
+	if ledger == nil {
+		respondError(w, fmt.Sprintf("ledger not found: %d", seq), http.StatusNotFound)
+		return
+	}
+	respondJSON(w, ledger)
 }
 
 // HandleTransactions returns raw transaction data from the Bronze layer
@@ -931,14 +980,14 @@ func scanLedgers(rows *sql.Rows) ([]map[string]interface{}, error) {
 
 	for rows.Next() {
 		var (
-			sequence, txCount, opCount, successTxCount, failedTxCount, txSetOpCount int64
+			sequence, txCount, opCount, successTxCount, failedTxCount, txSetOpCount  int64
 			totalCoins, feePool, baseFee, baseReserve, maxTxSetSize, protocolVersion int64
-			ledgerRange                                                               int64
-			sorobanFeeWrite1kb                                                        sql.NullInt64
-			sorobanOpCount, totalFeeCharged, contractEventsCount                      sql.NullInt64
-			ledgerHash, prevLedgerHash                                                string
-			ledgerHeader, nodeID, signature, eraID, versionLabel                      sql.NullString
-			closedAt, createdAt                                                       time.Time
+			ledgerRange                                                              int64
+			sorobanFeeWrite1kb                                                       sql.NullInt64
+			sorobanOpCount, totalFeeCharged, contractEventsCount                     sql.NullInt64
+			ledgerHash, prevLedgerHash                                               string
+			ledgerHeader, nodeID, signature, eraID, versionLabel                     sql.NullString
+			closedAt, createdAt                                                      time.Time
 		)
 
 		err := rows.Scan(
@@ -1058,10 +1107,10 @@ func scanOperations(rows *sql.Rows) ([]map[string]interface{}, error) {
 
 	for rows.Next() {
 		var (
-			ledgerSeq, opIndex, opType, ledgerRange          int64
-			txHash, sourceAccount                             string
-			sourceMuxed, eraID, versionLabel                  sql.NullString
-			createdAt                                         time.Time
+			ledgerSeq, opIndex, opType, ledgerRange int64
+			txHash, sourceAccount                   string
+			sourceMuxed, eraID, versionLabel        sql.NullString
+			createdAt                               time.Time
 		)
 
 		err := rows.Scan(
@@ -1103,13 +1152,13 @@ func scanEffects(rows *sql.Rows) ([]map[string]interface{}, error) {
 
 	for rows.Next() {
 		var (
-			ledgerSeq, opIndex, effectIndex, effectType, signerWeight                                                                                  int64
-			txHash, effectTypeStr                                                                                                                      string
-			accountID, amount, assetCode, assetIssuer, assetType, trustlineLimit, signerAccount, sellerAccount, eraID, versionLabel                    sql.NullString
-			authorizeFlag, clawbackFlag                                                                                                                sql.NullBool
-			offerID                                                                                                                                    sql.NullInt64
-			createdAt                                                                                                                                  time.Time
-			ledgerRange                                                                                                                                int64
+			ledgerSeq, opIndex, effectIndex, effectType, signerWeight                                                               int64
+			txHash, effectTypeStr                                                                                                   string
+			accountID, amount, assetCode, assetIssuer, assetType, trustlineLimit, signerAccount, sellerAccount, eraID, versionLabel sql.NullString
+			authorizeFlag, clawbackFlag                                                                                             sql.NullBool
+			offerID                                                                                                                 sql.NullInt64
+			createdAt                                                                                                               time.Time
+			ledgerRange                                                                                                             int64
 		)
 
 		err := rows.Scan(
@@ -1160,11 +1209,11 @@ func scanTrades(rows *sql.Rows) ([]map[string]interface{}, error) {
 	for rows.Next() {
 		var (
 			ledgerSeq, opIndex, tradeIndex, ledgerRange int64
-			txHash, sellerAccount, buyerAccount          string
-			sellingAssetCode, sellingAssetIssuer         sql.NullString
-			buyingAssetCode, buyingAssetIssuer           sql.NullString
-			eraID, versionLabel                          sql.NullString
-			sellingAmount, buyingAmount, price           sql.NullString
+			txHash, sellerAccount, buyerAccount         string
+			sellingAssetCode, sellingAssetIssuer        sql.NullString
+			buyingAssetCode, buyingAssetIssuer          sql.NullString
+			eraID, versionLabel                         sql.NullString
+			sellingAmount, buyingAmount, price          sql.NullString
 		)
 
 		err := rows.Scan(
@@ -1226,12 +1275,12 @@ func scanAccounts(rows *sql.Rows) ([]map[string]interface{}, error) {
 
 	for rows.Next() {
 		var (
-			accountID, balance                                           string
-			seqNum, numSubentries, ledgerSeq, ledgerRange                int64
-			masterWeight, thresholdLow, thresholdMed, thresholdHigh      int64
-			numSponsoring, numSponsored, flags                           int64
-			homeDomain, sponsor, signers, eraID, versionLabel            sql.NullString
-			createdAt                                                    time.Time
+			accountID, balance                                      string
+			seqNum, numSubentries, ledgerSeq, ledgerRange           int64
+			masterWeight, thresholdLow, thresholdMed, thresholdHigh int64
+			numSponsoring, numSponsored, flags                      int64
+			homeDomain, sponsor, signers, eraID, versionLabel       sql.NullString
+			createdAt                                               time.Time
 		)
 
 		err := rows.Scan(
@@ -1245,20 +1294,20 @@ func scanAccounts(rows *sql.Rows) ([]map[string]interface{}, error) {
 		}
 
 		accountResult := map[string]interface{}{
-			"account_id":       accountID,
-			"balance":          balance,
-			"sequence_number":  seqNum,
-			"num_subentries":   numSubentries,
-			"flags":            flags,
-			"master_weight":    masterWeight,
-			"low_threshold":    thresholdLow,
-			"med_threshold":    thresholdMed,
-			"high_threshold":   thresholdHigh,
-			"ledger_sequence":  ledgerSeq,
-			"num_sponsoring":   numSponsoring,
-			"num_sponsored":    numSponsored,
-			"ledger_range":     ledgerRange,
-			"created_at":       createdAt,
+			"account_id":      accountID,
+			"balance":         balance,
+			"sequence_number": seqNum,
+			"num_subentries":  numSubentries,
+			"flags":           flags,
+			"master_weight":   masterWeight,
+			"low_threshold":   thresholdLow,
+			"med_threshold":   thresholdMed,
+			"high_threshold":  thresholdHigh,
+			"ledger_sequence": ledgerSeq,
+			"num_sponsoring":  numSponsoring,
+			"num_sponsored":   numSponsored,
+			"ledger_range":    ledgerRange,
+			"created_at":      createdAt,
 		}
 
 		if homeDomain.Valid {
@@ -1289,9 +1338,9 @@ func scanTrustlines(rows *sql.Rows) ([]map[string]interface{}, error) {
 	for rows.Next() {
 		var (
 			accountID, assetCode, assetIssuer, assetType, balance, trustLimit string
-			buyingLiab, sellingLiab, ledgerSeq, ledgerRange                    int64
-			eraID, versionLabel                                                sql.NullString
-			createdAt                                                          time.Time
+			buyingLiab, sellingLiab, ledgerSeq, ledgerRange                   int64
+			eraID, versionLabel                                               sql.NullString
+			createdAt                                                         time.Time
 		)
 
 		err := rows.Scan(
@@ -1334,12 +1383,12 @@ func scanOffers(rows *sql.Rows) ([]map[string]interface{}, error) {
 
 	for rows.Next() {
 		var (
-			sellerAccount, amount, price                             string
-			offerID, flags, ledgerSeq, ledgerRange                   int64
-			sellingAssetCode, sellingAssetIssuer, sellingAssetType   sql.NullString
-			buyingAssetCode, buyingAssetIssuer, buyingAssetType      sql.NullString
-			eraID, versionLabel                                      sql.NullString
-			createdAt                                                time.Time
+			sellerAccount, amount, price                           string
+			offerID, flags, ledgerSeq, ledgerRange                 int64
+			sellingAssetCode, sellingAssetIssuer, sellingAssetType sql.NullString
+			buyingAssetCode, buyingAssetIssuer, buyingAssetType    sql.NullString
+			eraID, versionLabel                                    sql.NullString
+			createdAt                                              time.Time
 		)
 
 		err := rows.Scan(
@@ -1398,12 +1447,12 @@ func scanContractEvents(rows *sql.Rows) ([]map[string]interface{}, error) {
 
 	for rows.Next() {
 		var (
-			eventID, contractID, txHash                 string
-			ledgerSeq, opIndex, eventIndex, eventType   int64
-			topicsJSON, dataJSON                        string
-			closedAt                                    time.Time
-			ledgerRange                                 int64
-			eraID, versionLabel                         sql.NullString
+			eventID, contractID, txHash               string
+			ledgerSeq, opIndex, eventIndex, eventType int64
+			topicsJSON, dataJSON                      string
+			closedAt                                  time.Time
+			ledgerRange                               int64
+			eraID, versionLabel                       sql.NullString
 		)
 
 		err := rows.Scan(

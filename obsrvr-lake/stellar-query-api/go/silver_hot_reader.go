@@ -3,18 +3,45 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
-	"log"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/lib/pq"
+	"github.com/stellar/go/xdr"
 )
 
 // SilverHotReader queries PostgreSQL silver_hot for recent analytics data
+type ServingRecentTransaction struct {
+	TxHash         string    `json:"tx_hash"`
+	LedgerSequence int64     `json:"ledger_sequence"`
+	ClosedAt       string    `json:"closed_at"`
+	Successful     bool      `json:"successful"`
+	Fee            int64     `json:"fee"`
+	OperationCount int       `json:"operation_count"`
+	SourceAccount  string    `json:"source_account"`
+	Summary        TxSummary `json:"summary"`
+	CreatedAt      time.Time `json:"-"`
+}
+
+type ServingRecentLedger struct {
+	LedgerSequence     int64  `json:"ledger_sequence"`
+	ClosedAt           string `json:"closed_at"`
+	LedgerHash         string `json:"ledger_hash,omitempty"`
+	PreviousLedgerHash string `json:"previous_ledger_hash,omitempty"`
+	ProtocolVersion    int    `json:"protocol_version,omitempty"`
+	BaseFeeStroops     int64  `json:"base_fee_stroops,omitempty"`
+	SuccessfulTxCount  int    `json:"successful_tx_count"`
+	FailedTxCount      int    `json:"failed_tx_count,omitempty"`
+	OperationCount     int    `json:"operation_count"`
+}
+
 type SilverHotReader struct {
-	db *sql.DB
+	db          *sql.DB
+	bronzeHotPG *sql.DB
 }
 
 // NewSilverHotReader creates a new Silver hot layer reader
@@ -36,9 +63,1405 @@ func NewSilverHotReader(config PostgresConfig) (*SilverHotReader, error) {
 	return &SilverHotReader{db: db}, nil
 }
 
+func (h *SilverHotReader) SetBronzeHotPG(db *sql.DB) {
+	h.bronzeHotPG = db
+}
+
 // DB returns the underlying database connection
 func (h *SilverHotReader) DB() *sql.DB {
 	return h.db
+}
+
+// GetServingAccountCurrent returns current account state from serving schema.
+// This is faster than the legacy/unified paths because it reads the compact
+// serving projection instead of federating or scanning broader silver tables.
+func (h *SilverHotReader) GetServingAccountCurrent(ctx context.Context, accountID string) (*AccountCurrent, error) {
+	query := `
+		SELECT
+			account_id,
+			balance_stroops,
+			sequence_number,
+			num_subentries,
+			last_modified_ledger,
+			updated_at,
+			home_domain,
+			created_at
+		FROM serving.sv_accounts_current
+		WHERE account_id = $1
+	`
+
+	var acc AccountCurrent
+	var balance sql.NullInt64
+	var seq sql.NullInt64
+	var updatedAt sql.NullTime
+	var homeDomain, createdAt sql.NullString
+	if err := h.db.QueryRowContext(ctx, query, accountID).Scan(
+		&acc.AccountID,
+		&balance,
+		&seq,
+		&acc.NumSubentries,
+		&acc.LastModifiedLedger,
+		&updatedAt,
+		&homeDomain,
+		&createdAt,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	if balance.Valid {
+		acc.Balance = strconv.FormatInt(balance.Int64, 10)
+	}
+	if seq.Valid {
+		acc.SequenceNumber = strconv.FormatInt(seq.Int64, 10)
+	}
+	if updatedAt.Valid {
+		acc.UpdatedAt = updatedAt.Time.UTC().Format(time.RFC3339)
+	}
+	if homeDomain.Valid && homeDomain.String != "" {
+		acc.HomeDomain = &homeDomain.String
+	}
+	if createdAt.Valid && createdAt.String != "" {
+		acc.CreatedAt = &createdAt.String
+	}
+	return &acc, nil
+}
+
+// GetServingTopAccounts returns top accounts from serving schema.
+func (h *SilverHotReader) GetServingTopAccounts(ctx context.Context, limit int) ([]AccountCurrent, error) {
+	rows, err := h.db.QueryContext(ctx, `
+		SELECT
+			account_id,
+			balance_stroops,
+			sequence_number,
+			num_subentries,
+			last_modified_ledger,
+			updated_at
+		FROM serving.sv_accounts_current
+		ORDER BY balance_stroops DESC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var accounts []AccountCurrent
+	for rows.Next() {
+		var acc AccountCurrent
+		var balance, seq sql.NullInt64
+		var updatedAt sql.NullTime
+		if err := rows.Scan(&acc.AccountID, &balance, &seq, &acc.NumSubentries, &acc.LastModifiedLedger, &updatedAt); err != nil {
+			return nil, err
+		}
+		if balance.Valid {
+			acc.Balance = strconv.FormatInt(balance.Int64, 10)
+		}
+		if seq.Valid {
+			acc.SequenceNumber = strconv.FormatInt(seq.Int64, 10)
+		}
+		if updatedAt.Valid {
+			acc.UpdatedAt = updatedAt.Time.UTC().Format(time.RFC3339)
+		}
+		accounts = append(accounts, acc)
+	}
+	return accounts, rows.Err()
+}
+
+// GetServingAccountBalances returns all balances for an account from serving schema.
+func (h *SilverHotReader) GetServingAccountBalances(ctx context.Context, accountID string) (*AccountBalancesResponse, error) {
+	rows, err := h.db.QueryContext(ctx, `
+		SELECT
+			asset_type,
+			asset_code,
+			asset_issuer,
+			balance_stroops,
+			limit_stroops,
+			is_authorized
+		FROM serving.sv_account_balances_current
+		WHERE account_id = $1
+		ORDER BY balance_stroops DESC, asset_code ASC
+	`, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	resp := &AccountBalancesResponse{AccountID: accountID}
+	for rows.Next() {
+		var bal Balance
+		var issuer sql.NullString
+		var balanceStroops sql.NullInt64
+		var limitStroops sql.NullInt64
+		var authorized sql.NullBool
+		if err := rows.Scan(&bal.AssetType, &bal.AssetCode, &issuer, &balanceStroops, &limitStroops, &authorized); err != nil {
+			return nil, err
+		}
+		if issuer.Valid {
+			bal.AssetIssuer = &issuer.String
+		}
+		if balanceStroops.Valid {
+			bal.BalanceStroops = balanceStroops.Int64
+			bal.Balance = formatStroopsToDecimal(balanceStroops.Int64)
+		}
+		if limitStroops.Valid {
+			ls := formatStroopsToDecimal(limitStroops.Int64)
+			bal.Limit = &ls
+		}
+		if authorized.Valid {
+			v := authorized.Bool
+			bal.IsAuthorized = &v
+		}
+		resp.Balances = append(resp.Balances, bal)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(resp.Balances) == 0 {
+		return nil, fmt.Errorf("account not found: %s", accountID)
+	}
+	resp.TotalBalances = len(resp.Balances)
+	return resp, nil
+}
+
+// GetServingNetworkStats returns compact headline network stats from serving schema.
+func (h *SilverHotReader) GetServingNetworkStats(ctx context.Context) (*NetworkStats, error) {
+	stats := &NetworkStats{DataFreshness: "real-time"}
+	var generatedAt, latestClosedAt sql.NullTime
+	var avgClose sql.NullFloat64
+	var proto sql.NullInt64
+	var txTotal, txFailed, activeAccounts, createdAccounts sql.NullInt64
+	if err := h.db.QueryRowContext(ctx, `
+		SELECT generated_at, latest_ledger, latest_ledger_closed_at, avg_close_time_seconds,
+		       protocol_version, tx_24h_total, tx_24h_failed, active_accounts_24h, created_accounts_24h
+		FROM serving.sv_network_stats_current
+		WHERE network = 'testnet'
+		LIMIT 1
+	`).Scan(&generatedAt, &stats.Ledger.CurrentSequence, &latestClosedAt, &avgClose, &proto, &txTotal, &txFailed, &activeAccounts, &createdAccounts); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if generatedAt.Valid {
+		stats.GeneratedAt = generatedAt.Time.UTC().Format(time.RFC3339)
+	} else {
+		stats.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	if avgClose.Valid {
+		stats.Ledger.AvgCloseTimeSeconds = avgClose.Float64
+	}
+	if proto.Valid {
+		stats.Ledger.ProtocolVersion = int(proto.Int64)
+	}
+	if txTotal.Valid {
+		stats.Transactions24h = &TransactionStats24h{Total: txTotal.Int64, Failed: txFailed.Int64}
+		if txTotal.Int64 > 0 {
+			stats.Transactions24h.FailureRate = float64(txFailed.Int64) / float64(txTotal.Int64)
+		}
+	}
+	if activeAccounts.Valid {
+		stats.Accounts.Active24h = activeAccounts.Int64
+	}
+	if createdAccounts.Valid {
+		stats.Accounts.Created24h = createdAccounts.Int64
+	}
+	_ = h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM serving.sv_accounts_current`).Scan(&stats.Accounts.Total)
+	return stats, nil
+}
+
+// GetServingTokenHolders returns token holders from serving schema.
+func (h *SilverHotReader) GetServingTokenHolders(ctx context.Context, filters TokenHoldersFilters) (*TokenHoldersResponse, error) {
+	assetKey := filters.AssetCode
+	isNative := filters.AssetCode == "XLM" || filters.AssetCode == "native"
+	if isNative {
+		assetKey = "XLM"
+	}
+	if !isNative {
+		assetKey = filters.AssetCode + ":" + filters.AssetIssuer
+	}
+
+	query := `
+		SELECT account_id, balance_stroops
+		FROM serving.sv_account_balances_current
+		WHERE asset_key = $1
+	`
+	args := []any{assetKey}
+	argPos := 2
+	if filters.MinBalance != nil {
+		query += fmt.Sprintf(" AND balance_stroops >= $%d", argPos)
+		args = append(args, *filters.MinBalance)
+		argPos++
+	}
+	if filters.Cursor != nil {
+		query += fmt.Sprintf(" AND (balance_stroops < $%d OR (balance_stroops = $%d AND account_id > $%d))", argPos, argPos, argPos+1)
+		args = append(args, filters.Cursor.Balance, filters.Cursor.AccountID)
+		argPos += 2
+	}
+	query += fmt.Sprintf(" ORDER BY balance_stroops DESC, account_id ASC LIMIT $%d", argPos)
+	args = append(args, filters.Limit+1)
+
+	rows, err := h.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var holders []TokenHolder
+	for rows.Next() {
+		var accountID string
+		var balance int64
+		if err := rows.Scan(&accountID, &balance); err != nil {
+			return nil, err
+		}
+		holders = append(holders, TokenHolder{
+			AccountID:      accountID,
+			Balance:        formatStroopsToDecimal(balance),
+			BalanceStroops: balance,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	for i := range holders {
+		if filters.Cursor == nil {
+			holders[i].Rank = i + 1
+		}
+	}
+	response := &TokenHoldersResponse{Asset: AssetInfo{Code: filters.AssetCode}, Holders: holders}
+	if isNative {
+		response.Asset.Type = "native"
+	} else {
+		response.Asset.Type = "credit_alphanum4"
+		if len(filters.AssetCode) > 4 {
+			response.Asset.Type = "credit_alphanum12"
+		}
+		response.Asset.Issuer = &filters.AssetIssuer
+	}
+	response.HasMore = len(response.Holders) > filters.Limit
+	if response.HasMore {
+		response.Holders = response.Holders[:filters.Limit]
+		last := response.Holders[len(response.Holders)-1]
+		response.Cursor = TokenHoldersCursor{Balance: last.BalanceStroops, AccountID: last.AccountID}.Encode()
+	}
+	response.TotalHolders = len(response.Holders)
+	return response, nil
+}
+
+// GetServingTokenStats returns token stats from serving schema.
+func (h *SilverHotReader) GetServingTokenStats(ctx context.Context, assetCode, assetIssuer string) (*TokenStatsResponse, error) {
+	assetKey := assetCode
+	isNative := assetCode == "XLM" || assetCode == "native"
+	if isNative {
+		assetKey = "XLM"
+	} else {
+		assetKey = assetCode + ":" + assetIssuer
+	}
+
+	resp := &TokenStatsResponse{Asset: AssetInfo{Code: assetCode}, GeneratedAt: time.Now().UTC().Format(time.RFC3339)}
+	if isNative {
+		resp.Asset.Type = "native"
+	} else {
+		resp.Asset.Issuer = &assetIssuer
+		resp.Asset.Type = "credit_alphanum4"
+		if len(assetCode) > 4 {
+			resp.Asset.Type = "credit_alphanum12"
+		}
+	}
+
+	var supply sql.NullFloat64
+	var vol sql.NullFloat64
+	if err := h.db.QueryRowContext(ctx, `
+		SELECT holder_count, trustline_count, circulating_supply, volume_24h, transfers_24h, unique_accounts_24h, top10_concentration
+		FROM serving.sv_asset_stats_current
+		WHERE asset_key = $1
+	`, assetKey).Scan(
+		&resp.Stats.TotalHolders,
+		&resp.Stats.TotalTrustlines,
+		&supply,
+		&vol,
+		&resp.Stats.Transfers24h,
+		&resp.Stats.UniqueAccounts24h,
+		&resp.Stats.Top10Concentration,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if supply.Valid {
+		resp.Stats.CirculatingSupply = fmt.Sprintf("%.7f", supply.Float64)
+		if vol.Valid {
+			resp.Stats.Volume24h = fmt.Sprintf("%.7f", vol.Float64)
+		}
+	}
+	if resp.Stats.Volume24h == "" {
+		resp.Stats.Volume24h = "0.0000000"
+	}
+	if resp.Stats.CirculatingSupply == "" {
+		resp.Stats.CirculatingSupply = "0.0000000"
+	}
+	return resp, nil
+}
+
+// GetServingAssetList returns asset directory data from serving schema.
+func (h *SilverHotReader) GetServingAssetList(ctx context.Context, filters AssetListFilters) (*AssetListResponse, error) {
+	requestLimit := filters.Limit + 1
+	query := `
+		SELECT a.asset_code, COALESCE(a.asset_issuer, ''), a.asset_type,
+		       s.holder_count, COALESCE(s.circulating_supply, 0), COALESCE(s.volume_24h, 0),
+		       COALESCE(s.transfers_24h, 0), COALESCE(s.top10_concentration, 0)
+		FROM serving.sv_assets_current a
+		JOIN serving.sv_asset_stats_current s USING (asset_key)
+		WHERE 1=1
+	`
+	args := []any{}
+	argPos := 1
+	if filters.AssetType != "" {
+		query += fmt.Sprintf(" AND a.asset_type = $%d", argPos)
+		args = append(args, filters.AssetType)
+		argPos++
+	}
+	if filters.Search != "" {
+		query += fmt.Sprintf(" AND a.asset_code ILIKE $%d", argPos)
+		args = append(args, filters.Search+"%")
+		argPos++
+	}
+	if filters.MinHolders != nil {
+		query += fmt.Sprintf(" AND s.holder_count >= $%d", argPos)
+		args = append(args, *filters.MinHolders)
+		argPos++
+	}
+	orderCol := "s.holder_count"
+	if filters.SortBy == "volume_24h" {
+		orderCol = "s.volume_24h"
+		if filters.Cursor != nil {
+			query += fmt.Sprintf(" AND (s.volume_24h < $%d OR (s.volume_24h = $%d AND a.asset_code > $%d))", argPos, argPos, argPos+1)
+			args = append(args, float64(filters.Cursor.Volume24h)/10000000.0, filters.Cursor.AssetCode)
+			argPos += 2
+		}
+	} else {
+		if filters.Cursor != nil {
+			query += fmt.Sprintf(" AND (s.holder_count < $%d OR (s.holder_count = $%d AND a.asset_code > $%d))", argPos, argPos, argPos+1)
+			args = append(args, filters.Cursor.HolderCount, filters.Cursor.AssetCode)
+			argPos += 2
+		}
+	}
+	query += fmt.Sprintf(" ORDER BY %s DESC, a.asset_code ASC LIMIT $%d", orderCol, argPos)
+	args = append(args, requestLimit)
+
+	rows, err := h.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	resp := &AssetListResponse{GeneratedAt: time.Now().UTC().Format(time.RFC3339)}
+	for rows.Next() {
+		var a AssetSummary
+		var issuer string
+		var supply, volume float64
+		if err := rows.Scan(&a.AssetCode, &issuer, &a.AssetType, &a.HolderCount, &supply, &volume, &a.Transfers24h, &a.Top10Concentration); err != nil {
+			return nil, err
+		}
+		a.AssetIssuer = issuer
+		a.CirculatingSupply = fmt.Sprintf("%.7f", supply)
+		a.Volume24h = fmt.Sprintf("%.7f", volume)
+		resp.Assets = append(resp.Assets, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	resp.HasMore = len(resp.Assets) > filters.Limit
+	if resp.HasMore {
+		resp.Assets = resp.Assets[:filters.Limit]
+		last := resp.Assets[len(resp.Assets)-1]
+		resp.Cursor = (&AssetListCursor{HolderCount: last.HolderCount, AssetCode: last.AssetCode, AssetIssuer: last.AssetIssuer, SortBy: filters.SortBy, SortOrder: filters.SortOrder}).Encode()
+	}
+	_ = h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM serving.sv_assets_current`).Scan(&resp.TotalAssets)
+	return resp, nil
+}
+
+func (h *SilverHotReader) GetServingLatestLedgerSequence(ctx context.Context) (int64, error) {
+	var latestSequence int64
+	if err := h.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(ledger_sequence), 0) FROM serving.sv_ledger_stats_recent`).Scan(&latestSequence); err != nil {
+		return 0, err
+	}
+	if latestSequence > 0 {
+		return latestSequence, nil
+	}
+	if err := h.db.QueryRowContext(ctx, `
+		SELECT COALESCE(latest_ledger, 0)
+		FROM serving.sv_network_stats_current
+		WHERE network = 'testnet'
+		LIMIT 1
+	`).Scan(&latestSequence); err != nil {
+		if err == sql.ErrNoRows {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return latestSequence, nil
+}
+
+// GetServingRecentTransactions returns the most recent transactions from serving projections.
+func (h *SilverHotReader) GetServingRecentTransactions(ctx context.Context, limit int) (int64, []ServingRecentTransaction, error) {
+	latestSequence, err := h.GetServingLatestLedgerSequence(ctx)
+	if err != nil {
+		return 0, nil, err
+	}
+
+	rows, err := h.db.QueryContext(ctx, `
+		SELECT tx_hash, ledger_sequence, created_at, COALESCE(source_account, ''), successful,
+		       COALESCE(fee_charged_stroops, 0), COALESCE(operation_count, 0),
+		       tx_type, summary_text, summary_json, primary_contract_id
+		FROM serving.sv_transactions_recent
+		ORDER BY ledger_sequence DESC, created_at DESC, tx_hash DESC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer rows.Close()
+
+	var out []ServingRecentTransaction
+	for rows.Next() {
+		var item ServingRecentTransaction
+		var txType sql.NullString
+		var summaryText sql.NullString
+		var summaryJSON sql.NullString
+		var primaryContract sql.NullString
+		if err := rows.Scan(&item.TxHash, &item.LedgerSequence, &item.CreatedAt, &item.SourceAccount, &item.Successful, &item.Fee, &item.OperationCount, &txType, &summaryText, &summaryJSON, &primaryContract); err != nil {
+			return 0, nil, err
+		}
+		item.ClosedAt = item.CreatedAt.UTC().Format(time.RFC3339)
+		if summaryJSON.Valid && summaryJSON.String != "" {
+			if err := json.Unmarshal([]byte(summaryJSON.String), &item.Summary); err != nil {
+				item.Summary = buildFallbackRecentTxSummary(txType.String, summaryText.String, primaryContract)
+			}
+		} else {
+			item.Summary = buildFallbackRecentTxSummary(txType.String, summaryText.String, primaryContract)
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, nil, err
+	}
+	return latestSequence, out, nil
+}
+
+func buildFallbackRecentTxSummary(txType, summaryText string, primaryContract sql.NullString) TxSummary {
+	summary := TxSummary{Type: txType, Description: summaryText}
+	if summary.Type == "" {
+		summary.Type = "classic"
+	}
+	if summary.Description == "" {
+		summary.Description = "Transaction"
+	}
+	if primaryContract.Valid && primaryContract.String != "" {
+		summary.InvolvedContracts = []string{primaryContract.String}
+	} else {
+		summary.InvolvedContracts = []string{}
+	}
+	return summary
+}
+
+func (h *SilverHotReader) GetServingRecentLedgers(ctx context.Context, limit int) (int64, []ServingRecentLedger, error) {
+	latestSequence, err := h.GetServingLatestLedgerSequence(ctx)
+	if err != nil {
+		return 0, nil, err
+	}
+	rows, err := h.db.QueryContext(ctx, `
+		SELECT ledger_sequence, closed_at, COALESCE(ledger_hash, ''), COALESCE(prev_hash, ''),
+		       COALESCE(protocol_version, 0), COALESCE(base_fee_stroops, 0),
+		       COALESCE(successful_tx_count, 0), COALESCE(failed_tx_count, 0), COALESCE(operation_count, 0)
+		FROM serving.sv_ledger_stats_recent
+		ORDER BY ledger_sequence DESC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer rows.Close()
+	var out []ServingRecentLedger
+	for rows.Next() {
+		var item ServingRecentLedger
+		var closedAt time.Time
+		if err := rows.Scan(&item.LedgerSequence, &closedAt, &item.LedgerHash, &item.PreviousLedgerHash, &item.ProtocolVersion, &item.BaseFeeStroops, &item.SuccessfulTxCount, &item.FailedTxCount, &item.OperationCount); err != nil {
+			return 0, nil, err
+		}
+		item.ClosedAt = closedAt.UTC().Format(time.RFC3339)
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, nil, err
+	}
+	return latestSequence, out, nil
+}
+
+// GetServingExplorerEvents returns recent explorer events from serving projections.
+func (h *SilverHotReader) GetServingExplorerEvents(ctx context.Context, filters ExplorerEventFilters, classifier *EventClassifier) ([]ExplorerEvent, *ExplorerEventMeta, string, bool, error) {
+	if events, meta, nextCursor, hasMore, err := h.getProjectedServingExplorerEvents(ctx, filters); err == nil {
+		return events, meta, nextCursor, hasMore, nil
+	}
+
+	limit := filters.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	requestLimit := limit + 1
+	orderDir := "DESC"
+	cursorOp := "<"
+	if filters.Order == "asc" {
+		orderDir = "ASC"
+		cursorOp = ">"
+	}
+
+	conditions := []string{"1=1"}
+	args := []any{}
+	argPos := 1
+
+	if len(filters.Types) > 0 {
+		topic0Values, includesCatchAll := classifier.Topic0ValuesForTypes(filters.Types)
+		if includesCatchAll && len(topic0Values) > 0 {
+			known := classifier.AllKnownTopic0Values()
+			includePH := make([]string, len(topic0Values))
+			for i, val := range topic0Values {
+				includePH[i] = fmt.Sprintf("$%d", argPos)
+				args = append(args, val)
+				argPos++
+			}
+			excludePH := make([]string, len(known))
+			for i, val := range known {
+				excludePH[i] = fmt.Sprintf("$%d", argPos)
+				args = append(args, val)
+				argPos++
+			}
+			conditions = append(conditions, fmt.Sprintf("(topic0 IN (%s) OR topic0 IS NULL OR topic0 NOT IN (%s))", strings.Join(includePH, ","), strings.Join(excludePH, ",")))
+		} else if includesCatchAll {
+			known := classifier.AllKnownTopic0Values()
+			if len(known) > 0 {
+				excludePH := make([]string, len(known))
+				for i, val := range known {
+					excludePH[i] = fmt.Sprintf("$%d", argPos)
+					args = append(args, val)
+					argPos++
+				}
+				conditions = append(conditions, fmt.Sprintf("(topic0 IS NULL OR topic0 NOT IN (%s))", strings.Join(excludePH, ",")))
+			}
+		} else if len(topic0Values) > 0 {
+			placeholders := make([]string, len(topic0Values))
+			for i, val := range topic0Values {
+				placeholders[i] = fmt.Sprintf("$%d", argPos)
+				args = append(args, val)
+				argPos++
+			}
+			conditions = append(conditions, fmt.Sprintf("topic0 IN (%s)", strings.Join(placeholders, ",")))
+		}
+	}
+	if filters.ContractID != nil && *filters.ContractID != "" {
+		hexID, err := normalizeContractID(*filters.ContractID)
+		if err != nil {
+			return nil, nil, "", false, fmt.Errorf("invalid contract_id %q: must be C... address or 64-char hex hash", *filters.ContractID)
+		}
+		conditions = append(conditions, fmt.Sprintf("contract_id = $%d", argPos))
+		args = append(args, hexID)
+		argPos++
+	}
+	if filters.ContractName != nil && *filters.ContractName != "" {
+		hexIDs, err := h.resolveContractNameToHexHot(ctx, *filters.ContractName)
+		if err != nil {
+			return nil, nil, "", false, err
+		}
+		if len(hexIDs) == 0 {
+			return []ExplorerEvent{}, &ExplorerEventMeta{}, "", false, nil
+		}
+		placeholders := make([]string, len(hexIDs))
+		for i, hexID := range hexIDs {
+			placeholders[i] = fmt.Sprintf("$%d", argPos)
+			args = append(args, hexID)
+			argPos++
+		}
+		conditions = append(conditions, fmt.Sprintf("contract_id IN (%s)", strings.Join(placeholders, ",")))
+	}
+	if filters.TxHash != nil && *filters.TxHash != "" {
+		conditions = append(conditions, fmt.Sprintf("tx_hash = $%d", argPos))
+		args = append(args, *filters.TxHash)
+		argPos++
+	}
+	if filters.TopicMatch != nil && *filters.TopicMatch != "" {
+		conditions = append(conditions, fmt.Sprintf("COALESCE(raw_event_json->>'topics_decoded','') ILIKE '%%' || $%d || '%%'", argPos))
+		args = append(args, *filters.TopicMatch)
+		argPos++
+	}
+	if filters.Topic0 != nil && *filters.Topic0 != "" {
+		conditions = append(conditions, fmt.Sprintf("topic0 = $%d", argPos))
+		args = append(args, *filters.Topic0)
+		argPos++
+	}
+	if filters.Topic1 != nil && *filters.Topic1 != "" {
+		conditions = append(conditions, fmt.Sprintf("topic1 = $%d", argPos))
+		args = append(args, *filters.Topic1)
+		argPos++
+	}
+	if filters.Topic2 != nil && *filters.Topic2 != "" {
+		conditions = append(conditions, fmt.Sprintf("topic2 = $%d", argPos))
+		args = append(args, *filters.Topic2)
+		argPos++
+	}
+	if filters.Topic3 != nil && *filters.Topic3 != "" {
+		conditions = append(conditions, fmt.Sprintf("topic3 = $%d", argPos))
+		args = append(args, *filters.Topic3)
+		argPos++
+	}
+	if filters.Cursor != nil && *filters.Cursor != "" {
+		parts := strings.SplitN(*filters.Cursor, ":", 2)
+		if len(parts) != 2 {
+			return nil, nil, "", false, fmt.Errorf("invalid cursor format")
+		}
+		cursorLedger, err1 := strconv.ParseInt(parts[0], 10, 64)
+		cursorEvent, err2 := strconv.ParseInt(parts[1], 10, 64)
+		if err1 != nil || err2 != nil {
+			return nil, nil, "", false, fmt.Errorf("invalid cursor values")
+		}
+		conditions = append(conditions, fmt.Sprintf("(ledger_sequence %s $%d OR (ledger_sequence = $%d AND COALESCE(event_index,0) %s $%d))", cursorOp, argPos, argPos, cursorOp, argPos+1))
+		args = append(args, cursorLedger, cursorEvent)
+		argPos += 2
+	}
+
+	whereClause := strings.Join(conditions, " AND ")
+	query := fmt.Sprintf(`
+		SELECT event_id, contract_id, ledger_sequence, tx_hash, created_at,
+		       COALESCE((raw_event_json->>'in_successful_contract_call')::boolean, true),
+		       topic0, topic1, topic2, topic3,
+		       raw_event_json->>'topics_decoded', raw_event_json->>'data_decoded',
+		       COALESCE(event_index, 0), COALESCE((raw_event_json->>'operation_index')::int, 0)
+		FROM serving.sv_events_recent
+		WHERE %s
+		ORDER BY ledger_sequence %s, COALESCE(event_index,0) %s
+		LIMIT $%d
+	`, whereClause, orderDir, orderDir, argPos)
+	queryArgs := append(append([]any{}, args...), requestLimit)
+
+	rows, err := h.db.QueryContext(ctx, query, queryArgs...)
+	if err != nil {
+		return nil, nil, "", false, err
+	}
+	defer rows.Close()
+
+	var events []ExplorerEvent
+	contractSet := map[string]bool{}
+	var contractIDs []string
+	typeSet := map[string]bool{}
+	for _, t := range filters.Types {
+		typeSet[t] = true
+	}
+
+	for rows.Next() {
+		var e ExplorerEvent
+		var createdAt time.Time
+		var successful bool
+		if err := rows.Scan(&e.EventID, &e.ContractID, &e.LedgerSequence, &e.TxHash, &createdAt, &successful, &e.Topic0, &e.Topic1, &e.Topic2, &e.Topic3, &e.TopicsDecoded, &e.DataDecoded, &e.EventIndex, &e.OpIndex); err != nil {
+			return nil, nil, "", false, err
+		}
+		e.ClosedAt = createdAt.UTC().Format(time.RFC3339)
+		e.Successful = successful
+		e.Data = e.DataDecoded
+		if e.ContractID != nil {
+			if strKeyID, err := hexToStrKey(*e.ContractID); err == nil {
+				e.ContractID = &strKeyID
+			}
+		}
+		classification := classifier.Classify(e.ContractID, e.Topic0, e.TopicsDecoded)
+		e.Type = classification.EventType
+		e.Protocol = classification.Protocol
+		if len(typeSet) > 0 && !typeSet[e.Type] {
+			continue
+		}
+		events = append(events, e)
+		if e.ContractID != nil && !contractSet[*e.ContractID] {
+			contractSet[*e.ContractID] = true
+			contractIDs = append(contractIDs, *e.ContractID)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, "", false, err
+	}
+
+	if len(contractIDs) > 0 {
+		nameMap := h.batchResolveContractNames(ctx, contractIDs)
+		for i := range events {
+			if events[i].ContractID != nil {
+				if info, ok := nameMap[*events[i].ContractID]; ok {
+					events[i].ContractName = info.name
+					events[i].ContractSymbol = info.symbol
+					events[i].ContractCategory = info.category
+				}
+			}
+		}
+	}
+
+	hasMore := len(events) > limit
+	if hasMore {
+		events = events[:limit]
+	}
+	var nextCursor string
+	if len(events) > 0 && hasMore {
+		last := events[len(events)-1]
+		nextCursor = fmt.Sprintf("%d:%d", last.LedgerSequence, last.EventIndex)
+	}
+
+	metaQuery := fmt.Sprintf(`
+		WITH filtered AS (
+			SELECT ledger_sequence FROM serving.sv_events_recent WHERE %s
+		), capped AS (
+			SELECT ledger_sequence FROM filtered LIMIT 10001
+		)
+		SELECT (SELECT COUNT(*) FROM capped),
+		       (SELECT MIN(ledger_sequence) FROM filtered),
+		       (SELECT MAX(ledger_sequence) FROM filtered)
+	`, whereClause)
+	var count int64
+	var minLedger, maxLedger sql.NullInt64
+	if err := h.db.QueryRowContext(ctx, metaQuery, args...).Scan(&count, &minLedger, &maxLedger); err != nil {
+		return events, &ExplorerEventMeta{}, nextCursor, hasMore, nil
+	}
+	meta := &ExplorerEventMeta{MatchedCount: count, CountCapped: count > 10000}
+	if meta.CountCapped {
+		meta.MatchedCount = 10000
+	}
+	if minLedger.Valid {
+		meta.LedgerRange.Min = minLedger.Int64
+	}
+	if maxLedger.Valid {
+		meta.LedgerRange.Max = maxLedger.Int64
+	}
+	return events, meta, nextCursor, hasMore, nil
+}
+
+func (h *SilverHotReader) getProjectedServingExplorerEvents(ctx context.Context, filters ExplorerEventFilters) ([]ExplorerEvent, *ExplorerEventMeta, string, bool, error) {
+	limit := filters.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	requestLimit := limit + 1
+	orderDir := "DESC"
+	cursorOp := "<"
+	if filters.Order == "asc" {
+		orderDir = "ASC"
+		cursorOp = ">"
+	}
+	conditions := []string{"1=1"}
+	args := []any{}
+	argPos := 1
+	if len(filters.Types) > 0 {
+		placeholders := make([]string, len(filters.Types))
+		for i, t := range filters.Types {
+			placeholders[i] = fmt.Sprintf("$%d", argPos)
+			args = append(args, t)
+			argPos++
+		}
+		conditions = append(conditions, fmt.Sprintf("explorer_type IN (%s)", strings.Join(placeholders, ",")))
+	}
+	if filters.ContractID != nil && *filters.ContractID != "" {
+		normalized, err := normalizeContractID(*filters.ContractID)
+		if err != nil {
+			return nil, nil, "", false, err
+		}
+		conditions = append(conditions, fmt.Sprintf("(contract_id = $%d OR contract_address = $%d)", argPos, argPos+1))
+		args = append(args, normalized, *filters.ContractID)
+		argPos += 2
+	}
+	if filters.ContractName != nil && *filters.ContractName != "" {
+		conditions = append(conditions, fmt.Sprintf("COALESCE(contract_name,'') ILIKE '%%' || $%d || '%%'", argPos))
+		args = append(args, *filters.ContractName)
+		argPos++
+	}
+	if filters.TxHash != nil && *filters.TxHash != "" {
+		conditions = append(conditions, fmt.Sprintf("tx_hash = $%d", argPos))
+		args = append(args, *filters.TxHash)
+		argPos++
+	}
+	if filters.TopicMatch != nil && *filters.TopicMatch != "" {
+		conditions = append(conditions, fmt.Sprintf("COALESCE(topics_decoded,'') ILIKE '%%' || $%d || '%%'", argPos))
+		args = append(args, *filters.TopicMatch)
+		argPos++
+	}
+	for _, pair := range []struct {
+		v   *string
+		col string
+	}{{filters.Topic0, "topic0"}, {filters.Topic1, "topic1"}, {filters.Topic2, "topic2"}, {filters.Topic3, "topic3"}} {
+		if pair.v != nil && *pair.v != "" {
+			conditions = append(conditions, fmt.Sprintf("%s = $%d", pair.col, argPos))
+			args = append(args, *pair.v)
+			argPos++
+		}
+	}
+	if filters.Cursor != nil && *filters.Cursor != "" {
+		parts := strings.SplitN(*filters.Cursor, ":", 2)
+		if len(parts) != 2 {
+			return nil, nil, "", false, fmt.Errorf("invalid cursor format")
+		}
+		cursorLedger, err1 := strconv.ParseInt(parts[0], 10, 64)
+		cursorEvent, err2 := strconv.ParseInt(parts[1], 10, 64)
+		if err1 != nil || err2 != nil {
+			return nil, nil, "", false, fmt.Errorf("invalid cursor values")
+		}
+		conditions = append(conditions, fmt.Sprintf("(ledger_sequence %s $%d OR (ledger_sequence = $%d AND COALESCE(event_index,0) %s $%d))", cursorOp, argPos, argPos, cursorOp, argPos+1))
+		args = append(args, cursorLedger, cursorEvent)
+		argPos += 2
+	}
+	where := strings.Join(conditions, " AND ")
+	query := fmt.Sprintf(`
+		SELECT event_id, contract_address, ledger_sequence, tx_hash, created_at, successful,
+		       topic0, topic1, topic2, topic3, topics_decoded, data_decoded,
+		       COALESCE(event_index,0), COALESCE(operation_index,0), explorer_type, protocol,
+		       contract_name, contract_symbol, contract_category
+		FROM serving.sv_explorer_events_recent
+		WHERE %s
+		ORDER BY ledger_sequence %s, COALESCE(event_index,0) %s
+		LIMIT $%d
+	`, where, orderDir, orderDir, argPos)
+	queryArgs := append(append([]any{}, args...), requestLimit)
+	rows, err := h.db.QueryContext(ctx, query, queryArgs...)
+	if err != nil {
+		return nil, nil, "", false, err
+	}
+	defer rows.Close()
+	var events []ExplorerEvent
+	for rows.Next() {
+		var e ExplorerEvent
+		var createdAt time.Time
+		if err := rows.Scan(&e.EventID, &e.ContractID, &e.LedgerSequence, &e.TxHash, &createdAt, &e.Successful, &e.Topic0, &e.Topic1, &e.Topic2, &e.Topic3, &e.TopicsDecoded, &e.DataDecoded, &e.EventIndex, &e.OpIndex, &e.Type, &e.Protocol, &e.ContractName, &e.ContractSymbol, &e.ContractCategory); err != nil {
+			return nil, nil, "", false, err
+		}
+		e.ClosedAt = createdAt.UTC().Format(time.RFC3339)
+		e.Data = e.DataDecoded
+		events = append(events, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, "", false, err
+	}
+	hasMore := len(events) > limit
+	if hasMore {
+		events = events[:limit]
+	}
+	var nextCursor string
+	if len(events) > 0 && hasMore {
+		last := events[len(events)-1]
+		nextCursor = fmt.Sprintf("%d:%d", last.LedgerSequence, last.EventIndex)
+	}
+	metaQuery := fmt.Sprintf(`WITH filtered AS (SELECT ledger_sequence FROM serving.sv_explorer_events_recent WHERE %s), capped AS (SELECT ledger_sequence FROM filtered LIMIT 10001) SELECT (SELECT COUNT(*) FROM capped), (SELECT MIN(ledger_sequence) FROM filtered), (SELECT MAX(ledger_sequence) FROM filtered)`, where)
+	var count int64
+	var minLedger, maxLedger sql.NullInt64
+	if err := h.db.QueryRowContext(ctx, metaQuery, args...).Scan(&count, &minLedger, &maxLedger); err != nil {
+		return events, &ExplorerEventMeta{}, nextCursor, hasMore, nil
+	}
+	meta := &ExplorerEventMeta{MatchedCount: count, CountCapped: count > 10000}
+	if meta.CountCapped {
+		meta.MatchedCount = 10000
+	}
+	if minLedger.Valid {
+		meta.LedgerRange.Min = minLedger.Int64
+	}
+	if maxLedger.Valid {
+		meta.LedgerRange.Max = maxLedger.Int64
+	}
+	return events, meta, nextCursor, hasMore, nil
+}
+
+func (h *SilverHotReader) resolveContractNameToHexHot(ctx context.Context, name string) ([]string, error) {
+	rows, err := h.db.QueryContext(ctx, `
+		SELECT DISTINCT contract_id FROM (
+			SELECT contract_id FROM contract_registry WHERE display_name ILIKE '%' || $1 || '%'
+			UNION
+			SELECT contract_id FROM token_registry WHERE token_name ILIKE '%' || $1 || '%'
+		) matches
+	`, name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var hexIDs []string
+	for rows.Next() {
+		var contractID string
+		if err := rows.Scan(&contractID); err != nil {
+			return nil, err
+		}
+		if contractID == "" {
+			continue
+		}
+		if normalized, err := normalizeContractID(contractID); err == nil {
+			hexIDs = append(hexIDs, normalized)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return hexIDs, nil
+}
+
+func (h *SilverHotReader) batchResolveContractNames(ctx context.Context, contractIDs []string) map[string]contractNameInfo {
+	result := make(map[string]contractNameInfo)
+	if len(contractIDs) == 0 {
+		return result
+	}
+	placeholders := make([]string, len(contractIDs))
+	args := make([]any, len(contractIDs))
+	for i, id := range contractIDs {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = id
+	}
+	query := fmt.Sprintf(`
+		SELECT cr.contract_id, cr.display_name, tr.token_symbol, cr.category
+		FROM contract_registry cr
+		LEFT JOIN token_registry tr ON cr.contract_id = tr.contract_id
+		WHERE cr.contract_id IN (%s)
+	`, strings.Join(placeholders, ","))
+	rows, err := h.db.QueryContext(ctx, query, args...)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var contractID string
+			var name, symbol, category sql.NullString
+			if err := rows.Scan(&contractID, &name, &symbol, &category); err != nil {
+				continue
+			}
+			strKeyID := contractID
+			if converted, err := hexToStrKey(contractID); err == nil {
+				strKeyID = converted
+			}
+			info := contractNameInfo{}
+			if name.Valid && name.String != "" {
+				s := name.String
+				info.name = &s
+			}
+			if symbol.Valid && symbol.String != "" {
+				s := symbol.String
+				info.symbol = &s
+			}
+			if category.Valid && category.String != "" {
+				s := category.String
+				info.category = &s
+			}
+			result[strKeyID] = info
+		}
+	}
+	if len(result) == len(contractIDs) {
+		return result
+	}
+
+	missingHex := make([]string, 0)
+	for _, id := range contractIDs {
+		if _, ok := result[id]; !ok {
+			if hexID, err := normalizeContractID(id); err == nil {
+				missingHex = append(missingHex, hexID)
+			}
+		}
+	}
+	if len(missingHex) == 0 {
+		return result
+	}
+	placeholders = make([]string, len(missingHex))
+	args = make([]any, len(missingHex))
+	for i, id := range missingHex {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = id
+	}
+	fallbackQuery := fmt.Sprintf(`SELECT contract_id, token_name, token_symbol FROM token_registry WHERE contract_id IN (%s)`, strings.Join(placeholders, ","))
+	rows, err = h.db.QueryContext(ctx, fallbackQuery, args...)
+	if err != nil {
+		return result
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var contractID string
+		var name, symbol sql.NullString
+		if err := rows.Scan(&contractID, &name, &symbol); err != nil {
+			continue
+		}
+		strKeyID := contractID
+		if converted, err := hexToStrKey(contractID); err == nil {
+			strKeyID = converted
+		}
+		info := contractNameInfo{}
+		if name.Valid && name.String != "" {
+			s := name.String
+			info.name = &s
+		}
+		if symbol.Valid && symbol.String != "" {
+			s := symbol.String
+			info.symbol = &s
+		}
+		tokenCat := "token"
+		info.category = &tokenCat
+		result[strKeyID] = info
+	}
+	return result
+}
+
+// GetServingTopContracts returns top contracts from serving stats tables.
+func (h *SilverHotReader) GetServingTopContracts(ctx context.Context, period string, limit int) ([]TopContract, error) {
+	if period == "all" {
+		return nil, fmt.Errorf("period=all not supported by serving fast path")
+	}
+	orderCol := "total_calls_24h"
+	uniqueCol := "unique_callers_24h"
+	if period == "7d" {
+		orderCol = "total_calls_7d"
+		uniqueCol = "unique_callers_7d"
+	} else if period == "30d" {
+		orderCol = "total_calls_30d"
+		uniqueCol = "unique_callers_7d"
+	}
+	query := fmt.Sprintf(`
+		SELECT contract_id, %s as total_calls, COALESCE(%s, 0) as unique_callers, COALESCE(top_function, ''), last_activity_at
+		FROM serving.sv_contract_stats_current
+		WHERE %s > 0
+		ORDER BY %s DESC, contract_id ASC
+		LIMIT $1
+	`, orderCol, uniqueCol, orderCol, orderCol)
+	rows, err := h.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []TopContract
+	for rows.Next() {
+		var tc TopContract
+		var totalCalls, uniqueCallers int64
+		var lastActivity sql.NullTime
+		if err := rows.Scan(&tc.ContractID, &totalCalls, &uniqueCallers, &tc.TopFunction, &lastActivity); err != nil {
+			return nil, err
+		}
+		tc.TotalCalls = int(totalCalls)
+		tc.UniqueCallers = int(uniqueCallers)
+		if lastActivity.Valid {
+			tc.LastActivity = lastActivity.Time.UTC().Format(time.RFC3339)
+		}
+		out = append(out, tc)
+	}
+	return out, rows.Err()
+}
+
+// GetServingGenericEvents returns recent generic contract events from serving projections.
+func (h *SilverHotReader) GetServingGenericEvents(ctx context.Context, filters GenericEventFilters) ([]GenericEvent, string, bool, error) {
+	limit := filters.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	requestLimit := limit + 1
+	orderDir := "DESC"
+	cursorOp := "<"
+	if filters.Order == "asc" {
+		orderDir = "ASC"
+		cursorOp = ">"
+	}
+
+	query := `
+		SELECT
+			event_id,
+			contract_id,
+			ledger_sequence,
+			tx_hash,
+			created_at,
+			event_type,
+			COALESCE((raw_event_json->>'in_successful_contract_call')::boolean, true),
+			raw_event_json->>'topics_json',
+			raw_event_json->>'topics_decoded',
+			raw_event_json->>'data_decoded',
+			COALESCE((raw_event_json->>'topic_count')::int,
+				CASE WHEN topic3 IS NOT NULL THEN 4 WHEN topic2 IS NOT NULL THEN 3 WHEN topic1 IS NOT NULL THEN 2 WHEN topic0 IS NOT NULL THEN 1 ELSE 0 END),
+			COALESCE((raw_event_json->>'operation_index')::int, 0),
+			COALESCE(event_index, 0),
+			topic0,
+			topic1,
+			topic2,
+			topic3
+		FROM serving.sv_events_recent
+		WHERE 1=1
+	`
+	args := []any{}
+	argPos := 1
+	if filters.ContractID != nil && *filters.ContractID != "" {
+		query += fmt.Sprintf(" AND contract_id = $%d", argPos)
+		args = append(args, *filters.ContractID)
+		argPos++
+	}
+	if filters.TxHash != nil && *filters.TxHash != "" {
+		query += fmt.Sprintf(" AND tx_hash = $%d", argPos)
+		args = append(args, *filters.TxHash)
+		argPos++
+	}
+	if filters.EventType != nil && *filters.EventType != "" {
+		query += fmt.Sprintf(" AND event_type = $%d", argPos)
+		args = append(args, *filters.EventType)
+		argPos++
+	}
+	if filters.TopicMatch != nil && *filters.TopicMatch != "" {
+		query += fmt.Sprintf(" AND COALESCE(raw_event_json->>'topics_decoded','') ILIKE '%%' || $%d || '%%'", argPos)
+		args = append(args, *filters.TopicMatch)
+		argPos++
+	}
+	if filters.Topic0 != nil && *filters.Topic0 != "" {
+		query += fmt.Sprintf(" AND topic0 = $%d", argPos)
+		args = append(args, *filters.Topic0)
+		argPos++
+	}
+	if filters.Topic1 != nil && *filters.Topic1 != "" {
+		query += fmt.Sprintf(" AND topic1 = $%d", argPos)
+		args = append(args, *filters.Topic1)
+		argPos++
+	}
+	if filters.Topic2 != nil && *filters.Topic2 != "" {
+		query += fmt.Sprintf(" AND topic2 = $%d", argPos)
+		args = append(args, *filters.Topic2)
+		argPos++
+	}
+	if filters.Topic3 != nil && *filters.Topic3 != "" {
+		query += fmt.Sprintf(" AND topic3 = $%d", argPos)
+		args = append(args, *filters.Topic3)
+		argPos++
+	}
+	if filters.StartLedger != nil {
+		query += fmt.Sprintf(" AND ledger_sequence >= $%d", argPos)
+		args = append(args, *filters.StartLedger)
+		argPos++
+	}
+	if filters.EndLedger != nil {
+		query += fmt.Sprintf(" AND ledger_sequence <= $%d", argPos)
+		args = append(args, *filters.EndLedger)
+		argPos++
+	}
+	if filters.Cursor != nil && *filters.Cursor != "" {
+		parts := strings.SplitN(*filters.Cursor, ":", 2)
+		if len(parts) == 2 {
+			cursorLedger, err := strconv.ParseInt(parts[0], 10, 64)
+			if err != nil {
+				return nil, "", false, fmt.Errorf("invalid cursor ledger value %q: %w", parts[0], err)
+			}
+			cursorEvent, err := strconv.ParseInt(parts[1], 10, 64)
+			if err != nil {
+				return nil, "", false, fmt.Errorf("invalid cursor event_index value %q: %w", parts[1], err)
+			}
+			query += fmt.Sprintf(" AND (ledger_sequence %s $%d OR (ledger_sequence = $%d AND COALESCE(event_index,0) %s $%d))", cursorOp, argPos, argPos, cursorOp, argPos+1)
+			args = append(args, cursorLedger, cursorEvent)
+			argPos += 2
+		}
+	}
+	query += fmt.Sprintf(" ORDER BY ledger_sequence %s, event_index %s LIMIT $%d", orderDir, orderDir, argPos)
+	args = append(args, requestLimit)
+
+	rows, err := h.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, "", false, err
+	}
+	defer rows.Close()
+
+	var events []GenericEvent
+	for rows.Next() {
+		var e GenericEvent
+		var contractID sql.NullString
+		var createdAt sql.NullTime
+		if err := rows.Scan(&e.EventID, &contractID, &e.LedgerSeq, &e.TxHash, &createdAt, &e.EventType, &e.Successful, &e.TopicsJSON, &e.TopicsDecoded, &e.DataDecoded, &e.TopicCount, &e.OpIndex, &e.EventIndex, &e.Topic0Decoded, &e.Topic1Decoded, &e.Topic2Decoded, &e.Topic3Decoded); err != nil {
+			return nil, "", false, err
+		}
+		if contractID.Valid {
+			e.ContractID = &contractID.String
+		}
+		if createdAt.Valid {
+			e.ClosedAt = createdAt.Time.UTC().Format(time.RFC3339)
+		}
+		events = append(events, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", false, err
+	}
+
+	hasMore := len(events) > limit
+	if hasMore {
+		events = events[:limit]
+	}
+	var nextCursor string
+	if len(events) > 0 && hasMore {
+		last := events[len(events)-1]
+		nextCursor = fmt.Sprintf("%d:%d", last.LedgerSeq, last.EventIndex)
+	}
+	return events, nextCursor, hasMore, nil
+}
+
+// GetServingContractRecentCalls returns recent contract calls from serving projections.
+func (h *SilverHotReader) GetServingContractRecentCalls(ctx context.Context, contractID string, limit int, cursor *OperationCursor, order string) ([]ContractCallRecord, string, bool, error) {
+	requestLimit := limit + 1
+	orderDir := "DESC"
+	cursorOp := "<"
+	if order == "asc" {
+		orderDir = "ASC"
+		cursorOp = ">"
+	}
+
+	query := `
+		SELECT
+			tx_hash,
+			ledger_sequence,
+			created_at,
+			contract_id,
+			function_name,
+			COALESCE(caller_account, ''),
+			COALESCE(successful, false),
+			COALESCE(NULLIF(split_part(call_id, ':', 3), ''), '0')::bigint as operation_index
+		FROM serving.sv_contract_calls_recent
+		WHERE contract_id = $1
+	`
+	args := []any{contractID}
+	argPos := 2
+	if cursor != nil {
+		query += fmt.Sprintf(" AND (ledger_sequence %s $%d OR (ledger_sequence = $%d AND COALESCE(NULLIF(split_part(call_id, ':', 3), ''), '0')::bigint %s $%d))", cursorOp, argPos, argPos, cursorOp, argPos+1)
+		args = append(args, cursor.LedgerSequence, cursor.OperationIndex)
+		argPos += 2
+	}
+	query += fmt.Sprintf(" ORDER BY ledger_sequence %s, operation_index %s LIMIT $%d", orderDir, orderDir, argPos)
+	args = append(args, requestLimit)
+
+	rows, err := h.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, "", false, err
+	}
+	defer rows.Close()
+
+	var calls []ContractCallRecord
+	for rows.Next() {
+		var c ContractCallRecord
+		var createdAt sql.NullTime
+		var contractIDVal sql.NullString
+		var functionName sql.NullString
+		if err := rows.Scan(&c.TransactionHash, &c.LedgerSequence, &createdAt, &contractIDVal, &functionName, &c.SourceAccount, &c.Successful, &c.OperationIndex); err != nil {
+			return nil, "", false, err
+		}
+		if createdAt.Valid {
+			c.ClosedAt = createdAt.Time.UTC().Format(time.RFC3339)
+		}
+		if contractIDVal.Valid {
+			c.ContractID = &contractIDVal.String
+		}
+		if functionName.Valid {
+			c.FunctionName = &functionName.String
+		}
+		calls = append(calls, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", false, err
+	}
+
+	hasMore := len(calls) > limit
+	if hasMore {
+		calls = calls[:limit]
+	}
+	var nextCursor string
+	if len(calls) > 0 && hasMore {
+		last := calls[len(calls)-1]
+		nextCursor = (OperationCursor{LedgerSequence: last.LedgerSequence, OperationIndex: last.OperationIndex, Order: order}).Encode()
+	}
+	return calls, nextCursor, hasMore, nil
+}
+
+// GetServingContractMetadata returns contract metadata from serving projections.
+func (h *SilverHotReader) GetServingContractMetadata(ctx context.Context, contractID string) (*ContractMetadataResponse, error) {
+	resp := &ContractMetadataResponse{ContractID: contractID}
+	var name, symbol, contractType sql.NullString
+	var creator, wasmHash sql.NullString
+	var deployLedger, wasmSizeBytes, totalStateSizeBytes, estimatedMonthlyRent sql.NullInt64
+	var deployTime sql.NullTime
+	var persistentEntries, temporaryEntries, instanceEntries sql.NullInt32
+	if err := h.db.QueryRowContext(ctx, `
+		SELECT name, symbol, contract_type, creator_account, wasm_hash, deploy_ledger, deploy_timestamp,
+		       wasm_size_bytes, persistent_entries, temporary_entries, instance_entries,
+		       total_state_size_bytes, estimated_monthly_rent_stroops
+		FROM serving.sv_contracts_current
+		WHERE contract_id = $1
+	`, contractID).Scan(
+		&name, &symbol, &contractType, &creator, &wasmHash, &deployLedger, &deployTime,
+		&wasmSizeBytes, &persistentEntries, &temporaryEntries, &instanceEntries,
+		&totalStateSizeBytes, &estimatedMonthlyRent,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if name.Valid {
+		resp.DisplayName = &name.String
+	}
+	if contractType.Valid {
+		resp.ContractType = &contractType.String
+	}
+	if creator.Valid {
+		resp.CreatorAddress = &creator.String
+	}
+	if wasmHash.Valid {
+		resp.WasmHash = &wasmHash.String
+	}
+	if wasmSizeBytes.Valid {
+		resp.WasmSizeBytes = &wasmSizeBytes.Int64
+	}
+	if deployLedger.Valid {
+		resp.CreatedLedger = &deployLedger.Int64
+	}
+	if deployTime.Valid {
+		s := deployTime.Time.UTC().Format(time.RFC3339)
+		resp.CreatedAt = &s
+	}
+	if persistentEntries.Valid {
+		resp.PersistentEntries = int(persistentEntries.Int32)
+	}
+	if temporaryEntries.Valid {
+		resp.TemporaryEntries = int(temporaryEntries.Int32)
+	}
+	if instanceEntries.Valid {
+		resp.InstanceEntries = int(instanceEntries.Int32)
+	}
+	resp.TotalEntries = resp.PersistentEntries + resp.TemporaryEntries + resp.InstanceEntries
+	if totalStateSizeBytes.Valid {
+		resp.TotalStateSizeBytes = &totalStateSizeBytes.Int64
+	}
+	if estimatedMonthlyRent.Valid {
+		resp.EstimatedMonthlyRentStroops = &estimatedMonthlyRent.Int64
+	}
+	rows, err := h.db.QueryContext(ctx, `
+		SELECT function_name, COUNT(*) as call_count
+		FROM contract_invocations_raw
+		WHERE contract_id = $1 AND function_name <> ''
+		GROUP BY function_name
+		ORDER BY call_count DESC, function_name ASC
+	`, contractID)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var fc FunctionCallCount
+			if err := rows.Scan(&fc.Name, &fc.CallCount); err != nil {
+				break
+			}
+			resp.ExportedFunctions = append(resp.ExportedFunctions, fc)
+		}
+	}
+	h.enrichContractRegistry(ctx, resp)
+	if resp.EstimatedMonthlyRentStroops == nil {
+		h.enrichContractRentEstimate(ctx, resp)
+	}
+	_ = symbol
+	return resp, nil
 }
 
 // Close closes the database connection
@@ -1450,6 +2873,136 @@ func (h *SilverHotReader) GetTradeStats(ctx context.Context, groupBy string, sta
 	return stats, nil
 }
 
+// GetEffectsByTransactionFast returns all effects for a transaction using a
+// selective hot-path query: first resolve the transaction's ledger/op indexes
+// from enriched_history_operations, then fetch matching effects by
+// ledger_sequence + operation_index instead of scanning by transaction_hash
+// across the large effects table.
+func (h *SilverHotReader) GetEffectsByTransactionFast(ctx context.Context, txHash string) ([]SilverEffect, error) {
+	rows, err := h.db.QueryContext(ctx, `
+		SELECT DISTINCT ledger_sequence, operation_index
+		FROM enriched_history_operations
+		WHERE transaction_hash = $1
+		ORDER BY ledger_sequence, operation_index
+	`, txHash)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve tx operation indexes: %w", err)
+	}
+	defer rows.Close()
+
+	var ledgerSequence int64
+	var opIndexes []int
+	for rows.Next() {
+		var ledgerSeq int64
+		var opIndex int
+		if err := rows.Scan(&ledgerSeq, &opIndex); err != nil {
+			return nil, fmt.Errorf("failed to scan tx operation indexes: %w", err)
+		}
+		if ledgerSequence == 0 {
+			ledgerSequence = ledgerSeq
+		}
+		opIndexes = append(opIndexes, opIndex)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate tx operation indexes: %w", err)
+	}
+	if len(opIndexes) == 0 {
+		return []SilverEffect{}, nil
+	}
+
+	query := `
+		SELECT ledger_sequence, transaction_hash, operation_index, effect_index,
+		       operation_id, effect_type, effect_type_string, account_id,
+		       amount, asset_code, asset_issuer, asset_type,
+		       details_json,
+		       trustline_limit, authorize_flag, clawback_flag,
+		       signer_account, signer_weight, offer_id, seller_account,
+		       created_at
+		FROM effects
+		WHERE ledger_sequence = $1
+		  AND operation_index = ANY($2)
+		ORDER BY operation_index ASC, effect_index ASC
+	`
+
+	fxRows, err := h.db.QueryContext(ctx, query, ledgerSequence, pq.Array(opIndexes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to query tx effects fast path: %w", err)
+	}
+	defer fxRows.Close()
+
+	var effects []SilverEffect
+	for fxRows.Next() {
+		var e SilverEffect
+		var operationID sql.NullInt64
+		var accountID, amount, assetCode, assetIssuer, assetType sql.NullString
+		var detailsJSON sql.NullString
+		var trustlineLimit, signerAccount, sellerAccount sql.NullString
+		var authorizeFlag, clawbackFlag sql.NullBool
+		var signerWeight sql.NullInt32
+		var offerID sql.NullInt64
+
+		err := fxRows.Scan(
+			&e.LedgerSequence, &e.TransactionHash, &e.OperationIndex, &e.EffectIndex,
+			&operationID, &e.EffectType, &e.EffectTypeString, &accountID,
+			&amount, &assetCode, &assetIssuer, &assetType,
+			&detailsJSON,
+			&trustlineLimit, &authorizeFlag, &clawbackFlag,
+			&signerAccount, &signerWeight, &offerID, &sellerAccount,
+			&e.Timestamp,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan tx effects fast path: %w", err)
+		}
+		if e.TransactionHash != txHash {
+			continue
+		}
+		if operationID.Valid {
+			e.OperationID = &operationID.Int64
+		}
+		if accountID.Valid {
+			e.AccountID = &accountID.String
+		}
+		if amount.Valid {
+			e.Amount = &amount.String
+		}
+		if assetCode.Valid || assetType.Valid {
+			asset := buildAssetInfo(assetType.String, assetCode.String, assetIssuer.String)
+			e.Asset = &asset
+		}
+		if detailsJSON.Valid {
+			raw := json.RawMessage(detailsJSON.String)
+			e.Details = &raw
+		}
+		if trustlineLimit.Valid {
+			e.TrustlineLimit = &trustlineLimit.String
+		}
+		if authorizeFlag.Valid {
+			e.AuthorizeFlag = &authorizeFlag.Bool
+		}
+		if clawbackFlag.Valid {
+			e.ClawbackFlag = &clawbackFlag.Bool
+		}
+		if signerAccount.Valid {
+			e.SignerAccount = &signerAccount.String
+		}
+		if signerWeight.Valid {
+			v := int(signerWeight.Int32)
+			e.SignerWeight = &v
+		}
+		if offerID.Valid {
+			e.OfferID = &offerID.Int64
+		}
+		if sellerAccount.Valid {
+			e.SellerAccount = &sellerAccount.String
+		}
+		effects = append(effects, e)
+	}
+	if err := fxRows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate tx effects fast path: %w", err)
+	}
+	return effects, nil
+}
+
 // GetEffects returns effects from the hot buffer with filters
 func (h *SilverHotReader) GetEffects(ctx context.Context, filters EffectFilters) ([]SilverEffect, string, bool, error) {
 	var conditions []string
@@ -1540,17 +3093,11 @@ func (h *SilverHotReader) GetEffects(ctx context.Context, filters EffectFilters)
 	`, whereClause, orderDir, orderDir, orderDir, orderDir, argNum)
 	args = append(args, limit+1)
 
-	stats := h.db.Stats()
-	log.Printf("[effects-hot] pool: open=%d inUse=%d idle=%d waitCount=%d", stats.OpenConnections, stats.InUse, stats.Idle, stats.WaitCount)
-	log.Printf("[effects-hot] query: %s args: %v", query, args)
-
 	rows, err := h.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		log.Printf("[effects-hot] query error: %v", err)
 		return nil, "", false, err
 	}
 	defer rows.Close()
-	log.Printf("[effects-hot] query returned, scanning rows...")
 
 	var effects []SilverEffect
 	for rows.Next() {
@@ -2182,6 +3729,28 @@ func (h *SilverHotReader) GetCurrentLedger(ctx context.Context) (int64, error) {
 	return ledger.Int64, nil
 }
 
+func (h *SilverHotReader) GetContractFunctions(ctx context.Context, contractID string) ([]string, error) {
+	rows, err := h.db.QueryContext(ctx, `
+		SELECT DISTINCT function_name
+		FROM enriched_history_operations
+		WHERE contract_id = $1 AND function_name IS NOT NULL
+		ORDER BY function_name
+	`, contractID)
+	if err != nil {
+		return nil, fmt.Errorf("GetContractFunctions: %w", err)
+	}
+	defer rows.Close()
+	var functions []string
+	for rows.Next() {
+		var fn string
+		if err := rows.Scan(&fn); err != nil {
+			return nil, err
+		}
+		functions = append(functions, fn)
+	}
+	return functions, nil
+}
+
 // enrichContractMetadata adds creator info from contract_metadata table
 func (h *SilverHotReader) enrichContractMetadata(ctx context.Context, resp *ContractMetadataResponse) {
 	query := `
@@ -2240,13 +3809,23 @@ func (h *SilverHotReader) enrichContractStorage(ctx context.Context, resp *Contr
 	query := `
 		SELECT
 			COUNT(*) as total_entries,
-			COUNT(*) FILTER (WHERE durability = 'persistent') as persistent_entries
+			COUNT(*) FILTER (WHERE lower(durability) LIKE '%persistent') as persistent_entries,
+			COUNT(*) FILTER (WHERE lower(durability) LIKE '%temporary') as temporary_entries,
+			COUNT(*) FILTER (WHERE lower(durability) LIKE '%instance') as instance_entries,
+			COALESCE(SUM(LENGTH(data_value)), 0) as total_state_size_bytes
 		FROM contract_data_current
 		WHERE contract_id = $1
 	`
+	var totalStateSizeBytes sql.NullInt64
 	_ = h.db.QueryRowContext(ctx, query, resp.ContractID).Scan(
-		&resp.TotalEntries, &resp.PersistentEntries,
+		&resp.TotalEntries, &resp.PersistentEntries, &resp.TemporaryEntries, &resp.InstanceEntries, &totalStateSizeBytes,
 	)
+	if totalStateSizeBytes.Valid {
+		resp.TotalStateSizeBytes = &totalStateSizeBytes.Int64
+	}
+	if resp.EstimatedMonthlyRentStroops == nil {
+		h.enrichContractRentEstimate(ctx, resp)
+	}
 }
 
 // enrichContractWasm adds WASM metrics from contract_code_current
@@ -2255,14 +3834,18 @@ func (h *SilverHotReader) enrichContractWasm(ctx context.Context, resp *Contract
 		return
 	}
 	query := `
-		SELECT n_instructions, n_functions, n_exports
+		SELECT n_data_segment_bytes, n_instructions, n_functions, n_exports
 		FROM contract_code_current
 		WHERE contract_code_hash = $1
 	`
+	var wasmSizeBytes sql.NullInt64
 	var nInstr, nFunc, nExport sql.NullInt32
-	err := h.db.QueryRowContext(ctx, query, *resp.WasmHash).Scan(&nInstr, &nFunc, &nExport)
+	err := h.db.QueryRowContext(ctx, query, *resp.WasmHash).Scan(&wasmSizeBytes, &nInstr, &nFunc, &nExport)
 	if err != nil {
 		return
+	}
+	if wasmSizeBytes.Valid {
+		resp.WasmSizeBytes = &wasmSizeBytes.Int64
 	}
 	if nInstr.Valid {
 		v := int(nInstr.Int32)
@@ -2276,6 +3859,192 @@ func (h *SilverHotReader) enrichContractWasm(ctx context.Context, resp *Contract
 		v := int(nExport.Int32)
 		resp.NExports = &v
 	}
+}
+
+func (h *SilverHotReader) enrichContractRegistry(ctx context.Context, resp *ContractMetadataResponse) {
+	var displayName, registryCategory sql.NullString
+	var verified sql.NullBool
+	err := h.db.QueryRowContext(ctx, `
+		SELECT display_name, category, verified
+		FROM contract_registry
+		WHERE contract_id = $1
+	`, resp.ContractID).Scan(&displayName, &registryCategory, &verified)
+	if err != nil {
+		return
+	}
+	if displayName.Valid {
+		resp.DisplayName = &displayName.String
+	}
+	if registryCategory.Valid && resp.ContractType == nil {
+		resp.ContractType = &registryCategory.String
+	}
+	if verified.Valid {
+		v := verified.Bool
+		resp.Verified = &v
+	}
+}
+
+type contractRentConfig struct {
+	NetworkStateBytes             int64
+	FeePerRent1KB                 int64
+	StateTargetSizeBytes          int64
+	RentFee1KBStateSizeLow        int64
+	RentFee1KBStateSizeHigh       int64
+	StateSizeRentFeeGrowthFactor  uint32
+	PersistentRentRateDenominator int64
+	TemporaryRentRateDenominator  int64
+}
+
+func (h *SilverHotReader) enrichContractRentEstimate(ctx context.Context, resp *ContractMetadataResponse) {
+	var persistentBytes, temporaryBytes, instanceBytes sql.NullInt64
+	err := h.db.QueryRowContext(ctx, `
+		SELECT
+			COALESCE(SUM(LENGTH(data_value)) FILTER (WHERE lower(durability) LIKE '%persistent'), 0),
+			COALESCE(SUM(LENGTH(data_value)) FILTER (WHERE lower(durability) LIKE '%temporary'), 0),
+			COALESCE(SUM(LENGTH(data_value)) FILTER (WHERE lower(durability) LIKE '%instance'), 0)
+		FROM contract_data_current
+		WHERE contract_id = $1
+	`, resp.ContractID).Scan(&persistentBytes, &temporaryBytes, &instanceBytes)
+	if err != nil {
+		return
+	}
+
+	cfg, err := h.loadContractRentConfig(ctx)
+	if err != nil || cfg == nil {
+		return
+	}
+
+	feePerRent1KB := approximateRentFeePer1KB(cfg.NetworkStateBytes, cfg)
+	if feePerRent1KB <= 0 {
+		return
+	}
+
+	const ledgersPerMonth = int64(518400) // ~30 days at 5s/ledger
+	persistentTotalBytes := persistentBytes.Int64 + instanceBytes.Int64
+	temporaryTotalBytes := temporaryBytes.Int64
+
+	monthly := int64(0)
+	if persistentTotalBytes > 0 && cfg.PersistentRentRateDenominator > 0 {
+		monthly += estimateMonthlyRentForBytes(persistentTotalBytes, feePerRent1KB, cfg.PersistentRentRateDenominator, ledgersPerMonth)
+	}
+	if temporaryTotalBytes > 0 && cfg.TemporaryRentRateDenominator > 0 {
+		monthly += estimateMonthlyRentForBytes(temporaryTotalBytes, feePerRent1KB, cfg.TemporaryRentRateDenominator, ledgersPerMonth)
+	}
+	if monthly > 0 {
+		resp.EstimatedMonthlyRentStroops = &monthly
+	}
+}
+
+func estimateMonthlyRentForBytes(totalBytes, feePerRent1KB, denominator, ledgersPerMonth int64) int64 {
+	if totalBytes <= 0 || feePerRent1KB <= 0 || denominator <= 0 || ledgersPerMonth <= 0 {
+		return 0
+	}
+	kbRoundedUp := (totalBytes + 1023) / 1024
+	return (kbRoundedUp * feePerRent1KB * ledgersPerMonth) / denominator
+}
+
+func approximateRentFeePer1KB(networkStateBytes int64, cfg *contractRentConfig) int64 {
+	if cfg == nil {
+		return 0
+	}
+	if cfg.FeePerRent1KB > 0 {
+		return cfg.FeePerRent1KB
+	}
+	if cfg.StateTargetSizeBytes <= 0 {
+		return 0
+	}
+	if networkStateBytes <= 0 {
+		return cfg.RentFee1KBStateSizeLow
+	}
+	if networkStateBytes <= cfg.StateTargetSizeBytes {
+		delta := cfg.RentFee1KBStateSizeHigh - cfg.RentFee1KBStateSizeLow
+		return cfg.RentFee1KBStateSizeLow + (delta*networkStateBytes)/cfg.StateTargetSizeBytes
+	}
+	// Approximation beyond target size: use the high watermark scaled by the
+	// configured growth factor for state beyond the first target window.
+	return cfg.RentFee1KBStateSizeHigh * int64(maxUint32(cfg.StateSizeRentFeeGrowthFactor, 1))
+}
+
+func maxUint32(a, b uint32) uint32 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func (h *SilverHotReader) loadContractRentConfig(ctx context.Context) (*contractRentConfig, error) {
+	var networkStateBytes sql.NullInt64
+	if err := h.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(LENGTH(data_value)), 0) FROM contract_data_current`).Scan(&networkStateBytes); err != nil {
+		return nil, err
+	}
+
+	rows, err := h.db.QueryContext(ctx, `
+		SELECT config_setting_id, config_setting_xdr
+		FROM config_settings_current
+		WHERE config_setting_id IN (2, 10)
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	cfg := &contractRentConfig{NetworkStateBytes: networkStateBytes.Int64}
+	for rows.Next() {
+		var id int
+		var encoded string
+		if err := rows.Scan(&id, &encoded); err != nil {
+			return nil, err
+		}
+		blob, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return nil, err
+		}
+		var entry xdr.ConfigSettingEntry
+		if err := entry.UnmarshalBinary(blob); err != nil {
+			return nil, err
+		}
+		switch xdr.ConfigSettingId(id) {
+		case xdr.ConfigSettingIdConfigSettingContractLedgerCostV0:
+			if entry.ContractLedgerCost != nil {
+				cfg.StateTargetSizeBytes = int64(entry.ContractLedgerCost.SorobanStateTargetSizeBytes)
+				cfg.RentFee1KBStateSizeLow = int64(entry.ContractLedgerCost.RentFee1KbSorobanStateSizeLow)
+				cfg.RentFee1KBStateSizeHigh = int64(entry.ContractLedgerCost.RentFee1KbSorobanStateSizeHigh)
+				cfg.StateSizeRentFeeGrowthFactor = uint32(entry.ContractLedgerCost.SorobanStateRentFeeGrowthFactor)
+			}
+		case xdr.ConfigSettingIdConfigSettingStateArchival:
+			if entry.StateArchivalSettings != nil {
+				cfg.PersistentRentRateDenominator = int64(entry.StateArchivalSettings.PersistentRentRateDenominator)
+				cfg.TemporaryRentRateDenominator = int64(entry.StateArchivalSettings.TempRentRateDenominator)
+			}
+		}
+	}
+	if cfg.PersistentRentRateDenominator == 0 {
+		cfg.PersistentRentRateDenominator = 1215 // Stellar testnet fallback
+	}
+	if cfg.TemporaryRentRateDenominator == 0 {
+		cfg.TemporaryRentRateDenominator = 2430 // Stellar testnet fallback
+	}
+	if h.bronzeHotPG != nil {
+		var feePerRent1KB, liveStateBytes sql.NullInt64
+		if err := h.bronzeHotPG.QueryRowContext(ctx, `
+			SELECT soroban_fee_write1kb, live_soroban_state_size
+			FROM ledgers_row_v2
+			WHERE soroban_fee_write1kb IS NOT NULL
+			ORDER BY sequence DESC
+			LIMIT 1
+		`).Scan(&feePerRent1KB, &liveStateBytes); err == nil {
+			if feePerRent1KB.Valid {
+				cfg.FeePerRent1KB = feePerRent1KB.Int64
+			}
+			if liveStateBytes.Valid && liveStateBytes.Int64 > 0 {
+				cfg.NetworkStateBytes = liveStateBytes.Int64
+			}
+		}
+	}
+	if cfg.FeePerRent1KB == 0 && cfg.StateTargetSizeBytes == 0 {
+		return nil, nil
+	}
+	return cfg, nil
 }
 
 // ============================================

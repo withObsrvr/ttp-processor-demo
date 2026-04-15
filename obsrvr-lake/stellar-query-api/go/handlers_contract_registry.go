@@ -26,13 +26,12 @@ type ContractRegistryEntry struct {
 
 // ContractRegistryHandlers contains HTTP handlers for the contract registry
 type ContractRegistryHandlers struct {
-	db     *sql.DB // direct PG connection to silver_hot
-	reader *UnifiedDuckDBReader
+	db *sql.DB // direct PG connection to silver_hot
 }
 
 // NewContractRegistryHandlers creates new contract registry API handlers
-func NewContractRegistryHandlers(db *sql.DB, reader *UnifiedDuckDBReader) *ContractRegistryHandlers {
-	return &ContractRegistryHandlers{db: db, reader: reader}
+func NewContractRegistryHandlers(db *sql.DB) *ContractRegistryHandlers {
+	return &ContractRegistryHandlers{db: db}
 }
 
 // HandleGetContract returns a single contract registry entry
@@ -348,7 +347,7 @@ func (h *ContractRegistryHandlers) HandleSeedRegistry(w http.ResponseWriter, r *
 
 	rows, _ := result.RowsAffected()
 	respondJSON(w, map[string]interface{}{
-		"status":     "seeded",
+		"status":      "seeded",
 		"new_entries": rows,
 	})
 }

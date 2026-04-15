@@ -5438,6 +5438,9 @@ const docTemplate = `{
                 "contract_id": {
                     "type": "string"
                 },
+                "contract_type": {
+                    "type": "string"
+                },
                 "created_at": {
                     "type": "string"
                 },
@@ -5447,11 +5450,20 @@ const docTemplate = `{
                 "creator_address": {
                     "type": "string"
                 },
+                "display_name": {
+                    "type": "string"
+                },
+                "estimated_monthly_rent_stroops": {
+                    "type": "integer"
+                },
                 "exported_functions": {
                     "type": "array",
                     "items": {
                         "$ref": "#/definitions/main.FunctionCallCount"
                     }
+                },
+                "instance_entries": {
+                    "type": "integer"
                 },
                 "n_exports": {
                     "type": "integer"
@@ -5465,11 +5477,23 @@ const docTemplate = `{
                 "persistent_entries": {
                     "type": "integer"
                 },
+                "temporary_entries": {
+                    "type": "integer"
+                },
                 "total_entries": {
                     "type": "integer"
                 },
+                "total_state_size_bytes": {
+                    "type": "integer"
+                },
+                "verified": {
+                    "type": "boolean"
+                },
                 "wasm_hash": {
                     "type": "string"
+                },
+                "wasm_size_bytes": {
+                    "type": "integer"
                 }
             }
         },

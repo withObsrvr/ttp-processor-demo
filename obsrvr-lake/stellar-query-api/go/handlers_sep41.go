@@ -8,11 +8,11 @@ import (
 
 // SEP41Handlers contains HTTP handlers for SEP-41 token queries
 type SEP41Handlers struct {
-	reader *UnifiedDuckDBReader
+	reader *SilverColdReader
 }
 
 // NewSEP41Handlers creates new SEP-41 token API handlers
-func NewSEP41Handlers(reader *UnifiedDuckDBReader) *SEP41Handlers {
+func NewSEP41Handlers(reader *SilverColdReader) *SEP41Handlers {
 	return &SEP41Handlers{reader: reader}
 }
 

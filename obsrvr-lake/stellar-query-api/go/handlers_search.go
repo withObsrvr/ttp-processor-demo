@@ -6,12 +6,13 @@ import (
 
 // SearchHandlers contains HTTP handlers for unified search
 type SearchHandlers struct {
-	reader *UnifiedDuckDBReader
+	hot  *SilverHotReader
+	cold *SilverColdReader
 }
 
 // NewSearchHandlers creates new search API handlers
-func NewSearchHandlers(reader *UnifiedDuckDBReader) *SearchHandlers {
-	return &SearchHandlers{reader: reader}
+func NewSearchHandlers(hot *SilverHotReader, cold *SilverColdReader) *SearchHandlers {
+	return &SearchHandlers{hot: hot, cold: cold}
 }
 
 // HandleSearch performs a unified search across all data types
@@ -31,7 +32,7 @@ func (h *SearchHandlers) HandleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results, err := h.reader.UnifiedSearch(r.Context(), q)
+	results, err := h.Search(r.Context(), q)
 	if err != nil {
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return

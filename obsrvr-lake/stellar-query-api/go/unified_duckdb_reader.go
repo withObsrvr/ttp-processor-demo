@@ -40,6 +40,12 @@ func NewUnifiedDuckDBReader(config UnifiedReaderConfig) (*UnifiedDuckDBReader, e
 		return nil, fmt.Errorf("failed to open DuckDB: %w", err)
 	}
 
+	// Cap DuckDB memory to prevent OOM kills
+	if _, err := db.Exec("SET memory_limit='1GB';"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to set memory limit: %w", err)
+	}
+
 	// Install and load required extensions
 	extensions := []struct {
 		name    string
