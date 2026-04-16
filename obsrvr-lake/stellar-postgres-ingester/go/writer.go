@@ -169,14 +169,24 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 			log.Printf("Warning: Failed to extract operations for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
 			sorobanOps := 0
+			convertedOps := make([]OperationData, 0, len(libOperations))
 			for _, r := range libOperations {
-				allOperations = append(allOperations, convertOperation(r))
+				convertedOps = append(convertedOps, convertOperation(r))
 				if r.LedgerSequence == ledgerData.Sequence {
 					if r.OpType == 24 || r.OpType == 25 || r.OpType == 26 {
 						sorobanOps++
 					}
 				}
 			}
+			// Enrich Soroban InvokeHostFunction ops with authorization-entry
+			// credentials (type + authorizer address). The stellar-extract
+			// library doesn't surface these, so we walk the LCM directly.
+			if creds, cerr := buildAuthCredentialsMap(input); cerr != nil {
+				log.Printf("Warning: Failed to build auth credentials map for ledger %d: %v", rawLedger.Sequence, cerr)
+			} else {
+				applyAuthCredentials(convertedOps, creds)
+			}
+			allOperations = append(allOperations, convertedOps...)
 			ledgerData.SorobanOpCount = &sorobanOps
 		}
 
@@ -1493,10 +1503,12 @@ func (w *Writer) insertOperations(ctx context.Context, tx pgx.Tx, operations []O
 			type, type_string, created_at, transaction_successful,
 			operation_result_code, ledger_range, amount, asset, destination,
 			soroban_operation, soroban_contract_id, soroban_function, soroban_arguments_json,
-			contract_calls_json, contracts_involved, max_call_depth
+			contract_calls_json, contracts_involved, max_call_depth,
+			soroban_auth_credentials_types, soroban_auth_addresses
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-			$11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23
+			$11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23,
+			$24, $25
 		)
 		ON CONFLICT (ledger_sequence, transaction_hash, operation_index) DO UPDATE SET
 			transaction_id = EXCLUDED.transaction_id,
@@ -1509,7 +1521,9 @@ func (w *Writer) insertOperations(ctx context.Context, tx pgx.Tx, operations []O
 			soroban_arguments_json = EXCLUDED.soroban_arguments_json,
 			contract_calls_json = EXCLUDED.contract_calls_json,
 			contracts_involved = EXCLUDED.contracts_involved,
-			max_call_depth = EXCLUDED.max_call_depth
+			max_call_depth = EXCLUDED.max_call_depth,
+			soroban_auth_credentials_types = EXCLUDED.soroban_auth_credentials_types,
+			soroban_auth_addresses = EXCLUDED.soroban_auth_addresses
 	`
 
 	batch := &pgx.Batch{}
@@ -1548,6 +1562,8 @@ func (w *Writer) insertOperations(ctx context.Context, tx pgx.Tx, operations []O
 			opData.ContractCallsJSON,
 			opData.ContractsInvolved,
 			opData.MaxCallDepth,
+			opData.SorobanAuthCredentialsTypes,
+			opData.SorobanAuthAddresses,
 		)
 	}
 

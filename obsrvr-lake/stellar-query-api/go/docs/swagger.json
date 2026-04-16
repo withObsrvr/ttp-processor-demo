@@ -872,6 +872,16 @@
                 "is_smart_wallet": {
                     "type": "boolean"
                 },
+                "wallet_type": {
+                    "description": "crossmint, openzeppelin, sep50_generic",
+                    "type": "string"
+                },
+                "implementation": {
+                    "type": "string"
+                },
+                "confidence": {
+                    "type": "number"
+                },
                 "signer_count": {
                     "type": "integer"
                 },
@@ -880,6 +890,126 @@
                         "type": "string"
                     },
                     "type": "array"
+                }
+            },
+            "type": "object"
+        },
+        "main.SmartWalletListEntry": {
+            "properties": {
+                "contract_id": {
+                    "type": "string"
+                },
+                "source": {
+                    "description": "\"classified\" or \"heuristic\"",
+                    "type": "string"
+                },
+                "tier": {
+                    "description": "\"passkey\", \"oz_or_generic\", \"crossmint\", \"openzeppelin\", \"sep50_generic\"",
+                    "type": "string"
+                },
+                "wallet_type": {
+                    "description": "Set when source=classified",
+                    "type": "string"
+                },
+                "confidence": {
+                    "type": "number"
+                },
+                "admin_calls": {
+                    "type": "integer"
+                },
+                "first_admin_ledger": {
+                    "type": "integer"
+                },
+                "last_admin_ledger": {
+                    "type": "integer"
+                },
+                "total_invocations": {
+                    "type": "integer"
+                },
+                "unique_callers": {
+                    "type": "integer"
+                },
+                "deployer_account": {
+                    "type": "string"
+                },
+                "wallet_signers": {
+                    "description": "JSONB signer array (when classified)",
+                    "type": "object"
+                },
+                "observed_functions": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                }
+            },
+            "type": "object"
+        },
+        "main.SmartWalletListResponse": {
+            "properties": {
+                "wallets": {
+                    "items": {
+                        "$ref": "#/definitions/main.SmartWalletListEntry"
+                    },
+                    "type": "array"
+                },
+                "count": {
+                    "type": "integer"
+                },
+                "classified_count": {
+                    "type": "integer"
+                },
+                "heuristic_count": {
+                    "type": "integer"
+                }
+            },
+            "type": "object"
+        },
+        "main.ContractTransactionEntry": {
+            "properties": {
+                "contract_id": {
+                    "type": "string"
+                },
+                "transaction_hash": {
+                    "type": "string"
+                },
+                "ledger_sequence": {
+                    "type": "integer"
+                },
+                "operation_index": {
+                    "type": "integer"
+                },
+                "function_name": {
+                    "type": "string"
+                },
+                "source_account": {
+                    "type": "string"
+                },
+                "successful": {
+                    "type": "boolean"
+                },
+                "closed_at": {
+                    "type": "string"
+                }
+            },
+            "type": "object"
+        },
+        "main.ContractTransactionsResponse": {
+            "properties": {
+                "contract_id": {
+                    "type": "string"
+                },
+                "transactions": {
+                    "items": {
+                        "$ref": "#/definitions/main.ContractTransactionEntry"
+                    },
+                    "type": "array"
+                },
+                "count": {
+                    "type": "integer"
+                },
+                "has_more": {
+                    "type": "boolean"
                 }
             },
             "type": "object"
@@ -1324,7 +1454,7 @@
                     "type": "string"
                 },
                 "contract_type": {
-                    "description": "sep41_token, unknown",
+                    "description": "sep41_token, smart_wallet, custom_soroban, sac, unknown",
                     "type": "string"
                 },
                 "token_name": {
@@ -1359,6 +1489,10 @@
                         "type": "string"
                     },
                     "type": "array"
+                },
+                "wallet_type": {
+                    "description": "Smart wallet implementation type: crossmint, openzeppelin, sep50_generic. Only set when the contract is classified as a smart wallet.",
+                    "type": "string"
                 }
             },
             "type": "object"
@@ -5673,6 +5807,150 @@
                 ]
             }
         },
+        "/api/v1/silver/smart-wallets": {
+            "get": {
+                "description": "Returns smart-account candidates from two sources. Classified wallets come from semantic_entities_contracts where wallet_type is populated by the silver-realtime-transformer. Heuristic candidates come from admin-function signals (add_signer, allow_signing_key, set_webauthn_verifier, etc.) on contract_invocations_raw, with dapp-backend false positives filtered out. Classified rows take precedence over heuristic duplicates.",
+                "parameters": [
+                    {
+                        "description": "Filter by tier: passkey, oz_or_generic, crossmint, openzeppelin, sep50_generic",
+                        "in": "query",
+                        "name": "tier",
+                        "type": "string"
+                    },
+                    {
+                        "description": "Filter by detection source: classified, heuristic",
+                        "in": "query",
+                        "name": "source",
+                        "type": "string"
+                    },
+                    {
+                        "description": "Maximum results (default 100, max 500)",
+                        "in": "query",
+                        "name": "limit",
+                        "type": "integer"
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "responses": {
+                    "200": {
+                        "description": "List of smart wallet candidates",
+                        "schema": {
+                            "$ref": "#/definitions/main.SmartWalletListResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "additionalProperties": true,
+                            "type": "object"
+                        }
+                    }
+                },
+                "summary": "List smart wallets (classified + heuristic)",
+                "tags": [
+                    "Smart Wallets"
+                ]
+            }
+        },
+        "/api/v1/silver/contracts/{contract_id}/transactions": {
+            "get": {
+                "description": "Returns invocation records for a specific contract from contract_invocations_raw in silver hot. Supports filtering by function name, success status, time range, and ledger range.",
+                "parameters": [
+                    {
+                        "description": "Contract ID (C...)",
+                        "in": "path",
+                        "name": "contract_id",
+                        "required": true,
+                        "type": "string"
+                    },
+                    {
+                        "description": "Exact match on function_name",
+                        "in": "query",
+                        "name": "function_name",
+                        "type": "string"
+                    },
+                    {
+                        "description": "Comma-separated function names (matches ANY)",
+                        "in": "query",
+                        "name": "function_any",
+                        "type": "string"
+                    },
+                    {
+                        "description": "Filter by success: true or false",
+                        "in": "query",
+                        "name": "successful",
+                        "type": "string"
+                    },
+                    {
+                        "description": "Only transactions after this timestamp (RFC3339)",
+                        "in": "query",
+                        "name": "after",
+                        "type": "string"
+                    },
+                    {
+                        "description": "Only transactions before this timestamp (RFC3339)",
+                        "in": "query",
+                        "name": "before",
+                        "type": "string"
+                    },
+                    {
+                        "description": "Lower bound on ledger_sequence (inclusive)",
+                        "in": "query",
+                        "name": "from_ledger",
+                        "type": "integer"
+                    },
+                    {
+                        "description": "Upper bound on ledger_sequence (exclusive)",
+                        "in": "query",
+                        "name": "to_ledger",
+                        "type": "integer"
+                    },
+                    {
+                        "description": "Maximum results (default 100, max 500)",
+                        "in": "query",
+                        "name": "limit",
+                        "type": "integer"
+                    },
+                    {
+                        "description": "Sort order on ledger_sequence: asc or desc (default desc)",
+                        "in": "query",
+                        "name": "order",
+                        "type": "string"
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "responses": {
+                    "200": {
+                        "description": "List of contract transactions",
+                        "schema": {
+                            "$ref": "#/definitions/main.ContractTransactionsResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid parameter",
+                        "schema": {
+                            "additionalProperties": true,
+                            "type": "object"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "additionalProperties": true,
+                            "type": "object"
+                        }
+                    }
+                },
+                "summary": "Get transactions for a contract",
+                "tags": [
+                    "Contracts"
+                ]
+            }
+        },
         "/api/v1/silver/stats/fees": {
             "get": {
                 "consumes": [
@@ -6713,10 +6991,10 @@
                 "consumes": [
                     "application/json"
                 ],
-                "description": "Returns classified contracts with type detection, usage statistics, and observed function signatures",
+                "description": "Returns classified contracts with type detection, usage statistics, and observed function signatures. Supports filtering by contract type, wallet type, deployer, and observed function names.",
                 "parameters": [
                     {
-                        "description": "Filter by contract type: sep41_token, unknown",
+                        "description": "Filter by contract type: sep41_token, smart_wallet, custom_soroban, sac, unknown",
                         "in": "query",
                         "name": "contract_type",
                         "type": "string"
@@ -6725,6 +7003,18 @@
                         "description": "Filter by deployer account (G...)",
                         "in": "query",
                         "name": "deployer",
+                        "type": "string"
+                    },
+                    {
+                        "description": "Filter by wallet type: crossmint, openzeppelin, sep50_generic, or \"any\" to match any non-null wallet_type",
+                        "in": "query",
+                        "name": "wallet_type",
+                        "type": "string"
+                    },
+                    {
+                        "description": "Comma-separated function names; matches contracts whose observed_functions overlap (ANY), e.g. allow_signing_key,set_webauthn_verifier",
+                        "in": "query",
+                        "name": "function_any",
                         "type": "string"
                     },
                     {

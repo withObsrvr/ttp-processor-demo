@@ -134,6 +134,13 @@ func (c *DuckDBClient) initialize() error {
 		return fmt.Errorf("failed to create Bronze tables: %w", err)
 	}
 
+	// Apply idempotent column-level migrations (ADD COLUMN IF NOT EXISTS for
+	// columns added after initial catalog creation). Safe to run on every
+	// start — each migration is a no-op when the column is already present.
+	if err := c.applyBronzeMigrations(ctx); err != nil {
+		return fmt.Errorf("failed to apply Bronze migrations: %w", err)
+	}
+
 	log.Println("DuckDB initialized successfully")
 	return nil
 }

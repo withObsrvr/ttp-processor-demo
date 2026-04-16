@@ -58,6 +58,36 @@ func (br *BronzeReader) GetMinLedgerSequence(ctx context.Context) (int64, error)
 	return minSeq.Int64, nil
 }
 
+// GetMinEventLedger returns the minimum ledger_sequence in contract_events_stream_v1.
+// Used for Soroban-event backfill, which must not be bounded by the (much shorter)
+// classic-bronze retention window on ledgers_row_v2.
+func (br *BronzeReader) GetMinEventLedger(ctx context.Context) (int64, error) {
+	var minSeq sql.NullInt64
+	if err := br.db.QueryRowContext(ctx,
+		`SELECT MIN(ledger_sequence) FROM contract_events_stream_v1`,
+	).Scan(&minSeq); err != nil {
+		return 0, fmt.Errorf("failed to get min event ledger: %w", err)
+	}
+	if !minSeq.Valid {
+		return 0, nil
+	}
+	return minSeq.Int64, nil
+}
+
+// GetMaxEventLedger returns the maximum ledger_sequence in contract_events_stream_v1.
+func (br *BronzeReader) GetMaxEventLedger(ctx context.Context) (int64, error) {
+	var maxSeq sql.NullInt64
+	if err := br.db.QueryRowContext(ctx,
+		`SELECT MAX(ledger_sequence) FROM contract_events_stream_v1`,
+	).Scan(&maxSeq); err != nil {
+		return 0, fmt.Errorf("failed to get max event ledger: %w", err)
+	}
+	if !maxSeq.Valid {
+		return 0, nil
+	}
+	return maxSeq.Int64, nil
+}
+
 // GetNextAvailableLedger returns the minimum ledger sequence >= afterLedger.
 // Used for gap detection: finds where data actually resumes after a gap.
 // Returns 0 if no ledger exists at or after the given sequence.
@@ -362,8 +392,13 @@ func (br *BronzeReader) QueryTokenTransfers(ctx context.Context, startLedger, en
 		UNION ALL
 
 		-- Soroban SEP-41 Token Transfers (transfer/mint/burn/clawback)
+		-- Source closed_at and successful directly from the event row; do NOT
+		-- inner-join transactions_row_v2 / ledgers_row_v2 here. Those classic
+		-- bronze tables have far shorter retention than contract_events_stream_v1,
+		-- and an inner-join silently drops every Soroban transfer older than
+		-- the classic retention window.
 		SELECT
-			l.closed_at AS timestamp,
+			e.closed_at AS timestamp,
 			e.transaction_hash,
 			e.ledger_sequence,
 			'soroban' AS source_type,
@@ -388,14 +423,13 @@ func (br *BronzeReader) QueryTokenTransfers(ctx context.Context, startLedger, en
 			) AS amount,
 			e.contract_id AS token_contract_id,
 			24 AS operation_type,
-			t.successful AS transaction_successful,
+			-- Use e.successful (tracks outer transaction success) not
+			-- e.in_successful_contract_call (sub-call scope — almost always
+			-- false on these events in practice, which would exclude every
+			-- transfer from the transaction_successful=true balance filter.
+			e.successful AS transaction_successful,
 			e.event_index
 		FROM contract_events_stream_v1 e
-		INNER JOIN transactions_row_v2 t
-			ON e.transaction_hash = t.transaction_hash
-			AND e.ledger_sequence = t.ledger_sequence
-		INNER JOIN ledgers_row_v2 l
-			ON e.ledger_sequence = l.sequence
 		WHERE e.ledger_sequence BETWEEN $1 AND $2
 		  AND e.event_type = 'contract'
 		  AND e.topic_count >= 2

@@ -37,11 +37,6 @@ func NewColdReader(config DuckLakeConfig) (*ColdReader, error) {
 }
 
 func (c *ColdReader) initialize(ctx context.Context) error {
-	// Cap DuckDB memory to prevent OOM kills (container has 3.5-5 GiB total)
-	if _, err := c.db.ExecContext(ctx, "SET memory_limit='1GB';"); err != nil {
-		return fmt.Errorf("failed to set memory limit: %w", err)
-	}
-
 	// Install required extensions
 	if _, err := c.db.ExecContext(ctx, "INSTALL ducklake FROM core_nightly;"); err != nil {
 		return fmt.Errorf("failed to install ducklake extension: %w", err)

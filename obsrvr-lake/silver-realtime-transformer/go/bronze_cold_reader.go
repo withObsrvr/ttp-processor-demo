@@ -374,8 +374,14 @@ func (r *BronzeColdReader) QueryTokenTransfers(ctx context.Context, startLedger,
 		UNION ALL
 
 		-- Soroban SEP-41 Token Transfers (transfer/mint/burn/clawback)
+		-- Source closed_at and successful directly from the event row; do NOT
+		-- inner-join transactions/ledgers here. Mirrors the hot-reader fix:
+		-- classic bronze tables have shorter retention than contract_events
+		-- in hot, and even in cold a missing join row would silently drop a
+		-- real transfer. contract_events_stream_v1 already carries both
+		-- closed_at and in_successful_contract_call per row.
 		SELECT
-			l.closed_at AS timestamp,
+			e.closed_at AS timestamp,
 			e.transaction_hash,
 			e.ledger_sequence,
 			'soroban' AS source_type,
@@ -400,14 +406,11 @@ func (r *BronzeColdReader) QueryTokenTransfers(ctx context.Context, startLedger,
 			) AS amount,
 			e.contract_id AS token_contract_id,
 			24 AS operation_type,
-			t.successful AS transaction_successful,
+			-- e.successful (outer tx success) not e.in_successful_contract_call
+			-- (sub-call scope). See matching comment in bronze_reader.go.
+			e.successful AS transaction_successful,
 			e.event_index
 		FROM %s e
-		INNER JOIN %s t
-			ON e.transaction_hash = t.transaction_hash
-			AND e.ledger_sequence = t.ledger_sequence
-		INNER JOIN %s l
-			ON e.ledger_sequence = l.sequence
 		WHERE e.ledger_sequence BETWEEN $1 AND $2
 		  AND e.event_type = 'contract'
 		  AND e.topic_count >= 2
@@ -415,7 +418,7 @@ func (r *BronzeColdReader) QueryTokenTransfers(ctx context.Context, startLedger,
 
 		ORDER BY ledger_sequence, transaction_hash
 	`, r.tableName("operations_row_v2"), r.tableName("transactions_row_v2"), r.tableName("ledgers_row_v2"),
-		r.tableName("contract_events_stream_v1"), r.tableName("transactions_row_v2"), r.tableName("ledgers_row_v2"))
+		r.tableName("contract_events_stream_v1"))
 
 	rows, err := r.db.QueryContext(ctx, query, startLedger, endLedger)
 	if err != nil {

@@ -8,10 +8,16 @@ import "strings"
 // add_signer, remove_signer, and guardians-based recovery. Instance storage may
 // contain "owner", "guardian", "signer" keys in a different format than Crossmint.
 //
-// Detection signals:
-//   - __check_auth events present (required)
+// Detection signals (any one is sufficient):
 //   - Observed functions include signer management (add_signer, remove_signer, etc.)
-//   - OR instance storage contains owner/guardian patterns without Crossmint type tags
+//   - Instance storage contains owner/guardian patterns without Crossmint type tags
+//   - __check_auth events present (strongest signal, boosts confidence)
+//
+// Rationale: __check_auth is a host-dispatched callback — it never appears as a
+// top-level InvokeHostFunction, so contract_invocations_raw cannot prove its
+// existence. Requiring HasCheckAuth therefore produced false negatives on any
+// wallet whose auth events weren't captured upstream. We accept the admin-
+// function surface itself as sufficient evidence.
 //
 // Reference: https://github.com/OpenZeppelin/stellar-contracts/
 type OpenZeppelinDetector struct{}
@@ -40,26 +46,19 @@ var ozStoragePatterns = []string{
 }
 
 func (d *OpenZeppelinDetector) Match(evidence WalletEvidence) bool {
-	if !evidence.HasCheckAuth {
-		return false
-	}
-
-	// Check for OZ-specific function names
+	// Primary signal: OZ-specific signer-management function in observed_functions.
 	for _, fn := range evidence.ObservedFunctions {
 		if ozSignerFunctions[fn] {
 			return true
 		}
 	}
 
-	// Check for OZ-specific storage patterns (without Crossmint type tags)
+	// Secondary signal: OZ-specific storage patterns without Crossmint type tags.
 	for _, entry := range evidence.InstanceStorage {
 		lower := strings.ToLower(entry.DataValue)
 		for _, pattern := range ozStoragePatterns {
-			if strings.Contains(lower, pattern) {
-				// Make sure it's not a Crossmint contract (they have type tags)
-				if !hasCrossmintTypeTag(lower) {
-					return true
-				}
+			if strings.Contains(lower, pattern) && !hasCrossmintTypeTag(lower) {
+				return true
 			}
 		}
 	}
@@ -70,14 +69,19 @@ func (d *OpenZeppelinDetector) Match(evidence WalletEvidence) bool {
 func (d *OpenZeppelinDetector) Extract(evidence WalletEvidence) *WalletDetectionResult {
 	result := &WalletDetectionResult{
 		WalletType: WalletTypeOpenZeppelin,
-		Confidence: 0.85,
+		Confidence: 0.75, // admin-function signature alone
 	}
 
-	// Extract signers from observed function patterns
+	// Boost confidence when admin functions are present
 	for _, fn := range evidence.ObservedFunctions {
 		if ozSignerFunctions[fn] {
-			result.Confidence = 0.9
+			result.Confidence = 0.85
+			break
 		}
+	}
+	// __check_auth evidence, when available, is strongest
+	if evidence.HasCheckAuth {
+		result.Confidence = 0.9
 	}
 
 	// Extract signer info from storage entries

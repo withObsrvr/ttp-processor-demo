@@ -226,6 +226,74 @@ func (h *SilverHotReader) GetServingAccountBalances(ctx context.Context, account
 	return resp, nil
 }
 
+type AddressBalanceCurrent struct {
+	OwnerAddress      string
+	AssetKey          string
+	AssetType         string
+	TokenContractID   *string
+	AssetCode         *string
+	AssetIssuer       *string
+	Symbol            *string
+	Decimals          *int
+	BalanceRaw        string
+	BalanceDisplay    string
+	BalanceSource     string
+	LastUpdatedLedger *int64
+	LastUpdatedAt     *string
+}
+
+func (h *SilverHotReader) GetAddressBalancesCurrent(ctx context.Context, ownerAddress string) ([]AddressBalanceCurrent, error) {
+	rows, err := h.db.QueryContext(ctx, `
+		SELECT owner_address, asset_key, asset_type, token_contract_id,
+		       asset_code, asset_issuer, symbol, decimals,
+		       CAST(balance_raw AS TEXT), balance_display, balance_source,
+		       last_updated_ledger, last_updated_at::text
+		FROM address_balances_current
+		WHERE owner_address = $1
+		ORDER BY CAST(balance_raw AS NUMERIC) DESC, asset_key ASC
+	`, ownerAddress)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []AddressBalanceCurrent
+	for rows.Next() {
+		var rec AddressBalanceCurrent
+		var tokenContractID, assetCode, assetIssuer, symbol, lastUpdatedAt sql.NullString
+		var decimals sql.NullInt64
+		var lastUpdatedLedger sql.NullInt64
+		if err := rows.Scan(&rec.OwnerAddress, &rec.AssetKey, &rec.AssetType, &tokenContractID, &assetCode, &assetIssuer, &symbol, &decimals, &rec.BalanceRaw, &rec.BalanceDisplay, &rec.BalanceSource, &lastUpdatedLedger, &lastUpdatedAt); err != nil {
+			return nil, err
+		}
+		if tokenContractID.Valid {
+			rec.TokenContractID = &tokenContractID.String
+		}
+		if assetCode.Valid {
+			rec.AssetCode = &assetCode.String
+		}
+		if assetIssuer.Valid {
+			rec.AssetIssuer = &assetIssuer.String
+		}
+		if symbol.Valid {
+			rec.Symbol = &symbol.String
+		}
+		if decimals.Valid {
+			d := int(decimals.Int64)
+			rec.Decimals = &d
+		}
+		if lastUpdatedLedger.Valid {
+			v := lastUpdatedLedger.Int64
+			rec.LastUpdatedLedger = &v
+		}
+		if lastUpdatedAt.Valid {
+			rec.LastUpdatedAt = &lastUpdatedAt.String
+		}
+		out = append(out, rec)
+	}
+	return out, rows.Err()
+}
+
 // GetServingNetworkStats returns compact headline network stats from serving schema.
 func (h *SilverHotReader) GetServingNetworkStats(ctx context.Context) (*NetworkStats, error) {
 	stats := &NetworkStats{DataFreshness: "real-time"}

@@ -2,12 +2,18 @@ package main
 
 import "strings"
 
-// SEP50FallbackDetector is the generic fallback for any contract with __check_auth
-// that doesn't match a specific wallet implementation.
+// SEP50FallbackDetector is the generic fallback for any contract that looks
+// like a smart wallet but doesn't match a specific implementation.
 //
-// This preserves the behavior of the original monolithic detection: any contract
-// that emits __check_auth events OR has signer-like instance storage is classified
-// as a smart wallet.
+// Match signals (any one is sufficient):
+//   - __check_auth events present (strongest)
+//   - Instance storage contains signer/policy entries
+//   - observed_functions contains a narrow admin-function surface
+//     (e.g. allow_signing_key, add_passkey, set_webauthn_verifier)
+//
+// __check_auth is no longer a hard requirement — it's host-dispatched and
+// not recorded in contract_invocations_raw, so gating on it produced false
+// negatives for wallets whose auth events weren't captured upstream.
 //
 // This detector has the lowest priority in the registry — it only fires if
 // Crossmint and OpenZeppelin detectors both decline.
@@ -16,13 +22,28 @@ type SEP50FallbackDetector struct{}
 func (d *SEP50FallbackDetector) Name() string     { return "sep50_fallback" }
 func (d *SEP50FallbackDetector) Type() WalletType { return WalletTypeSEP50Generic }
 
+// sep50GenericAdminFunctions are admin-function names we accept as evidence of
+// a custom-account / smart-wallet implementation even without __check_auth.
+var sep50GenericAdminFunctions = map[string]bool{
+	"allow_signing_key":     true,
+	"add_passkey":           true,
+	"set_webauthn_verifier": true,
+	"__check_auth":          true, // host-dispatched, but if it somehow appears
+}
+
 func (d *SEP50FallbackDetector) Match(evidence WalletEvidence) bool {
-	// Any contract with __check_auth is a smart wallet
 	if evidence.HasCheckAuth {
 		return true
 	}
 
-	// Also match if instance storage has signer-like entries (original heuristic)
+	// Admin-function surface signals a custom-account implementation.
+	for _, fn := range evidence.ObservedFunctions {
+		if sep50GenericAdminFunctions[fn] {
+			return true
+		}
+	}
+
+	// Signer-like or policy-like instance storage (original heuristic).
 	for _, entry := range evidence.InstanceStorage {
 		lower := strings.ToLower(entry.DataValue)
 		if strings.Contains(lower, "signer") || strings.Contains(lower, "policy") {

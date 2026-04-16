@@ -9,8 +9,13 @@ import "strings"
 // __check_auth for custom authentication and supports multi-signer policies.
 //
 // Detection signals:
-//   - __check_auth events present (required)
-//   - Instance storage contains signer entries with key type identifiers
+//   - Instance storage contains signer entries with Crossmint key type
+//     identifiers (Ed25519/Secp256k1/Secp256r1/WebAuthn/Passkey)
+//   - __check_auth events present (strongest; boosts confidence when available)
+//
+// The storage type-tag is Crossmint's unique fingerprint and is itself
+// sufficient for identification — __check_auth is no longer required because
+// it's host-dispatched and not captured in contract_invocations_raw.
 //
 // Reference: https://github.com/Crossmint/stellar-smart-account
 type CrossmintDetector struct{}
@@ -28,10 +33,8 @@ var crossmintSignerTypes = []string{
 }
 
 func (d *CrossmintDetector) Match(evidence WalletEvidence) bool {
-	if !evidence.HasCheckAuth {
-		return false
-	}
-	// Look for Crossmint-specific signer type tags in instance storage
+	// Crossmint's unique fingerprint is its typed signer storage; that alone
+	// is sufficient. __check_auth boosts confidence but is not required.
 	for _, entry := range evidence.InstanceStorage {
 		for _, sigType := range crossmintSignerTypes {
 			if strings.Contains(entry.DataValue, sigType) {
@@ -64,6 +67,11 @@ func (d *CrossmintDetector) Extract(evidence WalletEvidence) *WalletDetectionRes
 
 	if len(result.Signers) > 0 {
 		result.Confidence = 0.95
+	}
+	if !evidence.HasCheckAuth {
+		// Storage tags alone are strong but slightly less definitive than
+		// tags + observed __check_auth.
+		result.Confidence -= 0.05
 	}
 
 	return result

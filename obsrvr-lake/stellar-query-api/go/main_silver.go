@@ -61,6 +61,11 @@ func mainWithSilver() {
 	log.Printf("Starting %s with Silver layer support", config.Service.Name)
 	log.Printf("API server will listen on port %d", config.Service.Port)
 
+	if config.RPCFallback != nil && config.RPCFallback.Enabled && config.RPCFallback.URL != "" {
+		walletRPCFallback = NewWalletRPCFallback(*config.RPCFallback)
+		log.Printf("✅ Smart-wallet RPC fallback enabled: %s", config.RPCFallback.URL)
+	}
+
 	// Create hot reader (PostgreSQL)
 	hotReader, err := NewHotReader(config.Postgres)
 	if err != nil {
@@ -514,8 +519,22 @@ func mainWithSilver() {
 
 			// Feature 5: Smart Wallet Detection (SEP-50)
 			smartWalletHandlers := NewSmartWalletHandlers(silverHotReader, unifiedSilverReader.cold, coldReader)
+			if unifiedDuckDBReader != nil {
+				smartWalletHandlers.SetUnifiedDuckDBReader(unifiedDuckDBReader)
+			}
 			router.HandleFunc("/api/v1/silver/smart-wallet/{contract_id}", smartWalletHandlers.HandleSmartWalletInfo).Methods("GET")
+			router.HandleFunc("/api/v1/silver/smart-wallets", smartWalletHandlers.HandleSmartWalletsList).Methods("GET")
+			router.HandleFunc("/api/v1/silver/smart-wallets/{contract_id}", smartWalletHandlers.HandleSmartWalletDetail).Methods("GET")
+			router.HandleFunc("/api/v1/silver/smart-wallets/{contract_id}/balances", smartWalletHandlers.HandleSmartWalletBalances).Methods("GET")
 			log.Println("  ✓ /api/v1/silver/smart-wallet/{contract_id} (SEP-50 detection)")
+			log.Println("  ✓ /api/v1/silver/smart-wallets (classified + heuristic list)")
+			log.Println("  ✓ /api/v1/silver/smart-wallets/{contract_id} (wallet-centric detail)")
+			log.Println("  ✓ /api/v1/silver/smart-wallets/{contract_id}/balances (wallet balances)")
+
+			// Contract invocation lookup by contract_id
+			contractTxHandlers := NewContractTransactionsHandlers(silverHotReader)
+			router.HandleFunc("/api/v1/silver/contracts/{contract_id}/transactions", contractTxHandlers.HandleContractTransactions).Methods("GET")
+			log.Println("  ✓ /api/v1/silver/contracts/{contract_id}/transactions")
 		}
 
 		// CAP-67 Unified Event Stream + SEP-41 Token endpoints now read silver cold directly.
@@ -554,11 +573,13 @@ func mainWithSilver() {
 		// batch route must be registered before {hash} routes to avoid matching "batch" as a hash
 		router.HandleFunc("/api/v1/silver/tx/batch/decoded", decodeHandlers.HandleBatchDecodedTransactions).Methods("GET", "POST")
 		router.HandleFunc("/api/v1/silver/tx/{hash}/decoded", decodeHandlers.HandleDecodedTransaction).Methods("GET")
+		router.HandleFunc("/api/v1/silver/tx/{hash}/semantic", decodeHandlers.HandleSemanticTransaction).Methods("GET")
 		router.HandleFunc("/api/v1/silver/tx/{hash}/full", decodeHandlers.HandleFullTransaction).Methods("GET")
 		router.HandleFunc("/api/v1/silver/contracts/{id}/interface", decodeHandlers.HandleContractInterface).Methods("GET")
 		router.HandleFunc("/api/v1/silver/decode/scval", decodeHandlers.HandleDecodeScVal).Methods("POST")
 		log.Println("  ✓ /api/v1/silver/tx/batch/decoded (batch decoded transactions)")
 		log.Println("  ✓ /api/v1/silver/tx/{hash}/decoded (human-readable transaction)")
+		log.Println("  ✓ /api/v1/silver/tx/{hash}/semantic (actor-centric semantic transaction)")
 		log.Println("  ✓ /api/v1/silver/tx/{hash}/full (composite transaction analysis)")
 		log.Println("  ✓ /api/v1/silver/contracts/{id}/interface (contract ABI)")
 		log.Println("  ✓ /api/v1/silver/decode/scval (ScVal decoder)")

@@ -54,6 +54,33 @@ func (h *SmartWalletHandlers) getSmartWalletFromSemantic(ctx context.Context, co
 func (h *SmartWalletHandlers) assembleWalletEvidence(ctx context.Context, contractID string) (*WalletEvidence, error) {
 	evidence := &WalletEvidence{ContractID: contractID}
 
+	if h.hotReader != nil {
+		var wasmHash sql.NullString
+		if err := h.hotReader.db.QueryRowContext(ctx, `
+			SELECT wasm_hash
+			FROM contract_metadata
+			WHERE contract_id = $1
+		`, contractID).Scan(&wasmHash); err == nil && wasmHash.Valid {
+			evidence.WasmHash = wasmHash.String
+		}
+	}
+	if evidence.WasmHash == "" && h.coldReader != nil {
+		var wasmHash sql.NullString
+		query := fmt.Sprintf(`
+			SELECT wasm_hash
+			FROM %s.%s.contract_metadata
+			WHERE contract_id = ?
+		`, h.coldReader.catalogName, h.coldReader.schemaName)
+		if err := h.coldReader.db.QueryRowContext(ctx, query, contractID).Scan(&wasmHash); err == nil && wasmHash.Valid {
+			evidence.WasmHash = wasmHash.String
+		}
+	}
+	if evidence.WasmHash == "" && walletRPCFallback != nil {
+		if wasmHash, err := walletRPCFallback.LookupWasmHash(ctx, contractID); err == nil {
+			evidence.WasmHash = wasmHash
+		}
+	}
+
 	// Keep the on-demand path hot-only for now.
 	// Smart-wallet detection is fundamentally a current-state/product lookup,
 	// and cold scans over large historical tables can be too slow for request-time use.

@@ -407,6 +407,30 @@ CREATE TABLE IF NOT EXISTS native_balances_current (
 CREATE INDEX IF NOT EXISTS idx_native_balance ON native_balances_current(balance DESC);
 CREATE INDEX IF NOT EXISTS idx_native_last_modified ON native_balances_current(last_modified_ledger DESC);
 
+-- Table: address_balances_current
+-- Unified current balances keyed by owner address (G... or C...)
+CREATE TABLE IF NOT EXISTS address_balances_current (
+    owner_address TEXT NOT NULL,
+    asset_key TEXT NOT NULL,
+    asset_type TEXT NOT NULL,
+    token_contract_id TEXT,
+    asset_code TEXT,
+    asset_issuer TEXT,
+    symbol TEXT,
+    decimals INTEGER,
+    balance_raw NUMERIC NOT NULL,
+    balance_display TEXT NOT NULL,
+    balance_source TEXT NOT NULL,
+    last_updated_ledger BIGINT,
+    last_updated_at TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT NOW(),
+    PRIMARY KEY (owner_address, asset_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_address_balances_owner ON address_balances_current(owner_address);
+CREATE INDEX IF NOT EXISTS idx_address_balances_asset ON address_balances_current(asset_key);
+CREATE INDEX IF NOT EXISTS idx_address_balances_updated ON address_balances_current(last_updated_ledger DESC);
+
 -- ============================================================================
 -- PHASE 2: EVENT STREAM TABLES (2 tables)
 -- ============================================================================

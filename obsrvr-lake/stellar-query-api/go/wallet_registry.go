@@ -12,6 +12,7 @@ type WalletDetectorRegistry struct {
 func NewWalletDetectorRegistry() *WalletDetectorRegistry {
 	return &WalletDetectorRegistry{
 		detectors: []WalletDetector{
+			&WasmHashDetector{},
 			&CrossmintDetector{},
 			&OpenZeppelinDetector{},
 			&SEP50FallbackDetector{},

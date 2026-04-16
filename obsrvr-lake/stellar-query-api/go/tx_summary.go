@@ -56,6 +56,13 @@ func GenerateTxSummary(ops []DecodedOperation, events []UnifiedEvent) TxSummary 
 		}
 	}
 
+	// Multiple operations should take precedence over event-only fallback.
+	// Otherwise a tx with multiple classic ops plus one derived token event can
+	// be mislabeled as a single transfer/mint/burn.
+	if len(ops) > 1 {
+		return summarizeMultiOp(ops, events, contracts)
+	}
+
 	// Single event transactions — straightforward summaries
 	if len(events) == 1 {
 		e := events[0]
@@ -81,11 +88,6 @@ func GenerateTxSummary(ops []DecodedOperation, events []UnifiedEvent) TxSummary 
 			Type:              "contract_call",
 			InvolvedContracts: contracts,
 		}
-	}
-
-	// Multiple operations — try to summarize classic ops
-	if len(ops) > 1 {
-		return summarizeMultiOp(ops, events, contracts)
 	}
 
 	// Fallback: summarize from events
@@ -357,10 +359,7 @@ func summarizeMultiOp(ops []DecodedOperation, events []UnifiedEvent, contracts [
 }
 
 func summarizeSingleEvent(e UnifiedEvent, contracts []string) TxSummary {
-	amountStr := ""
-	if e.Amount != nil {
-		amountStr = *e.Amount
-	}
+	amountStr := formatEventAmountForDisplay(e)
 	assetStr := ""
 	if e.AssetCode != nil {
 		assetStr = " " + *e.AssetCode
@@ -445,13 +444,8 @@ func detectSwapPattern(events []UnifiedEvent, contracts []string) *TxSummary {
 }
 
 func buildSwapSummary(outgoing, incoming UnifiedEvent, contracts []string) *TxSummary {
-	outAmt, inAmt := "", ""
-	if outgoing.Amount != nil {
-		outAmt = *outgoing.Amount
-	}
-	if incoming.Amount != nil {
-		inAmt = *incoming.Amount
-	}
+	outAmt := formatEventAmountForDisplay(outgoing)
+	inAmt := formatEventAmountForDisplay(incoming)
 	outAsset, inAsset := "tokens", "tokens"
 	if outgoing.AssetCode != nil {
 		outAsset = *outgoing.AssetCode
@@ -486,24 +480,78 @@ func formatAmountForDisplay(amount *string) string {
 	if amount == nil || *amount == "" {
 		return ""
 	}
-	stroops, err := strconv.ParseInt(*amount, 10, 64)
-	if err != nil {
-		return *amount // return as-is if not parseable
+	return formatIntegerAmountWithDecimals(*amount, 7)
+}
+
+func formatEventAmountForDisplay(e UnifiedEvent) string {
+	if e.Amount == nil || *e.Amount == "" {
+		return ""
 	}
-	whole := stroops / 10_000_000
-	frac := stroops % 10_000_000
-	if frac == 0 {
-		return formatWithCommas(whole)
+	if e.TokenDecimals != nil {
+		return formatIntegerAmountWithDecimals(*e.Amount, *e.TokenDecimals)
 	}
-	// Trim trailing zeros from fractional part
-	fracStr := fmt.Sprintf("%07d", frac)
-	fracStr = strings.TrimRight(fracStr, "0")
-	return fmt.Sprintf("%s.%s", formatWithCommas(whole), fracStr)
+	return *e.Amount
+}
+
+func formatIntegerAmountWithDecimals(raw string, decimals int) string {
+	if raw == "" {
+		return ""
+	}
+	if decimals < 0 {
+		return raw
+	}
+
+	negative := strings.HasPrefix(raw, "-")
+	if negative {
+		raw = strings.TrimPrefix(raw, "-")
+	}
+	if raw == "" {
+		return ""
+	}
+
+	for len(raw) > 1 && raw[0] == '0' {
+		raw = raw[1:]
+	}
+
+	if _, err := strconv.ParseInt(raw, 10, 64); err == nil && decimals == 0 {
+		if negative {
+			return "-" + formatWithCommasMust(raw)
+		}
+		return formatWithCommasMust(raw)
+	}
+
+	if decimals == 0 {
+		if negative {
+			return "-" + formatWithCommasMust(raw)
+		}
+		return formatWithCommasMust(raw)
+	}
+
+	if len(raw) <= decimals {
+		raw = strings.Repeat("0", decimals-len(raw)+1) + raw
+	}
+	split := len(raw) - decimals
+	whole := raw[:split]
+	frac := raw[split:]
+	whole = formatWithCommasMust(whole)
+	frac = strings.TrimRight(frac, "0")
+
+	formatted := whole
+	if frac != "" {
+		formatted = whole + "." + frac
+	}
+	if negative {
+		formatted = "-" + formatted
+	}
+	return formatted
 }
 
 // formatWithCommas adds thousand separators to an integer
 func formatWithCommas(n int64) string {
-	s := strconv.FormatInt(n, 10)
+	return formatWithCommasMust(strconv.FormatInt(n, 10))
+}
+
+func formatWithCommasMust(s string) string {
 	if len(s) <= 3 {
 		return s
 	}

@@ -229,12 +229,24 @@ func (h *SemanticHandlers) HandleSemanticActivities(w http.ResponseWriter, r *ht
 
 // HandleSemanticContracts serves GET /api/v1/semantic/contracts
 // Note: contracts are UPSERT-only and not flushed to cold — hot-only query
+//
+// Query params:
+//   contract_type   exact match on contract_type column
+//   deployer        exact match on deployer_account
+//   wallet_type     exact match on wallet_type (e.g. crossmint, openzeppelin,
+//                   sep50_generic), or the sentinel "any" to match any
+//                   non-null wallet_type
+//   function_any    comma-separated list of function names; matches contracts
+//                   whose observed_functions array overlaps the list (ANY)
+//   limit           1..200, default 50
 func (h *SemanticHandlers) HandleSemanticContracts(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	limit := parseIntParam(r, "limit", 50, 1, 200)
 	contractType := r.URL.Query().Get("contract_type")
 	deployer := r.URL.Query().Get("deployer")
+	walletType := r.URL.Query().Get("wallet_type")
+	functionAny := r.URL.Query().Get("function_any")
 
 	query := `SELECT contract_id, contract_type,
 		token_name, token_symbol, token_decimals,
@@ -255,6 +267,23 @@ func (h *SemanticHandlers) HandleSemanticContracts(w http.ResponseWriter, r *htt
 		query += fmt.Sprintf(" AND deployer_account = $%d", argIdx)
 		args = append(args, deployer)
 		argIdx++
+	}
+	if walletType != "" {
+		if strings.EqualFold(walletType, "any") {
+			query += " AND wallet_type IS NOT NULL"
+		} else {
+			query += fmt.Sprintf(" AND wallet_type = $%d", argIdx)
+			args = append(args, walletType)
+			argIdx++
+		}
+	}
+	if functionAny != "" {
+		fns := splitAndTrim(functionAny)
+		if len(fns) > 0 {
+			query += fmt.Sprintf(" AND observed_functions && $%d", argIdx)
+			args = append(args, pq.Array(fns))
+			argIdx++
+		}
 	}
 
 	query += fmt.Sprintf(" ORDER BY total_invocations DESC LIMIT $%d", argIdx)
@@ -997,4 +1026,17 @@ func respondSemanticError(w http.ResponseWriter, message string, statusCode int)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 	json.NewEncoder(w).Encode(map[string]string{"error": message})
+}
+
+// splitAndTrim splits a comma-separated string and trims whitespace, dropping
+// empty entries. Used for query params that accept a list.
+func splitAndTrim(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }

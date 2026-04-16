@@ -56,6 +56,11 @@ type OperationData struct {
 	ContractCallsJSON  *string   // JSON array of {from, to, function, depth, order}
 	ContractsInvolved  []string  // All contracts in the call chain
 	MaxCallDepth       *int      // Maximum depth of nested calls
+	// Soroban authorization fields (SorobanAuthorizationEntry.Credentials).
+	// Parallel arrays; same length; one entry per auth entry on the op.
+	// nil on non-Soroban ops and InvokeHostFunction ops with zero auth entries.
+	SorobanAuthCredentialsTypes []string // "SOURCE_ACCOUNT" | "ADDRESS"
+	SorobanAuthAddresses        []string // strkey address; "" for SOURCE_ACCOUNT
 }
 
 // EffectData represents a single effect (state changes from operations)

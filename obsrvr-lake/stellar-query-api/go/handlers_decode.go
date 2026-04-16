@@ -49,7 +49,7 @@ func (h *DecodeHandlers) HandleDecodedTransaction(w http.ResponseWriter, r *http
 		return
 	}
 
-	decoded, err := h.getTransactionForDecode(r.Context(), txHash)
+	decoded, err := h.getTransactionForDisplay(r.Context(), txHash)
 	if err != nil {
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -190,7 +190,7 @@ func (h *DecodeHandlers) HandleFullTransaction(w http.ResponseWriter, r *http.Re
 	ctx := r.Context()
 
 	// 1. Get decoded transaction (summary + ops + events)
-	decoded, err := h.getTransactionForDecode(ctx, txHash)
+	decoded, err := h.getTransactionForDisplay(ctx, txHash)
 	if err != nil {
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -477,18 +477,45 @@ func (h *DecodeHandlers) resolveHashesFromLedger(ctx context.Context, ledgerSeq 
 	return nil, fmt.Errorf("no transactions found in ledger %d", ledgerSeq)
 }
 
-func (h *DecodeHandlers) getTransactionForDecode(ctx context.Context, txHash string) (*DecodedTransaction, error) {
+func (h *DecodeHandlers) getTransactionForDisplay(ctx context.Context, txHash string) (*DecodedTransaction, error) {
+	requestStart := time.Now()
 	if h.hotPathReader != nil {
-		decoded, err := h.hotPathReader.GetTransactionForDecode(ctx, txHash)
+		hotStart := time.Now()
+		hotCtx, cancel := context.WithTimeout(ctx, 1200*time.Millisecond)
+		defer cancel()
+		decoded, err := h.hotPathReader.GetTransactionForDecode(hotCtx, txHash)
 		if err == nil {
+			log.Printf("tx_display path=hot tx=%s duration_ms=%d total_ms=%d", txHash, time.Since(hotStart).Milliseconds(), time.Since(requestStart).Milliseconds())
 			return decoded, nil
 		}
 		if !strings.Contains(err.Error(), ErrTxNotFound.Error()) {
-			log.Printf("decode hot-path fallback tx=%s err=%v", txHash, err)
+			log.Printf("tx_display path=hot_fallback tx=%s duration_ms=%d err=%v", txHash, time.Since(hotStart).Milliseconds(), err)
 		}
 	}
 	if h.coldReader == nil {
 		return nil, fmt.Errorf("transaction decode requires cold reader")
 	}
-	return h.coldReader.GetTransactionForDecode(ctx, txHash, h.bronzeCold)
+	coldStart := time.Now()
+	coldCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	decoded, err := h.coldReader.GetTransactionForSemanticFast(coldCtx, txHash, h.bronzeCold)
+	if err == nil {
+		log.Printf("tx_display path=cold_fast tx=%s duration_ms=%d total_ms=%d", txHash, time.Since(coldStart).Milliseconds(), time.Since(requestStart).Milliseconds())
+		return decoded, nil
+	}
+	if !strings.Contains(err.Error(), ErrTxNotFound.Error()) {
+		log.Printf("tx_display path=cold_fast_fallback tx=%s duration_ms=%d err=%v", txHash, time.Since(coldStart).Milliseconds(), err)
+	}
+	legacyStart := time.Now()
+	decoded, err = h.coldReader.GetTransactionForDecode(ctx, txHash, h.bronzeCold)
+	if err != nil {
+		log.Printf("tx_display path=legacy_error tx=%s duration_ms=%d total_ms=%d err=%v", txHash, time.Since(legacyStart).Milliseconds(), time.Since(requestStart).Milliseconds(), err)
+		return nil, err
+	}
+	log.Printf("tx_display path=legacy tx=%s duration_ms=%d total_ms=%d", txHash, time.Since(legacyStart).Milliseconds(), time.Since(requestStart).Milliseconds())
+	return decoded, nil
+}
+
+func (h *DecodeHandlers) getTransactionForDecode(ctx context.Context, txHash string) (*DecodedTransaction, error) {
+	return h.getTransactionForDisplay(ctx, txHash)
 }

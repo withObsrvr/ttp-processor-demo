@@ -40,12 +40,6 @@ func NewUnifiedDuckDBReader(config UnifiedReaderConfig) (*UnifiedDuckDBReader, e
 		return nil, fmt.Errorf("failed to open DuckDB: %w", err)
 	}
 
-	// Cap DuckDB memory to prevent OOM kills
-	if _, err := db.Exec("SET memory_limit='1GB';"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to set memory limit: %w", err)
-	}
-
 	// Install and load required extensions
 	extensions := []struct {
 		name    string
@@ -5751,6 +5745,29 @@ func (r *UnifiedDuckDBReader) getSmartWalletFromSemantic(ctx context.Context, co
 func (r *UnifiedDuckDBReader) assembleWalletEvidence(ctx context.Context, contractID string) (*WalletEvidence, error) {
 	evidence := &WalletEvidence{
 		ContractID: contractID,
+	}
+
+	// 0. Get wasm hash from contract metadata (hot + cold)
+	for _, schema := range []string{r.hotSchema, r.coldSchema} {
+		if schema == "" {
+			continue
+		}
+		metaQuery := fmt.Sprintf(`
+			SELECT wasm_hash
+			FROM %s.contract_metadata
+			WHERE contract_id = $1 AND wasm_hash IS NOT NULL
+			LIMIT 1
+		`, schema)
+		var wasmHash sql.NullString
+		if err := r.db.QueryRowContext(ctx, metaQuery, contractID).Scan(&wasmHash); err == nil && wasmHash.Valid {
+			evidence.WasmHash = wasmHash.String
+			break
+		}
+	}
+	if evidence.WasmHash == "" && walletRPCFallback != nil {
+		if wasmHash, err := walletRPCFallback.LookupWasmHash(ctx, contractID); err == nil {
+			evidence.WasmHash = wasmHash
+		}
 	}
 
 	// 1. Check for __check_auth in bronze contract events
