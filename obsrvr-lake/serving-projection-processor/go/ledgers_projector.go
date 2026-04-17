@@ -47,6 +47,15 @@ func (p *LedgersRecentProjector) Name() string {
 	return "ledgers_recent"
 }
 
+func (p *LedgersRecentProjector) SourceHighWatermark(ctx context.Context) (int64, error) {
+	var wm int64
+	err := p.sourcePool.QueryRow(ctx, `SELECT COALESCE(MAX(sequence), 0) FROM ledgers_row_v2`).Scan(&wm)
+	if err != nil {
+		return 0, fmt.Errorf("query ledgers recent watermark: %w", err)
+	}
+	return wm, nil
+}
+
 func (p *LedgersRecentProjector) RunOnce(ctx context.Context) (RunStats, error) {
 	checkpoint, err := p.checkpoints.Load(ctx, p.Name(), p.network)
 	if err != nil {

@@ -54,6 +54,15 @@ func NewTransactionsRecentProjector(network string, batchSize int, sourcePool, s
 
 func (p *TransactionsRecentProjector) Name() string { return "transactions_recent" }
 
+func (p *TransactionsRecentProjector) SourceHighWatermark(ctx context.Context) (int64, error) {
+	var wm int64
+	err := p.sourcePool.QueryRow(ctx, `SELECT COALESCE(MAX(ledger_sequence), 0) FROM transactions_row_v2`).Scan(&wm)
+	if err != nil {
+		return 0, fmt.Errorf("query transactions recent watermark: %w", err)
+	}
+	return wm, nil
+}
+
 func (p *TransactionsRecentProjector) RunOnce(ctx context.Context) (RunStats, error) {
 	checkpoint, err := p.checkpoints.Load(ctx, p.Name(), p.network)
 	if err != nil {

@@ -10,16 +10,17 @@ import (
 
 // Config represents the service configuration
 type Config struct {
-	Service      ServiceConfig      `yaml:"service"`
-	BronzeSource BronzeSourceConfig `yaml:"bronze_source"` // gRPC source (replaces polling)
-	BronzeHot    DatabaseConfig     `yaml:"bronze_hot"`
-	BronzeCold   *DuckLakeConfig    `yaml:"bronze_cold,omitempty"`
-	S3           *S3Config          `yaml:"s3,omitempty"`
-	SilverHot    DatabaseConfig     `yaml:"silver_hot"`
-	Checkpoint   CheckpointConfig   `yaml:"checkpoint"`
-	Performance  PerformanceConfig  `yaml:"performance"`
-	GapDetection GapDetectionConfig `yaml:"gap_detection"`
-	Fallback     FallbackConfig     `yaml:"fallback"`
+	Service          ServiceConfig          `yaml:"service"`
+	BronzeSource     BronzeSourceConfig     `yaml:"bronze_source"` // gRPC source (replaces polling)
+	BronzeHot        DatabaseConfig         `yaml:"bronze_hot"`
+	BronzeCold       *DuckLakeConfig        `yaml:"bronze_cold,omitempty"`
+	S3               *S3Config              `yaml:"s3,omitempty"`
+	SilverHot        DatabaseConfig         `yaml:"silver_hot"`
+	Checkpoint       CheckpointConfig       `yaml:"checkpoint"`
+	Performance      PerformanceConfig      `yaml:"performance"`
+	GapDetection     GapDetectionConfig     `yaml:"gap_detection"`
+	Fallback         FallbackConfig         `yaml:"fallback"`
+	SorobanMigration SorobanMigrationConfig `yaml:"soroban_migration"`
 }
 
 // BronzeSourceConfig configures the gRPC connection to the bronze ingester's SourceService.
@@ -60,14 +61,27 @@ type ServiceConfig struct {
 	PollIntervalSeconds int    `yaml:"poll_interval_seconds"`
 }
 
+// SorobanMigrationConfig controls one-time startup repair behavior.
+// The address balance rebuilds can be extremely expensive on large datasets,
+// so they are disabled by default and should be run explicitly as a separate
+// backfill/maintenance operation.
+type SorobanMigrationConfig struct {
+	RebuildAddressBalancesOnStartup bool `yaml:"rebuild_address_balances_on_startup"`
+	RebuildStateBalancesOnStartup   bool `yaml:"rebuild_state_balances_on_startup"`
+}
+
 // DatabaseConfig holds database connection settings
 type DatabaseConfig struct {
-	Host     string `yaml:"host"`
-	Port     int    `yaml:"port"`
-	Database string `yaml:"database"`
-	User     string `yaml:"user"`
-	Password string `yaml:"password"`
-	SSLMode  string `yaml:"sslmode"`
+	Host                   string `yaml:"host"`
+	Port                   int    `yaml:"port"`
+	Database               string `yaml:"database"`
+	User                   string `yaml:"user"`
+	Password               string `yaml:"password"`
+	SSLMode                string `yaml:"sslmode"`
+	MaxOpenConns           int    `yaml:"max_open_conns"`
+	MaxIdleConns           int    `yaml:"max_idle_conns"`
+	ConnMaxLifetimeSeconds int    `yaml:"conn_max_lifetime_seconds"`
+	ConnMaxIdleTimeSeconds int    `yaml:"conn_max_idle_time_seconds"`
 }
 
 // CheckpointConfig holds checkpoint tracking settings
@@ -77,9 +91,11 @@ type CheckpointConfig struct {
 
 // PerformanceConfig holds performance tuning settings
 type PerformanceConfig struct {
-	BatchSize       int `yaml:"batch_size"`
-	MaxWorkers      int `yaml:"max_workers"`
-	InsertBatchSize int `yaml:"insert_batch_size"` // Max rows per multi-row INSERT (default: 500)
+	BatchSize        int `yaml:"batch_size"`
+	MaxWorkers       int `yaml:"max_workers"` // Deprecated: used as fallback for read/write worker limits
+	MaxBronzeReaders int `yaml:"max_bronze_readers"`
+	MaxSilverWriters int `yaml:"max_silver_writers"`
+	InsertBatchSize  int `yaml:"insert_batch_size"` // Max rows per multi-row INSERT (default: 500)
 }
 
 // GapDetectionConfig holds gap detection and recovery settings
@@ -120,8 +136,24 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("batch_size must be at least 1")
 	}
 
-	if c.Performance.MaxWorkers < 1 {
-		return fmt.Errorf("max_workers must be at least 1")
+	if c.Performance.MaxWorkers < 0 {
+		return fmt.Errorf("max_workers must be >= 0")
+	}
+
+	if c.Performance.MaxBronzeReaders < 0 {
+		return fmt.Errorf("max_bronze_readers must be >= 0")
+	}
+
+	if c.Performance.MaxSilverWriters < 0 {
+		return fmt.Errorf("max_silver_writers must be >= 0")
+	}
+
+	if c.MaxBronzeReaders() < 1 {
+		return fmt.Errorf("effective max bronze readers must be at least 1")
+	}
+
+	if c.MaxSilverWriters() < 1 {
+		return fmt.Errorf("effective max silver writers must be at least 1")
 	}
 
 	// Validate bronze source config
@@ -167,6 +199,50 @@ func (c *Config) GetBackfillBatchSize() int {
 // PollInterval returns the poll interval as a Duration
 func (c *Config) PollInterval() time.Duration {
 	return time.Duration(c.Service.PollIntervalSeconds) * time.Second
+}
+
+func (c *Config) MaxBronzeReaders() int {
+	if c.Performance.MaxBronzeReaders > 0 {
+		return c.Performance.MaxBronzeReaders
+	}
+	if c.Performance.MaxWorkers > 0 {
+		return c.Performance.MaxWorkers
+	}
+	return 4
+}
+
+func (c *Config) MaxSilverWriters() int {
+	if c.Performance.MaxSilverWriters > 0 {
+		return c.Performance.MaxSilverWriters
+	}
+	if c.Performance.MaxWorkers > 0 {
+		return c.Performance.MaxWorkers
+	}
+	return 4
+}
+
+func (d *DatabaseConfig) MaxIdleConnsOrDefault() int {
+	if d.MaxIdleConns > 0 {
+		return d.MaxIdleConns
+	}
+	if d.MaxOpenConns > 0 {
+		return d.MaxOpenConns
+	}
+	return 4
+}
+
+func (d *DatabaseConfig) ConnMaxLifetime() time.Duration {
+	if d.ConnMaxLifetimeSeconds <= 0 {
+		return 0
+	}
+	return time.Duration(d.ConnMaxLifetimeSeconds) * time.Second
+}
+
+func (d *DatabaseConfig) ConnMaxIdleTime() time.Duration {
+	if d.ConnMaxIdleTimeSeconds <= 0 {
+		return 0
+	}
+	return time.Duration(d.ConnMaxIdleTimeSeconds) * time.Second
 }
 
 // ConnectionString builds a PostgreSQL connection string

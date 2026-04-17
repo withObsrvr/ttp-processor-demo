@@ -2320,36 +2320,6 @@ func (w *Writer) insertContractData(ctx context.Context, tx pgx.Tx, contractData
 		return nil
 	}
 
-	query := `
-		INSERT INTO contract_data_snapshot_v1 (
-			contract_id, ledger_sequence, ledger_key_hash,
-			contract_key_type, contract_durability,
-			asset_code, asset_issuer, asset_type,
-			balance_holder, balance,
-			last_modified_ledger, ledger_entry_change, deleted, closed_at,
-			contract_data_xdr, created_at, ledger_range,
-			token_name, token_symbol, token_decimals
-		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
-		)
-		ON CONFLICT (contract_id, ledger_key_hash, ledger_sequence) DO UPDATE SET
-			contract_key_type = EXCLUDED.contract_key_type,
-			contract_durability = EXCLUDED.contract_durability,
-			asset_code = EXCLUDED.asset_code,
-			asset_issuer = EXCLUDED.asset_issuer,
-			asset_type = EXCLUDED.asset_type,
-			balance_holder = EXCLUDED.balance_holder,
-			balance = EXCLUDED.balance,
-			last_modified_ledger = EXCLUDED.last_modified_ledger,
-			ledger_entry_change = EXCLUDED.ledger_entry_change,
-			deleted = EXCLUDED.deleted,
-			contract_data_xdr = EXCLUDED.contract_data_xdr,
-			token_name = EXCLUDED.token_name,
-			token_symbol = EXCLUDED.token_symbol,
-			token_decimals = EXCLUDED.token_decimals
-	`
-
-	batch := &pgx.Batch{}
 	for i := range contractDataList {
 		data := &contractDataList[i]
 		// TokenName/TokenSymbol come from SEP-41 contract instance storage
@@ -2361,7 +2331,28 @@ func (w *Writer) insertContractData(ctx context.Context, tx pgx.Tx, contractData
 		data.Balance = sanitizeStringPtr(data.Balance)
 		data.AssetCode = sanitizeStringPtr(data.AssetCode)
 		data.AssetIssuer = sanitizeStringPtr(data.AssetIssuer)
-		batch.Queue(query,
+	}
+
+	_, err := tx.Exec(ctx, `
+		CREATE TEMP TABLE _tmp_contract_data (LIKE contract_data_snapshot_v1 INCLUDING DEFAULTS) ON COMMIT DROP
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create temp contract data table: %w", err)
+	}
+
+	columns := []string{
+		"contract_id", "ledger_sequence", "ledger_key_hash",
+		"contract_key_type", "contract_durability",
+		"asset_code", "asset_issuer", "asset_type",
+		"balance_holder", "balance",
+		"last_modified_ledger", "ledger_entry_change", "deleted", "closed_at",
+		"contract_data_xdr", "created_at", "ledger_range",
+		"token_name", "token_symbol", "token_decimals",
+	}
+
+	rows := make([][]interface{}, len(contractDataList))
+	for i, data := range contractDataList {
+		rows[i] = []interface{}{
 			data.ContractId,
 			data.LedgerSequence,
 			data.LedgerKeyHash,
@@ -2382,15 +2373,54 @@ func (w *Writer) insertContractData(ctx context.Context, tx pgx.Tx, contractData
 			data.TokenName,
 			data.TokenSymbol,
 			data.TokenDecimals,
-		)
+		}
 	}
 
-	br := tx.SendBatch(ctx, batch)
-	defer br.Close()
-	for i := range contractDataList {
-		if _, err := br.Exec(); err != nil {
-			return fmt.Errorf("failed to insert contract data %s/%s: %w", contractDataList[i].ContractId, contractDataList[i].LedgerKeyHash, err)
-		}
+	copyCount, err := tx.CopyFrom(ctx, pgx.Identifier{"_tmp_contract_data"}, columns, pgx.CopyFromRows(rows))
+	if err != nil {
+		return fmt.Errorf("failed to COPY %d contract data rows: %w", len(contractDataList), err)
+	}
+	if int(copyCount) != len(contractDataList) {
+		log.Printf("WARNING: contract data COPY expected %d rows but inserted %d", len(contractDataList), copyCount)
+	}
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO contract_data_snapshot_v1 (
+			contract_id, ledger_sequence, ledger_key_hash,
+			contract_key_type, contract_durability,
+			asset_code, asset_issuer, asset_type,
+			balance_holder, balance,
+			last_modified_ledger, ledger_entry_change, deleted, closed_at,
+			contract_data_xdr, created_at, ledger_range,
+			token_name, token_symbol, token_decimals
+		)
+		SELECT DISTINCT ON (contract_id, ledger_key_hash, ledger_sequence)
+			contract_id, ledger_sequence, ledger_key_hash,
+			contract_key_type, contract_durability,
+			asset_code, asset_issuer, asset_type,
+			balance_holder, balance,
+			last_modified_ledger, ledger_entry_change, deleted, closed_at,
+			contract_data_xdr, created_at, ledger_range,
+			token_name, token_symbol, token_decimals
+		FROM _tmp_contract_data
+		ON CONFLICT (contract_id, ledger_key_hash, ledger_sequence) DO UPDATE SET
+			contract_key_type = EXCLUDED.contract_key_type,
+			contract_durability = EXCLUDED.contract_durability,
+			asset_code = EXCLUDED.asset_code,
+			asset_issuer = EXCLUDED.asset_issuer,
+			asset_type = EXCLUDED.asset_type,
+			balance_holder = EXCLUDED.balance_holder,
+			balance = EXCLUDED.balance,
+			last_modified_ledger = EXCLUDED.last_modified_ledger,
+			ledger_entry_change = EXCLUDED.ledger_entry_change,
+			deleted = EXCLUDED.deleted,
+			contract_data_xdr = EXCLUDED.contract_data_xdr,
+			token_name = EXCLUDED.token_name,
+			token_symbol = EXCLUDED.token_symbol,
+			token_decimals = EXCLUDED.token_decimals
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to upsert contract data from temp: %w", err)
 	}
 
 	return nil
@@ -2618,26 +2648,12 @@ func sanitizeEventStrings(e *ContractEventData) {
 	e.Topic3Decoded = sanitizeStringPtr(e.Topic3Decoded)
 }
 
-// insertTokenTransfers bulk-inserts token transfers using pgx Batch
+// insertTokenTransfers bulk-inserts token transfers using COPY + temp table.
 func (w *Writer) insertTokenTransfers(ctx context.Context, tx pgx.Tx, transfers []TokenTransferData) error {
 	if len(transfers) == 0 {
 		return nil
 	}
 
-	query := `
-		INSERT INTO token_transfers_stream_v1 (
-			ledger_sequence, transaction_hash, transaction_id, operation_id,
-			operation_index, event_type, "from", "to", asset, asset_type,
-			asset_code, asset_issuer, amount, amount_raw, contract_id,
-			closed_at, created_at, ledger_range
-		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-			$11, $12, $13, $14, $15, $16, $17, $18
-		)
-		ON CONFLICT DO NOTHING
-	`
-
-	batch := &pgx.Batch{}
 	for i := range transfers {
 		t := &transfers[i]
 		// Defensive sanitization. Asset codes/issuers and account addresses
@@ -2651,7 +2667,25 @@ func (w *Writer) insertTokenTransfers(ctx context.Context, tx pgx.Tx, transfers 
 		t.To = sanitizeStringPtr(t.To)
 		t.AssetCode = sanitizeStringPtr(t.AssetCode)
 		t.AssetIssuer = sanitizeStringPtr(t.AssetIssuer)
-		batch.Queue(query,
+	}
+
+	_, err := tx.Exec(ctx, `
+		CREATE TEMP TABLE _tmp_token_transfers (LIKE token_transfers_stream_v1 INCLUDING DEFAULTS) ON COMMIT DROP
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create temp token transfers table: %w", err)
+	}
+
+	columns := []string{
+		"ledger_sequence", "transaction_hash", "transaction_id", "operation_id",
+		"operation_index", "event_type", "from", "to", "asset", "asset_type",
+		"asset_code", "asset_issuer", "amount", "amount_raw", "contract_id",
+		"closed_at", "created_at", "ledger_range",
+	}
+
+	rows := make([][]interface{}, len(transfers))
+	for i, t := range transfers {
+		rows[i] = []interface{}{
 			t.LedgerSequence,
 			t.TransactionHash,
 			t.TransactionID,
@@ -2670,16 +2704,34 @@ func (w *Writer) insertTokenTransfers(ctx context.Context, tx pgx.Tx, transfers 
 			t.ClosedAt,
 			t.CreatedAt,
 			t.LedgerRange,
-		)
+		}
 	}
 
-	br := tx.SendBatch(ctx, batch)
-	defer br.Close()
-	for i := range transfers {
-		if _, err := br.Exec(); err != nil {
-			return fmt.Errorf("failed to insert token transfer in ledger %d tx %s: %w",
-				transfers[i].LedgerSequence, transfers[i].TransactionHash, err)
-		}
+	copyCount, err := tx.CopyFrom(ctx, pgx.Identifier{"_tmp_token_transfers"}, columns, pgx.CopyFromRows(rows))
+	if err != nil {
+		return fmt.Errorf("failed to COPY %d token transfers: %w", len(transfers), err)
+	}
+	if int(copyCount) != len(transfers) {
+		log.Printf("WARNING: token transfers COPY expected %d rows but inserted %d", len(transfers), copyCount)
+	}
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO token_transfers_stream_v1 (
+			ledger_sequence, transaction_hash, transaction_id, operation_id,
+			operation_index, event_type, "from", "to", asset, asset_type,
+			asset_code, asset_issuer, amount, amount_raw, contract_id,
+			closed_at, created_at, ledger_range
+		)
+		SELECT DISTINCT ON (ledger_sequence, transaction_hash, operation_index, event_type, "from", "to", amount_raw)
+			ledger_sequence, transaction_hash, transaction_id, operation_id,
+			operation_index, event_type, "from", "to", asset, asset_type,
+			asset_code, asset_issuer, amount, amount_raw, contract_id,
+			closed_at, created_at, ledger_range
+		FROM _tmp_token_transfers
+		ON CONFLICT DO NOTHING
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to insert token transfers from temp: %w", err)
 	}
 
 	return nil

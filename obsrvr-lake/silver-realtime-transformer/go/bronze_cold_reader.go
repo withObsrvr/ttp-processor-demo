@@ -187,7 +187,7 @@ func (r *BronzeColdReader) QueryEnrichedOperations(ctx context.Context, startLed
 			o.operation_index,
 			o.ledger_sequence,
 			o.source_account,
-			o.op_type AS type,
+			o.type AS type,
 			o.type_string,
 			o.created_at,
 			o.transaction_successful,
@@ -316,8 +316,8 @@ func (r *BronzeColdReader) QueryEnrichedOperations(ctx context.Context, startLed
 			l.failed_tx_count AS ledger_failed_tx_count,
 
 			-- Derived fields
-			CASE WHEN o.op_type IN (1, 2, 13) THEN true ELSE false END AS is_payment_op,
-			CASE WHEN o.op_type = 24 THEN true ELSE false END AS is_soroban_op
+			CASE WHEN o.type IN (1, 2, 13) THEN true ELSE false END AS is_payment_op,
+			CASE WHEN o.type = 24 THEN true ELSE false END AS is_soroban_op
 		FROM %s o
 		INNER JOIN %s t
 			ON o.transaction_hash = t.transaction_hash
@@ -359,7 +359,7 @@ func (r *BronzeColdReader) QueryTokenTransfers(ctx context.Context, startLedger,
 			END AS asset_issuer,
 			CAST(o.amount AS VARCHAR) AS amount,
 			NULL AS token_contract_id,
-			o.op_type AS operation_type,
+			o.type AS operation_type,
 			t.successful AS transaction_successful,
 			NULL AS event_index
 		FROM %s o
@@ -368,7 +368,7 @@ func (r *BronzeColdReader) QueryTokenTransfers(ctx context.Context, startLedger,
 			AND o.ledger_sequence = t.ledger_sequence
 		INNER JOIN %s l
 			ON o.ledger_sequence = l.sequence
-		WHERE o.op_type IN (1, 2, 13)
+		WHERE o.type IN (1, 2, 13)
 		  AND o.ledger_sequence BETWEEN $1 AND $2
 
 		UNION ALL
@@ -460,7 +460,7 @@ func (r *BronzeColdReader) QueryAccountsSnapshot(ctx context.Context, startLedge
 				ledger_sequence,
 				ledger_range,
 				NULL AS era_id,
-				pipeline_version AS version_label,
+				NULL AS version_label,
 				ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY ledger_sequence DESC) as rn
 			FROM %s
 			WHERE ledger_sequence BETWEEN $1 AND $2
@@ -531,7 +531,7 @@ func (r *BronzeColdReader) QueryAccountsSnapshotAll(ctx context.Context, startLe
 			closed_at AS updated_at,
 			ledger_range,
 			NULL AS era_id,
-			pipeline_version AS version_label
+			NULL AS version_label
 		FROM %s
 		WHERE ledger_sequence BETWEEN $1 AND $2
 		ORDER BY account_id, ledger_sequence
@@ -762,7 +762,7 @@ func (r *BronzeColdReader) QueryContractInvocations(ctx context.Context, startLe
 			o.ledger_range
 		FROM %s o
 		WHERE o.ledger_sequence BETWEEN $1 AND $2
-		  AND o.op_type = 24
+		  AND o.type = 24
 		  AND o.soroban_contract_id IS NOT NULL
 		  AND o.soroban_function IS NOT NULL
 		  AND o.soroban_arguments_json IS NOT NULL
@@ -797,7 +797,7 @@ func (r *BronzeColdReader) QueryContractCallGraphs(ctx context.Context, startLed
 			o.ledger_range
 		FROM %s o
 		WHERE o.ledger_sequence BETWEEN $1 AND $2
-		  AND o.op_type = 24
+		  AND o.type = 24
 		  AND o.contract_calls_json IS NOT NULL
 		  AND o.max_call_depth > 0
 		ORDER BY o.ledger_sequence, o.transaction_index, o.operation_index

@@ -87,7 +87,7 @@ func (c *DuckDBClient) initialize() error {
 	attachQuery := fmt.Sprintf(`
 		ATTACH 'ducklake:postgres:%s'
 		AS %s
-		(DATA_PATH '%s', METADATA_SCHEMA '%s')
+		(DATA_PATH '%s', METADATA_SCHEMA '%s', DATA_INLINING_ROW_LIMIT 250)
 	`, c.config.CatalogPath, c.config.CatalogName, c.config.DataPath, c.config.MetadataSchema)
 
 	if _, err := c.db.Exec(attachQuery); err != nil {
@@ -98,7 +98,7 @@ func (c *DuckDBClient) initialize() error {
 			createAttachQuery := fmt.Sprintf(`
 				ATTACH 'ducklake:postgres:%s'
 				AS %s
-				(TYPE ducklake, DATA_PATH '%s', METADATA_SCHEMA '%s')
+				(TYPE ducklake, DATA_PATH '%s', METADATA_SCHEMA '%s', DATA_INLINING_ROW_LIMIT 250)
 			`, c.config.CatalogPath, c.config.CatalogName, c.config.DataPath, c.config.MetadataSchema)
 			if _, err := c.db.Exec(createAttachQuery); err != nil {
 				return fmt.Errorf("failed to create and attach DuckLake catalog: %w", err)
@@ -122,11 +122,76 @@ func (c *DuckDBClient) initialize() error {
 
 // FlushTable flushes a table from PostgreSQL to DuckLake using postgres_scan
 func (c *DuckDBClient) FlushTable(tableName string, watermark int64, pgConnStr string, lastFlushed int64) (int64, error) {
-	query := fmt.Sprintf(`
-		INSERT INTO %s.%s.%s
-		SELECT * FROM postgres_scan('%s', 'public', '%s')
-		WHERE last_modified_ledger > %d AND last_modified_ledger <= %d
-	`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, lastFlushed, watermark)
+	var query string
+
+	switch tableName {
+	case "accounts_current":
+		// PostgreSQL silver_hot.accounts_current currently contains additional legacy
+		// and derived columns. Use an explicit projection to map into the 24-column
+		// DuckLake schema in a stable order.
+		query = fmt.Sprintf(`
+			INSERT INTO %s.%s.%s
+			SELECT
+				account_id,
+				balance,
+				sequence_number,
+				num_subentries,
+				num_sponsoring,
+				num_sponsored,
+				home_domain,
+				master_weight,
+				low_threshold,
+				med_threshold,
+				high_threshold,
+				flags,
+				auth_required,
+				auth_revocable,
+				auth_immutable,
+				auth_clawback_enabled,
+				signers,
+				sponsor_account,
+				created_at,
+				updated_at,
+				last_modified_ledger,
+				ledger_range,
+				era_id,
+				version_label
+			FROM postgres_scan('%s', 'public', '%s')
+			WHERE last_modified_ledger > %d AND last_modified_ledger <= %d
+		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, lastFlushed, watermark)
+	case "claimable_balances_current":
+		// Source table in silver_hot has 15 columns, while DuckLake carries two
+		// additional compatibility columns (claimants, asset). Project explicitly.
+		query = fmt.Sprintf(`
+			INSERT INTO %s.%s.%s
+			SELECT
+				balance_id,
+				NULL AS claimants,
+				asset_type,
+				asset_code,
+				asset_issuer,
+				NULL AS asset,
+				amount,
+				sponsor,
+				flags,
+				last_modified_ledger,
+				ledger_sequence,
+				created_at,
+				ledger_range,
+				inserted_at,
+				updated_at,
+				claimants_count,
+				closed_at
+			FROM postgres_scan('%s', 'public', '%s')
+			WHERE last_modified_ledger > %d AND last_modified_ledger <= %d
+		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, lastFlushed, watermark)
+	default:
+		query = fmt.Sprintf(`
+			INSERT INTO %s.%s.%s
+			SELECT * FROM postgres_scan('%s', 'public', '%s')
+			WHERE last_modified_ledger > %d AND last_modified_ledger <= %d
+		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, lastFlushed, watermark)
+	}
 
 	result, err := c.db.Exec(query)
 	if err != nil {
@@ -170,6 +235,10 @@ func (c *DuckDBClient) FlushSnapshotTable(tableName string, watermark int64, pgC
 			FROM postgres_scan('%s', 'public', '%s')
 			WHERE ledger_sequence > %d AND ledger_sequence <= %d
 		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, lastFlushed, watermark)
+	} else if tableName == "claimable_balances_snapshot" {
+		// Source table does not currently exist in silver_hot. Keep explicit handling
+		// here so future re-enablement is intentional.
+		return 0, fmt.Errorf("source table %s does not exist in silver_hot", tableName)
 	} else {
 		// Other snapshot tables use SELECT * (columns match)
 		query = fmt.Sprintf(`

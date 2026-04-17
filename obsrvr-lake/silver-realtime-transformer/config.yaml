@@ -19,6 +19,10 @@ bronze_hot:
   user: stellar
   password: stellar_dev_password
   sslmode: disable
+  max_open_conns: 8
+  max_idle_conns: 4
+  conn_max_lifetime_seconds: 300
+  conn_max_idle_time_seconds: 60
 
 # Destination: Silver hot buffer (silver_hot PostgreSQL)
 silver_hot:
@@ -28,6 +32,10 @@ silver_hot:
   user: stellar
   password: stellar_dev_password
   sslmode: disable
+  max_open_conns: 8
+  max_idle_conns: 4
+  conn_max_lifetime_seconds: 300
+  conn_max_idle_time_seconds: 60
 
 # Checkpoint tracking
 checkpoint:
@@ -36,7 +44,9 @@ checkpoint:
 # Performance tuning
 performance:
   batch_size: 500            # Max ledgers to process per cycle
-  max_workers: 4             # Parallel transformation workers
+  max_workers: 4             # Deprecated fallback for reader/writer limits
+  max_bronze_readers: 4      # Reserved for grouped bronze scan concurrency
+  max_silver_writers: 4      # Parallel silver write transactions
   insert_batch_size: 500     # Max rows per multi-row INSERT
 
 # Gap detection settings
@@ -49,6 +59,13 @@ gap_detection:
 fallback:
   enabled: false           # Set to true to enable cold storage fallback
   backfill_batch_size: 50  # Smaller batches for cold storage queries
+
+# One-time Soroban repair behavior.
+# The balance rebuilds can be very expensive on large datasets, so keep them
+# off during normal startup unless you are explicitly running maintenance.
+soroban_migration:
+  rebuild_address_balances_on_startup: false
+  rebuild_state_balances_on_startup: false
 
 # Bronze cold storage configuration (DuckLake)
 # Uncomment and configure when fallback is enabled

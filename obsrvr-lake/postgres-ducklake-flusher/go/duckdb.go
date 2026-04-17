@@ -89,7 +89,7 @@ func (c *DuckDBClient) initialize() error {
 	attachSQL := fmt.Sprintf(`
 		ATTACH '%s'
 		AS %s
-		(DATA_PATH '%s', METADATA_SCHEMA '%s', AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE);
+		(DATA_PATH '%s', METADATA_SCHEMA '%s', DATA_INLINING_ROW_LIMIT 100, AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE);
 	`, c.config.CatalogPath, c.config.CatalogName, c.config.DataPath, c.config.MetadataSchema)
 
 	_, err := c.db.ExecContext(ctx, attachSQL)
@@ -103,7 +103,7 @@ func (c *DuckDBClient) initialize() error {
 			createAttachSQL := fmt.Sprintf(`
 				ATTACH '%s'
 				AS %s
-				(TYPE ducklake, DATA_PATH '%s', METADATA_SCHEMA '%s', AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE);
+				(TYPE ducklake, DATA_PATH '%s', METADATA_SCHEMA '%s', DATA_INLINING_ROW_LIMIT 100, AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE);
 			`, c.config.CatalogPath, c.config.CatalogName, c.config.DataPath, c.config.MetadataSchema)
 
 			if _, err := c.db.ExecContext(ctx, createAttachSQL); err != nil {

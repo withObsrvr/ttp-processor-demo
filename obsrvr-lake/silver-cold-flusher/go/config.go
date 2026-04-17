@@ -120,7 +120,7 @@ func GetTablesToFlush() []string {
 		"trustlines_snapshot",
 		"offers_snapshot",
 		"account_signers_snapshot",
-		"claimable_balances_snapshot",
+		// "claimable_balances_snapshot", // Source table does not exist in silver_hot
 
 		// Enriched/event tables (3)
 		"enriched_history_operations",

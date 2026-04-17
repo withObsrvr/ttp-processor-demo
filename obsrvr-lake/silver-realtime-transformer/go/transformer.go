@@ -674,47 +674,55 @@ func (rt *RealtimeTransformer) migrateSorobanTransfers() {
 		log.Printf("✅ Soroban migration: rebuilt %d semantic flow rows", flowCount)
 
 		// Step 8: Rebuild address_balances_current for the backfilled range.
-		// Without this, C... addresses that had all their activity in the
-		// backfilled (not-just-live) ledger range stay at 0 in the balance
-		// table even though their transfers are now in token_transfers_raw.
-		log.Printf("🔄 Soroban migration: rebuilding address balances for ledgers %d to %d", minLedger, maxLedger)
-		balTx, err := rt.silverDB.BeginTx(ctx, nil)
-		if err != nil {
-			log.Printf("⚠️  Soroban migration: failed to begin tx for address balances rebuild: %v", err)
-			return
+		// This can be extremely expensive on large datasets, so by default we
+		// skip it during startup migration and leave it for an explicit
+		// maintenance/backfill workflow.
+		if rt.config.SorobanMigration.RebuildAddressBalancesOnStartup {
+			log.Printf("🔄 Soroban migration: rebuilding address balances for ledgers %d to %d", minLedger, maxLedger)
+			balTx, err := rt.silverDB.BeginTx(ctx, nil)
+			if err != nil {
+				log.Printf("⚠️  Soroban migration: failed to begin tx for address balances rebuild: %v", err)
+				return
+			}
+			balCount, err := rt.transformAddressBalancesCurrent(ctx, balTx, minLedger, maxLedger)
+			if err != nil {
+				log.Printf("⚠️  Soroban migration: failed to rebuild address balances: %v", err)
+				balTx.Rollback()
+				return
+			}
+			if err := balTx.Commit(); err != nil {
+				log.Printf("⚠️  Soroban migration: failed to commit address balances rebuild: %v", err)
+				return
+			}
+			log.Printf("✅ Soroban migration: rebuilt %d address balance rows", balCount)
+		} else {
+			log.Printf("⏭️  Soroban migration: skipping startup address balance rebuild for ledgers %d to %d (disabled by config)", minLedger, maxLedger)
 		}
-		balCount, err := rt.transformAddressBalancesCurrent(ctx, balTx, minLedger, maxLedger)
-		if err != nil {
-			log.Printf("⚠️  Soroban migration: failed to rebuild address balances: %v", err)
-			balTx.Rollback()
-			return
-		}
-		if err := balTx.Commit(); err != nil {
-			log.Printf("⚠️  Soroban migration: failed to commit address balances rebuild: %v", err)
-			return
-		}
-		log.Printf("✅ Soroban migration: rebuilt %d address balance rows", balCount)
 
 		// Step 9: Rebuild state-based address balances from
-		// contract_data_snapshot_v1. This fills in SAC holdings (notably
-		// native XLM) that event aggregation can't cover completely.
-		log.Printf("🔄 Soroban migration: rebuilding state-based address balances for ledgers %d to %d", minLedger, maxLedger)
-		stateTx, err := rt.silverDB.BeginTx(ctx, nil)
-		if err != nil {
-			log.Printf("⚠️  Soroban migration: failed to begin tx for state balances rebuild: %v", err)
-			return
+		// contract_data_snapshot_v1. This is also disabled by default on
+		// startup to avoid long, opaque migration runtimes in production.
+		if rt.config.SorobanMigration.RebuildStateBalancesOnStartup {
+			log.Printf("🔄 Soroban migration: rebuilding state-based address balances for ledgers %d to %d", minLedger, maxLedger)
+			stateTx, err := rt.silverDB.BeginTx(ctx, nil)
+			if err != nil {
+				log.Printf("⚠️  Soroban migration: failed to begin tx for state balances rebuild: %v", err)
+				return
+			}
+			stateCount, err := rt.transformAddressBalancesFromContractState(ctx, stateTx, minLedger, maxLedger)
+			if err != nil {
+				log.Printf("⚠️  Soroban migration: failed to rebuild state balances: %v", err)
+				stateTx.Rollback()
+				return
+			}
+			if err := stateTx.Commit(); err != nil {
+				log.Printf("⚠️  Soroban migration: failed to commit state balances rebuild: %v", err)
+				return
+			}
+			log.Printf("✅ Soroban migration: upserted %d state-based balance rows", stateCount)
+		} else {
+			log.Printf("⏭️  Soroban migration: skipping startup state-based balance rebuild for ledgers %d to %d (disabled by config)", minLedger, maxLedger)
 		}
-		stateCount, err := rt.transformAddressBalancesFromContractState(ctx, stateTx, minLedger, maxLedger)
-		if err != nil {
-			log.Printf("⚠️  Soroban migration: failed to rebuild state balances: %v", err)
-			stateTx.Rollback()
-			return
-		}
-		if err := stateTx.Commit(); err != nil {
-			log.Printf("⚠️  Soroban migration: failed to commit state balances rebuild: %v", err)
-			return
-		}
-		log.Printf("✅ Soroban migration: upserted %d state-based balance rows", stateCount)
 	}
 
 	// Record completion so we don't rerun on next startup unless the version bumps.
@@ -796,9 +804,10 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 	// transaction since they write to non-overlapping tables.
 
 	type transformResult struct {
-		name  string
-		count int64
-		err   error
+		name     string
+		count    int64
+		duration time.Duration
+		err      error
 	}
 
 	type transformJob struct {
@@ -833,10 +842,7 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 		{"config_settings_current", rt.transformConfigSettingsCurrent},
 	}
 
-	maxWorkers := rt.config.Performance.MaxWorkers
-	if maxWorkers < 1 {
-		maxWorkers = 4
-	}
+	maxWorkers := rt.config.MaxSilverWriters()
 
 	results := make(chan transformResult, len(bronzeTransforms))
 	semaphore := make(chan struct{}, maxWorkers)
@@ -849,25 +855,26 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 			semaphore <- struct{}{}        // acquire
 			defer func() { <-semaphore }() // release
 
+			jobStart := time.Now()
 			tx, txErr := rt.silverDB.BeginTx(ctx, nil)
 			if txErr != nil {
-				results <- transformResult{j.name, 0, fmt.Errorf("begin tx for %s: %w", j.name, txErr)}
+				results <- transformResult{name: j.name, count: 0, duration: time.Since(jobStart), err: fmt.Errorf("begin tx for %s: %w", j.name, txErr)}
 				return
 			}
 
 			count, fnErr := j.fn(ctx, tx, startLedger, endLedger)
 			if fnErr != nil {
 				tx.Rollback()
-				results <- transformResult{j.name, 0, fmt.Errorf("transform %s: %w", j.name, fnErr)}
+				results <- transformResult{name: j.name, count: 0, duration: time.Since(jobStart), err: fmt.Errorf("transform %s: %w", j.name, fnErr)}
 				return
 			}
 
 			if commitErr := tx.Commit(); commitErr != nil {
-				results <- transformResult{j.name, 0, fmt.Errorf("commit %s: %w", j.name, commitErr)}
+				results <- transformResult{name: j.name, count: 0, duration: time.Since(jobStart), err: fmt.Errorf("commit %s: %w", j.name, commitErr)}
 				return
 			}
 
-			results <- transformResult{j.name, count, nil}
+			results <- transformResult{name: j.name, count: count, duration: time.Since(jobStart), err: nil}
 		}(job)
 	}
 
@@ -884,10 +891,11 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 			if firstErr == nil {
 				firstErr = r.err
 			}
-			log.Printf("failed to %s: %v", r.name, r.err)
+			log.Printf("   ❌ %s failed after %v: %v", r.name, r.duration, r.err)
 			continue
 		}
 		totalRows += r.count
+		log.Printf("   ✅ %s: %d rows in %v", r.name, r.count, r.duration)
 	}
 
 	if firstErr != nil {
@@ -922,11 +930,13 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 	}
 
 	for _, j := range semanticTransforms {
+		jobStart := time.Now()
 		count, err := j.fn(ctx, semanticTx, startLedger, endLedger)
 		if err != nil {
 			return fmt.Errorf("failed to transform %s: %w", j.name, err)
 		}
 		totalRows += count
+		log.Printf("   ✅ %s: %d rows in %v", j.name, count, time.Since(jobStart))
 	}
 
 	// Post-processing: wallet classification on newly upserted contracts
@@ -3077,12 +3087,17 @@ func (rt *RealtimeTransformer) transformAddressBalancesCurrent(ctx context.Conte
 			FROM token_transfers_raw
 			WHERE ledger_sequence BETWEEN $1 AND $2 AND to_account IS NOT NULL AND to_account != ''
 		), dedup AS (
-			SELECT DISTINCT ON (transaction_hash, ledger_sequence, COALESCE(from_account,''), COALESCE(to_account,''), COALESCE(token_contract_id,''), COALESCE(amount,0), COALESCE(event_index,-1))
-				transaction_hash, ledger_sequence, timestamp, from_account, to_account,
-				token_contract_id, asset_code, asset_issuer, amount, event_index
-			FROM token_transfers_raw
-			WHERE transaction_successful = true
-			ORDER BY transaction_hash, ledger_sequence, COALESCE(from_account,''), COALESCE(to_account,''), COALESCE(token_contract_id,''), COALESCE(amount,0), COALESCE(event_index,-1)
+			SELECT DISTINCT ON (t.transaction_hash, t.ledger_sequence, COALESCE(t.from_account,''), COALESCE(t.to_account,''), COALESCE(t.token_contract_id,''), COALESCE(t.amount,0), COALESCE(t.event_index,-1))
+				t.transaction_hash, t.ledger_sequence, t.timestamp, t.from_account, t.to_account,
+				t.token_contract_id, t.asset_code, t.asset_issuer, t.amount, t.event_index
+			FROM token_transfers_raw t
+			WHERE t.transaction_successful = true
+			  AND EXISTS (
+				SELECT 1
+				FROM impacted i
+				WHERE i.owner_address = t.from_account OR i.owner_address = t.to_account
+			  )
+			ORDER BY t.transaction_hash, t.ledger_sequence, COALESCE(t.from_account,''), COALESCE(t.to_account,''), COALESCE(t.token_contract_id,''), COALESCE(t.amount,0), COALESCE(t.event_index,-1)
 		), balances AS (
 			SELECT
 				addr.owner_address,
@@ -3155,50 +3170,18 @@ func (rt *RealtimeTransformer) transformAddressBalancesFromContractState(ctx con
 	}
 	defer rows.Close()
 
-	// UPSERT one row at a time. Volumes here are modest (one row per
-	// (token_contract, holder) pair in the window) so batching isn't
-	// needed for the MVP.
-	const upsert = `
-		INSERT INTO address_balances_current (
-			owner_address, asset_key, asset_type, token_contract_id,
-			asset_code, asset_issuer, symbol, decimals,
-			balance_raw, balance_display, balance_source,
-			last_updated_ledger, last_updated_at, updated_at
-		)
-		SELECT
-			$1::text AS owner_address,
-			$2::text AS asset_key,
-			CASE
-				WHEN $3::text IS NULL OR $3::text = '' THEN 'soroban_token'
-				WHEN $4::text IS NOT NULL AND LENGTH($4::text) <= 4 THEN 'credit_alphanum4'
-				WHEN $4::text IS NOT NULL THEN 'credit_alphanum12'
-				ELSE 'soroban_token'
-			END AS asset_type,
-			$2::text AS token_contract_id,
-			COALESCE($4::text, 'XLM') AS asset_code,
-			$5::text AS asset_issuer,
-			COALESCE(tr.token_symbol, $4::text, 'XLM') AS symbol,
-			COALESCE(tr.token_decimals, 7) AS decimals,
-			$6::numeric AS balance_raw,
-			CASE
-				WHEN COALESCE(tr.token_decimals, 7) = 0 THEN ($6::numeric)::text
-				ELSE ($6::numeric / POWER(10::numeric, COALESCE(tr.token_decimals, 7)))::text
-			END AS balance_display,
-			'contract_storage_state' AS balance_source,
-			$7::bigint AS last_updated_ledger,
-			$8::timestamp AS last_updated_at,
-			NOW() AS updated_at
-		FROM (SELECT 1) dummy
-		LEFT JOIN token_registry tr ON tr.contract_id = $2::text
-		ON CONFLICT (owner_address, asset_key) DO UPDATE SET
-			balance_raw = EXCLUDED.balance_raw,
-			balance_display = EXCLUDED.balance_display,
-			balance_source = EXCLUDED.balance_source,
-			last_updated_ledger = EXCLUDED.last_updated_ledger,
-			last_updated_at = EXCLUDED.last_updated_at,
-			updated_at = NOW()
-		WHERE EXCLUDED.last_updated_ledger >= address_balances_current.last_updated_ledger
-	`
+	batchSize := rt.insertBatchSize()
+	pending := make([]AddressBalanceStateStageRow, 0, batchSize)
+	flush := func() error {
+		if len(pending) == 0 {
+			return nil
+		}
+		if err := rt.silverWriter.BulkUpsertAddressBalanceState(ctx, tx, pending, batchSize); err != nil {
+			return fmt.Errorf("bulk upsert contract_storage_state balances: %w", err)
+		}
+		pending = pending[:0]
+		return nil
+	}
 
 	var count int64
 	for rows.Next() {
@@ -3219,22 +3202,30 @@ func (rt *RealtimeTransformer) transformAddressBalancesFromContractState(ctx con
 		); err != nil {
 			return count, fmt.Errorf("scan balance holder row: %w", err)
 		}
-		if _, err := tx.ExecContext(ctx, upsert,
-			balanceHolder,       // $1 owner_address
-			contractID,          // $2 asset_key + token_contract_id
-			assetType.String,    // $3 asset_type hint
-			assetCode.String,    // $4 asset_code
-			assetIssuer.String,  // $5 asset_issuer
-			balance,             // $6 balance_raw (numeric string)
-			lastModifiedLedger,  // $7 last_updated_ledger
-			closedAt,            // $8 last_updated_at
-		); err != nil {
-			return count, fmt.Errorf("upsert contract_storage_state balance: %w", err)
-		}
+
+		pending = append(pending, AddressBalanceStateStageRow{
+			OwnerAddress:      balanceHolder,
+			AssetKey:          contractID,
+			AssetTypeHint:     assetType.String,
+			AssetCode:         assetCode.String,
+			AssetIssuer:       assetIssuer.String,
+			BalanceRaw:        balance,
+			LastUpdatedLedger: lastModifiedLedger,
+			LastUpdatedAt:     closedAt,
+		})
 		count++
+
+		if len(pending) >= batchSize {
+			if err := flush(); err != nil {
+				return count, err
+			}
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return count, fmt.Errorf("iterate balance holder rows: %w", err)
+	}
+	if err := flush(); err != nil {
+		return count, err
 	}
 	return count, nil
 }
