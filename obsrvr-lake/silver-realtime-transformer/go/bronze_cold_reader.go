@@ -1089,6 +1089,47 @@ func (r *BronzeColdReader) QueryContractDataSnapshot(ctx context.Context, startL
 	return rows, nil
 }
 
+// QueryBalanceHolderSnapshots mirrors the hot-reader version for DuckLake cold.
+// See bronze_reader.go for rationale.
+func (r *BronzeColdReader) QueryBalanceHolderSnapshots(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
+	query := fmt.Sprintf(`
+		WITH ranked AS (
+			SELECT
+				contract_id,
+				balance_holder,
+				balance,
+				asset_type,
+				asset_code,
+				asset_issuer,
+				last_modified_ledger,
+				closed_at,
+				ROW_NUMBER() OVER (PARTITION BY contract_id, balance_holder ORDER BY ledger_sequence DESC) AS rn
+			FROM %s
+			WHERE ledger_sequence BETWEEN $1 AND $2
+			  AND deleted = false
+			  AND balance_holder IS NOT NULL
+			  AND balance IS NOT NULL
+		)
+		SELECT
+			contract_id,
+			balance_holder,
+			balance,
+			asset_type,
+			asset_code,
+			asset_issuer,
+			last_modified_ledger,
+			closed_at
+		FROM ranked
+		WHERE rn = 1
+	`, r.tableName("contract_data_snapshot_v1"))
+
+	rows, err := r.db.QueryContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query balance holder snapshots from cold: %w", err)
+	}
+	return rows, nil
+}
+
 // QueryContractCodeSnapshot reads contract code snapshots (deduplicated)
 func (r *BronzeColdReader) QueryContractCodeSnapshot(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
 	query := fmt.Sprintf(`

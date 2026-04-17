@@ -573,6 +573,21 @@ func (sm *SourceManager) QueryContractDataSnapshot(ctx context.Context, startLed
 	return nil, fmt.Errorf("unknown source mode: %s", mode)
 }
 
+// QueryBalanceHolderSnapshots delegates to the appropriate reader.
+func (sm *SourceManager) QueryBalanceHolderSnapshots(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
+	sm.mu.RLock()
+	mode := sm.mode
+	sm.mu.RUnlock()
+
+	switch mode {
+	case SourceModeHot:
+		return sm.hotReader.QueryBalanceHolderSnapshots(ctx, startLedger, endLedger)
+	case SourceModeBackfill:
+		return sm.coldReader.QueryBalanceHolderSnapshots(ctx, startLedger, endLedger)
+	}
+	return nil, fmt.Errorf("unknown source mode: %s", mode)
+}
+
 // QueryContractCodeSnapshot delegates to the appropriate reader
 func (sm *SourceManager) QueryContractCodeSnapshot(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
 	sm.mu.RLock()

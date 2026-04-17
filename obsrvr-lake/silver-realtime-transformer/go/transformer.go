@@ -371,7 +371,12 @@ func (rt *RealtimeTransformer) migrateSorobanTransfers() {
 	//       and is ~99.7% false on transfer events in prod, which caused the
 	//       balance aggregation filter (WHERE transaction_successful=true) to
 	//       drop every backfilled transfer and leave C... balances empty.
-	const currentMigrationVersion = 4
+	//   v5: 2026-04-16 — add Step 9 (state-based balance rebuild from
+	//       contract_data_snapshot_v1.balance_holder). Required so historical
+	//       SAC balances (including newly-decoded native XLM entries from the
+	//       ingester fix) land in address_balances_current without waiting
+	//       for new on-chain activity per wallet.
+	const currentMigrationVersion = 5
 
 	// Ensure migration-tracking table exists.
 	if _, err := rt.silverDB.ExecContext(ctx, `
@@ -689,6 +694,27 @@ func (rt *RealtimeTransformer) migrateSorobanTransfers() {
 			return
 		}
 		log.Printf("✅ Soroban migration: rebuilt %d address balance rows", balCount)
+
+		// Step 9: Rebuild state-based address balances from
+		// contract_data_snapshot_v1. This fills in SAC holdings (notably
+		// native XLM) that event aggregation can't cover completely.
+		log.Printf("🔄 Soroban migration: rebuilding state-based address balances for ledgers %d to %d", minLedger, maxLedger)
+		stateTx, err := rt.silverDB.BeginTx(ctx, nil)
+		if err != nil {
+			log.Printf("⚠️  Soroban migration: failed to begin tx for state balances rebuild: %v", err)
+			return
+		}
+		stateCount, err := rt.transformAddressBalancesFromContractState(ctx, stateTx, minLedger, maxLedger)
+		if err != nil {
+			log.Printf("⚠️  Soroban migration: failed to rebuild state balances: %v", err)
+			stateTx.Rollback()
+			return
+		}
+		if err := stateTx.Commit(); err != nil {
+			log.Printf("⚠️  Soroban migration: failed to commit state balances rebuild: %v", err)
+			return
+		}
+		log.Printf("✅ Soroban migration: upserted %d state-based balance rows", stateCount)
 	}
 
 	// Record completion so we don't rerun on next startup unless the version bumps.
@@ -885,6 +911,10 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 		{"semantic_entities", rt.transformSemanticEntities},
 		{"semantic_flows", rt.transformSemanticFlows},
 		{"address_balances_current", rt.transformAddressBalancesCurrent},
+		// State-based balance source runs AFTER event-aggregated balances so
+		// it can overwrite them via ON CONFLICT when state is authoritative
+		// (SAC Balance entries, including native XLM).
+		{"address_balances_state", rt.transformAddressBalancesFromContractState},
 		{"semantic_contract_functions", rt.transformSemanticContractFunctions},
 		{"semantic_asset_stats", rt.transformSemanticAssetStats},
 		{"semantic_dex_pairs", rt.transformSemanticDexPairs},
@@ -3106,6 +3136,106 @@ func (rt *RealtimeTransformer) transformAddressBalancesCurrent(ctx context.Conte
 		return 0, fmt.Errorf("failed to insert token address balances: %w", err)
 	}
 	count, _ := result.RowsAffected()
+	return count, nil
+}
+
+// transformAddressBalancesFromContractState populates address_balances_current
+// from bronze contract_data_snapshot_v1 where the ingester decoded a
+// Balance(Address) entry. This gives an authoritative state-based source for
+// C... holdings (including native XLM SAC balances that the previous cycle's
+// event-aggregation path couldn't fully capture).
+//
+// State rows win over event-aggregated rows ON CONFLICT when the state entry
+// has a newer last_updated_ledger — the ledger-entry snapshot is the
+// canonical on-chain truth.
+func (rt *RealtimeTransformer) transformAddressBalancesFromContractState(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	rows, err := rt.sourceManager.QueryBalanceHolderSnapshots(ctx, startLedger, endLedger)
+	if err != nil {
+		return 0, fmt.Errorf("query balance holder snapshots: %w", err)
+	}
+	defer rows.Close()
+
+	// UPSERT one row at a time. Volumes here are modest (one row per
+	// (token_contract, holder) pair in the window) so batching isn't
+	// needed for the MVP.
+	const upsert = `
+		INSERT INTO address_balances_current (
+			owner_address, asset_key, asset_type, token_contract_id,
+			asset_code, asset_issuer, symbol, decimals,
+			balance_raw, balance_display, balance_source,
+			last_updated_ledger, last_updated_at, updated_at
+		)
+		SELECT
+			$1::text AS owner_address,
+			$2::text AS asset_key,
+			CASE
+				WHEN $3::text IS NULL OR $3::text = '' THEN 'soroban_token'
+				WHEN $4::text IS NOT NULL AND LENGTH($4::text) <= 4 THEN 'credit_alphanum4'
+				WHEN $4::text IS NOT NULL THEN 'credit_alphanum12'
+				ELSE 'soroban_token'
+			END AS asset_type,
+			$2::text AS token_contract_id,
+			COALESCE($4::text, 'XLM') AS asset_code,
+			$5::text AS asset_issuer,
+			COALESCE(tr.token_symbol, $4::text, 'XLM') AS symbol,
+			COALESCE(tr.token_decimals, 7) AS decimals,
+			$6::numeric AS balance_raw,
+			CASE
+				WHEN COALESCE(tr.token_decimals, 7) = 0 THEN ($6::numeric)::text
+				ELSE ($6::numeric / POWER(10::numeric, COALESCE(tr.token_decimals, 7)))::text
+			END AS balance_display,
+			'contract_storage_state' AS balance_source,
+			$7::bigint AS last_updated_ledger,
+			$8::timestamp AS last_updated_at,
+			NOW() AS updated_at
+		FROM (SELECT 1) dummy
+		LEFT JOIN token_registry tr ON tr.contract_id = $2::text
+		ON CONFLICT (owner_address, asset_key) DO UPDATE SET
+			balance_raw = EXCLUDED.balance_raw,
+			balance_display = EXCLUDED.balance_display,
+			balance_source = EXCLUDED.balance_source,
+			last_updated_ledger = EXCLUDED.last_updated_ledger,
+			last_updated_at = EXCLUDED.last_updated_at,
+			updated_at = NOW()
+		WHERE EXCLUDED.last_updated_ledger >= address_balances_current.last_updated_ledger
+	`
+
+	var count int64
+	for rows.Next() {
+		var (
+			contractID         string
+			balanceHolder      string
+			balance            string
+			assetType          sql.NullString
+			assetCode          sql.NullString
+			assetIssuer        sql.NullString
+			lastModifiedLedger int64
+			closedAt           time.Time
+		)
+		if err := rows.Scan(
+			&contractID, &balanceHolder, &balance,
+			&assetType, &assetCode, &assetIssuer,
+			&lastModifiedLedger, &closedAt,
+		); err != nil {
+			return count, fmt.Errorf("scan balance holder row: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, upsert,
+			balanceHolder,       // $1 owner_address
+			contractID,          // $2 asset_key + token_contract_id
+			assetType.String,    // $3 asset_type hint
+			assetCode.String,    // $4 asset_code
+			assetIssuer.String,  // $5 asset_issuer
+			balance,             // $6 balance_raw (numeric string)
+			lastModifiedLedger,  // $7 last_updated_ledger
+			closedAt,            // $8 last_updated_at
+		); err != nil {
+			return count, fmt.Errorf("upsert contract_storage_state balance: %w", err)
+		}
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		return count, fmt.Errorf("iterate balance holder rows: %w", err)
+	}
 	return count, nil
 }
 

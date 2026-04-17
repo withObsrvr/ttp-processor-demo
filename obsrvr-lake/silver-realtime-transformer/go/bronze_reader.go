@@ -966,6 +966,36 @@ func (br *BronzeReader) QueryContractDataSnapshot(ctx context.Context, startLedg
 	return rows, nil
 }
 
+// QueryBalanceHolderSnapshots reads rows from contract_data_snapshot_v1 where the
+// ingester decoded a Balance(Address) entry (balance_holder populated). This is the
+// state-based source for address_balances_current. Unlike QueryContractDataSnapshot
+// it projects only what's needed for balance materialization and filters out rows
+// without decoded balances.
+func (br *BronzeReader) QueryBalanceHolderSnapshots(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
+	query := `
+		SELECT DISTINCT ON (contract_id, balance_holder)
+			contract_id,
+			balance_holder,
+			balance,
+			asset_type,
+			asset_code,
+			asset_issuer,
+			last_modified_ledger,
+			closed_at
+		FROM contract_data_snapshot_v1
+		WHERE ledger_sequence BETWEEN $1 AND $2
+		  AND deleted = false
+		  AND balance_holder IS NOT NULL
+		  AND balance IS NOT NULL
+		ORDER BY contract_id, balance_holder, ledger_sequence DESC
+	`
+	rows, err := br.db.QueryContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query balance holder snapshots: %w", err)
+	}
+	return rows, nil
+}
+
 // QueryContractCodeSnapshot reads contract code snapshots (deduplicated by contract_code_hash)
 // Used for contract_code_current upsert
 func (br *BronzeReader) QueryContractCodeSnapshot(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {

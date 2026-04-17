@@ -13,6 +13,7 @@ import (
 	"time"
 
 	_ "github.com/duckdb/duckdb-go/v2"
+	"github.com/stellar/go/amount"
 	"github.com/stellar/go/strkey"
 )
 
@@ -606,7 +607,7 @@ func (r *UnifiedDuckDBReader) GetAccountsListWithCursor(ctx context.Context, fil
 
 	// Apply minimum balance filter
 	if filters.MinBalance != nil {
-		minBalXLM := float64(*filters.MinBalance) / 10000000.0
+		minBalXLM := amount.StringFromInt64(*filters.MinBalance)
 		query += fmt.Sprintf(" AND CAST(balance AS DECIMAL) >= $%d", argNum)
 		args = append(args, minBalXLM)
 		argNum++
@@ -644,7 +645,7 @@ func (r *UnifiedDuckDBReader) GetAccountsListWithCursor(ctx context.Context, fil
 			argNum++
 
 		default: // "balance"
-			cursorBalXLM := float64(filters.Cursor.Balance) / 10000000.0
+			cursorBalXLM := amount.StringFromInt64(filters.Cursor.Balance)
 			if isAsc {
 				query += fmt.Sprintf(" AND (CAST(balance AS DECIMAL) > $%d OR (CAST(balance AS DECIMAL) = $%d AND account_id > $%d))", argNum, argNum, argNum+1)
 			} else {
@@ -1278,7 +1279,7 @@ func (r *UnifiedDuckDBReader) GetTokenHolders(ctx context.Context, filters Token
 		if isNative {
 			// For XLM, balance is in stroops or decimal format
 			// Convert min_balance stroops to decimal for comparison
-			minBalDecimal := float64(*filters.MinBalance) / 10000000.0
+			minBalDecimal := amount.StringFromInt64(*filters.MinBalance)
 			query += fmt.Sprintf(` AND (
 				CASE
 					WHEN balance_str LIKE '%%.%%' THEN CAST(balance_str AS DOUBLE)
@@ -1297,7 +1298,7 @@ func (r *UnifiedDuckDBReader) GetTokenHolders(ctx context.Context, filters Token
 
 	// Apply cursor pagination (paginating by balance DESC, account_id for tie-breaking)
 	if filters.Cursor != nil {
-		cursorBalDecimal := float64(filters.Cursor.Balance) / 10000000.0
+		cursorBalDecimal := amount.StringFromInt64(filters.Cursor.Balance)
 		if isNative {
 			query += fmt.Sprintf(` AND (
 				(CASE
@@ -1557,7 +1558,7 @@ func (r *UnifiedDuckDBReader) GetTokenStats(ctx context.Context, assetCode, asse
 		if err != nil {
 			return nil, fmt.Errorf("failed to get token stats: %w", err)
 		}
-		totalSupply = float64(totalSupplyStroops) / 10000000.0
+		totalSupply = float64(totalSupplyStroops) // raw stroops as float for ratio math
 
 		// Get top 10 concentration
 		top10Query := fmt.Sprintf(`
@@ -1590,11 +1591,20 @@ func (r *UnifiedDuckDBReader) GetTokenStats(ctx context.Context, assetCode, asse
 		if err := r.db.QueryRowContext(ctx, top10Query, assetCode, assetIssuer).Scan(&top10TotalStroops); err != nil {
 			log.Printf("Warning: failed to get top 10 concentration: %v", err)
 		} else if totalSupply > 0 {
-			stats.Top10Concentration = float64(top10TotalStroops) / 10000000.0 / totalSupply
+			// Both numerator and denominator are stroops — 10^7 factors cancel
+			stats.Top10Concentration = float64(top10TotalStroops) / totalSupply
 		}
 	}
 
-	stats.CirculatingSupply = fmt.Sprintf("%.7f", totalSupply)
+	// Use SDK amount helper for precision-safe stroop→XLM display.
+	// totalSupply here is raw stroops as float64 — convert back to int64
+	// for the helper. For the non-native path, CirculatingSupply is set
+	// separately via formatBigNumericStroops (line 3794).
+	if totalSupply > 0 {
+		stats.CirculatingSupply = amount.StringFromInt64(int64(totalSupply))
+	} else {
+		stats.CirculatingSupply = "0.0000000"
+	}
 
 	// Get 24h transfer stats from enriched_history_operations
 	// This works for both XLM and other assets

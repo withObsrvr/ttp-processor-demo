@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/lib/pq"
+	"github.com/stellar/go/amount"
 	"github.com/stellar/go/xdr"
 )
 
@@ -508,7 +509,7 @@ func (h *SilverHotReader) GetServingAssetList(ctx context.Context, filters Asset
 		orderCol = "s.volume_24h"
 		if filters.Cursor != nil {
 			query += fmt.Sprintf(" AND (s.volume_24h < $%d OR (s.volume_24h = $%d AND a.asset_code > $%d))", argPos, argPos, argPos+1)
-			args = append(args, float64(filters.Cursor.Volume24h)/10000000.0, filters.Cursor.AssetCode)
+			args = append(args, amount.StringFromInt64(filters.Cursor.Volume24h), filters.Cursor.AssetCode)
 			argPos += 2
 		}
 	} else {
@@ -1706,7 +1707,7 @@ func (h *SilverHotReader) GetAccountsList(ctx context.Context, filters AccountLi
 	// Apply minimum balance filter (balance is stored as decimal string in XLM)
 	if filters.MinBalance != nil {
 		// Convert stroops to XLM for comparison (divide by 10^7)
-		minBalXLM := float64(*filters.MinBalance) / 10000000.0
+		minBalXLM := amount.StringFromInt64(*filters.MinBalance)
 		query += " AND CAST(balance AS DECIMAL) >= $" + fmt.Sprint(len(args)+1)
 		args = append(args, minBalXLM)
 	}
@@ -1749,7 +1750,7 @@ func (h *SilverHotReader) GetAccountsList(ctx context.Context, filters AccountLi
 
 		default: // "balance" or empty
 			// Paginate based on balance, tie-break by account_id
-			cursorBalXLM := float64(filters.Cursor.Balance) / 10000000.0
+			cursorBalXLM := amount.StringFromInt64(filters.Cursor.Balance)
 			if isAsc {
 				query += " AND (CAST(balance AS DECIMAL) > $" + fmt.Sprint(len(args)+1) +
 					" OR (CAST(balance AS DECIMAL) = $" + fmt.Sprint(len(args)+2) +
@@ -2722,9 +2723,10 @@ func buildAssetInfo(assetType, assetCode, assetIssuer string) AssetInfo {
 	return info
 }
 
-// formatStroops converts stroops (int64) to XLM string with 7 decimal places
+// formatStroops converts stroops (int64) to XLM string with 7 decimal places.
+// Uses the SDK's amount helper for precision-safe conversion (no float64).
 func formatStroops(stroops int64) string {
-	return fmt.Sprintf("%.7f", float64(stroops)/10000000.0)
+	return amount.StringFromInt64(stroops)
 }
 
 // ============================================

@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/stellar/go-stellar-sdk/amount"
 )
 
 type AccountBalancesProjector struct {
@@ -290,10 +291,10 @@ func authorizedFromFlags(flags *int32) *bool {
 	return &v
 }
 
-func stroopsToDisplay(v *int64) *float64 {
+func stroopsToDisplay(v *int64) *string {
 	if v == nil {
 		return nil
 	}
-	f := float64(*v) / 10000000.0
-	return &f
+	s := amount.StringFromInt64(*v)
+	return &s
 }
