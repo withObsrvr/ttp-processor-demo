@@ -67,9 +67,13 @@ func NewIndexReader(config IndexConfig) (*IndexReader, error) {
 	}
 
 	// Build catalog path (PostgreSQL connection string)
-	catalogPath := fmt.Sprintf("ducklake:postgres:postgresql://%s:%s@%s:%d/%s?sslmode=require",
+	sslMode := config.CatalogSSLMode
+	if sslMode == "" {
+		sslMode = "require"
+	}
+	catalogPath := fmt.Sprintf("ducklake:postgres:postgresql://%s:%s@%s:%d/%s?sslmode=%s",
 		config.CatalogUser, config.CatalogPassword,
-		config.CatalogHost, config.CatalogPort, config.CatalogDatabase)
+		config.CatalogHost, config.CatalogPort, config.CatalogDatabase, sslMode)
 
 	// Build data path (S3 bucket)
 	dataPath := fmt.Sprintf("s3://%s/", config.S3Bucket)

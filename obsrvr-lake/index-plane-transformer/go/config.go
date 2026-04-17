@@ -54,6 +54,7 @@ type IndexColdConfig struct {
 	CatalogDatabase   string `yaml:"catalog_database"`
 	CatalogUser       string `yaml:"catalog_user"`
 	CatalogPassword   string `yaml:"catalog_password"`
+	CatalogSSLMode    string `yaml:"catalog_sslmode"`
 	S3Endpoint        string `yaml:"s3_endpoint"`
 	S3Region          string `yaml:"s3_region"`
 	S3AccessKeyID     string `yaml:"s3_access_key_id"`
@@ -103,6 +104,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.BronzeHot.SSLMode == "" {
 		config.BronzeHot.SSLMode = "require"
+	}
+	if config.IndexCold.CatalogSSLMode == "" {
+		config.IndexCold.CatalogSSLMode = "require"
 	}
 	if config.IndexCold.PartitionSize == 0 {
 		config.IndexCold.PartitionSize = 100000

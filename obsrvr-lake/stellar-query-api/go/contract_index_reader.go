@@ -65,9 +65,13 @@ func NewContractIndexReader(config ContractIndexConfig) (*ContractIndexReader, e
 	}
 
 	// Build catalog path (PostgreSQL connection string)
-	catalogPath := fmt.Sprintf("ducklake:postgres:postgresql://%s:%s@%s:%d/%s?sslmode=require",
+	sslMode := config.CatalogSSLMode
+	if sslMode == "" {
+		sslMode = "require"
+	}
+	catalogPath := fmt.Sprintf("ducklake:postgres:postgresql://%s:%s@%s:%d/%s?sslmode=%s",
 		config.CatalogUser, config.CatalogPassword,
-		config.CatalogHost, config.CatalogPort, config.CatalogDatabase)
+		config.CatalogHost, config.CatalogPort, config.CatalogDatabase, sslMode)
 
 	// Build data path (S3 bucket)
 	dataPath := fmt.Sprintf("s3://%s/", config.S3Bucket)
@@ -289,11 +293,11 @@ func (cir *ContractIndexReader) GetIndexStats(ctx context.Context) (map[string]i
 
 	return map[string]interface{}{
 		"total_contract_ledger_pairs": totalPairs,
-		"unique_contracts":             uniqueContracts,
-		"min_ledger":                   minLedger,
-		"max_ledger":                   maxLedger,
-		"ledger_coverage":              maxLedger - minLedger + 1,
-		"last_updated":                 lastUpdated.Format(time.RFC3339),
+		"unique_contracts":            uniqueContracts,
+		"min_ledger":                  minLedger,
+		"max_ledger":                  maxLedger,
+		"ledger_coverage":             maxLedger - minLedger + 1,
+		"last_updated":                lastUpdated.Format(time.RFC3339),
 	}, nil
 }
 
