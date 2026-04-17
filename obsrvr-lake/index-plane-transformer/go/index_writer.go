@@ -77,9 +77,9 @@ func (iw *IndexWriter) initialize() error {
 
 	// Attach DuckLake catalog
 	log.Println("🔗 Attaching DuckLake catalog...")
-	catalogPath := fmt.Sprintf("ducklake:postgres:postgresql://%s:%s@%s:%d/%s?sslmode=require",
+	catalogPath := fmt.Sprintf("ducklake:postgres:postgresql://%s:%s@%s:%d/%s?sslmode=%s",
 		iw.config.CatalogUser, iw.config.CatalogPassword,
-		iw.config.CatalogHost, iw.config.CatalogPort, iw.config.CatalogDatabase)
+		iw.config.CatalogHost, iw.config.CatalogPort, iw.config.CatalogDatabase, iw.config.CatalogSSLMode)
 
 	dataPath := fmt.Sprintf("s3://%s/", iw.config.S3Bucket)
 

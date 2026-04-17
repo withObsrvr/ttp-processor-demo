@@ -21,6 +21,7 @@ index_cold:
   schema_name: "index"
   table_name: "tx_hash_index"
   duckdb_path: "/tmp/duckdb/index_writer.db"
+  catalog_sslmode: "require"
 
   # B2 storage for Index Plane
   s3_endpoint: "s3.us-west-004.backblazeb2.com"
