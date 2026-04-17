@@ -57,9 +57,9 @@ type LedgerData struct {
 	IngestionTimestamp   time.Time
 	LedgerRange          uint32
 	// Soroban aggregates per ledger
-	SorobanOpCount       *int
-	TotalFeeCharged      *int64
-	ContractEventsCount  *int
+	SorobanOpCount      *int
+	TotalFeeCharged     *int64
+	ContractEventsCount *int
 }
 
 // NewWriter creates a new PostgreSQL writer
@@ -70,6 +70,141 @@ func NewWriter(db *pgxpool.Pool, config *Config, checkpoint *Checkpoint, healthS
 		checkpoint:   checkpoint,
 		healthServer: healthServer,
 	}
+}
+
+// bulkUpsertCopy performs a high-throughput upsert by COPYing rows into a
+// per-call TEMP table shaped like target (LIKE ... INCLUDING DEFAULTS,
+// ON COMMIT DROP) and then running a single INSERT … SELECT DISTINCT ON (…)
+// FROM <tmp> ON CONFLICT … upsert from it.
+//
+// Compared with row-by-row tx.Exec this replaces N network round trips per
+// batch (one per row) with exactly 3, and lets the target's indexes be
+// maintained once in bulk rather than per row. The DISTINCT ON collapses
+// any intra-batch duplicates on the conflict key, which the old per-row
+// path handled implicitly via repeated ON CONFLICT DO UPDATEs.
+//
+// Parameters:
+//   - target:       target table (e.g. "accounts_snapshot_v1")
+//   - columns:      columns to COPY, in the same order as each row's values
+//   - conflictCols: unique/PK columns used for both DISTINCT ON and ON CONFLICT
+//   - updateCols:   columns set via EXCLUDED on conflict; empty ⇒ DO NOTHING
+//   - rows:         [][]any, outer length = row count, inner matches `columns`
+func (w *Writer) bulkUpsertCopy(
+	ctx context.Context,
+	tx pgx.Tx,
+	target string,
+	columns []string,
+	conflictCols []string,
+	updateCols []string,
+	rows [][]interface{},
+) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	if len(conflictCols) == 0 {
+		return fmt.Errorf("bulkUpsertCopy(%s): conflictCols required", target)
+	}
+
+	tmp := "_tmp_" + target
+
+	// Per-call temp table shaped like the target. ON COMMIT DROP scopes the
+	// lifetime to the enclosing transaction so repeated calls across batches
+	// don't accumulate state. LIKE … INCLUDING DEFAULTS copies the column
+	// definitions only — no indexes, constraints, or check expressions —
+	// which keeps COPY O(rows) with no per-row index cost.
+	_, err := tx.Exec(ctx, fmt.Sprintf(
+		`CREATE TEMP TABLE %s (LIKE %s INCLUDING DEFAULTS) ON COMMIT DROP`,
+		tmp, target,
+	))
+	if err != nil {
+		return fmt.Errorf("create temp table %s: %w", tmp, err)
+	}
+
+	copied, err := tx.CopyFrom(ctx, pgx.Identifier{tmp}, columns, pgx.CopyFromRows(rows))
+	if err != nil {
+		return fmt.Errorf("COPY %d rows into %s: %w", len(rows), tmp, err)
+	}
+	if int(copied) != len(rows) {
+		log.Printf("WARNING: COPY into %s expected %d rows, got %d", tmp, len(rows), copied)
+	}
+
+	colList := strings.Join(columns, ", ")
+	conflictList := strings.Join(conflictCols, ", ")
+
+	var onConflict string
+	if len(updateCols) == 0 {
+		onConflict = "DO NOTHING"
+	} else {
+		parts := make([]string, len(updateCols))
+		for i, c := range updateCols {
+			parts[i] = fmt.Sprintf("%s = EXCLUDED.%s", c, c)
+		}
+		onConflict = "DO UPDATE SET " + strings.Join(parts, ", ")
+	}
+
+	// DISTINCT ON (<conflictCols>) deduplicates within this batch. Without
+	// it, Postgres raises "ON CONFLICT DO UPDATE command cannot affect row
+	// a second time" when the same conflict key appears twice in the COPY —
+	// which happens in practice for e.g. the same contract_data key modified
+	// multiple times within one ledger range.
+	_, err = tx.Exec(ctx, fmt.Sprintf(
+		`INSERT INTO %s (%s)
+		 SELECT DISTINCT ON (%s) %s FROM %s
+		 ON CONFLICT (%s) %s`,
+		target, colList, conflictList, colList, tmp, conflictList, onConflict,
+	))
+	if err != nil {
+		return fmt.Errorf("upsert from %s into %s: %w", tmp, target, err)
+	}
+	return nil
+}
+
+// bulkInsertCopy COPYs rows directly into `target` with no conflict
+// handling. Use this for append-only tables that carry no unique or
+// exclusion constraints (e.g. token_transfers_stream_v1) — skipping the
+// temp-table + INSERT SELECT round trip is the fastest path available.
+func (w *Writer) bulkInsertCopy(
+	ctx context.Context,
+	tx pgx.Tx,
+	target string,
+	columns []string,
+	rows [][]interface{},
+) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	copied, err := tx.CopyFrom(ctx, pgx.Identifier{target}, columns, pgx.CopyFromRows(rows))
+	if err != nil {
+		return fmt.Errorf("COPY %d rows into %s: %w", len(rows), target, err)
+	}
+	if int(copied) != len(rows) {
+		log.Printf("WARNING: COPY into %s expected %d rows, got %d", target, len(rows), copied)
+	}
+	return nil
+}
+
+// batchExec sends N queries as a single pipelined pgx.Batch, replacing
+// N synchronous tx.Exec round trips with one. Use this for low-row-count
+// inserters where the TEMP-table overhead of bulkUpsertCopy isn't worth it
+// (typically <100 rows/batch). The caller is responsible for baking the
+// full INSERT … ON CONFLICT … SQL into `query`; each `rows[i]` is the
+// parameter slice for one queued invocation.
+func batchExec(ctx context.Context, tx pgx.Tx, query string, rows [][]interface{}) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	b := &pgx.Batch{}
+	for _, r := range rows {
+		b.Queue(query, r...)
+	}
+	br := tx.SendBatch(ctx, b)
+	defer br.Close()
+	for i := range rows {
+		if _, err := br.Exec(); err != nil {
+			return fmt.Errorf("batch exec row %d: %w", i, err)
+		}
+	}
+	return nil
 }
 
 // WriteBatch writes a batch of ledgers to PostgreSQL
@@ -93,6 +228,7 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 
 	// Process each ledger
 	var totalTxCount, totalOpCount uint64
+	allLedgers := make([]LedgerData, 0, len(rawLedgers))
 	var allTransactions []TransactionData
 	var allOperations []OperationData
 	var allEffects []EffectData
@@ -190,10 +326,10 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 			ledgerData.SorobanOpCount = &sorobanOps
 		}
 
-		// Insert ledger (after operations extraction so we have soroban op count)
-		if err := w.insertLedger(ctx, tx, ledgerData); err != nil {
-			return fmt.Errorf("failed to insert ledger %d: %w", ledgerData.Sequence, err)
-		}
+		// Accumulate ledger (actual insert runs as a single bulk COPY after
+		// the loop — see insertLedgers below). Must sit after the operations
+		// extraction above so SorobanOpCount is populated before the copy.
+		allLedgers = append(allLedgers, *ledgerData)
 
 		// Extract effects via library
 		libEffects, err := extract.ExtractEffects(input)
@@ -388,6 +524,14 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 
 		totalTxCount += uint64(ledgerData.TransactionCount)
 		totalOpCount += uint64(ledgerData.OperationCount)
+	}
+
+	// Insert all ledgers (one COPY for the whole batch)
+	if len(allLedgers) > 0 {
+		if err := w.insertLedgers(ctx, tx, allLedgers); err != nil {
+			return fmt.Errorf("failed to insert ledgers: %w", err)
+		}
+		log.Printf("Inserted %d ledgers", len(allLedgers))
 	}
 
 	// Insert all transactions
@@ -1362,66 +1506,44 @@ func convertTokenTransfer(r extract.TokenTransferData) TokenTransferData {
 	}
 }
 
-// insertLedger inserts a single ledger into PostgreSQL
-func (w *Writer) insertLedger(ctx context.Context, tx pgx.Tx, ledger *LedgerData) error {
-	query := `
-		INSERT INTO ledgers_row_v2 (
-			sequence, ledger_hash, previous_ledger_hash, closed_at,
-			protocol_version, total_coins, fee_pool, base_fee, base_reserve,
-			max_tx_set_size, successful_tx_count, failed_tx_count,
-			ingestion_timestamp, ledger_range,
-			transaction_count, operation_count, tx_set_operation_count,
-			soroban_fee_write1kb, node_id, signature, ledger_header,
-			bucket_list_size, live_soroban_state_size, evicted_keys_count,
-			soroban_op_count, total_fee_charged, contract_events_count
-		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-			$11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-			$21, $22, $23, $24, $25, $26, $27
-		)
-		ON CONFLICT (sequence) DO UPDATE SET
-			ledger_hash = EXCLUDED.ledger_hash,
-			closed_at = EXCLUDED.closed_at,
-			transaction_count = EXCLUDED.transaction_count,
-			operation_count = EXCLUDED.operation_count,
-			successful_tx_count = EXCLUDED.successful_tx_count,
-			failed_tx_count = EXCLUDED.failed_tx_count,
-			soroban_op_count = EXCLUDED.soroban_op_count,
-			total_fee_charged = EXCLUDED.total_fee_charged,
-			contract_events_count = EXCLUDED.contract_events_count
-	`
-
-	_, err := tx.Exec(ctx, query,
-		ledger.Sequence,
-		ledger.LedgerHash,
-		ledger.PreviousLedgerHash,
-		ledger.ClosedAt,
-		ledger.ProtocolVersion,
-		ledger.TotalCoins,
-		ledger.FeePool,
-		ledger.BaseFee,
-		ledger.BaseReserve,
-		ledger.MaxTxSetSize,
-		ledger.SuccessfulTxCount,
-		ledger.FailedTxCount,
-		ledger.IngestionTimestamp,
-		ledger.LedgerRange,
-		ledger.TransactionCount,
-		ledger.OperationCount,
-		ledger.TxSetOperationCount,
-		ledger.SorobanFeeWrite1KB,
-		ledger.NodeID,
-		ledger.Signature,
-		ledger.LedgerHeader,
-		ledger.BucketListSize,
-		ledger.LiveSorobanStateSize,
-		ledger.EvictedKeysCount,
-		ledger.SorobanOpCount,
-		ledger.TotalFeeCharged,
-		ledger.ContractEventsCount,
+// insertLedgers bulk-upserts ledgers via COPY → temp → INSERT SELECT.
+// Replaces the old per-ledger tx.Exec (previously invoked inside the
+// per-ledger loop) with a single COPY for the whole batch.
+func (w *Writer) insertLedgers(ctx context.Context, tx pgx.Tx, ledgers []LedgerData) error {
+	columns := []string{
+		"sequence", "ledger_hash", "previous_ledger_hash", "closed_at",
+		"protocol_version", "total_coins", "fee_pool", "base_fee", "base_reserve",
+		"max_tx_set_size", "successful_tx_count", "failed_tx_count",
+		"ingestion_timestamp", "ledger_range",
+		"transaction_count", "operation_count", "tx_set_operation_count",
+		"soroban_fee_write1kb", "node_id", "signature", "ledger_header",
+		"bucket_list_size", "live_soroban_state_size", "evicted_keys_count",
+		"soroban_op_count", "total_fee_charged", "contract_events_count",
+	}
+	rows := make([][]interface{}, len(ledgers))
+	for i := range ledgers {
+		l := &ledgers[i]
+		rows[i] = []interface{}{
+			l.Sequence, l.LedgerHash, l.PreviousLedgerHash, l.ClosedAt,
+			l.ProtocolVersion, l.TotalCoins, l.FeePool, l.BaseFee, l.BaseReserve,
+			l.MaxTxSetSize, l.SuccessfulTxCount, l.FailedTxCount,
+			l.IngestionTimestamp, l.LedgerRange,
+			l.TransactionCount, l.OperationCount, l.TxSetOperationCount,
+			l.SorobanFeeWrite1KB, l.NodeID, l.Signature, l.LedgerHeader,
+			l.BucketListSize, l.LiveSorobanStateSize, l.EvictedKeysCount,
+			l.SorobanOpCount, l.TotalFeeCharged, l.ContractEventsCount,
+		}
+	}
+	return w.bulkUpsertCopy(ctx, tx, "ledgers_row_v2", columns,
+		[]string{"sequence"},
+		[]string{
+			"ledger_hash", "closed_at",
+			"transaction_count", "operation_count",
+			"successful_tx_count", "failed_tx_count",
+			"soroban_op_count", "total_fee_charged", "contract_events_count",
+		},
+		rows,
 	)
-
-	return err
 }
 
 // insertTransactions inserts transactions into PostgreSQL
@@ -1430,37 +1552,24 @@ func (w *Writer) insertTransactions(ctx context.Context, tx pgx.Tx, transactions
 		return nil
 	}
 
-	query := `
-		INSERT INTO transactions_row_v2 (
-			ledger_sequence, transaction_hash, transaction_id, source_account, fee_charged,
-			max_fee, successful, transaction_result_code, operation_count,
-			memo_type, memo, created_at, account_sequence, ledger_range,
-			signatures_count, new_account, rent_fee_charged,
-			soroban_resources_instructions, soroban_resources_read_bytes,
-			soroban_resources_write_bytes
-		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-			$11, $12, $13, $14, $15, $16, $17, $18, $19, $20
-		)
-		ON CONFLICT (ledger_sequence, transaction_hash) DO UPDATE SET
-			transaction_id = EXCLUDED.transaction_id,
-			successful = EXCLUDED.successful,
-			fee_charged = EXCLUDED.fee_charged,
-			rent_fee_charged = EXCLUDED.rent_fee_charged,
-			soroban_resources_instructions = EXCLUDED.soroban_resources_instructions,
-			soroban_resources_read_bytes = EXCLUDED.soroban_resources_read_bytes,
-			soroban_resources_write_bytes = EXCLUDED.soroban_resources_write_bytes
-	`
+	columns := []string{
+		"ledger_sequence", "transaction_hash", "transaction_id", "source_account", "fee_charged",
+		"max_fee", "successful", "transaction_result_code", "operation_count",
+		"memo_type", "memo", "created_at", "account_sequence", "ledger_range",
+		"signatures_count", "new_account", "rent_fee_charged",
+		"soroban_resources_instructions", "soroban_resources_read_bytes",
+		"soroban_resources_write_bytes",
+	}
 
+	rows := make([][]interface{}, len(transactions))
 	for i := range transactions {
 		txData := &transactions[i]
-		// Sanitize text fields. Stellar text memos are arbitrary bytes
-		// (up to 28) and can legally contain NUL — PostgreSQL TEXT does
-		// not allow 0x00, so we strip it. MemoType and other free-form
-		// strings get the same treatment defensively.
+		// Stellar text memos are arbitrary bytes (up to 28) and can legally
+		// contain NUL — PostgreSQL TEXT does not allow 0x00 so we strip.
+		// MemoType and other free-form strings get the same treatment.
 		txData.Memo = sanitizeStringPtr(txData.Memo)
 		txData.MemoType = sanitizeStringPtr(txData.MemoType)
-		_, err := tx.Exec(ctx, query,
+		rows[i] = []interface{}{
 			txData.LedgerSequence,
 			txData.TransactionHash,
 			txData.TransactionID,
@@ -1481,13 +1590,18 @@ func (w *Writer) insertTransactions(ctx context.Context, tx pgx.Tx, transactions
 			txData.SorobanResourcesInstructions,
 			txData.SorobanResourcesReadBytes,
 			txData.SorobanResourcesWriteBytes,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to insert transaction %s: %w", txData.TransactionHash, err)
 		}
 	}
-
-	return nil
+	return w.bulkUpsertCopy(ctx, tx, "transactions_row_v2", columns,
+		[]string{"ledger_sequence", "transaction_hash"},
+		[]string{
+			"transaction_id", "successful", "fee_charged", "rent_fee_charged",
+			"soroban_resources_instructions",
+			"soroban_resources_read_bytes",
+			"soroban_resources_write_bytes",
+		},
+		rows,
+	)
 }
 
 // insertOperations bulk-inserts operations using pgx Batch for efficiency.
@@ -1660,7 +1774,7 @@ func (w *Writer) insertTrades(ctx context.Context, tx pgx.Tx, trades []TradeData
 		return nil
 	}
 
-	query := `
+	const query = `
 		INSERT INTO trades_row_v1 (
 			ledger_sequence, transaction_hash, operation_index, trade_index,
 			trade_type, trade_timestamp,
@@ -1674,33 +1788,18 @@ func (w *Writer) insertTrades(ctx context.Context, tx pgx.Tx, trades []TradeData
 		ON CONFLICT (ledger_sequence, transaction_hash, operation_index, trade_index) DO NOTHING
 	`
 
-	for _, tradeData := range trades {
-		_, err := tx.Exec(ctx, query,
-			tradeData.LedgerSequence,
-			tradeData.TransactionHash,
-			tradeData.OperationIndex,
-			tradeData.TradeIndex,
-			tradeData.TradeType,
-			tradeData.TradeTimestamp,
-			tradeData.SellerAccount,
-			tradeData.SellingAssetCode,
-			tradeData.SellingAssetIssuer,
-			tradeData.SellingAmount,
-			tradeData.BuyerAccount,
-			tradeData.BuyingAssetCode,
-			tradeData.BuyingAssetIssuer,
-			tradeData.BuyingAmount,
-			tradeData.Price,
-			tradeData.CreatedAt,
-			tradeData.LedgerRange,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to insert trade %s:%d:%d: %w",
-				tradeData.TransactionHash, tradeData.OperationIndex, tradeData.TradeIndex, err)
+	rows := make([][]interface{}, len(trades))
+	for i := range trades {
+		t := &trades[i]
+		rows[i] = []interface{}{
+			t.LedgerSequence, t.TransactionHash, t.OperationIndex, t.TradeIndex,
+			t.TradeType, t.TradeTimestamp,
+			t.SellerAccount, t.SellingAssetCode, t.SellingAssetIssuer, t.SellingAmount,
+			t.BuyerAccount, t.BuyingAssetCode, t.BuyingAssetIssuer, t.BuyingAmount,
+			t.Price, t.CreatedAt, t.LedgerRange,
 		}
 	}
-
-	return nil
+	return batchExec(ctx, tx, query, rows)
 }
 
 // insertAccounts inserts account snapshots into PostgreSQL
@@ -1709,35 +1808,23 @@ func (w *Writer) insertAccounts(ctx context.Context, tx pgx.Tx, accounts []Accou
 		return nil
 	}
 
-	query := `
-		INSERT INTO accounts_snapshot_v1 (
-			account_id, ledger_sequence, closed_at, balance,
-			sequence_number, num_subentries, num_sponsoring, num_sponsored, home_domain,
-			master_weight, low_threshold, med_threshold, high_threshold,
-			flags, auth_required, auth_revocable, auth_immutable, auth_clawback_enabled,
-			signers, sponsor_account,
-			created_at, updated_at, ledger_range
-		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-			$11, $12, $13, $14, $15, $16, $17, $18,
-			$19, $20, $21, $22, $23
-		)
-		ON CONFLICT (account_id, ledger_sequence) DO UPDATE SET
-			balance = EXCLUDED.balance,
-			sequence_number = EXCLUDED.sequence_number,
-			num_subentries = EXCLUDED.num_subentries,
-			flags = EXCLUDED.flags,
-			updated_at = EXCLUDED.updated_at
-	`
-
+	columns := []string{
+		"account_id", "ledger_sequence", "closed_at", "balance",
+		"sequence_number", "num_subentries", "num_sponsoring", "num_sponsored", "home_domain",
+		"master_weight", "low_threshold", "med_threshold", "high_threshold",
+		"flags", "auth_required", "auth_revocable", "auth_immutable", "auth_clawback_enabled",
+		"signers", "sponsor_account",
+		"created_at", "updated_at", "ledger_range",
+	}
+	rows := make([][]interface{}, len(accounts))
 	for i := range accounts {
 		acct := &accounts[i]
 		// HomeDomain is user-controlled (up to 32 bytes, no protocol-level
-		// validation of contents). Signers is a JSON array marshalled from
-		// account state. Both can carry NUL bytes that PG TEXT rejects.
+		// validation). Signers is a JSON array marshalled from account
+		// state. Both can carry NUL bytes that PG TEXT rejects.
 		acct.HomeDomain = sanitizeStringPtr(acct.HomeDomain)
 		acct.Signers = sanitizeStringPtr(acct.Signers)
-		_, err := tx.Exec(ctx, query,
+		rows[i] = []interface{}{
 			acct.AccountID,
 			acct.LedgerSequence,
 			acct.ClosedAt,
@@ -1761,13 +1848,13 @@ func (w *Writer) insertAccounts(ctx context.Context, tx pgx.Tx, accounts []Accou
 			acct.CreatedAt,
 			acct.UpdatedAt,
 			acct.LedgerRange,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to insert account %s: %w", acct.AccountID, err)
 		}
 	}
-
-	return nil
+	return w.bulkUpsertCopy(ctx, tx, "accounts_snapshot_v1", columns,
+		[]string{"account_id", "ledger_sequence"},
+		[]string{"balance", "sequence_number", "num_subentries", "flags", "updated_at"},
+		rows,
+	)
 }
 
 // insertOffers inserts DEX offer snapshots into PostgreSQL
@@ -1776,7 +1863,7 @@ func (w *Writer) insertOffers(ctx context.Context, tx pgx.Tx, offers []OfferData
 		return nil
 	}
 
-	query := `
+	const query = `
 		INSERT INTO offers_snapshot_v1 (
 			offer_id, seller_account, ledger_sequence, closed_at,
 			selling_asset_type, selling_asset_code, selling_asset_issuer,
@@ -1793,30 +1880,18 @@ func (w *Writer) insertOffers(ctx context.Context, tx pgx.Tx, offers []OfferData
 			created_at = EXCLUDED.created_at
 	`
 
-	for _, offer := range offers {
-		_, err := tx.Exec(ctx, query,
-			offer.OfferID,
-			offer.SellerAccount,
-			offer.LedgerSequence,
-			offer.ClosedAt,
-			offer.SellingAssetType,
-			offer.SellingAssetCode,
-			offer.SellingAssetIssuer,
-			offer.BuyingAssetType,
-			offer.BuyingAssetCode,
-			offer.BuyingAssetIssuer,
-			offer.Amount,
-			offer.Price,
-			offer.Flags,
-			offer.CreatedAt,
-			offer.LedgerRange,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to insert offer %d: %w", offer.OfferID, err)
+	rows := make([][]interface{}, len(offers))
+	for i := range offers {
+		o := &offers[i]
+		rows[i] = []interface{}{
+			o.OfferID, o.SellerAccount, o.LedgerSequence, o.ClosedAt,
+			o.SellingAssetType, o.SellingAssetCode, o.SellingAssetIssuer,
+			o.BuyingAssetType, o.BuyingAssetCode, o.BuyingAssetIssuer,
+			o.Amount, o.Price, o.Flags,
+			o.CreatedAt, o.LedgerRange,
 		}
 	}
-
-	return nil
+	return batchExec(ctx, tx, query, rows)
 }
 
 // insertTrustlines inserts trustline snapshots into PostgreSQL
@@ -1825,50 +1900,30 @@ func (w *Writer) insertTrustlines(ctx context.Context, tx pgx.Tx, trustlines []T
 		return nil
 	}
 
-	query := `
-		INSERT INTO trustlines_snapshot_v1 (
-			account_id, asset_code, asset_issuer, asset_type,
-			balance, trust_limit, buying_liabilities, selling_liabilities,
-			authorized, authorized_to_maintain_liabilities, clawback_enabled,
-			ledger_sequence, created_at, ledger_range
-		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-			$11, $12, $13, $14
-		)
-		ON CONFLICT (account_id, asset_code, asset_issuer, asset_type, ledger_sequence) DO UPDATE SET
-			balance = EXCLUDED.balance,
-			trust_limit = EXCLUDED.trust_limit,
-			buying_liabilities = EXCLUDED.buying_liabilities,
-			selling_liabilities = EXCLUDED.selling_liabilities,
-			authorized = EXCLUDED.authorized,
-			authorized_to_maintain_liabilities = EXCLUDED.authorized_to_maintain_liabilities,
-			clawback_enabled = EXCLUDED.clawback_enabled
-	`
-
-	for _, tl := range trustlines {
-		_, err := tx.Exec(ctx, query,
-			tl.AccountID,
-			tl.AssetCode,
-			tl.AssetIssuer,
-			tl.AssetType,
-			tl.Balance,
-			tl.TrustLimit,
-			tl.BuyingLiabilities,
-			tl.SellingLiabilities,
-			tl.Authorized,
-			tl.AuthorizedToMaintainLiabilities,
-			tl.ClawbackEnabled,
-			tl.LedgerSequence,
-			tl.CreatedAt,
-			tl.LedgerRange,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to insert trustline %s:%s:%s: %w",
-				tl.AccountID, tl.AssetCode, tl.AssetIssuer, err)
+	columns := []string{
+		"account_id", "asset_code", "asset_issuer", "asset_type",
+		"balance", "trust_limit", "buying_liabilities", "selling_liabilities",
+		"authorized", "authorized_to_maintain_liabilities", "clawback_enabled",
+		"ledger_sequence", "created_at", "ledger_range",
+	}
+	rows := make([][]interface{}, len(trustlines))
+	for i := range trustlines {
+		tl := &trustlines[i]
+		rows[i] = []interface{}{
+			tl.AccountID, tl.AssetCode, tl.AssetIssuer, tl.AssetType,
+			tl.Balance, tl.TrustLimit, tl.BuyingLiabilities, tl.SellingLiabilities,
+			tl.Authorized, tl.AuthorizedToMaintainLiabilities, tl.ClawbackEnabled,
+			tl.LedgerSequence, tl.CreatedAt, tl.LedgerRange,
 		}
 	}
-
-	return nil
+	return w.bulkUpsertCopy(ctx, tx, "trustlines_snapshot_v1", columns,
+		[]string{"account_id", "asset_code", "asset_issuer", "asset_type", "ledger_sequence"},
+		[]string{
+			"balance", "trust_limit", "buying_liabilities", "selling_liabilities",
+			"authorized", "authorized_to_maintain_liabilities", "clawback_enabled",
+		},
+		rows,
+	)
 }
 
 // insertAccountSigners inserts account signer snapshots into PostgreSQL
@@ -1877,39 +1932,23 @@ func (w *Writer) insertAccountSigners(ctx context.Context, tx pgx.Tx, signers []
 		return nil
 	}
 
-	query := `
-		INSERT INTO account_signers_snapshot_v1 (
-			account_id, signer, ledger_sequence, weight, sponsor,
-			deleted, closed_at, ledger_range, created_at
-		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9
-		)
-		ON CONFLICT (account_id, signer, ledger_sequence) DO UPDATE SET
-			weight = EXCLUDED.weight,
-			sponsor = EXCLUDED.sponsor,
-			deleted = EXCLUDED.deleted,
-			closed_at = EXCLUDED.closed_at
-	`
-
-	for _, s := range signers {
-		_, err := tx.Exec(ctx, query,
-			s.AccountID,
-			s.Signer,
-			s.LedgerSequence,
-			s.Weight,
-			nullString(s.Sponsor),
-			s.Deleted,
-			s.ClosedAt,
-			s.LedgerRange,
-			s.CreatedAt,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to insert account signer %s:%s: %w",
-				s.AccountID, s.Signer, err)
+	columns := []string{
+		"account_id", "signer", "ledger_sequence", "weight", "sponsor",
+		"deleted", "closed_at", "ledger_range", "created_at",
+	}
+	rows := make([][]interface{}, len(signers))
+	for i := range signers {
+		s := &signers[i]
+		rows[i] = []interface{}{
+			s.AccountID, s.Signer, s.LedgerSequence, s.Weight, nullString(s.Sponsor),
+			s.Deleted, s.ClosedAt, s.LedgerRange, s.CreatedAt,
 		}
 	}
-
-	return nil
+	return w.bulkUpsertCopy(ctx, tx, "account_signers_snapshot_v1", columns,
+		[]string{"account_id", "signer", "ledger_sequence"},
+		[]string{"weight", "sponsor", "deleted", "closed_at"},
+		rows,
+	)
 }
 
 // nullString returns nil if s is empty, otherwise returns s
@@ -1926,7 +1965,7 @@ func (w *Writer) insertClaimableBalances(ctx context.Context, tx pgx.Tx, balance
 		return nil
 	}
 
-	query := `
+	const query = `
 		INSERT INTO claimable_balances_snapshot_v1 (
 			balance_id, sponsor, ledger_sequence, closed_at,
 			asset_type, asset_code, asset_issuer, amount,
@@ -1944,27 +1983,16 @@ func (w *Writer) insertClaimableBalances(ctx context.Context, tx pgx.Tx, balance
 			flags = EXCLUDED.flags
 	`
 
-	for _, bal := range balances {
-		_, err := tx.Exec(ctx, query,
-			bal.BalanceID,
-			bal.Sponsor,
-			bal.LedgerSequence,
-			bal.ClosedAt,
-			bal.AssetType,
-			bal.AssetCode,
-			bal.AssetIssuer,
-			bal.Amount,
-			bal.ClaimantsCount,
-			bal.Flags,
-			bal.CreatedAt,
-			bal.LedgerRange,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to insert claimable balance %s: %w", bal.BalanceID, err)
+	rows := make([][]interface{}, len(balances))
+	for i := range balances {
+		b := &balances[i]
+		rows[i] = []interface{}{
+			b.BalanceID, b.Sponsor, b.LedgerSequence, b.ClosedAt,
+			b.AssetType, b.AssetCode, b.AssetIssuer, b.Amount,
+			b.ClaimantsCount, b.Flags, b.CreatedAt, b.LedgerRange,
 		}
 	}
-
-	return nil
+	return batchExec(ctx, tx, query, rows)
 }
 
 // insertLiquidityPools inserts liquidity pool snapshots into PostgreSQL
@@ -1973,7 +2001,7 @@ func (w *Writer) insertLiquidityPools(ctx context.Context, tx pgx.Tx, pools []Li
 		return nil
 	}
 
-	query := `
+	const query = `
 		INSERT INTO liquidity_pools_snapshot_v1 (
 			liquidity_pool_id, ledger_sequence, closed_at,
 			pool_type, fee, trustline_count, total_pool_shares,
@@ -1992,32 +2020,18 @@ func (w *Writer) insertLiquidityPools(ctx context.Context, tx pgx.Tx, pools []Li
 			asset_b_amount = EXCLUDED.asset_b_amount
 	`
 
-	for _, pool := range pools {
-		_, err := tx.Exec(ctx, query,
-			pool.LiquidityPoolID,
-			pool.LedgerSequence,
-			pool.ClosedAt,
-			pool.PoolType,
-			pool.Fee,
-			pool.TrustlineCount,
-			pool.TotalPoolShares,
-			pool.AssetAType,
-			pool.AssetACode,
-			pool.AssetAIssuer,
-			pool.AssetAAmount,
-			pool.AssetBType,
-			pool.AssetBCode,
-			pool.AssetBIssuer,
-			pool.AssetBAmount,
-			pool.CreatedAt,
-			pool.LedgerRange,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to insert liquidity pool %s: %w", pool.LiquidityPoolID, err)
+	rows := make([][]interface{}, len(pools))
+	for i := range pools {
+		p := &pools[i]
+		rows[i] = []interface{}{
+			p.LiquidityPoolID, p.LedgerSequence, p.ClosedAt,
+			p.PoolType, p.Fee, p.TrustlineCount, p.TotalPoolShares,
+			p.AssetAType, p.AssetACode, p.AssetAIssuer, p.AssetAAmount,
+			p.AssetBType, p.AssetBCode, p.AssetBIssuer, p.AssetBAmount,
+			p.CreatedAt, p.LedgerRange,
 		}
 	}
-
-	return nil
+	return batchExec(ctx, tx, query, rows)
 }
 
 // insertConfigSettings inserts config settings data into the database
@@ -2026,7 +2040,7 @@ func (w *Writer) insertConfigSettings(ctx context.Context, tx pgx.Tx, settings [
 		return nil
 	}
 
-	query := `
+	const query = `
 		INSERT INTO config_settings_snapshot_v1 (
 			config_setting_id, ledger_sequence, last_modified_ledger, deleted, closed_at,
 			ledger_max_instructions, tx_max_instructions, fee_rate_per_instructions_increment, tx_memory_limit,
@@ -2055,36 +2069,18 @@ func (w *Writer) insertConfigSettings(ctx context.Context, tx pgx.Tx, settings [
 			config_setting_xdr = EXCLUDED.config_setting_xdr
 	`
 
-	for _, setting := range settings {
-		_, err := tx.Exec(ctx, query,
-			setting.ConfigSettingID,
-			setting.LedgerSequence,
-			setting.LastModifiedLedger,
-			setting.Deleted,
-			setting.ClosedAt,
-			setting.LedgerMaxInstructions,
-			setting.TxMaxInstructions,
-			setting.FeeRatePerInstructionsIncrement,
-			setting.TxMemoryLimit,
-			setting.LedgerMaxReadLedgerEntries,
-			setting.LedgerMaxReadBytes,
-			setting.LedgerMaxWriteLedgerEntries,
-			setting.LedgerMaxWriteBytes,
-			setting.TxMaxReadLedgerEntries,
-			setting.TxMaxReadBytes,
-			setting.TxMaxWriteLedgerEntries,
-			setting.TxMaxWriteBytes,
-			setting.ContractMaxSizeBytes,
-			setting.ConfigSettingXDR,
-			setting.CreatedAt,
-			setting.LedgerRange,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to insert config setting %d: %w", setting.ConfigSettingID, err)
+	rows := make([][]interface{}, len(settings))
+	for i := range settings {
+		s := &settings[i]
+		rows[i] = []interface{}{
+			s.ConfigSettingID, s.LedgerSequence, s.LastModifiedLedger, s.Deleted, s.ClosedAt,
+			s.LedgerMaxInstructions, s.TxMaxInstructions, s.FeeRatePerInstructionsIncrement, s.TxMemoryLimit,
+			s.LedgerMaxReadLedgerEntries, s.LedgerMaxReadBytes, s.LedgerMaxWriteLedgerEntries, s.LedgerMaxWriteBytes,
+			s.TxMaxReadLedgerEntries, s.TxMaxReadBytes, s.TxMaxWriteLedgerEntries, s.TxMaxWriteBytes,
+			s.ContractMaxSizeBytes, s.ConfigSettingXDR, s.CreatedAt, s.LedgerRange,
 		}
 	}
-
-	return nil
+	return batchExec(ctx, tx, query, rows)
 }
 
 // insertTTL inserts TTL data into the database
@@ -2093,40 +2089,23 @@ func (w *Writer) insertTTL(ctx context.Context, tx pgx.Tx, ttls []TTLData) error
 		return nil
 	}
 
-	query := `
-		INSERT INTO ttl_snapshot_v1 (
-			key_hash, ledger_sequence, live_until_ledger_seq, ttl_remaining, expired,
-			last_modified_ledger, deleted, closed_at, created_at, ledger_range
-		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10
-		)
-		ON CONFLICT (key_hash, ledger_sequence) DO UPDATE SET
-			live_until_ledger_seq = EXCLUDED.live_until_ledger_seq,
-			ttl_remaining = EXCLUDED.ttl_remaining,
-			expired = EXCLUDED.expired,
-			last_modified_ledger = EXCLUDED.last_modified_ledger,
-			deleted = EXCLUDED.deleted
-	`
-
-	for _, ttl := range ttls {
-		_, err := tx.Exec(ctx, query,
-			ttl.KeyHash,
-			ttl.LedgerSequence,
-			ttl.LiveUntilLedgerSeq,
-			ttl.TTLRemaining,
-			ttl.Expired,
-			ttl.LastModifiedLedger,
-			ttl.Deleted,
-			ttl.ClosedAt,
-			ttl.CreatedAt,
-			ttl.LedgerRange,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to insert TTL for key %s: %w", ttl.KeyHash, err)
+	columns := []string{
+		"key_hash", "ledger_sequence", "live_until_ledger_seq", "ttl_remaining", "expired",
+		"last_modified_ledger", "deleted", "closed_at", "created_at", "ledger_range",
+	}
+	rows := make([][]interface{}, len(ttls))
+	for i := range ttls {
+		ttl := &ttls[i]
+		rows[i] = []interface{}{
+			ttl.KeyHash, ttl.LedgerSequence, ttl.LiveUntilLedgerSeq, ttl.TTLRemaining, ttl.Expired,
+			ttl.LastModifiedLedger, ttl.Deleted, ttl.ClosedAt, ttl.CreatedAt, ttl.LedgerRange,
 		}
 	}
-
-	return nil
+	return w.bulkUpsertCopy(ctx, tx, "ttl_snapshot_v1", columns,
+		[]string{"key_hash", "ledger_sequence"},
+		[]string{"live_until_ledger_seq", "ttl_remaining", "expired", "last_modified_ledger", "deleted"},
+		rows,
+	)
 }
 
 // insertEvictedKeys inserts evicted keys data into the database
@@ -2135,36 +2114,23 @@ func (w *Writer) insertEvictedKeys(ctx context.Context, tx pgx.Tx, keys []Evicte
 		return nil
 	}
 
-	query := `
-		INSERT INTO evicted_keys_state_v1 (
-			key_hash, ledger_sequence, contract_id, key_type, durability,
-			closed_at, ledger_range, created_at
-		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8
-		)
-		ON CONFLICT (key_hash, ledger_sequence) DO UPDATE SET
-			contract_id = EXCLUDED.contract_id,
-			key_type = EXCLUDED.key_type,
-			durability = EXCLUDED.durability
-	`
-
-	for _, key := range keys {
-		_, err := tx.Exec(ctx, query,
-			key.KeyHash,
-			key.LedgerSequence,
-			key.ContractID,
-			key.KeyType,
-			key.Durability,
-			key.ClosedAt,
-			key.LedgerRange,
-			key.CreatedAt,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to insert evicted key %s: %w", key.KeyHash, err)
+	columns := []string{
+		"key_hash", "ledger_sequence", "contract_id", "key_type", "durability",
+		"closed_at", "ledger_range", "created_at",
+	}
+	rows := make([][]interface{}, len(keys))
+	for i := range keys {
+		k := &keys[i]
+		rows[i] = []interface{}{
+			k.KeyHash, k.LedgerSequence, k.ContractID, k.KeyType, k.Durability,
+			k.ClosedAt, k.LedgerRange, k.CreatedAt,
 		}
 	}
-
-	return nil
+	return w.bulkUpsertCopy(ctx, tx, "evicted_keys_state_v1", columns,
+		[]string{"key_hash", "ledger_sequence"},
+		[]string{"contract_id", "key_type", "durability"},
+		rows,
+	)
 }
 
 // insertContractEvents bulk-inserts contract events using COPY + upsert.
@@ -2278,74 +2244,49 @@ func (w *Writer) insertContractData(ctx context.Context, tx pgx.Tx, contractData
 		return nil
 	}
 
-	query := `
-		INSERT INTO contract_data_snapshot_v1 (
-			contract_id, ledger_sequence, ledger_key_hash,
-			contract_key_type, contract_durability,
-			asset_code, asset_issuer, asset_type,
-			balance_holder, balance,
-			last_modified_ledger, ledger_entry_change, deleted, closed_at,
-			contract_data_xdr, created_at, ledger_range,
-			token_name, token_symbol, token_decimals
-		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
-		)
-		ON CONFLICT (contract_id, ledger_key_hash, ledger_sequence) DO UPDATE SET
-			contract_key_type = EXCLUDED.contract_key_type,
-			contract_durability = EXCLUDED.contract_durability,
-			asset_code = EXCLUDED.asset_code,
-			asset_issuer = EXCLUDED.asset_issuer,
-			asset_type = EXCLUDED.asset_type,
-			balance_holder = EXCLUDED.balance_holder,
-			balance = EXCLUDED.balance,
-			last_modified_ledger = EXCLUDED.last_modified_ledger,
-			ledger_entry_change = EXCLUDED.ledger_entry_change,
-			deleted = EXCLUDED.deleted,
-			contract_data_xdr = EXCLUDED.contract_data_xdr,
-			token_name = EXCLUDED.token_name,
-			token_symbol = EXCLUDED.token_symbol,
-			token_decimals = EXCLUDED.token_decimals
-	`
-
+	columns := []string{
+		"contract_id", "ledger_sequence", "ledger_key_hash",
+		"contract_key_type", "contract_durability",
+		"asset_code", "asset_issuer", "asset_type",
+		"balance_holder", "balance",
+		"last_modified_ledger", "ledger_entry_change", "deleted", "closed_at",
+		"contract_data_xdr", "created_at", "ledger_range",
+		"token_name", "token_symbol", "token_decimals",
+	}
+	rows := make([][]interface{}, len(contractDataList))
 	for i := range contractDataList {
 		data := &contractDataList[i]
-		// TokenName/TokenSymbol come from SEP-41 contract instance storage
-		// METADATA — pure developer input, can contain anything. BalanceHolder
-		// is a decoded scval address. Sanitize all of these defensively.
+		// TokenName/TokenSymbol come from SEP-41 instance METADATA — pure
+		// developer input, can contain anything. BalanceHolder is a decoded
+		// scval address. Sanitize all defensively.
 		data.TokenName = sanitizeStringPtr(data.TokenName)
 		data.TokenSymbol = sanitizeStringPtr(data.TokenSymbol)
 		data.BalanceHolder = sanitizeStringPtr(data.BalanceHolder)
 		data.Balance = sanitizeStringPtr(data.Balance)
 		data.AssetCode = sanitizeStringPtr(data.AssetCode)
 		data.AssetIssuer = sanitizeStringPtr(data.AssetIssuer)
-		_, err := tx.Exec(ctx, query,
-			data.ContractId,
-			data.LedgerSequence,
-			data.LedgerKeyHash,
-			data.ContractKeyType,
-			data.ContractDurability,
-			data.AssetCode,
-			data.AssetIssuer,
-			data.AssetType,
-			data.BalanceHolder,
-			data.Balance,
-			data.LastModifiedLedger,
-			data.LedgerEntryChange,
-			data.Deleted,
-			data.ClosedAt,
-			data.ContractDataXDR,
-			data.CreatedAt,
-			data.LedgerRange,
-			data.TokenName,
-			data.TokenSymbol,
-			data.TokenDecimals,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to insert contract data %s/%s: %w", data.ContractId, data.LedgerKeyHash, err)
+		rows[i] = []interface{}{
+			data.ContractId, data.LedgerSequence, data.LedgerKeyHash,
+			data.ContractKeyType, data.ContractDurability,
+			data.AssetCode, data.AssetIssuer, data.AssetType,
+			data.BalanceHolder, data.Balance,
+			data.LastModifiedLedger, data.LedgerEntryChange, data.Deleted, data.ClosedAt,
+			data.ContractDataXDR, data.CreatedAt, data.LedgerRange,
+			data.TokenName, data.TokenSymbol, data.TokenDecimals,
 		}
 	}
-
-	return nil
+	return w.bulkUpsertCopy(ctx, tx, "contract_data_snapshot_v1", columns,
+		[]string{"contract_id", "ledger_key_hash", "ledger_sequence"},
+		[]string{
+			"contract_key_type", "contract_durability",
+			"asset_code", "asset_issuer", "asset_type",
+			"balance_holder", "balance",
+			"last_modified_ledger", "ledger_entry_change", "deleted",
+			"contract_data_xdr",
+			"token_name", "token_symbol", "token_decimals",
+		},
+		rows,
+	)
 }
 
 // insertContractCode inserts contract code snapshots with WASM metrics (Phase 4 - Day 10)
@@ -2354,7 +2295,7 @@ func (w *Writer) insertContractCode(ctx context.Context, tx pgx.Tx, contractCode
 		return nil
 	}
 
-	query := `
+	const query = `
 		INSERT INTO contract_code_snapshot_v1 (
 			contract_code_hash, ledger_key_hash, contract_code_ext_v,
 			last_modified_ledger, ledger_entry_change, deleted, closed_at,
@@ -2383,35 +2324,19 @@ func (w *Writer) insertContractCode(ctx context.Context, tx pgx.Tx, contractCode
 			n_data_segment_bytes = EXCLUDED.n_data_segment_bytes
 	`
 
-	for _, code := range contractCodeList {
-		_, err := tx.Exec(ctx, query,
-			code.ContractCodeHash,
-			code.LedgerKeyHash,
-			code.ContractCodeExtV,
-			code.LastModifiedLedger,
-			code.LedgerEntryChange,
-			code.Deleted,
-			code.ClosedAt,
-			code.LedgerSequence,
-			code.NInstructions,
-			code.NFunctions,
-			code.NGlobals,
-			code.NTableEntries,
-			code.NTypes,
-			code.NDataSegments,
-			code.NElemSegments,
-			code.NImports,
-			code.NExports,
-			code.NDataSegmentBytes,
-			code.CreatedAt,
-			code.LedgerRange,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to insert contract code %s: %w", code.ContractCodeHash, err)
+	rows := make([][]interface{}, len(contractCodeList))
+	for i := range contractCodeList {
+		c := &contractCodeList[i]
+		rows[i] = []interface{}{
+			c.ContractCodeHash, c.LedgerKeyHash, c.ContractCodeExtV,
+			c.LastModifiedLedger, c.LedgerEntryChange, c.Deleted, c.ClosedAt,
+			c.LedgerSequence,
+			c.NInstructions, c.NFunctions, c.NGlobals, c.NTableEntries, c.NTypes,
+			c.NDataSegments, c.NElemSegments, c.NImports, c.NExports, c.NDataSegmentBytes,
+			c.CreatedAt, c.LedgerRange,
 		}
 	}
-
-	return nil
+	return batchExec(ctx, tx, query, rows)
 }
 
 // insertNativeBalances inserts XLM-only balances (Phase 5 - Day 11)
@@ -2420,45 +2345,29 @@ func (w *Writer) insertNativeBalances(ctx context.Context, tx pgx.Tx, nativeBala
 		return nil
 	}
 
-	query := `
-		INSERT INTO native_balances_snapshot_v1 (
-			account_id, balance, buying_liabilities, selling_liabilities,
-			num_subentries, num_sponsoring, num_sponsored, sequence_number,
-			last_modified_ledger, ledger_sequence, ledger_range
-		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
-		)
-		ON CONFLICT (account_id, ledger_sequence) DO UPDATE SET
-			balance = EXCLUDED.balance,
-			buying_liabilities = EXCLUDED.buying_liabilities,
-			selling_liabilities = EXCLUDED.selling_liabilities,
-			num_subentries = EXCLUDED.num_subentries,
-			num_sponsoring = EXCLUDED.num_sponsoring,
-			num_sponsored = EXCLUDED.num_sponsored,
-			sequence_number = EXCLUDED.sequence_number,
-			last_modified_ledger = EXCLUDED.last_modified_ledger
-	`
-
-	for _, nb := range nativeBalancesList {
-		_, err := tx.Exec(ctx, query,
-			nb.AccountID,
-			nb.Balance,
-			nb.BuyingLiabilities,
-			nb.SellingLiabilities,
-			nb.NumSubentries,
-			nb.NumSponsoring,
-			nb.NumSponsored,
-			nb.SequenceNumber,
-			nb.LastModifiedLedger,
-			nb.LedgerSequence,
-			nb.LedgerRange,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to insert native balance for account %s: %w", nb.AccountID, err)
+	columns := []string{
+		"account_id", "balance", "buying_liabilities", "selling_liabilities",
+		"num_subentries", "num_sponsoring", "num_sponsored", "sequence_number",
+		"last_modified_ledger", "ledger_sequence", "ledger_range",
+	}
+	rows := make([][]interface{}, len(nativeBalancesList))
+	for i := range nativeBalancesList {
+		nb := &nativeBalancesList[i]
+		rows[i] = []interface{}{
+			nb.AccountID, nb.Balance, nb.BuyingLiabilities, nb.SellingLiabilities,
+			nb.NumSubentries, nb.NumSponsoring, nb.NumSponsored, nb.SequenceNumber,
+			nb.LastModifiedLedger, nb.LedgerSequence, nb.LedgerRange,
 		}
 	}
-
-	return nil
+	return w.bulkUpsertCopy(ctx, tx, "native_balances_snapshot_v1", columns,
+		[]string{"account_id", "ledger_sequence"},
+		[]string{
+			"balance", "buying_liabilities", "selling_liabilities",
+			"num_subentries", "num_sponsoring", "num_sponsored",
+			"sequence_number", "last_modified_ledger",
+		},
+		rows,
+	)
 }
 
 // insertRestoredKeys inserts restored storage keys (Phase 5 - Day 11)
@@ -2467,7 +2376,7 @@ func (w *Writer) insertRestoredKeys(ctx context.Context, tx pgx.Tx, restoredKeys
 		return nil
 	}
 
-	query := `
+	const query = `
 		INSERT INTO restored_keys_state_v1 (
 			key_hash, ledger_sequence,
 			contract_id, key_type, durability, restored_from_ledger,
@@ -2482,24 +2391,16 @@ func (w *Writer) insertRestoredKeys(ctx context.Context, tx pgx.Tx, restoredKeys
 			restored_from_ledger = EXCLUDED.restored_from_ledger
 	`
 
-	for _, rk := range restoredKeysList {
-		_, err := tx.Exec(ctx, query,
-			rk.KeyHash,
-			rk.LedgerSequence,
-			rk.ContractID,
-			rk.KeyType,
-			rk.Durability,
-			rk.RestoredFromLedger,
-			rk.ClosedAt,
-			rk.LedgerRange,
-			rk.CreatedAt,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to insert restored key %s: %w", rk.KeyHash, err)
+	rows := make([][]interface{}, len(restoredKeysList))
+	for i := range restoredKeysList {
+		rk := &restoredKeysList[i]
+		rows[i] = []interface{}{
+			rk.KeyHash, rk.LedgerSequence,
+			rk.ContractID, rk.KeyType, rk.Durability, rk.RestoredFromLedger,
+			rk.ClosedAt, rk.LedgerRange, rk.CreatedAt,
 		}
 	}
-
-	return nil
+	return batchExec(ctx, tx, query, rows)
 }
 
 // insertContractCreations inserts contract creation records into PostgreSQL (C11)
@@ -2508,7 +2409,7 @@ func (w *Writer) insertContractCreations(ctx context.Context, tx pgx.Tx, creatio
 		return nil
 	}
 
-	query := `
+	const query = `
 		INSERT INTO contract_creations_v1 (
 			contract_id, creator_address, wasm_hash,
 			created_ledger, created_at, ledger_range
@@ -2516,21 +2417,15 @@ func (w *Writer) insertContractCreations(ctx context.Context, tx pgx.Tx, creatio
 		ON CONFLICT (contract_id) DO NOTHING
 	`
 
-	for _, c := range creations {
-		_, err := tx.Exec(ctx, query,
-			c.ContractID,
-			c.CreatorAddress,
-			c.WasmHash,
-			c.CreatedLedger,
-			c.CreatedAt,
-			c.LedgerRange,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to insert contract creation %s: %w", c.ContractID, err)
+	rows := make([][]interface{}, len(creations))
+	for i := range creations {
+		c := &creations[i]
+		rows[i] = []interface{}{
+			c.ContractID, c.CreatorAddress, c.WasmHash,
+			c.CreatedLedger, c.CreatedAt, c.LedgerRange,
 		}
 	}
-
-	return nil
+	return batchExec(ctx, tx, query, rows)
 }
 
 // sanitizeUTF8 ensures a string is valid UTF-8 for PostgreSQL.
@@ -2569,25 +2464,22 @@ func (w *Writer) insertTokenTransfers(ctx context.Context, tx pgx.Tx, transfers 
 		return nil
 	}
 
-	query := `
-		INSERT INTO token_transfers_stream_v1 (
-			ledger_sequence, transaction_hash, transaction_id, operation_id,
-			operation_index, event_type, "from", "to", asset, asset_type,
-			asset_code, asset_issuer, amount, amount_raw, contract_id,
-			closed_at, created_at, ledger_range
-		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-			$11, $12, $13, $14, $15, $16, $17, $18
-		)
-		ON CONFLICT DO NOTHING
-	`
-
-	batch := &pgx.Batch{}
+	// token_transfers_stream_v1 has no unique or exclusion constraint
+	// (see migrations/004_add_toid_and_token_transfers.sql) — the original
+	// ON CONFLICT DO NOTHING was a no-op arbiterless clause. We therefore
+	// COPY directly into the target and skip the temp-table + INSERT SELECT
+	// dance altogether.
+	columns := []string{
+		"ledger_sequence", "transaction_hash", "transaction_id", "operation_id",
+		"operation_index", "event_type", "from", "to", "asset", "asset_type",
+		"asset_code", "asset_issuer", "amount", "amount_raw", "contract_id",
+		"closed_at", "created_at", "ledger_range",
+	}
+	rows := make([][]interface{}, len(transfers))
 	for i := range transfers {
 		t := &transfers[i]
-		// Defensive sanitization. Asset codes/issuers and account addresses
-		// are constrained in practice, but AmountRaw and Asset come straight
-		// out of SDK decoding so we strip NULs/invalid UTF-8 just in case.
+		// AmountRaw and Asset come straight from SDK decoding — strip NULs /
+		// invalid UTF-8. Others are defensive.
 		t.EventType = sanitizeUTF8(t.EventType)
 		t.Asset = sanitizeUTF8(t.Asset)
 		t.AssetType = sanitizeUTF8(t.AssetType)
@@ -2596,36 +2488,12 @@ func (w *Writer) insertTokenTransfers(ctx context.Context, tx pgx.Tx, transfers 
 		t.To = sanitizeStringPtr(t.To)
 		t.AssetCode = sanitizeStringPtr(t.AssetCode)
 		t.AssetIssuer = sanitizeStringPtr(t.AssetIssuer)
-		batch.Queue(query,
-			t.LedgerSequence,
-			t.TransactionHash,
-			t.TransactionID,
-			t.OperationID,
-			t.OperationIndex,
-			t.EventType,
-			t.From,
-			t.To,
-			t.Asset,
-			t.AssetType,
-			t.AssetCode,
-			t.AssetIssuer,
-			t.Amount,
-			t.AmountRaw,
-			t.ContractID,
-			t.ClosedAt,
-			t.CreatedAt,
-			t.LedgerRange,
-		)
-	}
-
-	br := tx.SendBatch(ctx, batch)
-	defer br.Close()
-	for i := range transfers {
-		if _, err := br.Exec(); err != nil {
-			return fmt.Errorf("failed to insert token transfer in ledger %d tx %s: %w",
-				transfers[i].LedgerSequence, transfers[i].TransactionHash, err)
+		rows[i] = []interface{}{
+			t.LedgerSequence, t.TransactionHash, t.TransactionID, t.OperationID,
+			t.OperationIndex, t.EventType, t.From, t.To, t.Asset, t.AssetType,
+			t.AssetCode, t.AssetIssuer, t.Amount, t.AmountRaw, t.ContractID,
+			t.ClosedAt, t.CreatedAt, t.LedgerRange,
 		}
 	}
-
-	return nil
+	return w.bulkInsertCopy(ctx, tx, "token_transfers_stream_v1", columns, rows)
 }
