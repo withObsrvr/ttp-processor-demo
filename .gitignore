@@ -313,3 +313,5 @@ obsrvr-lake/silver-realtime-transformer/migrations/README.md
 tmp-smart-wallets/smart_wallet_transactions.tsv
 tmp-smart-wallets/smart_wallets_clean.tsv
 .claude/scheduled_tasks.lock
+obsrvr-lake/stellar-query-api/docs/refactoring-plan.md
+obsrvr-lake/stellar-query-api/docs/deploying-stellar-query-api.md

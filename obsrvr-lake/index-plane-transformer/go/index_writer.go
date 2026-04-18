@@ -225,7 +225,13 @@ func (iw *IndexWriter) purgeOrphanedMetadata() error {
 	return nil
 }
 
-// WriteTransactions writes transaction index entries to Index Plane
+// WriteTransactions writes transaction index entries to Index Plane.
+//
+// Replay safety:
+// The write path is intentionally idempotent for repeated batches. Rows already
+// present in the target table (matched by tx_hash) are skipped so that a crash
+// after target writes but before checkpoint save does not duplicate index rows
+// on restart.
 func (iw *IndexWriter) WriteTransactions(ctx context.Context, transactions []TransactionIndex) (int64, error) {
 	if len(transactions) == 0 {
 		return 0, nil
@@ -277,8 +283,16 @@ func (iw *IndexWriter) WriteTransactions(ctx context.Context, transactions []Tra
 		return 0, fmt.Errorf("failed to insert into temp table: %w", err)
 	}
 
-	// Copy from temp to DuckLake table
-	copySQL := fmt.Sprintf("INSERT INTO %s SELECT * FROM temp_tx_index", fullTableName)
+	// Copy only rows that are not already present in the target table.
+	// tx_hash is treated as the stable idempotency key for the index.
+	copySQL := fmt.Sprintf(`
+		INSERT INTO %s
+		SELECT t.*
+		FROM temp_tx_index t
+		LEFT JOIN %s existing
+		  ON existing.tx_hash = t.tx_hash
+		WHERE existing.tx_hash IS NULL
+	`, fullTableName, fullTableName)
 	result, err := iw.db.Exec(copySQL)
 	if err != nil {
 		return 0, fmt.Errorf("failed to copy to DuckLake table: %w", err)
@@ -289,7 +303,11 @@ func (iw *IndexWriter) WriteTransactions(ctx context.Context, transactions []Tra
 		return 0, fmt.Errorf("failed to get rows affected: %w", err)
 	}
 
-	log.Printf("✅ Inserted %d transactions into %s (inlined in catalog)", rowsAffected, fullTableName)
+	skipped := int64(len(transactions)) - rowsAffected
+	if skipped < 0 {
+		skipped = 0
+	}
+	log.Printf("✅ Inserted %d transactions into %s (skipped_existing=%d)", rowsAffected, fullTableName, skipped)
 
 	return rowsAffected, nil
 }

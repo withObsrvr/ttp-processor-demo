@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"net/http"
 	"strings"
@@ -289,7 +288,7 @@ func (h *ComplianceHandlers) HandleFullArchive(w http.ResponseWriter, r *http.Re
 	}
 
 	var req FullArchiveRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSON(w, r, &req); err != nil {
 		respondError(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -339,9 +338,9 @@ func (h *ComplianceHandlers) HandleFullArchive(w http.ResponseWriter, r *http.Re
 		CreatedAt:   job.CreatedAt.Format(time.RFC3339),
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(response)
+	if err := writeJSON(w, http.StatusAccepted, response, nil); err != nil {
+		respondError(w, "failed to encode archive response", http.StatusInternalServerError)
+	}
 }
 
 // HandleArchiveStatus returns the status of an archive job

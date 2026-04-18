@@ -59,7 +59,7 @@ func main() {
 
 	// Connect to Bronze Hot (stellar_hot PostgreSQL)
 	log.Println("🔗 Connecting to Bronze Hot (stellar_hot)...")
-	bronzeDB, err := sql.Open("postgres", config.BronzeHot.ConnectionString())
+	bronzeDB, err := sql.Open("pgx", config.BronzeHot.ConnectionString())
 	if err != nil {
 		log.Fatalf("Failed to connect to bronze hot: %v", err)
 	}

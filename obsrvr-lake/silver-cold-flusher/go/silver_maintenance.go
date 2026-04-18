@@ -48,6 +48,11 @@ var SilverTables = []string{
 	"semantic_asset_stats",
 	"semantic_dex_pairs",
 	"semantic_account_summary",
+
+	// High-volume append-only historical tables (added April 2026 — previously
+	// absent from the flush list, causing silver_hot to grow unbounded)
+	"effects",
+	"evicted_keys",
 }
 
 // HighVolumeSilverTables are tables that accumulate files fastest and need

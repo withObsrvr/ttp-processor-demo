@@ -251,6 +251,8 @@ func (f *Flusher) flushAllTables(watermark, lastFlushed int64) (int64, []string,
 		"contract_invocations_raw":            true,
 		"semantic_activities":                 true,
 		"semantic_flows_value":                true,
+		"effects":                             true,
+		"evicted_keys":                        true,
 	}
 
 	// Tables with non-standard watermark column
@@ -310,6 +312,8 @@ func (f *Flusher) deleteFlushedData(watermark int64, tables []string) (int64, er
 		"contract_invocations_raw":            true,
 		"semantic_activities":                 true,
 		"semantic_flows_value":                true,
+		"effects":                             true,
+		"evicted_keys":                        true,
 	}
 
 	// Tables with non-standard watermark column

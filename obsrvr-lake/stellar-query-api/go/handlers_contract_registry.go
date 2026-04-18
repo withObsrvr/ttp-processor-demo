@@ -2,7 +2,6 @@ package main
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -247,7 +246,7 @@ func (h *ContractRegistryHandlers) HandleUpsertContract(w http.ResponseWriter, r
 		Verified    *bool   `json:"verified,omitempty"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSON(w, r, &req); err != nil {
 		respondError(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
 		return
 	}

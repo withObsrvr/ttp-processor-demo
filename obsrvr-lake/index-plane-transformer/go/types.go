@@ -21,4 +21,9 @@ type TransformerStats struct {
 	TransformationErrors  int64
 	LastTransformDuration time.Duration
 	LagSeconds            int64
+	SourceMinLedger       int64
+	SourceMaxLedger       int64
+	CheckpointGapLedgers  int64
+	RetentionGapDetected  bool
+	RetentionGapMessage   string
 }

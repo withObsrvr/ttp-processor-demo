@@ -2,96 +2,101 @@ package main
 
 import (
 	"context"
-	"encoding/json"
+	"database/sql"
 	"fmt"
-	"os"
 	"time"
 )
 
-// Checkpoint represents the saved state
-type Checkpoint struct {
-	LastLedger  int64     `json:"last_ledger"`
-	LastUpdated time.Time `json:"last_updated"`
-}
-
-// CheckpointManager handles file-based checkpoint tracking
+// CheckpointManager handles PostgreSQL-backed checkpoint tracking.
 type CheckpointManager struct {
-	filePath string
+	db    *sql.DB
+	table string
 }
 
-// NewCheckpointManager creates a new checkpoint manager
-func NewCheckpointManager(filePath string) (*CheckpointManager, error) {
-	return &CheckpointManager{
-		filePath: filePath,
-	}, nil
+// NewCheckpointManager creates a new checkpoint manager.
+func NewCheckpointManager(db *sql.DB, table string) (*CheckpointManager, error) {
+	cm := &CheckpointManager{db: db, table: table}
+	if err := cm.ensure(context.Background()); err != nil {
+		return nil, err
+	}
+	return cm, nil
 }
 
-// Load retrieves the last processed ledger sequence from file
-func (cm *CheckpointManager) Load(ctx context.Context) (int64, error) {
-	// Check if file exists
-	if _, err := os.Stat(cm.filePath); os.IsNotExist(err) {
-		return 0, nil // No checkpoint yet, start from beginning
+func (cm *CheckpointManager) ensure(ctx context.Context) error {
+	query := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s (
+			id INTEGER PRIMARY KEY DEFAULT 1,
+			last_ledger_sequence BIGINT NOT NULL,
+			last_processed_at TIMESTAMP NOT NULL,
+			transformer_version VARCHAR(50),
+			CONSTRAINT single_checkpoint CHECK (id = 1)
+		)
+	`, cm.table)
+	if _, err := cm.db.ExecContext(ctx, query); err != nil {
+		return fmt.Errorf("ensure checkpoint table: %w", err)
 	}
 
-	// Read file
-	data, err := os.ReadFile(cm.filePath)
-	if err != nil {
-		return 0, fmt.Errorf("failed to read checkpoint file: %w", err)
+	seed := fmt.Sprintf(`
+		INSERT INTO %s (id, last_ledger_sequence, last_processed_at, transformer_version)
+		VALUES (1, 0, NOW(), 'v1.0.0')
+		ON CONFLICT (id) DO NOTHING
+	`, cm.table)
+	if _, err := cm.db.ExecContext(ctx, seed); err != nil {
+		return fmt.Errorf("seed checkpoint table: %w", err)
 	}
-
-	// Parse JSON
-	var checkpoint Checkpoint
-	if err := json.Unmarshal(data, &checkpoint); err != nil {
-		return 0, fmt.Errorf("failed to parse checkpoint JSON: %w", err)
-	}
-
-	return checkpoint.LastLedger, nil
-}
-
-// Save updates the checkpoint file with the last processed ledger
-func (cm *CheckpointManager) Save(ctx context.Context, ledgerSequence int64) error {
-	checkpoint := Checkpoint{
-		LastLedger:  ledgerSequence,
-		LastUpdated: time.Now().UTC(),
-	}
-
-	// Marshal to JSON
-	data, err := json.MarshalIndent(checkpoint, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal checkpoint: %w", err)
-	}
-
-	// Write to file
-	if err := os.WriteFile(cm.filePath, data, 0644); err != nil {
-		return fmt.Errorf("failed to write checkpoint file: %w", err)
-	}
-
 	return nil
 }
 
-// GetStatus returns checkpoint status information
-func (cm *CheckpointManager) GetStatus() (lastLedger int64, lastProcessed time.Time, err error) {
-	// Check if file exists
-	if _, err := os.Stat(cm.filePath); os.IsNotExist(err) {
-		return 0, time.Time{}, nil
-	}
-
-	// Read file
-	data, err := os.ReadFile(cm.filePath)
+// Load retrieves the last processed ledger sequence.
+func (cm *CheckpointManager) Load(ctx context.Context) (int64, error) {
+	var lastLedger int64
+	query := fmt.Sprintf(`SELECT last_ledger_sequence FROM %s WHERE id = 1`, cm.table)
+	err := cm.db.QueryRowContext(ctx, query).Scan(&lastLedger)
 	if err != nil {
-		return 0, time.Time{}, fmt.Errorf("failed to read checkpoint file: %w", err)
+		if err == sql.ErrNoRows {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("load checkpoint: %w", err)
 	}
-
-	// Parse JSON
-	var checkpoint Checkpoint
-	if err := json.Unmarshal(data, &checkpoint); err != nil {
-		return 0, time.Time{}, fmt.Errorf("failed to parse checkpoint JSON: %w", err)
-	}
-
-	return checkpoint.LastLedger, checkpoint.LastUpdated, nil
+	return lastLedger, nil
 }
 
-// Close closes the checkpoint manager (no-op for file-based)
+// Save updates the checkpoint with the last processed ledger.
+func (cm *CheckpointManager) Save(ctx context.Context, ledgerSequence int64) error {
+	query := fmt.Sprintf(`
+		UPDATE %s
+		SET last_ledger_sequence = $1,
+		    last_processed_at = $2
+		WHERE id = 1
+	`, cm.table)
+	result, err := cm.db.ExecContext(ctx, query, ledgerSequence, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("save checkpoint: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("save checkpoint rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("no checkpoint row found to update")
+	}
+	return nil
+}
+
+// GetStatus returns checkpoint status information.
+func (cm *CheckpointManager) GetStatus() (lastLedger int64, lastProcessed time.Time, err error) {
+	query := fmt.Sprintf(`SELECT last_ledger_sequence, last_processed_at FROM %s WHERE id = 1`, cm.table)
+	err = cm.db.QueryRow(query).Scan(&lastLedger, &lastProcessed)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return 0, time.Time{}, nil
+		}
+		return 0, time.Time{}, fmt.Errorf("get checkpoint status: %w", err)
+	}
+	return lastLedger, lastProcessed, nil
+}
+
+// Close closes the checkpoint manager (DB is owned by transformer).
 func (cm *CheckpointManager) Close() error {
 	return nil
 }

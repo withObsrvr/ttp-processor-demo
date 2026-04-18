@@ -3,8 +3,9 @@
 service:
   name: "index-plane-transformer"
   version: "1.0.0"
-  poll_interval_seconds: 30      # Poll Bronze Hot every 30 seconds
+  poll_interval_seconds: 30       # Poll Bronze Hot every 30 seconds
   batch_size: 10000               # Process 10,000 ledgers per batch
+  allow_retention_gap_start: false # Set true only when intentionally accepting pre-start history gaps
 
 # Source: Bronze Hot (PostgreSQL stellar_hot)
 bronze_hot:
@@ -15,12 +16,27 @@ bronze_hot:
   password: "${PG_HOT_PASSWORD}"
   sslmode: "require"
 
+# Catalog / checkpoint database
+# If omitted in older configs, the service falls back to index_cold catalog_* fields.
+catalog:
+  host: "${CATALOG_HOST}"
+  port: 25060
+  database: "${CATALOG_DB}"
+  user: "${CATALOG_USER}"
+  password: "${CATALOG_PASSWORD}"
+  sslmode: "require"
+
 # Target: Index Plane (DuckLake)
 index_cold:
   catalog_name: "testnet_catalog"
   schema_name: "index"
   table_name: "tx_hash_index"
   duckdb_path: "/tmp/duckdb/index_writer.db"
+  catalog_host: "${CATALOG_HOST}"
+  catalog_port: 25060
+  catalog_database: "${CATALOG_DB}"
+  catalog_user: "${CATALOG_USER}"
+  catalog_password: "${CATALOG_PASSWORD}"
   catalog_sslmode: "require"
 
   # B2 storage for Index Plane
@@ -31,7 +47,7 @@ index_cold:
   s3_bucket: "${B2_INDEX_BUCKET}"
   partition_size: 100000
 
-# Checkpoint (uses same DB as Bronze Hot)
+# Checkpoint table in the catalog database
 checkpoint:
   table: "index.transformer_checkpoint"
 

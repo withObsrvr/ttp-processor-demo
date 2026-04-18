@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"sync"
@@ -12,8 +13,10 @@ import (
 type Transformer struct {
 	config       *Config
 	bronzeReader *BronzeHotReader
+	catalogDB    *sql.DB
 	indexWriter  *IndexWriter
 	checkpoint   *CheckpointManager
+	advisoryLock *AdvisoryLock
 	healthServer *HealthServer
 	stats        TransformerStats
 	mu           sync.RWMutex
@@ -29,20 +32,32 @@ func NewTransformer(config *Config) (*Transformer, error) {
 		return nil, fmt.Errorf("failed to connect to Bronze Hot: %w", err)
 	}
 
+	// Connect to catalog DB for advisory locking and catalog-backed DuckLake access.
+	catalogDB, err := connectPostgres(&config.Catalog)
+	if err != nil {
+		bronzeReader.Close()
+		return nil, fmt.Errorf("failed to connect to Catalog DB: %w", err)
+	}
+
 	// Create Index writer (writes to DuckLake)
 	indexWriter, err := NewIndexWriter(config)
 	if err != nil {
 		bronzeReader.Close()
+		catalogDB.Close()
 		return nil, fmt.Errorf("failed to create Index writer: %w", err)
 	}
 
-	// Create checkpoint manager (file-based)
-	checkpoint, err := NewCheckpointManager(config.Indexing.CheckpointFile)
+	// Create checkpoint manager (PostgreSQL-backed)
+	checkpoint, err := NewCheckpointManager(catalogDB, config.Indexing.CheckpointTable)
 	if err != nil {
 		bronzeReader.Close()
 		indexWriter.Close()
+		catalogDB.Close()
 		return nil, fmt.Errorf("failed to create checkpoint manager: %w", err)
 	}
+
+	lockResource := fmt.Sprintf("%s|%s|contract_events_index", config.Service.Name, config.Catalog.Database)
+	advisoryLock := NewAdvisoryLock(catalogDB, "contract-event-index-transformer", lockResource)
 
 	// Create health server
 	healthServer := NewHealthServer(config.Health.Port)
@@ -50,8 +65,10 @@ func NewTransformer(config *Config) (*Transformer, error) {
 	return &Transformer{
 		config:       config,
 		bronzeReader: bronzeReader,
+		catalogDB:    catalogDB,
 		indexWriter:  indexWriter,
 		checkpoint:   checkpoint,
+		advisoryLock: advisoryLock,
 		healthServer: healthServer,
 		stopChan:     make(chan struct{}),
 	}, nil
@@ -71,13 +88,19 @@ func (t *Transformer) Start() error {
 	log.Println("Source: Bronze Hot (PostgreSQL contract_events_stream_v1)")
 	log.Println("Target: Contract Event Index (DuckLake)")
 
+	ctx := context.Background()
+
+	if err := t.advisoryLock.Acquire(ctx); err != nil {
+		return fmt.Errorf("failed to acquire singleton advisory lock: %w", err)
+	}
+	log.Println("🔒 Acquired advisory lock; singleton writer active")
+
 	// Start health server
 	t.healthServer.SetIndexWriter(t.indexWriter)
 	if err := t.healthServer.Start(); err != nil {
+		_ = t.advisoryLock.Release(ctx)
 		return fmt.Errorf("failed to start health server: %w", err)
 	}
-
-	ctx := context.Background()
 
 	// Load checkpoint
 	lastLedger, err := t.checkpoint.Load(ctx)
@@ -92,7 +115,7 @@ func (t *Transformer) Start() error {
 	}
 
 	// Update initial stats
-	t.updateStats(lastLedger, time.Now(), 0)
+	t.updateStats(lastLedger, 0, 0, false, "", time.Now(), 0)
 
 	// Run initial transformation check
 	log.Println("🔍 Running initial transformation check...")
@@ -216,16 +239,24 @@ func (t *Transformer) runTransformationCycle() error {
 		return fmt.Errorf("failed to load checkpoint: %w", err)
 	}
 
-	// Get max ledger in Bronze Hot
-	maxLedger, err := t.bronzeReader.GetMaxLedgerSequence(ctx)
+	// Get current source ledger bounds in Bronze Hot.
+	minLedger, maxLedger, err := t.bronzeReader.GetLedgerBounds(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get max ledger from Bronze Hot: %w", err)
+		return fmt.Errorf("failed to get ledger bounds from Bronze Hot: %w", err)
+	}
+
+	retentionGapDetected, retentionGapMessage := describeRetentionGap(lastLedger, minLedger)
+	if retentionGapDetected {
+		if !t.config.Service.AllowRetentionGapStart {
+			return fmt.Errorf("retention gap detected and allow_retention_gap_start=false: %s", retentionGapMessage)
+		}
+		log.Printf("⚠️  retention gap detected but continuing because allow_retention_gap_start=true: %s", retentionGapMessage)
 	}
 
 	// Check if there's new data to process
 	if maxLedger <= lastLedger {
 		// No new data, update stats and return
-		t.updateStats(lastLedger, time.Now(), 0)
+		t.updateStats(lastLedger, minLedger, maxLedger, retentionGapDetected, retentionGapMessage, time.Now(), 0)
 		return nil
 	}
 
@@ -289,20 +320,33 @@ func (t *Transformer) runTransformationCycle() error {
 
 	// Update stats
 	duration := time.Since(startTime)
-	t.updateStats(endLedger, time.Now(), duration)
+	t.updateStats(endLedger, minLedger, maxLedger, retentionGapDetected, retentionGapMessage, time.Now(), duration)
 	t.incrementTotal()
+
+	if retentionGapDetected {
+		log.Printf("⚠️  indexed forward despite retention gap; historical contract-event coverage is incomplete until backfilled from cold: %s", retentionGapMessage)
+	}
 
 	return nil
 }
 
 // updateStats updates transformer statistics
-func (t *Transformer) updateStats(lastLedger int64, processedAt time.Time, duration time.Duration) {
+func (t *Transformer) updateStats(lastLedger, minLedger, maxLedger int64, retentionGapDetected bool, retentionGapMessage string, processedAt time.Time, duration time.Duration) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	t.stats.LastLedgerProcessed = lastLedger
 	t.stats.LastProcessedAt = processedAt
 	t.stats.LastTransformDuration = duration
+	t.stats.SourceMinLedger = minLedger
+	t.stats.SourceMaxLedger = maxLedger
+	t.stats.RetentionGapDetected = retentionGapDetected
+	t.stats.RetentionGapMessage = retentionGapMessage
+	if maxLedger > lastLedger {
+		t.stats.CheckpointGapLedgers = maxLedger - lastLedger
+	} else {
+		t.stats.CheckpointGapLedgers = 0
+	}
 
 	// Calculate lag (simple: time since last processed)
 	t.stats.LagSeconds = int64(time.Since(processedAt).Seconds())
@@ -338,6 +382,15 @@ func (t *Transformer) Stop() error {
 
 	close(t.stopChan)
 
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := t.advisoryLock.Release(ctx); err != nil {
+		log.Printf("Error releasing advisory lock: %v", err)
+	} else {
+		log.Println("🔓 Released advisory lock")
+	}
+
 	// Stop health server
 	if err := t.healthServer.Stop(); err != nil {
 		log.Printf("Error stopping health server: %v", err)
@@ -350,6 +403,10 @@ func (t *Transformer) Stop() error {
 
 	if err := t.indexWriter.Close(); err != nil {
 		log.Printf("Error closing Index writer: %v", err)
+	}
+
+	if err := t.catalogDB.Close(); err != nil {
+		log.Printf("Error closing Catalog DB: %v", err)
 	}
 
 	if err := t.checkpoint.Close(); err != nil {
@@ -368,4 +425,17 @@ func connectBronzeHot(config *Config) (*BronzeHotReader, error) {
 	}
 
 	return NewBronzeHotReader(db), nil
+}
+
+func describeRetentionGap(lastLedger, minLedger int64) (bool, string) {
+	if minLedger <= 0 {
+		return false, ""
+	}
+	if lastLedger == 0 && minLedger > 1 {
+		return true, fmt.Sprintf("no checkpoint exists and Bronze Hot begins at ledger %d; earlier ledgers are not available from hot storage", minLedger)
+	}
+	if lastLedger > 0 && lastLedger < minLedger-1 {
+		return true, fmt.Sprintf("checkpoint ledger %d is behind oldest hot ledger %d", lastLedger, minLedger)
+	}
+	return false, ""
 }

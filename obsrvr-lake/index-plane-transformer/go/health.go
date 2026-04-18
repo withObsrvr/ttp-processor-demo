@@ -20,13 +20,18 @@ type HealthServer struct {
 
 // HealthResponse represents the health check response
 type HealthResponse struct {
-	Status                      string `json:"status"`
-	LastLedgerProcessed         int64  `json:"last_ledger_processed"`
-	LastProcessedAt             string `json:"last_processed_at,omitempty"`
-	LagSeconds                  int64  `json:"lag_seconds"`
-	TransformationsTotal        int64  `json:"transformations_total"`
-	TransformationErrors        int64  `json:"transformation_errors"`
-	LastTransformDurationMs     int64  `json:"last_transformation_duration_ms"`
+	Status                  string `json:"status"`
+	LastLedgerProcessed     int64  `json:"last_ledger_processed"`
+	LastProcessedAt         string `json:"last_processed_at,omitempty"`
+	LagSeconds              int64  `json:"lag_seconds"`
+	TransformationsTotal    int64  `json:"transformations_total"`
+	TransformationErrors    int64  `json:"transformation_errors"`
+	LastTransformDurationMs int64  `json:"last_transformation_duration_ms"`
+	SourceMinLedger         int64  `json:"source_min_ledger"`
+	SourceMaxLedger         int64  `json:"source_max_ledger"`
+	CheckpointGapLedgers    int64  `json:"checkpoint_gap_ledgers"`
+	RetentionGapDetected    bool   `json:"retention_gap_detected"`
+	RetentionGapMessage     string `json:"retention_gap_message,omitempty"`
 }
 
 // NewHealthServer creates a new health server
@@ -106,19 +111,27 @@ func (hs *HealthServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := HealthResponse{
-		Status:                      "healthy",
-		LastLedgerProcessed:         stats.LastLedgerProcessed,
-		LagSeconds:                  lagSeconds,
-		TransformationsTotal:        stats.TransformationsTotal,
-		TransformationErrors:        stats.TransformationErrors,
-		LastTransformDurationMs:     stats.LastTransformDuration.Milliseconds(),
+		Status:                  "healthy",
+		LastLedgerProcessed:     stats.LastLedgerProcessed,
+		LagSeconds:              lagSeconds,
+		TransformationsTotal:    stats.TransformationsTotal,
+		TransformationErrors:    stats.TransformationErrors,
+		LastTransformDurationMs: stats.LastTransformDuration.Milliseconds(),
+		SourceMinLedger:         stats.SourceMinLedger,
+		SourceMaxLedger:         stats.SourceMaxLedger,
+		CheckpointGapLedgers:    stats.CheckpointGapLedgers,
+		RetentionGapDetected:    stats.RetentionGapDetected,
+		RetentionGapMessage:     stats.RetentionGapMessage,
 	}
 
 	if !stats.LastProcessedAt.IsZero() {
 		response.LastProcessedAt = stats.LastProcessedAt.Format(time.RFC3339)
 	}
 
-	// Set status based on lag
+	// Set status based on source coverage and lag.
+	if response.RetentionGapDetected {
+		response.Status = "degraded"
+	}
 	if lagSeconds > 300 { // 5 minutes
 		response.Status = "degraded"
 	}

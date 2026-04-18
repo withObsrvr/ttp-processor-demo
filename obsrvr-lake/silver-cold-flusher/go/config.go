@@ -134,5 +134,12 @@ func GetTablesToFlush() []string {
 		// Semantic layer tables (event/append tables only; entities_contracts is UPSERT-only, not flushed)
 		"semantic_activities",
 		"semantic_flows_value",
+
+		// High-volume append-only historical tables — MUST be retained in this
+		// list or hot PG will grow unbounded. Previous to April 2026 these
+		// were missing and `silver_hot.effects` hit 10 GB + 16M rows on
+		// testnet despite the rest of silver being pruned to a ~50-min window.
+		"effects",
+		"evicted_keys",
 	}
 }

@@ -59,6 +59,19 @@ CREATE TABLE IF NOT EXISTS index.maintenance_log (
     executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Checkpoint table for contract-event-index-transformer
+CREATE TABLE IF NOT EXISTS index.contract_event_transformer_checkpoint (
+    id INTEGER PRIMARY KEY DEFAULT 1,
+    last_ledger_sequence BIGINT NOT NULL,
+    last_processed_at TIMESTAMP NOT NULL,
+    transformer_version VARCHAR(50),
+    CONSTRAINT single_contract_event_checkpoint CHECK (id = 1)
+);
+
+INSERT INTO index.contract_event_transformer_checkpoint (id, last_ledger_sequence, last_processed_at, transformer_version)
+VALUES (1, 0, CURRENT_TIMESTAMP, 'v1.0.0')
+ON CONFLICT (id) DO NOTHING;
+
 -- Register contract_events_index table in catalog
 -- ON CONFLICT ensures idempotency (can run script multiple times)
 INSERT INTO index.tables (table_name, description, last_updated)

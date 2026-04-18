@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -45,18 +44,18 @@ func (h *DecodeHandlers) HandleDecodedTransaction(w http.ResponseWriter, r *http
 	vars := mux.Vars(r)
 	txHash := vars["hash"]
 	if txHash == "" {
-		respondError(w, "transaction hash required", http.StatusBadRequest)
+		badRequest(w, "transaction hash required")
 		return
 	}
 
 	decoded, err := h.getTransactionForDisplay(r.Context(), txHash)
 	if err != nil {
-		respondError(w, err.Error(), http.StatusInternalServerError)
+		internalError(w, err.Error())
 		return
 	}
 
 	if decoded.OpCount == 0 && len(decoded.Events) == 0 {
-		respondError(w, "transaction not found", http.StatusNotFound)
+		notFound(w, "transaction not found")
 		return
 	}
 
@@ -78,7 +77,7 @@ func (h *DecodeHandlers) HandleContractInterface(w http.ResponseWriter, r *http.
 	vars := mux.Vars(r)
 	contractID := vars["id"]
 	if contractID == "" {
-		respondError(w, "contract_id required", http.StatusBadRequest)
+		badRequest(w, "contract_id required")
 		return
 	}
 
@@ -90,13 +89,13 @@ func (h *DecodeHandlers) HandleContractInterface(w http.ResponseWriter, r *http.
 	}
 	if err != nil || len(functions) == 0 {
 		if h.coldReader == nil {
-			respondError(w, "contract interface detection requires cold reader", http.StatusInternalServerError)
+			internalError(w, "contract interface detection requires cold reader")
 			return
 		}
 		functions, err = h.coldReader.GetContractFunctions(r.Context(), contractID)
 	}
 	if err != nil {
-		respondError(w, err.Error(), http.StatusInternalServerError)
+		internalError(w, err.Error())
 		return
 	}
 
@@ -133,20 +132,13 @@ func (h *DecodeHandlers) HandleContractInterface(w http.ResponseWriter, r *http.
 // @Failure 400 {object} map[string]interface{} "Invalid request body or missing xdr/json field"
 // @Router /api/v1/silver/decode/scval [post]
 func (h *DecodeHandlers) HandleDecodeScVal(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1MB limit
-	if err != nil {
-		respondError(w, "failed to read request body", http.StatusBadRequest)
-		return
-	}
-	defer r.Body.Close()
-
 	var req struct {
 		XDR      string          `json:"xdr"`
 		JSON     json.RawMessage `json:"json"`
 		TypeHint string          `json:"type_hint"`
 	}
-	if err := json.Unmarshal(body, &req); err != nil {
-		respondError(w, "invalid JSON body", http.StatusBadRequest)
+	if err := readJSON(w, r, &req); err != nil {
+		badRequest(w, "invalid JSON body: "+err.Error())
 		return
 	}
 
@@ -160,7 +152,7 @@ func (h *DecodeHandlers) HandleDecodeScVal(w http.ResponseWriter, r *http.Reques
 	} else if req.JSON != nil {
 		decoded = DecodeScValJSON(req.JSON)
 	} else {
-		respondError(w, "either 'xdr' or 'json' field required", http.StatusBadRequest)
+		badRequest(w, "either 'xdr' or 'json' field required")
 		return
 	}
 
@@ -183,7 +175,7 @@ func (h *DecodeHandlers) HandleFullTransaction(w http.ResponseWriter, r *http.Re
 	vars := mux.Vars(r)
 	txHash := vars["hash"]
 	if txHash == "" {
-		respondError(w, "transaction hash required", http.StatusBadRequest)
+		badRequest(w, "transaction hash required")
 		return
 	}
 
@@ -192,12 +184,12 @@ func (h *DecodeHandlers) HandleFullTransaction(w http.ResponseWriter, r *http.Re
 	// 1. Get decoded transaction (summary + ops + events)
 	decoded, err := h.getTransactionForDisplay(ctx, txHash)
 	if err != nil {
-		respondError(w, err.Error(), http.StatusInternalServerError)
+		internalError(w, err.Error())
 		return
 	}
 
 	if decoded.OpCount == 0 && len(decoded.Events) == 0 {
-		respondError(w, "transaction not found", http.StatusNotFound)
+		notFound(w, "transaction not found")
 		return
 	}
 
@@ -282,7 +274,7 @@ func (h *DecodeHandlers) HandleFullTransaction(w http.ResponseWriter, r *http.Re
 // @Router /api/v1/silver/tx/batch/decoded [post]
 func (h *DecodeHandlers) HandleBatchDecodedTransactions(w http.ResponseWriter, r *http.Request) {
 	if h.coldReader == nil {
-		respondError(w, "batch decoded requires cold reader", http.StatusInternalServerError)
+		internalError(w, "batch decoded requires cold reader")
 		return
 	}
 
@@ -290,19 +282,12 @@ func (h *DecodeHandlers) HandleBatchDecodedTransactions(w http.ResponseWriter, r
 	var hashes []string
 
 	// Determine hashes from GET params or POST body
-	if r.Method == "POST" {
-		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-		if err != nil {
-			respondError(w, "failed to read request body", http.StatusBadRequest)
-			return
-		}
-		defer r.Body.Close()
-
+	if r.Method == http.MethodPost {
 		var req struct {
 			Hashes []string `json:"hashes"`
 		}
-		if err := json.Unmarshal(body, &req); err != nil {
-			respondError(w, "invalid JSON body", http.StatusBadRequest)
+		if err := readJSON(w, r, &req); err != nil {
+			badRequest(w, "invalid JSON body: "+err.Error())
 			return
 		}
 		hashes = req.Hashes
@@ -324,7 +309,7 @@ func (h *DecodeHandlers) HandleBatchDecodedTransactions(w http.ResponseWriter, r
 	if len(hashes) == 0 && ledgerParam != "" {
 		seq, err := strconv.ParseInt(ledgerParam, 10, 64)
 		if err != nil {
-			respondError(w, "invalid ledger sequence", http.StatusBadRequest)
+			badRequest(w, "invalid ledger sequence")
 			return
 		}
 
@@ -344,7 +329,7 @@ func (h *DecodeHandlers) HandleBatchDecodedTransactions(w http.ResponseWriter, r
 
 		resolved, err := h.resolveHashesFromLedger(ctx, seq, limit)
 		if err != nil {
-			respondError(w, "failed to resolve ledger transactions: "+err.Error(), http.StatusInternalServerError)
+			internalError(w, "failed to resolve ledger transactions: "+err.Error())
 			return
 		}
 		hashes = resolved
@@ -352,12 +337,12 @@ func (h *DecodeHandlers) HandleBatchDecodedTransactions(w http.ResponseWriter, r
 	}
 
 	if len(hashes) == 0 {
-		respondError(w, "provide 'hashes' (query or body) or 'ledger' parameter", http.StatusBadRequest)
+		badRequest(w, "provide 'hashes' (query or body) or 'ledger' parameter")
 		return
 	}
 	// Hashes mode capped at 25; ledger mode respects its own limit (up to 100)
 	if !fromLedger && len(hashes) > 25 {
-		respondError(w, "maximum 25 transactions per batch", http.StatusBadRequest)
+		badRequest(w, "maximum 25 transactions per batch")
 		return
 	}
 
