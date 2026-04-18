@@ -73,7 +73,11 @@ func (h *ContractTransactionsHandlers) HandleContractTransactions(w http.Respons
 
 	sqlQ := `
 		SELECT contract_id, transaction_hash, ledger_sequence, operation_index,
-		       function_name, source_account, successful, closed_at
+		       function_name, source_account, successful,
+		       -- Cast TIMESTAMP → ISO-8601 text so Scan into sql.NullString
+		       -- below works; otherwise lib/pq/pgx returns time.Time which
+		       -- can't be scanned into NullString.
+		       to_char(closed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS closed_at
 		FROM contract_invocations_raw
 		WHERE contract_id = $1
 	`

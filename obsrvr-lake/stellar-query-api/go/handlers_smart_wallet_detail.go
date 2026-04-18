@@ -516,8 +516,16 @@ func (h *SmartWalletHandlers) GetSmartWalletBalances(ctx context.Context, contra
 }
 
 func appendOrReplaceBalance(balances []SmartWalletBalanceSummary, bal SmartWalletBalanceSummary) []SmartWalletBalanceSummary {
+	// Classic Stellar assets are uniquely identified by (code, issuer) — two
+	// trustlines with the same code (e.g. USDC) but different issuers are
+	// entirely separate assets with different balances. Without AssetIssuer
+	// in this key, one entry would silently overwrite the other and the API
+	// would return wrong balances.
 	for i := range balances {
-		if balances[i].AssetType == bal.AssetType && balances[i].AssetCode == bal.AssetCode && derefOrDefault(balances[i].TokenContractID, "") == derefOrDefault(bal.TokenContractID, "") {
+		if balances[i].AssetType == bal.AssetType &&
+			balances[i].AssetCode == bal.AssetCode &&
+			derefOrDefault(balances[i].AssetIssuer, "") == derefOrDefault(bal.AssetIssuer, "") &&
+			derefOrDefault(balances[i].TokenContractID, "") == derefOrDefault(bal.TokenContractID, "") {
 			balances[i] = bal
 			return balances
 		}
@@ -983,22 +991,27 @@ func (h *SmartWalletHandlers) fetchWalletTxSummaries(ctx context.Context, txHash
 	defer rows.Close()
 
 	for rows.Next() {
+		// tx_type, summary_text, and summary_json are all declared without
+		// NOT NULL in serving_schema.sql, so they must be scanned into
+		// NullString. Scanning NULL into a plain `string` would make Scan
+		// return "converting NULL to string is unsupported" and abort the
+		// entire smart-wallet detail handler with a 500.
 		var (
 			hash            string
-			txType          string
-			summaryText     string
-			summaryJSON     string
+			txType          sql.NullString
+			summaryText     sql.NullString
+			summaryJSON     sql.NullString
 			primaryContract sql.NullString
 		)
 		if err := rows.Scan(&hash, &txType, &summaryText, &summaryJSON, &primaryContract); err != nil {
 			return out, err
 		}
-		rec := smartWalletTxSummary{TxType: txType}
-		if summaryJSON != "" {
-			_ = json.Unmarshal([]byte(summaryJSON), &rec.Summary)
+		rec := smartWalletTxSummary{TxType: txType.String}
+		if summaryJSON.Valid && summaryJSON.String != "" {
+			_ = json.Unmarshal([]byte(summaryJSON.String), &rec.Summary)
 		}
 		if rec.Summary.Description == "" {
-			rec.Summary = buildFallbackRecentTxSummary(txType, summaryText, primaryContract)
+			rec.Summary = buildFallbackRecentTxSummary(txType.String, summaryText.String, primaryContract)
 		}
 		if primaryContract.Valid {
 			rec.Contract = &primaryContract.String
