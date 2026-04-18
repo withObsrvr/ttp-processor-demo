@@ -68,6 +68,7 @@ func (app *application) registerSilverRoutes(router *mux.Router) {
 	router.HandleFunc("/api/v1/silver/tx/{hash}/effects", silverHandlers.HandleEffectsByTransactionAlias).Methods("GET")
 	router.HandleFunc("/api/v1/silver/soroban/contract-code", silverHandlers.HandleContractCode).Methods("GET")
 	router.HandleFunc("/api/v1/silver/soroban/ttl", silverHandlers.HandleTTL).Methods("GET")
+	router.HandleFunc("/api/v1/silver/soroban/ttl/resolve", silverHandlers.HandleTTLResolve).Methods("GET")
 	router.HandleFunc("/api/v1/silver/soroban/ttl/expiring", silverHandlers.HandleTTLExpiring).Methods("GET")
 	router.HandleFunc("/api/v1/silver/soroban/ttl/expired", silverHandlers.HandleTTLExpired).Methods("GET")
 	router.HandleFunc("/api/v1/silver/soroban/evicted-keys", silverHandlers.HandleEvictedKeys).Methods("GET")
