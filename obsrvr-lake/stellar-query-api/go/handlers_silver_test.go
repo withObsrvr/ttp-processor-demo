@@ -199,12 +199,6 @@ func TestRespondJSON(t *testing.T) {
 		t.Errorf("Expected Content-Type application/json, got %s", contentType)
 	}
 
-	// Check CORS header
-	cors := w.Header().Get("Access-Control-Allow-Origin")
-	if cors != "*" {
-		t.Errorf("Expected CORS header *, got %s", cors)
-	}
-
 	// Check body
 	var decoded map[string]interface{}
 	if err := json.Unmarshal(w.Body.Bytes(), &decoded); err != nil {
@@ -225,13 +219,21 @@ func TestRespondError(t *testing.T) {
 		t.Errorf("Expected status 400, got %d", w.Code)
 	}
 
-	// Check body contains error
-	var decoded map[string]interface{}
+	// Check body contains structured error
+	var decoded struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
 	if err := json.Unmarshal(w.Body.Bytes(), &decoded); err != nil {
 		t.Fatalf("Failed to decode response body: %v", err)
 	}
-	if decoded["error"] != "test error" {
-		t.Errorf("Error message mismatch: got %v", decoded["error"])
+	if decoded.Error.Message != "test error" {
+		t.Errorf("Error message mismatch: got %v", decoded.Error.Message)
+	}
+	if decoded.Error.Code != "invalid_request" {
+		t.Errorf("Error code mismatch: got %v", decoded.Error.Code)
 	}
 }
 

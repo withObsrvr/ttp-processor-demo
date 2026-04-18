@@ -28,8 +28,9 @@ type BronzeSourceConfig struct {
 
 // ServiceConfig contains service-level configuration
 type ServiceConfig struct {
-	Name    string `yaml:"name"`
-	Version string `yaml:"version"`
+	Name                   string `yaml:"name"`
+	Version                string `yaml:"version"`
+	AllowRetentionGapStart bool   `yaml:"allow_retention_gap_start"`
 }
 
 // DatabaseConfig holds PostgreSQL connection settings
@@ -53,9 +54,9 @@ type S3Config struct {
 
 // IndexingConfig contains indexing behavior configuration
 type IndexingConfig struct {
-	PollInterval   string `yaml:"poll_interval"`    // e.g., "30s"
-	BatchSize      int64  `yaml:"batch_size"`       // Max ledgers per batch
-	CheckpointFile string `yaml:"checkpoint_file"`  // Path to checkpoint.json
+	PollInterval   string `yaml:"poll_interval"`   // e.g., "30s"
+	BatchSize      int64  `yaml:"batch_size"`      // Max ledgers per batch
+	CheckpointTable string `yaml:"checkpoint_table"` // PostgreSQL checkpoint table
 }
 
 // MaintenanceConfig contains DuckLake maintenance settings
@@ -104,8 +105,8 @@ func LoadConfig(path string) (*Config, error) {
 	if config.Indexing.BatchSize == 0 {
 		config.Indexing.BatchSize = 1000
 	}
-	if config.Indexing.CheckpointFile == "" {
-		config.Indexing.CheckpointFile = "checkpoint.json"
+	if config.Indexing.CheckpointTable == "" {
+		config.Indexing.CheckpointTable = "index.contract_event_transformer_checkpoint"
 	}
 	if config.Maintenance.EveryNWrites == 0 {
 		config.Maintenance.EveryNWrites = 100

@@ -24,25 +24,35 @@ func NewBronzeHotReader(db *sql.DB) *BronzeHotReader {
 	return &BronzeHotReader{db: db}
 }
 
-// GetMaxLedgerSequence returns the maximum ledger sequence available in Bronze Hot
-func (br *BronzeHotReader) GetMaxLedgerSequence(ctx context.Context) (int64, error) {
+// GetLedgerBounds returns the minimum and maximum ledger sequence available in Bronze Hot.
+func (br *BronzeHotReader) GetLedgerBounds(ctx context.Context) (int64, int64, error) {
+	var minSeq sql.NullInt64
 	var maxSeq sql.NullInt64
 
 	query := `
-		SELECT MAX(ledger_sequence)
+		SELECT MIN(ledger_sequence), MAX(ledger_sequence)
 		FROM contract_events_stream_v1
 	`
 
-	err := br.db.QueryRowContext(ctx, query).Scan(&maxSeq)
+	err := br.db.QueryRowContext(ctx, query).Scan(&minSeq, &maxSeq)
 	if err != nil {
-		return 0, fmt.Errorf("failed to get max ledger sequence: %w", err)
+		return 0, 0, fmt.Errorf("failed to get ledger bounds: %w", err)
 	}
 
-	if !maxSeq.Valid {
-		return 0, nil // No contract events yet
+	if !minSeq.Valid || !maxSeq.Valid {
+		return 0, 0, nil // No contract events yet
 	}
 
-	return maxSeq.Int64, nil
+	return minSeq.Int64, maxSeq.Int64, nil
+}
+
+// GetMaxLedgerSequence returns the maximum ledger sequence available in Bronze Hot.
+func (br *BronzeHotReader) GetMaxLedgerSequence(ctx context.Context) (int64, error) {
+	_, maxSeq, err := br.GetLedgerBounds(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return maxSeq, nil
 }
 
 // ReadContractEventSummaries reads aggregated contract event data for a ledger range

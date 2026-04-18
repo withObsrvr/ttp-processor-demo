@@ -5,9 +5,12 @@ Fast lookup index for finding which ledgers contain events from specific Stellar
 ## Overview
 
 The Contract Event Index Transformer is a continuous indexing service that:
-- Polls Bronze Hot (`bronze.contract_events_stream_v1`) every 30 seconds
-- Groups events by (contract_id, ledger_sequence)
+- Polls Bronze Hot (`contract_events_stream_v1`) every 30 seconds by default, with optional gRPC trigger mode
+- Groups events by `(contract_id, ledger_sequence)`
 - Writes aggregated index to DuckLake (Parquet on B2)
+- Uses replay-safe inserts so repeated batches skip already indexed contract/ledger pairs
+- Acquires a PostgreSQL advisory lock so only one writer instance is active at a time
+- Detects Bronze Hot retention gaps and fails fast unless explicitly overridden
 - Enables O(1) lookups: "Which ledgers have events from contract X?"
 
 ## Architecture
@@ -39,18 +42,20 @@ contract_events_stream_v1  →  index.contract_events_index
 - **transformer.go** - Polling loop and orchestration
 - **bronze_reader.go** - Reads from Bronze Hot PostgreSQL
 - **index_writer.go** - Writes to DuckLake with CHECKPOINT
-- **checkpoint.go** - File-based checkpoint management
+- **checkpoint.go** - PostgreSQL-backed checkpoint management
 - **config.go** - Configuration structs
 - **health.go** - HTTP health endpoint
 
 ### Key Features
 
-- **Polling Loop**: 30-second interval (configurable)
+- **Polling Loop / gRPC Triggering**: 30-second interval by default, or Bronze SourceService event-driven mode
 - **Batch Processing**: 1000 ledgers per batch (configurable)
-- **File-Based Checkpoint**: Survives restarts via `checkpoint.json`
-- **CHECKPOINT**: Forces DuckDB to flush Parquet files to B2
+- **PostgreSQL Checkpoint**: Resumes from catalog-backed checkpoint state
+- **Singleton Writer Protection**: PostgreSQL advisory lock prevents overlapping writer instances
+- **Replay-Safe Writes**: existing `(contract_id, ledger_sequence)` rows are skipped on replay
+- **Retention Gap Detection**: fails fast by default when Bronze Hot no longer contains history required by the checkpoint
 - **Partitioning**: Automatic by ledger_range (ledger_sequence / 100000)
-- **Health Endpoint**: HTTP :8096/health with stats
+- **Health Endpoint**: HTTP :8096/health with richer source/checkpoint stats
 
 ## Configuration
 
@@ -60,6 +65,11 @@ contract_events_stream_v1  →  index.contract_events_index
 service:
   name: contract-event-index-transformer
   version: 1.0.0
+  allow_retention_gap_start: false
+
+bronze_source:
+  mode: poll
+  endpoint: localhost:50054
 
 bronze_hot:
   host: "${PG_BRONZE_HOT_HOST}"
@@ -87,7 +97,7 @@ s3:
 indexing:
   poll_interval: "30s"
   batch_size: 1000
-  checkpoint_file: "checkpoint.json"
+  checkpoint_table: "index.contract_event_transformer_checkpoint"
 
 health:
   port: 8096
@@ -156,7 +166,6 @@ docker run --rm -it \
   -e B2_KEY_ID=key \
   -e B2_KEY_SECRET=secret \
   -e B2_BUCKET=bucket \
-  -v $(pwd)/checkpoint.json:/app/checkpoint.json \
   withobsrvr/contract-event-index-transformer:latest
 ```
 
@@ -183,6 +192,14 @@ CREATE TABLE IF NOT EXISTS index.contract_events_index (
 - `first_seen_at`: When this pair was first indexed
 - `ledger_range`: Partition key = ledger_sequence / 100000
 - `created_at`: Index creation timestamp
+
+## Operational safeguards
+
+- **Fail fast on retention gap by default**: if Bronze Hot has already aged beyond the saved checkpoint, startup/catch-up fails unless `service.allow_retention_gap_start: true` is set.
+- **Catalog-backed checkpointing**: checkpoint state now lives in PostgreSQL (`index.contract_event_transformer_checkpoint`) instead of a local file, so reschedules do not lose progress.
+- **Intentional bootstrap override**: set `allow_retention_gap_start: true` only when you knowingly want to start from the currently retained hot window and accept missing older history.
+- **No further silent gaps after startup**: once running and caught up, the transformer should continue from Hot without creating new gaps as long as it stays healthy.
+- **Practical note**: the catalog database user must be able to create/update `index.contract_event_transformer_checkpoint`. In normal operation this is handled by `schema/contract_events_index.sql` during schema init. If the table is missing after a reset, apply that schema file before restarting the transformer.
 
 ## Health Endpoint
 
@@ -248,11 +265,11 @@ curl http://localhost:8096/health | jq
    ```
 
 4. **Update Checkpoint**:
-   ```json
-   {
-     "last_ledger": 283820,
-     "last_updated": "2025-01-03T10:40:00Z"
-   }
+   ```sql
+   UPDATE index.contract_event_transformer_checkpoint
+   SET last_ledger_sequence = 283820,
+       last_processed_at = NOW()
+   WHERE id = 1;
    ```
 
 ## Performance
@@ -296,13 +313,16 @@ SELECT MAX(ledger_sequence) FROM bronze.contract_events_stream_v1;
 ```
 
 **Check Checkpoint:**
-```bash
-cat checkpoint.json
+```sql
+SELECT * FROM index.contract_event_transformer_checkpoint;
 ```
 
 **Reset Checkpoint:**
-```bash
-echo '{"last_ledger": 0, "last_updated": "2025-01-03T00:00:00Z"}' > checkpoint.json
+```sql
+UPDATE index.contract_event_transformer_checkpoint
+SET last_ledger_sequence = 0,
+    last_processed_at = NOW()
+WHERE id = 1;
 ```
 
 ### CHECKPOINT Errors

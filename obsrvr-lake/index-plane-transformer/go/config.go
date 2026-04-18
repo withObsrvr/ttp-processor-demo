@@ -13,6 +13,7 @@ type Config struct {
 	Service      ServiceConfig      `yaml:"service"`
 	BronzeSource BronzeSourceConfig `yaml:"bronze_source"`
 	BronzeHot    DatabaseConfig     `yaml:"bronze_hot"`
+	Catalog      DatabaseConfig     `yaml:"catalog"`
 	IndexCold    IndexColdConfig    `yaml:"index_cold"`
 	Checkpoint   CheckpointConfig   `yaml:"checkpoint"`
 	Maintenance  MaintenanceConfig  `yaml:"maintenance"`
@@ -27,10 +28,11 @@ type BronzeSourceConfig struct {
 
 // ServiceConfig contains service-level configuration
 type ServiceConfig struct {
-	Name                string `yaml:"name"`
-	Version             string `yaml:"version"`
-	PollIntervalSeconds int    `yaml:"poll_interval_seconds"`
-	BatchSize           int64  `yaml:"batch_size"`
+	Name                   string `yaml:"name"`
+	Version                string `yaml:"version"`
+	PollIntervalSeconds    int    `yaml:"poll_interval_seconds"`
+	BatchSize              int64  `yaml:"batch_size"`
+	AllowRetentionGapStart bool   `yaml:"allow_retention_gap_start"`
 }
 
 // DatabaseConfig holds PostgreSQL connection settings
@@ -54,6 +56,7 @@ type IndexColdConfig struct {
 	CatalogDatabase   string `yaml:"catalog_database"`
 	CatalogUser       string `yaml:"catalog_user"`
 	CatalogPassword   string `yaml:"catalog_password"`
+	CatalogSSLMode    string `yaml:"catalog_sslmode"`
 	S3Endpoint        string `yaml:"s3_endpoint"`
 	S3Region          string `yaml:"s3_region"`
 	S3AccessKeyID     string `yaml:"s3_access_key_id"`
@@ -104,6 +107,18 @@ func LoadConfig(path string) (*Config, error) {
 	if config.BronzeHot.SSLMode == "" {
 		config.BronzeHot.SSLMode = "require"
 	}
+	if config.IndexCold.CatalogSSLMode == "" {
+		config.IndexCold.CatalogSSLMode = "require"
+	}
+	if config.Catalog.SSLMode == "" {
+		config.Catalog.SSLMode = config.IndexCold.CatalogSSLMode
+		if config.Catalog.SSLMode == "" {
+			config.Catalog.SSLMode = "require"
+		}
+	}
+	if config.Catalog.Host == "" {
+		config.Catalog = config.DefaultCatalogDatabase()
+	}
 	if config.IndexCold.PartitionSize == 0 {
 		config.IndexCold.PartitionSize = 100000
 	}
@@ -124,6 +139,9 @@ func LoadConfig(path string) (*Config, error) {
 	if config.BronzeSource.Mode == "grpc" && config.BronzeSource.Endpoint == "" {
 		return nil, fmt.Errorf("bronze_source.endpoint is required when mode is \"grpc\"")
 	}
+	if config.Catalog.Host == "" {
+		return nil, fmt.Errorf("catalog.host is required or index_cold catalog connection fields must be set")
+	}
 
 	return &config, nil
 }
@@ -139,4 +157,18 @@ func (d *DatabaseConfig) ConnectionString() string {
 		"host=%s port=%d dbname=%s user=%s password=%s sslmode=%s",
 		d.Host, d.Port, d.Database, d.User, d.Password, d.SSLMode,
 	)
+}
+
+func (c *Config) DefaultCatalogDatabase() DatabaseConfig {
+	if c.IndexCold.CatalogHost != "" {
+		return DatabaseConfig{
+			Host:     c.IndexCold.CatalogHost,
+			Port:     c.IndexCold.CatalogPort,
+			Database: c.IndexCold.CatalogDatabase,
+			User:     c.IndexCold.CatalogUser,
+			Password: c.IndexCold.CatalogPassword,
+			SSLMode:  c.IndexCold.CatalogSSLMode,
+		}
+	}
+	return c.BronzeHot
 }

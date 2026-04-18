@@ -116,6 +116,65 @@ func (c *DuckDBClient) partitionBronzeTables(ctx context.Context) error {
 	return nil
 }
 
+// applyBronzeMigrations runs idempotent ALTER-style adjustments to the
+// DuckLake bronze schema for columns added AFTER initial catalog creation.
+//
+// Why this exists: v3_bronze_schema.sql is applied via CREATE TABLE IF NOT
+// EXISTS, so once a table is created in the catalog its column set is fixed
+// from that file's perspective. New columns must therefore be applied with
+// ALTER TABLE against the live catalog.
+//
+// Each migration here MUST be idempotent — this runs on every flusher start.
+// Use "ADD COLUMN IF NOT EXISTS" and guard DDL with existence checks where
+// IF NOT EXISTS isn't supported by the DuckLake version.
+func (c *DuckDBClient) applyBronzeMigrations(ctx context.Context) error {
+	type migration struct {
+		name string
+		sql  string
+	}
+	qualified := fmt.Sprintf("%s.%s", c.config.CatalogName, c.config.SchemaName)
+
+	// Ordered list — append only; never reorder, never remove.
+	//
+	// WARNING: columns here MUST land in the same tail order as their
+	// PostgreSQL counterparts (ALTER TABLE ADD COLUMN appends at the end in
+	// both systems). The flusher flushes operations_row_v2 via SELECT * from
+	// postgres_scan, so column positions must align.
+	migrations := []migration{
+		{
+			name: "operations_row_v2.soroban_auth_credentials_types",
+			sql: fmt.Sprintf(
+				`ALTER TABLE %s.operations_row_v2 ADD COLUMN IF NOT EXISTS soroban_auth_credentials_types VARCHAR`,
+				qualified,
+			),
+		},
+		{
+			name: "operations_row_v2.soroban_auth_addresses",
+			sql: fmt.Sprintf(
+				`ALTER TABLE %s.operations_row_v2 ADD COLUMN IF NOT EXISTS soroban_auth_addresses VARCHAR`,
+				qualified,
+			),
+		},
+	}
+
+	for _, m := range migrations {
+		if _, err := c.db.ExecContext(ctx, m.sql); err != nil {
+			// DuckLake may report "already exists" even with IF NOT EXISTS on
+			// older extension builds; log-and-continue so a single bad
+			// migration doesn't block the flusher from starting.
+			errStr := err.Error()
+			if strings.Contains(errStr, "already exists") ||
+				strings.Contains(errStr, "Duplicate column") {
+				log.Printf("Migration %q: column already present, skipping", m.name)
+				continue
+			}
+			return fmt.Errorf("migration %q failed: %w", m.name, err)
+		}
+		log.Printf("Migration %q applied", m.name)
+	}
+	return nil
+}
+
 // splitSQLStatements splits SQL content into individual statements
 func splitSQLStatements(sql string) []string {
 	// Split by semicolon, accounting for comments

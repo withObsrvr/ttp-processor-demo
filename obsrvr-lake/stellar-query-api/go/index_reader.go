@@ -67,7 +67,8 @@ func NewIndexReader(config IndexConfig) (*IndexReader, error) {
 	}
 
 	// Build catalog path (PostgreSQL connection string)
-	catalogPath := fmt.Sprintf("ducklake:postgres:postgresql://%s:%s@%s:%d/%s?sslmode=require",
+	// The local Nomad-hosted catalog Postgres does not expose SSL.
+	catalogPath := fmt.Sprintf("ducklake:postgres:postgresql://%s:%s@%s:%d/%s?sslmode=disable",
 		config.CatalogUser, config.CatalogPassword,
 		config.CatalogHost, config.CatalogPort, config.CatalogDatabase)
 

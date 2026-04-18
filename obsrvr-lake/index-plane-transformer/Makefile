@@ -1,85 +1,160 @@
-.PHONY: build run clean docker-build docker-push test init
+.PHONY: all build build-offline run clean test test-race test-coverage \
+        deps vendor fmt vet lint install \
+        docker-build docker-buildx docker-push docker-run docker-shell docker-clean \
+        ci-build release help
 
-# Service name
-SERVICE := index-plane-transformer
-VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
-REGISTRY := withobsrvr
+# ---- Variables --------------------------------------------------------------
 
-# Build the service
+SERVICE_DIR := $(CURDIR)
+GO_SRC_DIR  := go
+BINARY_NAME := index-plane-transformer
+
+DOCKER_ORG       := withobsrvr
+DOCKER_IMAGE     := $(DOCKER_ORG)/$(BINARY_NAME)
+GIT_SHA          := $(shell git rev-parse --short HEAD 2>/dev/null || echo "dev")
+BUILD_TIMESTAMP  := $(shell date -u +%Y%m%d%H%M%S)
+BUILD_DATE       := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+VERSION_TAG      := $(GIT_SHA)-$(BUILD_TIMESTAMP)
+DOCKER_TAG       ?= latest
+DOCKER_PLATFORM  ?= linux/amd64
+
+# Dockerfile variant — main Dockerfile by default. Override for alternate builds:
+#   make docker-build DOCKERFILE=Dockerfile.binary
+#   make docker-build DOCKERFILE=Dockerfile.simple
+DOCKERFILE       ?= Dockerfile
+
+HEALTH_PORT      := 8096
+
+# DuckDB — CGO required.
+GOCMD   := go
+GOBUILD := CGO_ENABLED=1 $(GOCMD) build
+GOTEST  := CGO_ENABLED=1 $(GOCMD) test
+GOCLEAN := $(GOCMD) clean
+
+all: build
+
+# ---- Build ------------------------------------------------------------------
+
 build:
-	@echo "Building $(SERVICE)..."
-	cd go && go build -o ../$(SERVICE) .
-	@echo "✅ Build complete: ./$(SERVICE)"
+	@echo "→ building $(BINARY_NAME) (sha: $(GIT_SHA))"
+	@mkdir -p bin
+	cd $(GO_SRC_DIR) && $(GOBUILD) -o ../bin/$(BINARY_NAME) .
+	@echo "✓ $(BINARY_NAME) → bin/$(BINARY_NAME)"
 
-# Initialize Go module and dependencies
-init:
-	@echo "Initializing Go module..."
-	cd go && go mod init github.com/$(REGISTRY)/$(SERVICE) || true
-	cd go && go mod tidy
-	@echo "✅ Dependencies installed"
+build-offline:
+	@mkdir -p bin
+	cd $(GO_SRC_DIR) && GO111MODULE=on GOPROXY=off $(GOBUILD) -mod=vendor -o ../bin/$(BINARY_NAME) .
+	@echo "✓ $(BINARY_NAME) (offline/vendored) → bin/$(BINARY_NAME)"
 
-# Run the service locally
+# ---- Run --------------------------------------------------------------------
+
 run: build
-	@echo "Running $(SERVICE)..."
-	./$(SERVICE) -config config.yaml
+	./bin/$(BINARY_NAME) -config config.yaml
 
-# Clean build artifacts
-clean:
-	@echo "Cleaning build artifacts..."
-	rm -f $(SERVICE)
-	rm -rf go/vendor
-	@echo "✅ Clean complete"
+# ---- Quality ----------------------------------------------------------------
 
-# Build Docker image
-docker-build:
-	@echo "Building Docker image: $(REGISTRY)/$(SERVICE):$(VERSION)"
-	docker build -t $(REGISTRY)/$(SERVICE):$(VERSION) .
-	docker tag $(REGISTRY)/$(SERVICE):$(VERSION) $(REGISTRY)/$(SERVICE):latest
-	@echo "✅ Docker image built"
-
-# Push Docker image to registry
-docker-push: docker-build
-	@echo "Pushing Docker image to registry..."
-	docker push $(REGISTRY)/$(SERVICE):$(VERSION)
-	docker push $(REGISTRY)/$(SERVICE):latest
-	@echo "✅ Docker image pushed"
-
-# Run tests
 test:
-	@echo "Running tests..."
-	cd go && go test -v ./...
+	cd $(GO_SRC_DIR) && $(GOTEST) -v ./...
 
-# Install dependencies
-deps:
-	@echo "Installing dependencies..."
-	cd go && go get github.com/duckdb/duckdb-go/v2
-	cd go && go get github.com/lib/pq
-	cd go && go get gopkg.in/yaml.v3
-	cd go && go mod tidy
-	@echo "✅ Dependencies installed"
+test-race:
+	cd $(GO_SRC_DIR) && $(GOTEST) -race -v ./...
 
-# Format code
+test-coverage:
+	cd $(GO_SRC_DIR) && $(GOTEST) -coverprofile=coverage.out -covermode=atomic ./...
+	cd $(GO_SRC_DIR) && $(GOCMD) tool cover -func=coverage.out
+
 fmt:
-	@echo "Formatting code..."
-	cd go && go fmt ./...
-	@echo "✅ Code formatted"
+	cd $(GO_SRC_DIR) && $(GOCMD) fmt ./...
 
-# Lint code
+vet:
+	cd $(GO_SRC_DIR) && $(GOCMD) vet ./...
+
 lint:
-	@echo "Linting code..."
-	cd go && go vet ./...
-	@echo "✅ Linting complete"
+	@command -v golangci-lint >/dev/null 2>&1 || { \
+	  echo "golangci-lint not installed; install with: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest"; \
+	  exit 1; }
+	cd $(GO_SRC_DIR) && golangci-lint run ./...
 
-# Show help
+deps:
+	cd $(GO_SRC_DIR) && $(GOCMD) mod download
+	cd $(GO_SRC_DIR) && $(GOCMD) mod tidy
+
+vendor:
+	cd $(GO_SRC_DIR) && $(GOCMD) mod tidy && $(GOCMD) mod vendor
+	@echo "✓ vendored ($(GO_SRC_DIR)/vendor)"
+
+install:
+	cd $(GO_SRC_DIR) && $(GOCMD) install .
+
+clean:
+	rm -rf bin/
+	rm -f $(GO_SRC_DIR)/coverage.out
+	cd $(GO_SRC_DIR) && $(GOCLEAN)
+
+# ---- Docker -----------------------------------------------------------------
+
+docker-build:
+	@echo "→ building $(DOCKER_IMAGE)"
+	@echo "  context : $(SERVICE_DIR)"
+	@echo "  dockerfile: $(DOCKERFILE)"
+	@echo "  tags    : $(DOCKER_TAG), $(VERSION_TAG)"
+	docker build -f $(DOCKERFILE) \
+		-t $(DOCKER_IMAGE):$(DOCKER_TAG) \
+		-t $(DOCKER_IMAGE):$(VERSION_TAG) \
+		--label org.opencontainers.image.version=$(VERSION_TAG) \
+		--label org.opencontainers.image.revision=$(GIT_SHA) \
+		--label org.opencontainers.image.created=$(BUILD_DATE) \
+		--label org.opencontainers.image.source=https://github.com/withObsrvr/ttp-processor-demo \
+		$(SERVICE_DIR)
+	@echo "✓ built $(DOCKER_IMAGE):{$(DOCKER_TAG),$(VERSION_TAG)}"
+
+docker-buildx:
+	docker buildx build --platform $(DOCKER_PLATFORM) -f $(DOCKERFILE) \
+		-t $(DOCKER_IMAGE):$(DOCKER_TAG) -t $(DOCKER_IMAGE):$(VERSION_TAG) $(SERVICE_DIR)
+
+docker-push: docker-build
+	docker push $(DOCKER_IMAGE):$(DOCKER_TAG)
+	docker push $(DOCKER_IMAGE):$(VERSION_TAG)
+	@echo "✓ pushed $(DOCKER_IMAGE):{$(DOCKER_TAG),$(VERSION_TAG)}"
+
+docker-run:
+	docker run --rm -it -p $(HEALTH_PORT):$(HEALTH_PORT) \
+		-v $(CURDIR)/config.yaml:/local/config.yaml:ro \
+		$(DOCKER_IMAGE):$(DOCKER_TAG) -config /local/config.yaml
+
+docker-shell:
+	docker run --rm -it --entrypoint bash $(DOCKER_IMAGE):$(DOCKER_TAG)
+
+docker-clean:
+	-docker rmi $(DOCKER_IMAGE):$(DOCKER_TAG) 2>/dev/null
+	-docker rmi $(DOCKER_IMAGE):$(VERSION_TAG) 2>/dev/null
+
+# ---- CI / Release -----------------------------------------------------------
+
+ci-build: deps vet build test
+
+release: docker-build docker-push
+	@echo "✓ released $(DOCKER_IMAGE):$(VERSION_TAG)"
+
+# ---- Help -------------------------------------------------------------------
+
 help:
-	@echo "Available targets:"
-	@echo "  make build        - Build the service binary"
-	@echo "  make run          - Run the service locally"
-	@echo "  make clean        - Clean build artifacts"
-	@echo "  make docker-build - Build Docker image"
-	@echo "  make docker-push  - Build and push Docker image"
-	@echo "  make test         - Run tests"
-	@echo "  make deps         - Install dependencies"
-	@echo "  make fmt          - Format code"
-	@echo "  make lint         - Lint code"
-	@echo "  make init         - Initialize Go module"
+	@echo "index-plane-transformer — Makefile targets"
+	@echo ""
+	@echo "Build (CGO_ENABLED=1 — DuckDB requires it):"
+	@echo "  build / build-offline"
+	@echo ""
+	@echo "Run:"
+	@echo "  run                            Build + run with config.yaml"
+	@echo ""
+	@echo "Quality:"
+	@echo "  test / test-race / test-coverage / fmt / vet / lint"
+	@echo "  deps / vendor / install / clean"
+	@echo ""
+	@echo "Docker (image = $(DOCKER_IMAGE)):"
+	@echo "  docker-build / docker-buildx / docker-push"
+	@echo "    Override Dockerfile: make docker-build DOCKERFILE=Dockerfile.binary"
+	@echo "  docker-run (HEALTH_PORT=$(HEALTH_PORT))"
+	@echo "  docker-shell / docker-clean"
+	@echo ""
+	@echo "CI / Release: ci-build / release"

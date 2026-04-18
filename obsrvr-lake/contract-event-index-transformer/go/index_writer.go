@@ -154,7 +154,9 @@ func (iw *IndexWriter) createIndexTable() error {
 	return nil
 }
 
-// WriteBatch writes contract event index entries to DuckLake
+// WriteBatch writes contract event index entries to DuckLake.
+// Existing rows are skipped based on (contract_id, ledger_sequence) so replaying
+// the same ledger range after a crash or checkpoint rollback remains safe.
 func (iw *IndexWriter) WriteBatch(ctx context.Context, rows []ContractEventIndexRow) (int64, error) {
 	if len(rows) == 0 {
 		return 0, nil
@@ -204,8 +206,16 @@ func (iw *IndexWriter) WriteBatch(ctx context.Context, rows []ContractEventIndex
 		return 0, fmt.Errorf("failed to insert into temp table: %w", err)
 	}
 
-	// Copy from temp to DuckLake table
-	copySQL := fmt.Sprintf("INSERT INTO %s SELECT * FROM temp_contract_index", fullTableName)
+	// Copy only rows not already present in the target table.
+	copySQL := fmt.Sprintf(`
+		INSERT INTO %s
+		SELECT t.*
+		FROM temp_contract_index t
+		LEFT JOIN %s existing
+		  ON existing.contract_id = t.contract_id
+		 AND existing.ledger_sequence = t.ledger_sequence
+		WHERE existing.contract_id IS NULL
+	`, fullTableName, fullTableName)
 	result, err := iw.db.Exec(copySQL)
 	if err != nil {
 		return 0, fmt.Errorf("failed to copy to DuckLake table: %w", err)
@@ -216,6 +226,11 @@ func (iw *IndexWriter) WriteBatch(ctx context.Context, rows []ContractEventIndex
 		return 0, fmt.Errorf("failed to get rows affected: %w", err)
 	}
 
+	skipped := int64(len(rows)) - rowsAffected
+	if skipped < 0 {
+		skipped = 0
+	}
+	log.Printf("✅ Inserted %d contract-ledger pairs into %s (skipped_existing=%d)", rowsAffected, fullTableName, skipped)
 	return rowsAffected, nil
 }
 

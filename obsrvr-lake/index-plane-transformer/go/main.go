@@ -40,9 +40,9 @@ func main() {
 	}
 	log.Println("✅ Connected to Bronze Hot")
 
-	// Connect to Catalog DB (for checkpoints - uses BronzeHot config)
-	log.Println("🔗 Connecting to Catalog DB...")
-	catalogDB, err := sql.Open("postgres", config.BronzeHot.ConnectionString())
+	// Connect to Catalog DB (for checkpoints)
+	log.Printf("🔗 Connecting to Catalog DB (%s:%d/%s)...", config.Catalog.Host, config.Catalog.Port, config.Catalog.Database)
+	catalogDB, err := sql.Open("postgres", config.Catalog.ConnectionString())
 	if err != nil {
 		log.Fatalf("Failed to open Catalog connection: %v", err)
 	}

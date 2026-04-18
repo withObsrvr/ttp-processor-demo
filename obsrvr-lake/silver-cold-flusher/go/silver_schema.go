@@ -79,6 +79,42 @@ func (c *DuckDBClient) createSilverTables() error {
 		return fmt.Errorf("failed to partition Silver tables: %w", err)
 	}
 
+	// Apply schema-drift migrations (idempotent ALTERs for columns added after
+	// initial CREATE TABLE — CREATE TABLE IF NOT EXISTS can't update columns
+	// on an existing table).
+	if err := c.applySilverMigrations(); err != nil {
+		return fmt.Errorf("failed to apply Silver migrations: %w", err)
+	}
+
+	return nil
+}
+
+// applySilverMigrations runs idempotent ALTER-style adjustments to the DuckLake
+// silver schema for columns added after initial table creation.
+//
+// Each migration MUST be idempotent — this runs on every flusher start.
+// Use "ADD COLUMN IF NOT EXISTS" throughout.
+func (c *DuckDBClient) applySilverMigrations() error {
+	migrations := []struct {
+		name string
+		sql  string
+	}{
+		{
+			name: "effects.inserted_at",
+			sql: fmt.Sprintf(
+				`ALTER TABLE %s.%s.effects ADD COLUMN IF NOT EXISTS inserted_at TIMESTAMP`,
+				c.config.CatalogName, c.config.SchemaName,
+			),
+		},
+	}
+
+	for _, m := range migrations {
+		if _, err := c.db.Exec(m.sql); err != nil {
+			log.Printf("   ⚠️  Migration %q failed (non-fatal): %v", m.name, err)
+			continue
+		}
+		log.Printf("   Migration %q applied", m.name)
+	}
 	return nil
 }
 
@@ -101,6 +137,8 @@ var tablesWithLedgerRange = map[string]bool{
 	"enriched_history_operations_soroban": true,
 	"token_transfers_raw":                 true,
 	"contract_invocations_raw":            true,
+	"effects":                             true,
+	"evicted_keys":                        true,
 }
 
 // partitionSilverTables adds DuckLake partitioning to Silver tables that have ledger_range

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	_ "github.com/duckdb/duckdb-go/v2"
+	"github.com/stellar/go/amount"
 	"github.com/stellar/go/strkey"
 )
 
@@ -38,12 +39,6 @@ func NewUnifiedDuckDBReader(config UnifiedReaderConfig) (*UnifiedDuckDBReader, e
 	db, err := sql.Open("duckdb", "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open DuckDB: %w", err)
-	}
-
-	// Cap DuckDB memory to prevent OOM kills
-	if _, err := db.Exec("SET memory_limit='1GB';"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to set memory limit: %w", err)
 	}
 
 	// Install and load required extensions
@@ -612,7 +607,7 @@ func (r *UnifiedDuckDBReader) GetAccountsListWithCursor(ctx context.Context, fil
 
 	// Apply minimum balance filter
 	if filters.MinBalance != nil {
-		minBalXLM := float64(*filters.MinBalance) / 10000000.0
+		minBalXLM := amount.StringFromInt64(*filters.MinBalance)
 		query += fmt.Sprintf(" AND CAST(balance AS DECIMAL) >= $%d", argNum)
 		args = append(args, minBalXLM)
 		argNum++
@@ -650,7 +645,7 @@ func (r *UnifiedDuckDBReader) GetAccountsListWithCursor(ctx context.Context, fil
 			argNum++
 
 		default: // "balance"
-			cursorBalXLM := float64(filters.Cursor.Balance) / 10000000.0
+			cursorBalXLM := amount.StringFromInt64(filters.Cursor.Balance)
 			if isAsc {
 				query += fmt.Sprintf(" AND (CAST(balance AS DECIMAL) > $%d OR (CAST(balance AS DECIMAL) = $%d AND account_id > $%d))", argNum, argNum, argNum+1)
 			} else {
@@ -1284,7 +1279,7 @@ func (r *UnifiedDuckDBReader) GetTokenHolders(ctx context.Context, filters Token
 		if isNative {
 			// For XLM, balance is in stroops or decimal format
 			// Convert min_balance stroops to decimal for comparison
-			minBalDecimal := float64(*filters.MinBalance) / 10000000.0
+			minBalDecimal := amount.StringFromInt64(*filters.MinBalance)
 			query += fmt.Sprintf(` AND (
 				CASE
 					WHEN balance_str LIKE '%%.%%' THEN CAST(balance_str AS DOUBLE)
@@ -1303,7 +1298,7 @@ func (r *UnifiedDuckDBReader) GetTokenHolders(ctx context.Context, filters Token
 
 	// Apply cursor pagination (paginating by balance DESC, account_id for tie-breaking)
 	if filters.Cursor != nil {
-		cursorBalDecimal := float64(filters.Cursor.Balance) / 10000000.0
+		cursorBalDecimal := amount.StringFromInt64(filters.Cursor.Balance)
 		if isNative {
 			query += fmt.Sprintf(` AND (
 				(CASE
@@ -1454,11 +1449,19 @@ func (r *UnifiedDuckDBReader) GetTokenStats(ctx context.Context, assetCode, asse
 	isNative := assetCode == "XLM" || assetCode == "native"
 
 	var stats TokenStats
-	var totalSupply float64
+	// Keep the supply as int64 stroops across both paths so we can format with
+	// amount.StringFromInt64 uniformly at the end. The native path historically
+	// normalised to XLM float in SQL (because silver stores balances as
+	// decimal-formatted strings OR raw stroops) which then broke the shared
+	// formatter — balance_xlm of 100.5 got int64-cast to 100 and printed as
+	// "0.0000100" instead of "100.5000000". See unified_duckdb_reader.go
+	// history if digging: this was the bug Copilot caught in PR review.
+	var totalSupplyStroops int64
 
 	if isNative {
-		// XLM stats - query accounts_current
-		// Get holder count and total supply
+		// XLM stats — query accounts_current. Silver stores balance as either
+		// a decimal string (e.g. "100.5") or raw stroops ("1005000000"); the
+		// CASE normalises both shapes to raw stroops for summation.
 		query := fmt.Sprintf(`
 			WITH combined AS (
 				SELECT account_id, CAST(balance AS VARCHAR) as balance_str, last_modified_ledger, 1 as source
@@ -1477,26 +1480,26 @@ func (r *UnifiedDuckDBReader) GetTokenStats(ctx context.Context, assetCode, asse
 				SELECT
 					account_id,
 					CASE
-						WHEN balance_str LIKE '%%.%%' THEN CAST(balance_str AS DOUBLE)
-						ELSE CAST(balance_str AS BIGINT) / 10000000.0
-					END as balance_xlm
+						WHEN balance_str LIKE '%%.%%' THEN CAST(CAST(balance_str AS DOUBLE) * 10000000 AS BIGINT)
+						ELSE CAST(balance_str AS BIGINT)
+					END as balance_stroops
 				FROM deduplicated
 			)
 			SELECT
 				COUNT(*) as total_accounts,
-				COUNT(*) FILTER (WHERE balance_xlm > 0) as total_holders,
-				COALESCE(SUM(balance_xlm), 0) as total_supply
+				COUNT(*) FILTER (WHERE balance_stroops > 0) as total_holders,
+				COALESCE(SUM(balance_stroops), 0) as total_supply_stroops
 			FROM parsed
 		`, r.hotSchema, r.coldSchema)
 
 		var totalAccounts int64
-		err := r.db.QueryRowContext(ctx, query).Scan(&totalAccounts, &stats.TotalHolders, &totalSupply)
+		err := r.db.QueryRowContext(ctx, query).Scan(&totalAccounts, &stats.TotalHolders, &totalSupplyStroops)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get XLM stats: %w", err)
 		}
 		stats.TotalTrustlines = totalAccounts // For XLM, trustlines = accounts
 
-		// Get top 10 concentration for XLM
+		// Get top 10 concentration for XLM (stroops numerator + denominator cancel)
 		top10Query := fmt.Sprintf(`
 			WITH combined AS (
 				SELECT account_id, CAST(balance AS VARCHAR) as balance_str, last_modified_ledger, 1 as source
@@ -1514,26 +1517,26 @@ func (r *UnifiedDuckDBReader) GetTokenStats(ctx context.Context, assetCode, asse
 			parsed AS (
 				SELECT
 					CASE
-						WHEN balance_str LIKE '%%.%%' THEN CAST(balance_str AS DOUBLE)
-						ELSE CAST(balance_str AS BIGINT) / 10000000.0
-					END as balance_xlm
+						WHEN balance_str LIKE '%%.%%' THEN CAST(CAST(balance_str AS DOUBLE) * 10000000 AS BIGINT)
+						ELSE CAST(balance_str AS BIGINT)
+					END as balance_stroops
 				FROM deduplicated
-				ORDER BY balance_xlm DESC
+				ORDER BY balance_stroops DESC
 				LIMIT 10
 			)
-			SELECT COALESCE(SUM(balance_xlm), 0) as top_10_total
+			SELECT COALESCE(SUM(balance_stroops), 0) as top_10_total
 			FROM parsed
 		`, r.hotSchema, r.coldSchema)
 
-		var top10Total float64
-		if err := r.db.QueryRowContext(ctx, top10Query).Scan(&top10Total); err != nil {
+		var top10TotalStroops int64
+		if err := r.db.QueryRowContext(ctx, top10Query).Scan(&top10TotalStroops); err != nil {
 			log.Printf("Warning: failed to get top 10 concentration: %v", err)
-		} else if totalSupply > 0 {
-			stats.Top10Concentration = top10Total / totalSupply
+		} else if totalSupplyStroops > 0 {
+			stats.Top10Concentration = float64(top10TotalStroops) / float64(totalSupplyStroops)
 		}
 
 	} else {
-		// Non-XLM stats - query trustlines_current
+		// Non-XLM stats - query trustlines_current (balance is already stroops)
 		query := fmt.Sprintf(`
 			WITH combined AS (
 				SELECT account_id, balance, last_modified_ledger, 1 as source
@@ -1557,13 +1560,11 @@ func (r *UnifiedDuckDBReader) GetTokenStats(ctx context.Context, assetCode, asse
 			FROM deduplicated
 		`, r.hotSchema, r.coldSchema)
 
-		var totalSupplyStroops int64
 		err := r.db.QueryRowContext(ctx, query, assetCode, assetIssuer).Scan(
 			&stats.TotalTrustlines, &stats.TotalHolders, &totalSupplyStroops)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get token stats: %w", err)
 		}
-		totalSupply = float64(totalSupplyStroops) / 10000000.0
 
 		// Get top 10 concentration
 		top10Query := fmt.Sprintf(`
@@ -1595,12 +1596,17 @@ func (r *UnifiedDuckDBReader) GetTokenStats(ctx context.Context, assetCode, asse
 		var top10TotalStroops int64
 		if err := r.db.QueryRowContext(ctx, top10Query, assetCode, assetIssuer).Scan(&top10TotalStroops); err != nil {
 			log.Printf("Warning: failed to get top 10 concentration: %v", err)
-		} else if totalSupply > 0 {
-			stats.Top10Concentration = float64(top10TotalStroops) / 10000000.0 / totalSupply
+		} else if totalSupplyStroops > 0 {
+			stats.Top10Concentration = float64(top10TotalStroops) / float64(totalSupplyStroops)
 		}
 	}
 
-	stats.CirculatingSupply = fmt.Sprintf("%.7f", totalSupply)
+	// Single formatter for both paths — both express supply in stroops now.
+	if totalSupplyStroops > 0 {
+		stats.CirculatingSupply = amount.StringFromInt64(totalSupplyStroops)
+	} else {
+		stats.CirculatingSupply = "0.0000000"
+	}
 
 	// Get 24h transfer stats from enriched_history_operations
 	// This works for both XLM and other assets
@@ -5751,6 +5757,29 @@ func (r *UnifiedDuckDBReader) getSmartWalletFromSemantic(ctx context.Context, co
 func (r *UnifiedDuckDBReader) assembleWalletEvidence(ctx context.Context, contractID string) (*WalletEvidence, error) {
 	evidence := &WalletEvidence{
 		ContractID: contractID,
+	}
+
+	// 0. Get wasm hash from contract metadata (hot + cold)
+	for _, schema := range []string{r.hotSchema, r.coldSchema} {
+		if schema == "" {
+			continue
+		}
+		metaQuery := fmt.Sprintf(`
+			SELECT wasm_hash
+			FROM %s.contract_metadata
+			WHERE contract_id = $1 AND wasm_hash IS NOT NULL
+			LIMIT 1
+		`, schema)
+		var wasmHash sql.NullString
+		if err := r.db.QueryRowContext(ctx, metaQuery, contractID).Scan(&wasmHash); err == nil && wasmHash.Valid {
+			evidence.WasmHash = wasmHash.String
+			break
+		}
+	}
+	if evidence.WasmHash == "" && walletRPCFallback != nil {
+		if wasmHash, err := walletRPCFallback.LookupWasmHash(ctx, contractID); err == nil {
+			evidence.WasmHash = wasmHash
+		}
 	}
 
 	// 1. Check for __check_auth in bronze contract events

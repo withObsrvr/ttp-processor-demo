@@ -157,7 +157,14 @@ CREATE TABLE IF NOT EXISTS bronze.operations_row_v2 (
     max_call_depth INTEGER,
     -- Added via migration 004_add_toid_and_token_transfers
     transaction_id BIGINT,
-    operation_id BIGINT
+    operation_id BIGINT,
+    -- Added via applyBronzeMigrations (soroban auth credentials, 2026-04-15).
+    -- ORDER MATTERS: these MUST match the tail of PostgreSQL operations_row_v2
+    -- because the flusher uses SELECT * from postgres_scan. See
+    -- ttp-processor-demo/obsrvr-lake/stellar-postgres-ingester/migrations/
+    -- 005_add_soroban_auth_credentials.sql for the PG-side definition.
+    soroban_auth_credentials_types VARCHAR,
+    soroban_auth_addresses VARCHAR
 );
 
 -- Effects (FIXED: matches PostgreSQL exactly - 22 columns)

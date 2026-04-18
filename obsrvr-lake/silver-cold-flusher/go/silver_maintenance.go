@@ -48,6 +48,11 @@ var SilverTables = []string{
 	"semantic_asset_stats",
 	"semantic_dex_pairs",
 	"semantic_account_summary",
+
+	// High-volume append-only historical tables (added April 2026 — previously
+	// absent from the flush list, causing silver_hot to grow unbounded)
+	"effects",
+	"evicted_keys",
 }
 
 // HighVolumeSilverTables are tables that accumulate files fastest and need
@@ -60,8 +65,35 @@ var HighVolumeSilverTables = []string{
 	"offers_snapshot",
 }
 
+// flushInlinedSilverTablesInternal flushes inlined rows from the DuckLake catalog
+// into Parquet files so they can participate in subsequent merge compaction.
+func (c *DuckDBClient) flushInlinedSilverTablesInternal(ctx context.Context, tables []string) error {
+	log.Println("🧊 Flushing inlined DuckLake data for Silver tables before merge...")
+
+	successCount := 0
+	for _, table := range tables {
+		var schemaName, tableName string
+		var rowsFlushed int64
+		flushSQL := fmt.Sprintf(
+			`CALL ducklake_flush_inlined_data('%s', schema_name => '%s', table_name => '%s')`,
+			c.config.CatalogName, c.config.SchemaName, table,
+		)
+		if err := c.db.QueryRowContext(ctx, flushSQL).Scan(&schemaName, &tableName, &rowsFlushed); err != nil {
+			log.Printf("   ⚠️  flush inlined %s: %v", table, err)
+			continue
+		}
+		log.Printf("   ✅ flushed inlined %s.%s rows=%d", schemaName, tableName, rowsFlushed)
+		successCount++
+	}
+
+	if successCount == 0 {
+		return fmt.Errorf("failed to flush inlined data for all %d Silver tables", len(tables))
+	}
+	return nil
+}
+
 // RunCheckpoint performs automated DuckLake maintenance:
-// Merges small Parquet files into larger ones for query performance.
+// flushes inlined data to Parquet, then merges small Parquet files into larger ones.
 //
 // IMPORTANT: This intentionally does NOT run CHECKPOINT, expire_snapshots, or
 // cleanup_old_files. Those operations delete historical Parquet files from S3,
@@ -71,7 +103,11 @@ var HighVolumeSilverTables = []string{
 // Callers should hold the flusher's write lock to avoid conflicts with concurrent flushes.
 func (c *DuckDBClient) RunCheckpoint(ctx context.Context, maxCompactedFiles int) error {
 	startTime := time.Now()
-	log.Println("🔧 Running DuckLake merge maintenance (merge only, no expire/cleanup)...")
+	log.Println("🔧 Running DuckLake maintenance (flush inlined data + merge only, no expire/cleanup)...")
+
+	if err := c.flushInlinedSilverTablesInternal(ctx, HighVolumeSilverTables); err != nil {
+		log.Printf("⚠️  Silver inlined-data flush completed with errors: %v", err)
+	}
 
 	successCount := 0
 	for _, table := range HighVolumeSilverTables {
@@ -86,7 +122,7 @@ func (c *DuckDBClient) RunCheckpoint(ctx context.Context, maxCompactedFiles int)
 		}
 	}
 
-	log.Printf("✅ DuckLake merge completed (%d/%d tables) in %s",
+	log.Printf("✅ DuckLake maintenance completed (%d/%d tables merged) in %s",
 		successCount, len(HighVolumeSilverTables), time.Since(startTime).Round(time.Millisecond))
 	return nil
 }

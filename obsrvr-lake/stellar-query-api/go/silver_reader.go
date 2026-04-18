@@ -8,6 +8,7 @@ import (
 	"time"
 
 	_ "github.com/duckdb/duckdb-go/v2"
+	"github.com/stellar/go/amount"
 )
 
 // SilverColdReader queries the analytics-ready Silver layer from DuckLake (cold storage)
@@ -344,7 +345,7 @@ func (r *SilverColdReader) GetAccountsListWithCursor(ctx context.Context, filter
 	// Apply minimum balance filter (balance is stored as decimal string in XLM)
 	if filters.MinBalance != nil {
 		// Convert stroops to XLM for comparison (divide by 10^7)
-		minBalXLM := float64(*filters.MinBalance) / 10000000.0
+		minBalXLM := amount.StringFromInt64(*filters.MinBalance)
 		query += " AND CAST(balance AS DECIMAL) >= ?"
 		args = append(args, minBalXLM)
 	}
@@ -383,7 +384,7 @@ func (r *SilverColdReader) GetAccountsListWithCursor(ctx context.Context, filter
 
 		default: // "balance" or empty
 			// Paginate based on balance, tie-break by account_id
-			cursorBalXLM := float64(filters.Cursor.Balance) / 10000000.0
+			cursorBalXLM := amount.StringFromInt64(filters.Cursor.Balance)
 			if isAsc {
 				query += " AND (CAST(balance AS DECIMAL) > ? OR (CAST(balance AS DECIMAL) = ? AND account_id > ?))"
 			} else {

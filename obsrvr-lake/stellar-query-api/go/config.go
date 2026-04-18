@@ -8,15 +8,16 @@ import (
 )
 
 type Config struct {
-	Service        ServiceConfig          `yaml:"service"`
-	Postgres       PostgresConfig         `yaml:"postgres"`
-	PostgresSilver *PostgresConfig        `yaml:"postgres_silver,omitempty"`
-	DuckLake       DuckLakeConfig         `yaml:"ducklake"`
-	DuckLakeSilver *DuckLakeConfig        `yaml:"ducklake_silver,omitempty"`
-	Index          *IndexConfig           `yaml:"index,omitempty"`
-	ContractIndex  *ContractIndexConfig   `yaml:"contract_index,omitempty"`
-	Query          QueryConfig            `yaml:"query"`
-	Unified        *UnifiedReaderConfig   `yaml:"unified,omitempty"` // Config for DuckDB ATTACH unified reader
+	Service        ServiceConfig        `yaml:"service"`
+	Postgres       PostgresConfig       `yaml:"postgres"`
+	PostgresSilver *PostgresConfig      `yaml:"postgres_silver,omitempty"`
+	DuckLake       DuckLakeConfig       `yaml:"ducklake"`
+	DuckLakeSilver *DuckLakeConfig      `yaml:"ducklake_silver,omitempty"`
+	Index          *IndexConfig         `yaml:"index,omitempty"`
+	ContractIndex  *ContractIndexConfig `yaml:"contract_index,omitempty"`
+	Query          QueryConfig          `yaml:"query"`
+	Unified        *UnifiedReaderConfig `yaml:"unified,omitempty"` // Config for DuckDB ATTACH unified reader
+	RPCFallback    *RPCFallbackConfig   `yaml:"rpc_fallback,omitempty"`
 }
 
 type ServiceConfig struct {
@@ -37,15 +38,15 @@ type PostgresConfig struct {
 }
 
 type DuckLakeConfig struct {
-	CatalogPath         string `yaml:"catalog_path"`
-	DataPath            string `yaml:"data_path"`
-	CatalogName         string `yaml:"catalog_name"`
-	SchemaName          string `yaml:"schema_name"`
-	MetadataSchema      string `yaml:"metadata_schema"`
-	AWSAccessKeyID      string `yaml:"aws_access_key_id"`
-	AWSSecretAccessKey  string `yaml:"aws_secret_access_key"`
-	AWSRegion           string `yaml:"aws_region"`
-	AWSEndpoint         string `yaml:"aws_endpoint"`
+	CatalogPath        string `yaml:"catalog_path"`
+	DataPath           string `yaml:"data_path"`
+	CatalogName        string `yaml:"catalog_name"`
+	SchemaName         string `yaml:"schema_name"`
+	MetadataSchema     string `yaml:"metadata_schema"`
+	AWSAccessKeyID     string `yaml:"aws_access_key_id"`
+	AWSSecretAccessKey string `yaml:"aws_secret_access_key"`
+	AWSRegion          string `yaml:"aws_region"`
+	AWSEndpoint        string `yaml:"aws_endpoint"`
 }
 
 type QueryConfig struct {
@@ -105,32 +106,39 @@ type UnifiedDuckLakeConfig struct {
 }
 
 type IndexConfig struct {
-	Enabled            bool   `yaml:"enabled"`
-	CatalogHost        string `yaml:"catalog_host"`
-	CatalogPort        int    `yaml:"catalog_port"`
-	CatalogDatabase    string `yaml:"catalog_database"`
-	CatalogUser        string `yaml:"catalog_user"`
-	CatalogPassword    string `yaml:"catalog_password"`
-	DuckLakePath       string `yaml:"ducklake_path"`
-	S3Endpoint         string `yaml:"s3_endpoint"`
-	S3Region           string `yaml:"s3_region"`
-	S3Bucket           string `yaml:"s3_bucket"`
-	S3AccessKeyID      string `yaml:"s3_access_key_id"`
-	S3SecretAccessKey  string `yaml:"s3_secret_access_key"`
+	Enabled           bool   `yaml:"enabled"`
+	CatalogHost       string `yaml:"catalog_host"`
+	CatalogPort       int    `yaml:"catalog_port"`
+	CatalogDatabase   string `yaml:"catalog_database"`
+	CatalogUser       string `yaml:"catalog_user"`
+	CatalogPassword   string `yaml:"catalog_password"`
+	DuckLakePath      string `yaml:"ducklake_path"`
+	S3Endpoint        string `yaml:"s3_endpoint"`
+	S3Region          string `yaml:"s3_region"`
+	S3Bucket          string `yaml:"s3_bucket"`
+	S3AccessKeyID     string `yaml:"s3_access_key_id"`
+	S3SecretAccessKey string `yaml:"s3_secret_access_key"`
 }
 
 type ContractIndexConfig struct {
-	Enabled            bool   `yaml:"enabled"`
-	CatalogHost        string `yaml:"catalog_host"`
-	CatalogPort        int    `yaml:"catalog_port"`
-	CatalogDatabase    string `yaml:"catalog_database"`
-	CatalogUser        string `yaml:"catalog_user"`
-	CatalogPassword    string `yaml:"catalog_password"`
-	S3Endpoint         string `yaml:"s3_endpoint"`
-	S3Region           string `yaml:"s3_region"`
-	S3Bucket           string `yaml:"s3_bucket"`
-	S3AccessKeyID      string `yaml:"s3_access_key_id"`
-	S3SecretAccessKey  string `yaml:"s3_secret_access_key"`
+	Enabled           bool   `yaml:"enabled"`
+	CatalogHost       string `yaml:"catalog_host"`
+	CatalogPort       int    `yaml:"catalog_port"`
+	CatalogDatabase   string `yaml:"catalog_database"`
+	CatalogUser       string `yaml:"catalog_user"`
+	CatalogPassword   string `yaml:"catalog_password"`
+	S3Endpoint        string `yaml:"s3_endpoint"`
+	S3Region          string `yaml:"s3_region"`
+	S3Bucket          string `yaml:"s3_bucket"`
+	S3AccessKeyID     string `yaml:"s3_access_key_id"`
+	S3SecretAccessKey string `yaml:"s3_secret_access_key"`
+}
+
+type RPCFallbackConfig struct {
+	Enabled        bool   `yaml:"enabled"`
+	URL            string `yaml:"url"`
+	AuthHeader     string `yaml:"auth_header"`
+	TimeoutSeconds int    `yaml:"timeout_seconds"`
 }
 
 func LoadConfig(path string) (*Config, error) {

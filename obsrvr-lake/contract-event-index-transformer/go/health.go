@@ -18,6 +18,11 @@ type TransformerStats struct {
 	TransformationsTotal  int64         `json:"transformations_total"`
 	TransformationErrors  int64         `json:"transformation_errors"`
 	LagSeconds            int64         `json:"lag_seconds"`
+	SourceMinLedger       int64         `json:"source_min_ledger"`
+	SourceMaxLedger       int64         `json:"source_max_ledger"`
+	CheckpointGapLedgers  int64         `json:"checkpoint_gap_ledgers"`
+	RetentionGapDetected  bool          `json:"retention_gap_detected"`
+	RetentionGapMessage   string        `json:"retention_gap_message"`
 }
 
 // HealthServer provides HTTP health endpoint
@@ -105,9 +110,14 @@ func (hs *HealthServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	status := "healthy"
+	if stats.RetentionGapDetected {
+		status = "degraded"
+	}
+
 	// Build response
 	response := map[string]interface{}{
-		"status":      "healthy",
+		"status":      status,
 		"transformer": "contract-event-index",
 		"checkpoint": map[string]interface{}{
 			"last_ledger":  stats.LastLedgerProcessed,
@@ -116,10 +126,15 @@ func (hs *HealthServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"index":          indexStats,
 		"uptime_seconds": int64(time.Since(hs.startTime).Seconds()),
 		"stats": map[string]interface{}{
-			"transformations_total":     stats.TransformationsTotal,
-			"transformation_errors":     stats.TransformationErrors,
+			"transformations_total":      stats.TransformationsTotal,
+			"transformation_errors":      stats.TransformationErrors,
 			"last_transform_duration_ms": stats.LastTransformDuration.Milliseconds(),
-			"lag_seconds":               stats.LagSeconds,
+			"lag_seconds":                stats.LagSeconds,
+			"source_min_ledger":          stats.SourceMinLedger,
+			"source_max_ledger":          stats.SourceMaxLedger,
+			"checkpoint_gap_ledgers":     stats.CheckpointGapLedgers,
+			"retention_gap_detected":     stats.RetentionGapDetected,
+			"retention_gap_message":      stats.RetentionGapMessage,
 		},
 	}
 

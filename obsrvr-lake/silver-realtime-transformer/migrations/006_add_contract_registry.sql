@@ -34,6 +34,8 @@ ON CONFLICT (contract_id) DO NOTHING;
 
 -- Seed known ecosystem contracts
 INSERT INTO contract_registry (contract_id, display_name, category, project, verified, source) VALUES
+    -- Native XLM SAC (testnet) — computed from Test SDF Network passphrase
+    ('CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC', 'Stellar Lumens (XLM)', 'native_asset', 'stellar', true, 'manual'),
     -- Soroswap (mainnet router)
     ('CAG5LRYQ5JVEUI5TEID72EYOVX44TTUJT5BQR2J6J77FH65PCCFAJDDH', 'Soroswap Router', 'dex', 'soroswap', true, 'manual'),
     -- Soroswap (mainnet factory)
@@ -46,4 +48,19 @@ ON CONFLICT (contract_id) DO UPDATE SET
     project = EXCLUDED.project,
     verified = EXCLUDED.verified,
     source = EXCLUDED.source,
+    updated_at = NOW();
+
+-- Seed well-known tokens in token_registry (symbol/decimals for balance display).
+-- The transformer auto-populates this from contract instance metadata, but SAC
+-- contracts for native assets don't always have discoverable metadata — the
+-- native XLM SAC in particular needs a manual seed.
+INSERT INTO token_registry (contract_id, token_name, token_symbol, token_decimals, asset_code, token_type)
+VALUES
+    ('CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC', 'Stellar Lumens', 'XLM', 7, 'XLM', 'sac')
+ON CONFLICT (contract_id) DO UPDATE SET
+    token_name = EXCLUDED.token_name,
+    token_symbol = EXCLUDED.token_symbol,
+    token_decimals = EXCLUDED.token_decimals,
+    asset_code = EXCLUDED.asset_code,
+    token_type = EXCLUDED.token_type,
     updated_at = NOW();

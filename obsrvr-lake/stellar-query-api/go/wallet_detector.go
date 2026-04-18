@@ -12,17 +12,17 @@ const (
 // WalletSignerInfo describes a signer extracted from on-chain data
 type WalletSignerInfo struct {
 	ID       string `json:"id"`
-	KeyType  string `json:"key_type,omitempty"`  // "ed25519", "secp256k1", "webauthn", "unknown"
+	KeyType  string `json:"key_type,omitempty"` // "ed25519", "secp256k1", "webauthn", "unknown"
 	Weight   *int   `json:"weight,omitempty"`
 	RawValue string `json:"raw_value,omitempty"`
 }
 
 // WalletDetectionResult is what a detector returns when it matches
 type WalletDetectionResult struct {
-	WalletType WalletType       `json:"wallet_type"`
-	Confidence float64          `json:"confidence"` // 0.0-1.0
+	WalletType WalletType         `json:"wallet_type"`
+	Confidence float64            `json:"confidence"` // 0.0-1.0
 	Signers    []WalletSignerInfo `json:"signers,omitempty"`
-	Policies   []string         `json:"policies,omitempty"`
+	Policies   []string           `json:"policies,omitempty"`
 }
 
 // StorageEntry represents a single contract instance storage entry
@@ -35,6 +35,7 @@ type StorageEntry struct {
 // All data gathering happens in the caller — detectors are pure functions.
 type WalletEvidence struct {
 	ContractID        string
+	WasmHash          string
 	ObservedFunctions []string       // from contract_invocations_raw
 	HasCheckAuth      bool           // from bronze contract_events topics
 	InstanceStorage   []StorageEntry // from contract_data_current WHERE durability='instance'

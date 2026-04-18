@@ -11,9 +11,24 @@ import (
 	"os/signal"
 	"syscall"
 
+	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "github.com/lib/pq"
 	"google.golang.org/grpc"
 )
+
+func configureSQLDBPool(db *sql.DB, cfg DatabaseConfig) {
+	if cfg.MaxOpenConns > 0 {
+		db.SetMaxOpenConns(cfg.MaxOpenConns)
+	}
+	db.SetMaxIdleConns(cfg.MaxIdleConnsOrDefault())
+
+	if lifetime := cfg.ConnMaxLifetime(); lifetime > 0 {
+		db.SetConnMaxLifetime(lifetime)
+	}
+	if idle := cfg.ConnMaxIdleTime(); idle > 0 {
+		db.SetConnMaxIdleTime(idle)
+	}
+}
 
 func main() {
 	// Parse command line flags
@@ -39,14 +54,18 @@ func main() {
 	log.Printf("📋 Service: %s", config.Service.Name)
 	log.Printf("📋 Poll interval: %v", config.PollInterval())
 	log.Printf("📋 Batch size: %d ledgers", config.Performance.BatchSize)
+	log.Printf("📋 Bronze readers: %d", config.MaxBronzeReaders())
+	log.Printf("📋 Silver writers: %d", config.MaxSilverWriters())
 
 	// Connect to Bronze Hot (stellar_hot PostgreSQL)
 	log.Println("🔗 Connecting to Bronze Hot (stellar_hot)...")
-	bronzeDB, err := sql.Open("postgres", config.BronzeHot.ConnectionString())
+	bronzeDB, err := sql.Open("pgx", config.BronzeHot.ConnectionString())
 	if err != nil {
 		log.Fatalf("Failed to connect to bronze hot: %v", err)
 	}
 	defer bronzeDB.Close()
+
+	configureSQLDBPool(bronzeDB, config.BronzeHot)
 
 	if err := bronzeDB.Ping(); err != nil {
 		log.Fatalf("Failed to ping bronze hot: %v", err)
@@ -54,12 +73,14 @@ func main() {
 	log.Println("✅ Connected to Bronze Hot")
 
 	// Connect to Silver Hot (silver_hot PostgreSQL)
-	log.Println("🔗 Connecting to Silver Hot (silver_hot)...")
-	silverDB, err := sql.Open("postgres", config.SilverHot.ConnectionString())
+	log.Println("🔗 Connecting to Silver Hot (silver_hot) with pgx stdlib...")
+	silverDB, err := sql.Open("pgx", config.SilverHot.ConnectionString())
 	if err != nil {
 		log.Fatalf("Failed to connect to silver hot: %v", err)
 	}
 	defer silverDB.Close()
+
+	configureSQLDBPool(silverDB, config.SilverHot)
 
 	if err := silverDB.Ping(); err != nil {
 		log.Fatalf("Failed to ping silver hot: %v", err)

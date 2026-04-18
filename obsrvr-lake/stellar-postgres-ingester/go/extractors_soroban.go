@@ -539,8 +539,93 @@ func sacAssetFromContractData(ledgerEntry xdr.LedgerEntry, passphrase string) *x
 	return &asset
 }
 
-func sacContractBalanceFromContractData(ledgerEntry xdr.LedgerEntry, passphrase string) ([32]byte, *big.Int, bool) {
-	return sac.ContractBalanceFromContractData(ledgerEntry, passphrase)
+// balanceMetadataSym is the ScSymbol key used for SAC/SEP-41 Balance entries.
+// Matches the SDK's internal constant.
+var balanceMetadataSym = xdr.ScSymbol("Balance")
+
+// contractStorageBalanceFromData inlines the logic of
+// sac.ContractBalanceFromContractData but OMITS the native-XLM exclusion
+// (SDK source at ingest/sac/contract_data.go:211-215 comments
+// "we don't support asset stats for lumens" and returns false for the
+// native SAC — which silently hides every contract's XLM holdings).
+//
+// We want XLM balances for smart-wallet/contract state surfaces, so this
+// function returns the decoded holder and amount for any Balance(Address)
+// contract_data entry that matches the canonical SAC value shape, including
+// the native XLM SAC.
+//
+// Classic asset SACs (USDC etc.) were already being decoded by the SDK
+// wrapper — they keep working unchanged here because the match logic is
+// otherwise identical.
+//
+// Holder extraction still requires a contract address (ScAddress of Contract
+// type). Classic-account holders (G...) are a later-cycle concern; smart
+// wallets are always contracts.
+func contractStorageBalanceFromData(ledgerEntry xdr.LedgerEntry, _ string) ([32]byte, *big.Int, bool) {
+	contractData, ok := ledgerEntry.Data.GetContractData()
+	if !ok {
+		return [32]byte{}, nil, false
+	}
+	if contractData.Durability != xdr.ContractDataDurabilityPersistent {
+		return [32]byte{}, nil, false
+	}
+	if contractData.Contract.ContractId == nil {
+		return [32]byte{}, nil, false
+	}
+
+	keyEnumVecPtr, ok := contractData.Key.GetVec()
+	if !ok || keyEnumVecPtr == nil {
+		return [32]byte{}, nil, false
+	}
+	keyEnumVec := *keyEnumVecPtr
+	if len(keyEnumVec) != 2 || !keyEnumVec[0].Equals(
+		xdr.ScVal{
+			Type: xdr.ScValTypeScvSymbol,
+			Sym:  &balanceMetadataSym,
+		},
+	) {
+		return [32]byte{}, nil, false
+	}
+
+	scAddress, ok := keyEnumVec[1].GetAddress()
+	if !ok {
+		return [32]byte{}, nil, false
+	}
+	holder, ok := scAddress.GetContractId()
+	if !ok {
+		return [32]byte{}, nil, false
+	}
+
+	balanceMapPtr, ok := contractData.Val.GetMap()
+	if !ok || balanceMapPtr == nil {
+		return [32]byte{}, nil, false
+	}
+	balanceMap := *balanceMapPtr
+	if len(balanceMap) != 3 {
+		return [32]byte{}, nil, false
+	}
+	if keySym, ok := balanceMap[0].Key.GetSym(); !ok || keySym != "amount" {
+		return [32]byte{}, nil, false
+	}
+	if keySym, ok := balanceMap[1].Key.GetSym(); !ok || keySym != "authorized" ||
+		!balanceMap[1].Val.IsBool() {
+		return [32]byte{}, nil, false
+	}
+	if keySym, ok := balanceMap[2].Key.GetSym(); !ok || keySym != "clawback" ||
+		!balanceMap[2].Val.IsBool() {
+		return [32]byte{}, nil, false
+	}
+	amount, ok := balanceMap[0].Val.GetI128()
+	if !ok {
+		return [32]byte{}, nil, false
+	}
+	// amount cannot be negative (enforced in rs-soroban-env balance.rs).
+	if int64(amount.Hi) < 0 {
+		return [32]byte{}, nil, false
+	}
+	amt := new(big.Int).Lsh(new(big.Int).SetInt64(int64(amount.Hi)), 64)
+	amt.Add(amt, new(big.Int).SetUint64(uint64(amount.Lo)))
+	return holder, amt, true
 }
 
 // extractContractData extracts contract data state from raw ledger
@@ -582,10 +667,15 @@ func (w *Writer) extractContractData(rawLedger *pb.RawLedger) ([]ContractDataDat
 	// Get ledger header for stellar/go processor
 	ledgerHeader := lcm.LedgerHeaderHistoryEntry()
 
-	// Create stellar/go contract processor with sac wrapper functions
+	// Create stellar/go contract processor.
+	// Asset extractor stays as the SDK's SAC-only version (it looks up
+	// asset_code/asset_issuer from the contract's instance data, which is
+	// only meaningful for SAC wrappers anyway).
+	// Balance extractor is our local version that also decodes the native
+	// XLM SAC — see contractStorageBalanceFromData for rationale.
 	transformer := contract.NewTransformContractDataStruct(
 		sacAssetFromContractData,
-		sacContractBalanceFromContractData,
+		contractStorageBalanceFromData,
 	)
 
 	// Track unique contracts (to avoid duplicates within a ledger)

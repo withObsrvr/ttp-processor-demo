@@ -236,11 +236,10 @@ func (f *Flusher) flushAllTables(watermark, lastFlushed int64) (int64, []string,
 
 	// Snapshot tables (use ledger_sequence)
 	snapshotTables := map[string]bool{
-		"accounts_snapshot":             true,
-		"trustlines_snapshot":           true,
-		"offers_snapshot":               true,
-		"account_signers_snapshot":      true,
-		"claimable_balances_snapshot":   true,
+		"accounts_snapshot":        true,
+		"trustlines_snapshot":      true,
+		"offers_snapshot":          true,
+		"account_signers_snapshot": true,
 	}
 
 	// Enriched/event tables (use ledger_sequence)
@@ -252,6 +251,8 @@ func (f *Flusher) flushAllTables(watermark, lastFlushed int64) (int64, []string,
 		"contract_invocations_raw":            true,
 		"semantic_activities":                 true,
 		"semantic_flows_value":                true,
+		"effects":                             true,
+		"evicted_keys":                        true,
 	}
 
 	// Tables with non-standard watermark column
@@ -296,11 +297,10 @@ func (f *Flusher) deleteFlushedData(watermark int64, tables []string) (int64, er
 
 	// Snapshot tables (use ledger_sequence)
 	snapshotTables := map[string]bool{
-		"accounts_snapshot":             true,
-		"trustlines_snapshot":           true,
-		"offers_snapshot":               true,
-		"account_signers_snapshot":      true,
-		"claimable_balances_snapshot":   true,
+		"accounts_snapshot":        true,
+		"trustlines_snapshot":      true,
+		"offers_snapshot":          true,
+		"account_signers_snapshot": true,
 	}
 
 	// Enriched/event tables (use ledger_sequence)
@@ -312,6 +312,8 @@ func (f *Flusher) deleteFlushedData(watermark int64, tables []string) (int64, er
 		"contract_invocations_raw":            true,
 		"semantic_activities":                 true,
 		"semantic_flows_value":                true,
+		"effects":                             true,
+		"evicted_keys":                        true,
 	}
 
 	// Tables with non-standard watermark column

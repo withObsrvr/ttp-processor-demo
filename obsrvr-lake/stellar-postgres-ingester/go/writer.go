@@ -57,9 +57,9 @@ type LedgerData struct {
 	IngestionTimestamp   time.Time
 	LedgerRange          uint32
 	// Soroban aggregates per ledger
-	SorobanOpCount       *int
-	TotalFeeCharged      *int64
-	ContractEventsCount  *int
+	SorobanOpCount      *int
+	TotalFeeCharged     *int64
+	ContractEventsCount *int
 }
 
 // NewWriter creates a new PostgreSQL writer
@@ -83,6 +83,8 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 		len(rawLedgers),
 		rawLedgers[0].Sequence,
 		rawLedgers[len(rawLedgers)-1].Sequence)
+
+	extractStart := time.Now()
 
 	// Begin transaction
 	tx, err := w.db.Begin(ctx)
@@ -169,14 +171,24 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 			log.Printf("Warning: Failed to extract operations for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
 			sorobanOps := 0
+			convertedOps := make([]OperationData, 0, len(libOperations))
 			for _, r := range libOperations {
-				allOperations = append(allOperations, convertOperation(r))
+				convertedOps = append(convertedOps, convertOperation(r))
 				if r.LedgerSequence == ledgerData.Sequence {
 					if r.OpType == 24 || r.OpType == 25 || r.OpType == 26 {
 						sorobanOps++
 					}
 				}
 			}
+			// Enrich Soroban InvokeHostFunction ops with authorization-entry
+			// credentials (type + authorizer address). The stellar-extract
+			// library doesn't surface these, so we walk the LCM directly.
+			if creds, cerr := buildAuthCredentialsMap(input); cerr != nil {
+				log.Printf("Warning: Failed to build auth credentials map for ledger %d: %v", rawLedger.Sequence, cerr)
+			} else {
+				applyAuthCredentials(convertedOps, creds)
+			}
+			allOperations = append(allOperations, convertedOps...)
 			ledgerData.SorobanOpCount = &sorobanOps
 		}
 
@@ -380,170 +392,128 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 		totalOpCount += uint64(ledgerData.OperationCount)
 	}
 
-	// Insert all transactions
-	if len(allTransactions) > 0 {
-		if err := w.insertTransactions(ctx, tx, allTransactions); err != nil {
-			return fmt.Errorf("failed to insert transactions: %w", err)
-		}
-		log.Printf("Inserted %d transactions", len(allTransactions))
+	extractDuration := time.Since(extractStart)
+	log.Printf("Batch extraction finished in %v [transactions=%d operations=%d effects=%d trades=%d accounts=%d offers=%d trustlines=%d signers=%d claimable_balances=%d liquidity_pools=%d config_settings=%d ttl=%d evicted_keys=%d contract_events=%d contract_data=%d contract_code=%d native_balances=%d restored_keys=%d contract_creations=%d token_transfers=%d]",
+		extractDuration,
+		len(allTransactions), len(allOperations), len(allEffects), len(allTrades),
+		len(allAccounts), len(allOffers), len(allTrustlines), len(allAccountSigners),
+		len(allClaimableBalances), len(allLiquidityPools), len(allConfigSettings), len(allTTL),
+		len(allEvictedKeys), len(allContractEvents), len(allContractData), len(allContractCode),
+		len(allNativeBalances), len(allRestoredKeys), len(allContractCreations), len(allTokenTransfers))
+
+	insertStart := time.Now()
+
+	if err := logInsertStep("transactions", len(allTransactions), func() error {
+		return w.insertTransactions(ctx, tx, allTransactions)
+	}); err != nil {
+		return fmt.Errorf("failed to insert transactions: %w", err)
+	}
+	if err := logInsertStep("operations", len(allOperations), func() error {
+		return w.insertOperations(ctx, tx, allOperations)
+	}); err != nil {
+		return fmt.Errorf("failed to insert operations: %w", err)
+	}
+	if err := logInsertStep("effects", len(allEffects), func() error {
+		return w.insertEffects(ctx, tx, allEffects)
+	}); err != nil {
+		return fmt.Errorf("failed to insert effects: %w", err)
+	}
+	if err := logInsertStep("trades", len(allTrades), func() error {
+		return w.insertTrades(ctx, tx, allTrades)
+	}); err != nil {
+		return fmt.Errorf("failed to insert trades: %w", err)
+	}
+	if err := logInsertStep("accounts", len(allAccounts), func() error {
+		return w.insertAccounts(ctx, tx, allAccounts)
+	}); err != nil {
+		return fmt.Errorf("failed to insert accounts: %w", err)
+	}
+	if err := logInsertStep("offers", len(allOffers), func() error {
+		return w.insertOffers(ctx, tx, allOffers)
+	}); err != nil {
+		return fmt.Errorf("failed to insert offers: %w", err)
+	}
+	if err := logInsertStep("trustlines", len(allTrustlines), func() error {
+		return w.insertTrustlines(ctx, tx, allTrustlines)
+	}); err != nil {
+		return fmt.Errorf("failed to insert trustlines: %w", err)
+	}
+	if err := logInsertStep("account signers", len(allAccountSigners), func() error {
+		return w.insertAccountSigners(ctx, tx, allAccountSigners)
+	}); err != nil {
+		return fmt.Errorf("failed to insert account signers: %w", err)
+	}
+	if err := logInsertStep("claimable balances", len(allClaimableBalances), func() error {
+		return w.insertClaimableBalances(ctx, tx, allClaimableBalances)
+	}); err != nil {
+		return fmt.Errorf("failed to insert claimable balances: %w", err)
+	}
+	if err := logInsertStep("liquidity pools", len(allLiquidityPools), func() error {
+		return w.insertLiquidityPools(ctx, tx, allLiquidityPools)
+	}); err != nil {
+		return fmt.Errorf("failed to insert liquidity pools: %w", err)
+	}
+	if err := logInsertStep("config settings", len(allConfigSettings), func() error {
+		return w.insertConfigSettings(ctx, tx, allConfigSettings)
+	}); err != nil {
+		return fmt.Errorf("failed to insert config settings: %w", err)
+	}
+	if err := logInsertStep("ttl entries", len(allTTL), func() error {
+		return w.insertTTL(ctx, tx, allTTL)
+	}); err != nil {
+		return fmt.Errorf("failed to insert TTL: %w", err)
+	}
+	if err := logInsertStep("evicted keys", len(allEvictedKeys), func() error {
+		return w.insertEvictedKeys(ctx, tx, allEvictedKeys)
+	}); err != nil {
+		return fmt.Errorf("failed to insert evicted keys: %w", err)
+	}
+	if err := logInsertStep("contract events", len(allContractEvents), func() error {
+		return w.insertContractEvents(ctx, tx, allContractEvents)
+	}); err != nil {
+		return fmt.Errorf("failed to insert contract events: %w", err)
+	}
+	if err := logInsertStep("contract data entries", len(allContractData), func() error {
+		return w.insertContractData(ctx, tx, allContractData)
+	}); err != nil {
+		return fmt.Errorf("failed to insert contract data: %w", err)
+	}
+	if err := logInsertStep("contract code entries", len(allContractCode), func() error {
+		return w.insertContractCode(ctx, tx, allContractCode)
+	}); err != nil {
+		return fmt.Errorf("failed to insert contract code: %w", err)
+	}
+	if err := logInsertStep("native balances", len(allNativeBalances), func() error {
+		return w.insertNativeBalances(ctx, tx, allNativeBalances)
+	}); err != nil {
+		return fmt.Errorf("failed to insert native balances: %w", err)
+	}
+	if err := logInsertStep("restored keys", len(allRestoredKeys), func() error {
+		return w.insertRestoredKeys(ctx, tx, allRestoredKeys)
+	}); err != nil {
+		return fmt.Errorf("failed to insert restored keys: %w", err)
+	}
+	if err := logInsertStep("contract creations", len(allContractCreations), func() error {
+		return w.insertContractCreations(ctx, tx, allContractCreations)
+	}); err != nil {
+		return fmt.Errorf("failed to insert contract creations: %w", err)
+	}
+	if err := logInsertStep("token transfers", len(allTokenTransfers), func() error {
+		return w.insertTokenTransfers(ctx, tx, allTokenTransfers)
+	}); err != nil {
+		return fmt.Errorf("failed to insert token transfers: %w", err)
 	}
 
-	// Insert all operations
-	if len(allOperations) > 0 {
-		if err := w.insertOperations(ctx, tx, allOperations); err != nil {
-			return fmt.Errorf("failed to insert operations: %w", err)
-		}
-		log.Printf("Inserted %d operations", len(allOperations))
-	}
-
-	// Insert all effects
-	if len(allEffects) > 0 {
-		if err := w.insertEffects(ctx, tx, allEffects); err != nil {
-			return fmt.Errorf("failed to insert effects: %w", err)
-		}
-		log.Printf("Inserted %d effects", len(allEffects))
-	}
-
-	// Insert all trades
-	if len(allTrades) > 0 {
-		if err := w.insertTrades(ctx, tx, allTrades); err != nil {
-			return fmt.Errorf("failed to insert trades: %w", err)
-		}
-		log.Printf("Inserted %d trades", len(allTrades))
-	}
-
-	// Insert all accounts (Phase 1 - Day 1)
-	if len(allAccounts) > 0 {
-		if err := w.insertAccounts(ctx, tx, allAccounts); err != nil {
-			return fmt.Errorf("failed to insert accounts: %w", err)
-		}
-		log.Printf("Inserted %d accounts", len(allAccounts))
-	}
-
-	// Insert all offers (Phase 1 - Day 1)
-	if len(allOffers) > 0 {
-		if err := w.insertOffers(ctx, tx, allOffers); err != nil {
-			return fmt.Errorf("failed to insert offers: %w", err)
-		}
-		log.Printf("Inserted %d offers", len(allOffers))
-	}
-
-	// Insert all trustlines (Phase 1 - Day 2)
-	if len(allTrustlines) > 0 {
-		if err := w.insertTrustlines(ctx, tx, allTrustlines); err != nil {
-			return fmt.Errorf("failed to insert trustlines: %w", err)
-		}
-		log.Printf("Inserted %d trustlines", len(allTrustlines))
-	}
-
-	// Insert all account signers (Phase 1 - Day 3)
-	if len(allAccountSigners) > 0 {
-		if err := w.insertAccountSigners(ctx, tx, allAccountSigners); err != nil {
-			return fmt.Errorf("failed to insert account signers: %w", err)
-		}
-		log.Printf("Inserted %d account signers", len(allAccountSigners))
-	}
-
-	// Insert all claimable balances (Phase 2 - Day 4)
-	if len(allClaimableBalances) > 0 {
-		if err := w.insertClaimableBalances(ctx, tx, allClaimableBalances); err != nil {
-			return fmt.Errorf("failed to insert claimable balances: %w", err)
-		}
-		log.Printf("Inserted %d claimable balances", len(allClaimableBalances))
-	}
-
-	// Insert all liquidity pools (Phase 2 - Day 4)
-	if len(allLiquidityPools) > 0 {
-		if err := w.insertLiquidityPools(ctx, tx, allLiquidityPools); err != nil {
-			return fmt.Errorf("failed to insert liquidity pools: %w", err)
-		}
-		log.Printf("Inserted %d liquidity pools", len(allLiquidityPools))
-	}
-
-	// Insert all config settings (Phase 2 - Day 5)
-	if len(allConfigSettings) > 0 {
-		if err := w.insertConfigSettings(ctx, tx, allConfigSettings); err != nil {
-			return fmt.Errorf("failed to insert config settings: %w", err)
-		}
-		log.Printf("Inserted %d config settings", len(allConfigSettings))
-	}
-
-	// Insert all TTL (Phase 2 - Day 6)
-	if len(allTTL) > 0 {
-		if err := w.insertTTL(ctx, tx, allTTL); err != nil {
-			return fmt.Errorf("failed to insert TTL: %w", err)
-		}
-		log.Printf("Inserted %d TTL entries", len(allTTL))
-	}
-
-	// Insert all evicted keys (Phase 3 - Day 7)
-	if len(allEvictedKeys) > 0 {
-		if err := w.insertEvictedKeys(ctx, tx, allEvictedKeys); err != nil {
-			return fmt.Errorf("failed to insert evicted keys: %w", err)
-		}
-		log.Printf("Inserted %d evicted keys", len(allEvictedKeys))
-	}
-
-	// Insert all contract events (Phase 4 - Day 8)
-	if len(allContractEvents) > 0 {
-		if err := w.insertContractEvents(ctx, tx, allContractEvents); err != nil {
-			return fmt.Errorf("failed to insert contract events: %w", err)
-		}
-		log.Printf("Inserted %d contract events", len(allContractEvents))
-	}
-
-	// Insert all contract data (Phase 4 - Day 9)
-	if len(allContractData) > 0 {
-		if err := w.insertContractData(ctx, tx, allContractData); err != nil {
-			return fmt.Errorf("failed to insert contract data: %w", err)
-		}
-		log.Printf("Inserted %d contract data entries", len(allContractData))
-	}
-
-	// Insert all contract code (Phase 4 - Day 10)
-	if len(allContractCode) > 0 {
-		if err := w.insertContractCode(ctx, tx, allContractCode); err != nil {
-			return fmt.Errorf("failed to insert contract code: %w", err)
-		}
-		log.Printf("Inserted %d contract code entries", len(allContractCode))
-	}
-
-	// Insert all native balances (Phase 5 - Day 11)
-	if len(allNativeBalances) > 0 {
-		if err := w.insertNativeBalances(ctx, tx, allNativeBalances); err != nil {
-			return fmt.Errorf("failed to insert native balances: %w", err)
-		}
-		log.Printf("Inserted %d native balances", len(allNativeBalances))
-	}
-
-	// Insert all restored keys (Phase 5 - Day 11)
-	if len(allRestoredKeys) > 0 {
-		if err := w.insertRestoredKeys(ctx, tx, allRestoredKeys); err != nil {
-			return fmt.Errorf("failed to insert restored keys: %w", err)
-		}
-		log.Printf("Inserted %d restored keys", len(allRestoredKeys))
-	}
-
-	// Insert all contract creations (C11)
-	if len(allContractCreations) > 0 {
-		if err := w.insertContractCreations(ctx, tx, allContractCreations); err != nil {
-			return fmt.Errorf("failed to insert contract creations: %w", err)
-		}
-		log.Printf("Inserted %d contract creations", len(allContractCreations))
-	}
-
-	// Insert all token transfers
-	if len(allTokenTransfers) > 0 {
-		if err := w.insertTokenTransfers(ctx, tx, allTokenTransfers); err != nil {
-			return fmt.Errorf("failed to insert token transfers: %w", err)
-		}
-		log.Printf("Inserted %d token transfers", len(allTokenTransfers))
-	}
+	insertDuration := time.Since(insertStart)
+	commitStart := time.Now()
 
 	// Commit transaction
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
+
+	commitDuration := time.Since(commitStart)
+	log.Printf("Batch DB phases: extract=%v insert=%v commit=%v", extractDuration, insertDuration, commitDuration)
 
 	// Save checkpoint
 	if err := w.checkpoint.Save(); err != nil {
@@ -568,6 +538,20 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 		time.Since(startTime),
 		float64(len(rawLedgers))/time.Since(startTime).Seconds())
 
+	return nil
+}
+
+func logInsertStep(name string, count int, fn func() error) error {
+	if count == 0 {
+		return nil
+	}
+
+	start := time.Now()
+	if err := fn(); err != nil {
+		return err
+	}
+
+	log.Printf("Inserted %d %s in %v", count, name, time.Since(start))
 	return nil
 }
 
@@ -1442,6 +1426,7 @@ func (w *Writer) insertTransactions(ctx context.Context, tx pgx.Tx, transactions
 			soroban_resources_write_bytes = EXCLUDED.soroban_resources_write_bytes
 	`
 
+	batch := &pgx.Batch{}
 	for i := range transactions {
 		txData := &transactions[i]
 		// Sanitize text fields. Stellar text memos are arbitrary bytes
@@ -1450,7 +1435,7 @@ func (w *Writer) insertTransactions(ctx context.Context, tx pgx.Tx, transactions
 		// strings get the same treatment defensively.
 		txData.Memo = sanitizeStringPtr(txData.Memo)
 		txData.MemoType = sanitizeStringPtr(txData.MemoType)
-		_, err := tx.Exec(ctx, query,
+		batch.Queue(query,
 			txData.LedgerSequence,
 			txData.TransactionHash,
 			txData.TransactionID,
@@ -1472,8 +1457,13 @@ func (w *Writer) insertTransactions(ctx context.Context, tx pgx.Tx, transactions
 			txData.SorobanResourcesReadBytes,
 			txData.SorobanResourcesWriteBytes,
 		)
-		if err != nil {
-			return fmt.Errorf("failed to insert transaction %s: %w", txData.TransactionHash, err)
+	}
+
+	br := tx.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := range transactions {
+		if _, err := br.Exec(); err != nil {
+			return fmt.Errorf("failed to insert transaction %s: %w", transactions[i].TransactionHash, err)
 		}
 	}
 
@@ -1493,10 +1483,12 @@ func (w *Writer) insertOperations(ctx context.Context, tx pgx.Tx, operations []O
 			type, type_string, created_at, transaction_successful,
 			operation_result_code, ledger_range, amount, asset, destination,
 			soroban_operation, soroban_contract_id, soroban_function, soroban_arguments_json,
-			contract_calls_json, contracts_involved, max_call_depth
+			contract_calls_json, contracts_involved, max_call_depth,
+			soroban_auth_credentials_types, soroban_auth_addresses
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-			$11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23
+			$11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23,
+			$24, $25
 		)
 		ON CONFLICT (ledger_sequence, transaction_hash, operation_index) DO UPDATE SET
 			transaction_id = EXCLUDED.transaction_id,
@@ -1509,7 +1501,9 @@ func (w *Writer) insertOperations(ctx context.Context, tx pgx.Tx, operations []O
 			soroban_arguments_json = EXCLUDED.soroban_arguments_json,
 			contract_calls_json = EXCLUDED.contract_calls_json,
 			contracts_involved = EXCLUDED.contracts_involved,
-			max_call_depth = EXCLUDED.max_call_depth
+			max_call_depth = EXCLUDED.max_call_depth,
+			soroban_auth_credentials_types = EXCLUDED.soroban_auth_credentials_types,
+			soroban_auth_addresses = EXCLUDED.soroban_auth_addresses
 	`
 
 	batch := &pgx.Batch{}
@@ -1548,6 +1542,8 @@ func (w *Writer) insertOperations(ctx context.Context, tx pgx.Tx, operations []O
 			opData.ContractCallsJSON,
 			opData.ContractsInvolved,
 			opData.MaxCallDepth,
+			opData.SorobanAuthCredentialsTypes,
+			opData.SorobanAuthAddresses,
 		)
 	}
 
@@ -1714,6 +1710,7 @@ func (w *Writer) insertAccounts(ctx context.Context, tx pgx.Tx, accounts []Accou
 			updated_at = EXCLUDED.updated_at
 	`
 
+	batch := &pgx.Batch{}
 	for i := range accounts {
 		acct := &accounts[i]
 		// HomeDomain is user-controlled (up to 32 bytes, no protocol-level
@@ -1721,7 +1718,7 @@ func (w *Writer) insertAccounts(ctx context.Context, tx pgx.Tx, accounts []Accou
 		// account state. Both can carry NUL bytes that PG TEXT rejects.
 		acct.HomeDomain = sanitizeStringPtr(acct.HomeDomain)
 		acct.Signers = sanitizeStringPtr(acct.Signers)
-		_, err := tx.Exec(ctx, query,
+		batch.Queue(query,
 			acct.AccountID,
 			acct.LedgerSequence,
 			acct.ClosedAt,
@@ -1746,8 +1743,13 @@ func (w *Writer) insertAccounts(ctx context.Context, tx pgx.Tx, accounts []Accou
 			acct.UpdatedAt,
 			acct.LedgerRange,
 		)
-		if err != nil {
-			return fmt.Errorf("failed to insert account %s: %w", acct.AccountID, err)
+	}
+
+	br := tx.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := range accounts {
+		if _, err := br.Exec(); err != nil {
+			return fmt.Errorf("failed to insert account %s: %w", accounts[i].AccountID, err)
 		}
 	}
 
@@ -1777,8 +1779,10 @@ func (w *Writer) insertOffers(ctx context.Context, tx pgx.Tx, offers []OfferData
 			created_at = EXCLUDED.created_at
 	`
 
-	for _, offer := range offers {
-		_, err := tx.Exec(ctx, query,
+	batch := &pgx.Batch{}
+	for i := range offers {
+		offer := &offers[i]
+		batch.Queue(query,
 			offer.OfferID,
 			offer.SellerAccount,
 			offer.LedgerSequence,
@@ -1795,8 +1799,13 @@ func (w *Writer) insertOffers(ctx context.Context, tx pgx.Tx, offers []OfferData
 			offer.CreatedAt,
 			offer.LedgerRange,
 		)
-		if err != nil {
-			return fmt.Errorf("failed to insert offer %d: %w", offer.OfferID, err)
+	}
+
+	br := tx.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := range offers {
+		if _, err := br.Exec(); err != nil {
+			return fmt.Errorf("failed to insert offer %d: %w", offers[i].OfferID, err)
 		}
 	}
 
@@ -1829,8 +1838,10 @@ func (w *Writer) insertTrustlines(ctx context.Context, tx pgx.Tx, trustlines []T
 			clawback_enabled = EXCLUDED.clawback_enabled
 	`
 
-	for _, tl := range trustlines {
-		_, err := tx.Exec(ctx, query,
+	batch := &pgx.Batch{}
+	for i := range trustlines {
+		tl := &trustlines[i]
+		batch.Queue(query,
 			tl.AccountID,
 			tl.AssetCode,
 			tl.AssetIssuer,
@@ -1846,9 +1857,14 @@ func (w *Writer) insertTrustlines(ctx context.Context, tx pgx.Tx, trustlines []T
 			tl.CreatedAt,
 			tl.LedgerRange,
 		)
-		if err != nil {
+	}
+
+	br := tx.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := range trustlines {
+		if _, err := br.Exec(); err != nil {
 			return fmt.Errorf("failed to insert trustline %s:%s:%s: %w",
-				tl.AccountID, tl.AssetCode, tl.AssetIssuer, err)
+				trustlines[i].AccountID, trustlines[i].AssetCode, trustlines[i].AssetIssuer, err)
 		}
 	}
 
@@ -1875,8 +1891,10 @@ func (w *Writer) insertAccountSigners(ctx context.Context, tx pgx.Tx, signers []
 			closed_at = EXCLUDED.closed_at
 	`
 
-	for _, s := range signers {
-		_, err := tx.Exec(ctx, query,
+	batch := &pgx.Batch{}
+	for i := range signers {
+		s := &signers[i]
+		batch.Queue(query,
 			s.AccountID,
 			s.Signer,
 			s.LedgerSequence,
@@ -1887,9 +1905,14 @@ func (w *Writer) insertAccountSigners(ctx context.Context, tx pgx.Tx, signers []
 			s.LedgerRange,
 			s.CreatedAt,
 		)
-		if err != nil {
+	}
+
+	br := tx.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := range signers {
+		if _, err := br.Exec(); err != nil {
 			return fmt.Errorf("failed to insert account signer %s:%s: %w",
-				s.AccountID, s.Signer, err)
+				signers[i].AccountID, signers[i].Signer, err)
 		}
 	}
 
@@ -1928,8 +1951,10 @@ func (w *Writer) insertClaimableBalances(ctx context.Context, tx pgx.Tx, balance
 			flags = EXCLUDED.flags
 	`
 
-	for _, bal := range balances {
-		_, err := tx.Exec(ctx, query,
+	batch := &pgx.Batch{}
+	for i := range balances {
+		bal := &balances[i]
+		batch.Queue(query,
 			bal.BalanceID,
 			bal.Sponsor,
 			bal.LedgerSequence,
@@ -1943,8 +1968,13 @@ func (w *Writer) insertClaimableBalances(ctx context.Context, tx pgx.Tx, balance
 			bal.CreatedAt,
 			bal.LedgerRange,
 		)
-		if err != nil {
-			return fmt.Errorf("failed to insert claimable balance %s: %w", bal.BalanceID, err)
+	}
+
+	br := tx.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := range balances {
+		if _, err := br.Exec(); err != nil {
+			return fmt.Errorf("failed to insert claimable balance %s: %w", balances[i].BalanceID, err)
 		}
 	}
 
@@ -1976,8 +2006,10 @@ func (w *Writer) insertLiquidityPools(ctx context.Context, tx pgx.Tx, pools []Li
 			asset_b_amount = EXCLUDED.asset_b_amount
 	`
 
-	for _, pool := range pools {
-		_, err := tx.Exec(ctx, query,
+	batch := &pgx.Batch{}
+	for i := range pools {
+		pool := &pools[i]
+		batch.Queue(query,
 			pool.LiquidityPoolID,
 			pool.LedgerSequence,
 			pool.ClosedAt,
@@ -1996,8 +2028,13 @@ func (w *Writer) insertLiquidityPools(ctx context.Context, tx pgx.Tx, pools []Li
 			pool.CreatedAt,
 			pool.LedgerRange,
 		)
-		if err != nil {
-			return fmt.Errorf("failed to insert liquidity pool %s: %w", pool.LiquidityPoolID, err)
+	}
+
+	br := tx.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := range pools {
+		if _, err := br.Exec(); err != nil {
+			return fmt.Errorf("failed to insert liquidity pool %s: %w", pools[i].LiquidityPoolID, err)
 		}
 	}
 
@@ -2039,8 +2076,10 @@ func (w *Writer) insertConfigSettings(ctx context.Context, tx pgx.Tx, settings [
 			config_setting_xdr = EXCLUDED.config_setting_xdr
 	`
 
-	for _, setting := range settings {
-		_, err := tx.Exec(ctx, query,
+	batch := &pgx.Batch{}
+	for i := range settings {
+		setting := &settings[i]
+		batch.Queue(query,
 			setting.ConfigSettingID,
 			setting.LedgerSequence,
 			setting.LastModifiedLedger,
@@ -2063,8 +2102,13 @@ func (w *Writer) insertConfigSettings(ctx context.Context, tx pgx.Tx, settings [
 			setting.CreatedAt,
 			setting.LedgerRange,
 		)
-		if err != nil {
-			return fmt.Errorf("failed to insert config setting %d: %w", setting.ConfigSettingID, err)
+	}
+
+	br := tx.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := range settings {
+		if _, err := br.Exec(); err != nil {
+			return fmt.Errorf("failed to insert config setting %d: %w", settings[i].ConfigSettingID, err)
 		}
 	}
 
@@ -2092,8 +2136,10 @@ func (w *Writer) insertTTL(ctx context.Context, tx pgx.Tx, ttls []TTLData) error
 			deleted = EXCLUDED.deleted
 	`
 
-	for _, ttl := range ttls {
-		_, err := tx.Exec(ctx, query,
+	batch := &pgx.Batch{}
+	for i := range ttls {
+		ttl := &ttls[i]
+		batch.Queue(query,
 			ttl.KeyHash,
 			ttl.LedgerSequence,
 			ttl.LiveUntilLedgerSeq,
@@ -2105,8 +2151,13 @@ func (w *Writer) insertTTL(ctx context.Context, tx pgx.Tx, ttls []TTLData) error
 			ttl.CreatedAt,
 			ttl.LedgerRange,
 		)
-		if err != nil {
-			return fmt.Errorf("failed to insert TTL for key %s: %w", ttl.KeyHash, err)
+	}
+
+	br := tx.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := range ttls {
+		if _, err := br.Exec(); err != nil {
+			return fmt.Errorf("failed to insert TTL for key %s: %w", ttls[i].KeyHash, err)
 		}
 	}
 
@@ -2132,8 +2183,10 @@ func (w *Writer) insertEvictedKeys(ctx context.Context, tx pgx.Tx, keys []Evicte
 			durability = EXCLUDED.durability
 	`
 
-	for _, key := range keys {
-		_, err := tx.Exec(ctx, query,
+	batch := &pgx.Batch{}
+	for i := range keys {
+		key := &keys[i]
+		batch.Queue(query,
 			key.KeyHash,
 			key.LedgerSequence,
 			key.ContractID,
@@ -2143,8 +2196,13 @@ func (w *Writer) insertEvictedKeys(ctx context.Context, tx pgx.Tx, keys []Evicte
 			key.LedgerRange,
 			key.CreatedAt,
 		)
-		if err != nil {
-			return fmt.Errorf("failed to insert evicted key %s: %w", key.KeyHash, err)
+	}
+
+	br := tx.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := range keys {
+		if _, err := br.Exec(); err != nil {
+			return fmt.Errorf("failed to insert evicted key %s: %w", keys[i].KeyHash, err)
 		}
 	}
 
@@ -2262,35 +2320,6 @@ func (w *Writer) insertContractData(ctx context.Context, tx pgx.Tx, contractData
 		return nil
 	}
 
-	query := `
-		INSERT INTO contract_data_snapshot_v1 (
-			contract_id, ledger_sequence, ledger_key_hash,
-			contract_key_type, contract_durability,
-			asset_code, asset_issuer, asset_type,
-			balance_holder, balance,
-			last_modified_ledger, ledger_entry_change, deleted, closed_at,
-			contract_data_xdr, created_at, ledger_range,
-			token_name, token_symbol, token_decimals
-		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
-		)
-		ON CONFLICT (contract_id, ledger_key_hash, ledger_sequence) DO UPDATE SET
-			contract_key_type = EXCLUDED.contract_key_type,
-			contract_durability = EXCLUDED.contract_durability,
-			asset_code = EXCLUDED.asset_code,
-			asset_issuer = EXCLUDED.asset_issuer,
-			asset_type = EXCLUDED.asset_type,
-			balance_holder = EXCLUDED.balance_holder,
-			balance = EXCLUDED.balance,
-			last_modified_ledger = EXCLUDED.last_modified_ledger,
-			ledger_entry_change = EXCLUDED.ledger_entry_change,
-			deleted = EXCLUDED.deleted,
-			contract_data_xdr = EXCLUDED.contract_data_xdr,
-			token_name = EXCLUDED.token_name,
-			token_symbol = EXCLUDED.token_symbol,
-			token_decimals = EXCLUDED.token_decimals
-	`
-
 	for i := range contractDataList {
 		data := &contractDataList[i]
 		// TokenName/TokenSymbol come from SEP-41 contract instance storage
@@ -2302,7 +2331,28 @@ func (w *Writer) insertContractData(ctx context.Context, tx pgx.Tx, contractData
 		data.Balance = sanitizeStringPtr(data.Balance)
 		data.AssetCode = sanitizeStringPtr(data.AssetCode)
 		data.AssetIssuer = sanitizeStringPtr(data.AssetIssuer)
-		_, err := tx.Exec(ctx, query,
+	}
+
+	_, err := tx.Exec(ctx, `
+		CREATE TEMP TABLE _tmp_contract_data (LIKE contract_data_snapshot_v1 INCLUDING DEFAULTS) ON COMMIT DROP
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create temp contract data table: %w", err)
+	}
+
+	columns := []string{
+		"contract_id", "ledger_sequence", "ledger_key_hash",
+		"contract_key_type", "contract_durability",
+		"asset_code", "asset_issuer", "asset_type",
+		"balance_holder", "balance",
+		"last_modified_ledger", "ledger_entry_change", "deleted", "closed_at",
+		"contract_data_xdr", "created_at", "ledger_range",
+		"token_name", "token_symbol", "token_decimals",
+	}
+
+	rows := make([][]interface{}, len(contractDataList))
+	for i, data := range contractDataList {
+		rows[i] = []interface{}{
 			data.ContractId,
 			data.LedgerSequence,
 			data.LedgerKeyHash,
@@ -2323,10 +2373,54 @@ func (w *Writer) insertContractData(ctx context.Context, tx pgx.Tx, contractData
 			data.TokenName,
 			data.TokenSymbol,
 			data.TokenDecimals,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to insert contract data %s/%s: %w", data.ContractId, data.LedgerKeyHash, err)
 		}
+	}
+
+	copyCount, err := tx.CopyFrom(ctx, pgx.Identifier{"_tmp_contract_data"}, columns, pgx.CopyFromRows(rows))
+	if err != nil {
+		return fmt.Errorf("failed to COPY %d contract data rows: %w", len(contractDataList), err)
+	}
+	if int(copyCount) != len(contractDataList) {
+		log.Printf("WARNING: contract data COPY expected %d rows but inserted %d", len(contractDataList), copyCount)
+	}
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO contract_data_snapshot_v1 (
+			contract_id, ledger_sequence, ledger_key_hash,
+			contract_key_type, contract_durability,
+			asset_code, asset_issuer, asset_type,
+			balance_holder, balance,
+			last_modified_ledger, ledger_entry_change, deleted, closed_at,
+			contract_data_xdr, created_at, ledger_range,
+			token_name, token_symbol, token_decimals
+		)
+		SELECT DISTINCT ON (contract_id, ledger_key_hash, ledger_sequence)
+			contract_id, ledger_sequence, ledger_key_hash,
+			contract_key_type, contract_durability,
+			asset_code, asset_issuer, asset_type,
+			balance_holder, balance,
+			last_modified_ledger, ledger_entry_change, deleted, closed_at,
+			contract_data_xdr, created_at, ledger_range,
+			token_name, token_symbol, token_decimals
+		FROM _tmp_contract_data
+		ON CONFLICT (contract_id, ledger_key_hash, ledger_sequence) DO UPDATE SET
+			contract_key_type = EXCLUDED.contract_key_type,
+			contract_durability = EXCLUDED.contract_durability,
+			asset_code = EXCLUDED.asset_code,
+			asset_issuer = EXCLUDED.asset_issuer,
+			asset_type = EXCLUDED.asset_type,
+			balance_holder = EXCLUDED.balance_holder,
+			balance = EXCLUDED.balance,
+			last_modified_ledger = EXCLUDED.last_modified_ledger,
+			ledger_entry_change = EXCLUDED.ledger_entry_change,
+			deleted = EXCLUDED.deleted,
+			contract_data_xdr = EXCLUDED.contract_data_xdr,
+			token_name = EXCLUDED.token_name,
+			token_symbol = EXCLUDED.token_symbol,
+			token_decimals = EXCLUDED.token_decimals
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to upsert contract data from temp: %w", err)
 	}
 
 	return nil
@@ -2423,8 +2517,10 @@ func (w *Writer) insertNativeBalances(ctx context.Context, tx pgx.Tx, nativeBala
 			last_modified_ledger = EXCLUDED.last_modified_ledger
 	`
 
-	for _, nb := range nativeBalancesList {
-		_, err := tx.Exec(ctx, query,
+	batch := &pgx.Batch{}
+	for i := range nativeBalancesList {
+		nb := &nativeBalancesList[i]
+		batch.Queue(query,
 			nb.AccountID,
 			nb.Balance,
 			nb.BuyingLiabilities,
@@ -2437,8 +2533,13 @@ func (w *Writer) insertNativeBalances(ctx context.Context, tx pgx.Tx, nativeBala
 			nb.LedgerSequence,
 			nb.LedgerRange,
 		)
-		if err != nil {
-			return fmt.Errorf("failed to insert native balance for account %s: %w", nb.AccountID, err)
+	}
+
+	br := tx.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := range nativeBalancesList {
+		if _, err := br.Exec(); err != nil {
+			return fmt.Errorf("failed to insert native balance for account %s: %w", nativeBalancesList[i].AccountID, err)
 		}
 	}
 
@@ -2547,26 +2648,12 @@ func sanitizeEventStrings(e *ContractEventData) {
 	e.Topic3Decoded = sanitizeStringPtr(e.Topic3Decoded)
 }
 
-// insertTokenTransfers bulk-inserts token transfers using pgx Batch
+// insertTokenTransfers bulk-inserts token transfers using COPY + temp table.
 func (w *Writer) insertTokenTransfers(ctx context.Context, tx pgx.Tx, transfers []TokenTransferData) error {
 	if len(transfers) == 0 {
 		return nil
 	}
 
-	query := `
-		INSERT INTO token_transfers_stream_v1 (
-			ledger_sequence, transaction_hash, transaction_id, operation_id,
-			operation_index, event_type, "from", "to", asset, asset_type,
-			asset_code, asset_issuer, amount, amount_raw, contract_id,
-			closed_at, created_at, ledger_range
-		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-			$11, $12, $13, $14, $15, $16, $17, $18
-		)
-		ON CONFLICT DO NOTHING
-	`
-
-	batch := &pgx.Batch{}
 	for i := range transfers {
 		t := &transfers[i]
 		// Defensive sanitization. Asset codes/issuers and account addresses
@@ -2580,7 +2667,25 @@ func (w *Writer) insertTokenTransfers(ctx context.Context, tx pgx.Tx, transfers 
 		t.To = sanitizeStringPtr(t.To)
 		t.AssetCode = sanitizeStringPtr(t.AssetCode)
 		t.AssetIssuer = sanitizeStringPtr(t.AssetIssuer)
-		batch.Queue(query,
+	}
+
+	_, err := tx.Exec(ctx, `
+		CREATE TEMP TABLE _tmp_token_transfers (LIKE token_transfers_stream_v1 INCLUDING DEFAULTS) ON COMMIT DROP
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create temp token transfers table: %w", err)
+	}
+
+	columns := []string{
+		"ledger_sequence", "transaction_hash", "transaction_id", "operation_id",
+		"operation_index", "event_type", "from", "to", "asset", "asset_type",
+		"asset_code", "asset_issuer", "amount", "amount_raw", "contract_id",
+		"closed_at", "created_at", "ledger_range",
+	}
+
+	rows := make([][]interface{}, len(transfers))
+	for i, t := range transfers {
+		rows[i] = []interface{}{
 			t.LedgerSequence,
 			t.TransactionHash,
 			t.TransactionID,
@@ -2599,16 +2704,34 @@ func (w *Writer) insertTokenTransfers(ctx context.Context, tx pgx.Tx, transfers 
 			t.ClosedAt,
 			t.CreatedAt,
 			t.LedgerRange,
-		)
+		}
 	}
 
-	br := tx.SendBatch(ctx, batch)
-	defer br.Close()
-	for i := range transfers {
-		if _, err := br.Exec(); err != nil {
-			return fmt.Errorf("failed to insert token transfer in ledger %d tx %s: %w",
-				transfers[i].LedgerSequence, transfers[i].TransactionHash, err)
-		}
+	copyCount, err := tx.CopyFrom(ctx, pgx.Identifier{"_tmp_token_transfers"}, columns, pgx.CopyFromRows(rows))
+	if err != nil {
+		return fmt.Errorf("failed to COPY %d token transfers: %w", len(transfers), err)
+	}
+	if int(copyCount) != len(transfers) {
+		log.Printf("WARNING: token transfers COPY expected %d rows but inserted %d", len(transfers), copyCount)
+	}
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO token_transfers_stream_v1 (
+			ledger_sequence, transaction_hash, transaction_id, operation_id,
+			operation_index, event_type, "from", "to", asset, asset_type,
+			asset_code, asset_issuer, amount, amount_raw, contract_id,
+			closed_at, created_at, ledger_range
+		)
+		SELECT DISTINCT ON (ledger_sequence, transaction_hash, operation_index, event_type, "from", "to", amount_raw)
+			ledger_sequence, transaction_hash, transaction_id, operation_id,
+			operation_index, event_type, "from", "to", asset, asset_type,
+			asset_code, asset_issuer, amount, amount_raw, contract_id,
+			closed_at, created_at, ledger_range
+		FROM _tmp_token_transfers
+		ON CONFLICT DO NOTHING
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to insert token transfers from temp: %w", err)
 	}
 
 	return nil

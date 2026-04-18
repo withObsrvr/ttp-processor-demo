@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"net/http"
 	"strings"
 )
@@ -39,7 +38,7 @@ func (h *IndexHandlers) HandleTransactionLookup(w http.ResponseWriter, r *http.R
 	} else if strings.HasPrefix(path, "/transactions/") {
 		txHash = strings.TrimPrefix(path, "/transactions/")
 	} else {
-		respondError(w, "invalid path", http.StatusBadRequest)
+		badRequest(w, "invalid path")
 		return
 	}
 
@@ -47,19 +46,19 @@ func (h *IndexHandlers) HandleTransactionLookup(w http.ResponseWriter, r *http.R
 	txHash = strings.TrimSuffix(txHash, "/")
 
 	if txHash == "" {
-		respondError(w, "transaction hash required", http.StatusBadRequest)
+		badRequest(w, "transaction hash required")
 		return
 	}
 
 	// Lookup in Index Plane
 	location, err := h.reader.LookupTransactionHash(r.Context(), txHash)
 	if err != nil {
-		respondError(w, err.Error(), http.StatusInternalServerError)
+		internalError(w, err.Error())
 		return
 	}
 
 	if location == nil {
-		respondError(w, "transaction not found in index", http.StatusNotFound)
+		notFound(w, "transaction not found in index")
 		return
 	}
 
@@ -80,7 +79,7 @@ func (h *IndexHandlers) HandleTransactionLookup(w http.ResponseWriter, r *http.R
 // @Router /api/v1/index/transactions/lookup [post]
 func (h *IndexHandlers) HandleBatchTransactionLookup(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		respondError(w, "POST required", http.StatusMethodNotAllowed)
+		methodNotAllowed(w, "POST required")
 		return
 	}
 
@@ -88,25 +87,25 @@ func (h *IndexHandlers) HandleBatchTransactionLookup(w http.ResponseWriter, r *h
 		Hashes []string `json:"hashes"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		respondError(w, "invalid JSON body", http.StatusBadRequest)
+	if err := readJSON(w, r, &request); err != nil {
+		badRequest(w, "invalid JSON body: "+err.Error())
 		return
 	}
 
 	if len(request.Hashes) == 0 {
-		respondError(w, "hashes array required", http.StatusBadRequest)
+		badRequest(w, "hashes array required")
 		return
 	}
 
 	if len(request.Hashes) > 1000 {
-		respondError(w, "maximum 1000 hashes per request", http.StatusBadRequest)
+		badRequest(w, "maximum 1000 hashes per request")
 		return
 	}
 
 	// Batch lookup
 	locations, err := h.reader.LookupTransactionHashes(r.Context(), request.Hashes)
 	if err != nil {
-		respondError(w, err.Error(), http.StatusInternalServerError)
+		internalError(w, err.Error())
 		return
 	}
 
@@ -118,9 +117,9 @@ func (h *IndexHandlers) HandleBatchTransactionLookup(w http.ResponseWriter, r *h
 
 	// Build response with all requested hashes
 	type Result struct {
-		TxHash   string       `json:"tx_hash"`
-		Location *TxLocation  `json:"location,omitempty"`
-		Error    *string      `json:"error,omitempty"`
+		TxHash   string      `json:"tx_hash"`
+		Location *TxLocation `json:"location,omitempty"`
+		Error    *string     `json:"error,omitempty"`
 	}
 
 	results := make([]Result, len(request.Hashes))
@@ -159,7 +158,7 @@ func (h *IndexHandlers) HandleBatchTransactionLookup(w http.ResponseWriter, r *h
 func (h *IndexHandlers) HandleIndexHealth(w http.ResponseWriter, r *http.Request) {
 	stats, err := h.reader.GetIndexStats(r.Context())
 	if err != nil {
-		respondError(w, err.Error(), http.StatusInternalServerError)
+		internalError(w, err.Error())
 		return
 	}
 

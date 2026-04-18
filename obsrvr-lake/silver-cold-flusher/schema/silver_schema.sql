@@ -591,3 +591,39 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.semantic_account_summary (
     updated_at TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS testnet_catalog.silver.effects (
+    ledger_sequence BIGINT,
+    transaction_hash VARCHAR,
+    operation_index INTEGER,
+    effect_index INTEGER,
+    operation_id BIGINT,
+    effect_type INTEGER,
+    effect_type_string VARCHAR,
+    account_id VARCHAR,
+    amount VARCHAR,
+    asset_code VARCHAR,
+    asset_issuer VARCHAR,
+    asset_type VARCHAR,
+    details_json VARCHAR,
+    trustline_limit VARCHAR,
+    authorize_flag BOOLEAN,
+    clawback_flag BOOLEAN,
+    signer_account VARCHAR,
+    signer_weight INTEGER,
+    offer_id BIGINT,
+    seller_account VARCHAR,
+    created_at TIMESTAMP,
+    ledger_range BIGINT,
+    inserted_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS testnet_catalog.silver.evicted_keys (
+    contract_id VARCHAR,
+    key_hash VARCHAR,
+    ledger_sequence BIGINT,
+    closed_at TIMESTAMP,
+    created_at TIMESTAMP,
+    ledger_range BIGINT,
+    inserted_at TIMESTAMP
+);
+

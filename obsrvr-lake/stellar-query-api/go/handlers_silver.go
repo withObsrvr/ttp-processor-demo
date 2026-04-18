@@ -2,7 +2,6 @@ package main
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -3794,19 +3793,13 @@ func (h *SilverHandlers) HandleDataBoundaries(w http.ResponseWriter, r *http.Req
 }
 
 func respondJSON(w http.ResponseWriter, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*") // CORS for block explorer
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(data)
+	if err := writeJSON(w, http.StatusOK, data, nil); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to encode JSON response")
+	}
 }
 
 func respondError(w http.ResponseWriter, message string, statusCode int) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"error": message,
-	})
+	writeError(w, statusCode, message)
 }
 
 // boolToInt converts bool to int for logging purposes

@@ -187,7 +187,7 @@ func (r *BronzeColdReader) QueryEnrichedOperations(ctx context.Context, startLed
 			o.operation_index,
 			o.ledger_sequence,
 			o.source_account,
-			o.op_type AS type,
+			o.type AS type,
 			o.type_string,
 			o.created_at,
 			o.transaction_successful,
@@ -316,8 +316,8 @@ func (r *BronzeColdReader) QueryEnrichedOperations(ctx context.Context, startLed
 			l.failed_tx_count AS ledger_failed_tx_count,
 
 			-- Derived fields
-			CASE WHEN o.op_type IN (1, 2, 13) THEN true ELSE false END AS is_payment_op,
-			CASE WHEN o.op_type = 24 THEN true ELSE false END AS is_soroban_op
+			CASE WHEN o.type IN (1, 2, 13) THEN true ELSE false END AS is_payment_op,
+			CASE WHEN o.type = 24 THEN true ELSE false END AS is_soroban_op
 		FROM %s o
 		INNER JOIN %s t
 			ON o.transaction_hash = t.transaction_hash
@@ -359,7 +359,7 @@ func (r *BronzeColdReader) QueryTokenTransfers(ctx context.Context, startLedger,
 			END AS asset_issuer,
 			CAST(o.amount AS VARCHAR) AS amount,
 			NULL AS token_contract_id,
-			o.op_type AS operation_type,
+			o.type AS operation_type,
 			t.successful AS transaction_successful,
 			NULL AS event_index
 		FROM %s o
@@ -368,14 +368,20 @@ func (r *BronzeColdReader) QueryTokenTransfers(ctx context.Context, startLedger,
 			AND o.ledger_sequence = t.ledger_sequence
 		INNER JOIN %s l
 			ON o.ledger_sequence = l.sequence
-		WHERE o.op_type IN (1, 2, 13)
+		WHERE o.type IN (1, 2, 13)
 		  AND o.ledger_sequence BETWEEN $1 AND $2
 
 		UNION ALL
 
 		-- Soroban SEP-41 Token Transfers (transfer/mint/burn/clawback)
+		-- Source closed_at and successful directly from the event row; do NOT
+		-- inner-join transactions/ledgers here. Mirrors the hot-reader fix:
+		-- classic bronze tables have shorter retention than contract_events
+		-- in hot, and even in cold a missing join row would silently drop a
+		-- real transfer. contract_events_stream_v1 already carries both
+		-- closed_at and in_successful_contract_call per row.
 		SELECT
-			l.closed_at AS timestamp,
+			e.closed_at AS timestamp,
 			e.transaction_hash,
 			e.ledger_sequence,
 			'soroban' AS source_type,
@@ -400,14 +406,11 @@ func (r *BronzeColdReader) QueryTokenTransfers(ctx context.Context, startLedger,
 			) AS amount,
 			e.contract_id AS token_contract_id,
 			24 AS operation_type,
-			t.successful AS transaction_successful,
+			-- e.successful (outer tx success) not e.in_successful_contract_call
+			-- (sub-call scope). See matching comment in bronze_reader.go.
+			e.successful AS transaction_successful,
 			e.event_index
 		FROM %s e
-		INNER JOIN %s t
-			ON e.transaction_hash = t.transaction_hash
-			AND e.ledger_sequence = t.ledger_sequence
-		INNER JOIN %s l
-			ON e.ledger_sequence = l.sequence
 		WHERE e.ledger_sequence BETWEEN $1 AND $2
 		  AND e.event_type = 'contract'
 		  AND e.topic_count >= 2
@@ -415,7 +418,7 @@ func (r *BronzeColdReader) QueryTokenTransfers(ctx context.Context, startLedger,
 
 		ORDER BY ledger_sequence, transaction_hash
 	`, r.tableName("operations_row_v2"), r.tableName("transactions_row_v2"), r.tableName("ledgers_row_v2"),
-		r.tableName("contract_events_stream_v1"), r.tableName("transactions_row_v2"), r.tableName("ledgers_row_v2"))
+		r.tableName("contract_events_stream_v1"))
 
 	rows, err := r.db.QueryContext(ctx, query, startLedger, endLedger)
 	if err != nil {
@@ -457,7 +460,7 @@ func (r *BronzeColdReader) QueryAccountsSnapshot(ctx context.Context, startLedge
 				ledger_sequence,
 				ledger_range,
 				NULL AS era_id,
-				pipeline_version AS version_label,
+				NULL AS version_label,
 				ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY ledger_sequence DESC) as rn
 			FROM %s
 			WHERE ledger_sequence BETWEEN $1 AND $2
@@ -528,7 +531,7 @@ func (r *BronzeColdReader) QueryAccountsSnapshotAll(ctx context.Context, startLe
 			closed_at AS updated_at,
 			ledger_range,
 			NULL AS era_id,
-			pipeline_version AS version_label
+			NULL AS version_label
 		FROM %s
 		WHERE ledger_sequence BETWEEN $1 AND $2
 		ORDER BY account_id, ledger_sequence
@@ -759,7 +762,7 @@ func (r *BronzeColdReader) QueryContractInvocations(ctx context.Context, startLe
 			o.ledger_range
 		FROM %s o
 		WHERE o.ledger_sequence BETWEEN $1 AND $2
-		  AND o.op_type = 24
+		  AND o.type = 24
 		  AND o.soroban_contract_id IS NOT NULL
 		  AND o.soroban_function IS NOT NULL
 		  AND o.soroban_arguments_json IS NOT NULL
@@ -794,7 +797,7 @@ func (r *BronzeColdReader) QueryContractCallGraphs(ctx context.Context, startLed
 			o.ledger_range
 		FROM %s o
 		WHERE o.ledger_sequence BETWEEN $1 AND $2
-		  AND o.op_type = 24
+		  AND o.type = 24
 		  AND o.contract_calls_json IS NOT NULL
 		  AND o.max_call_depth > 0
 		ORDER BY o.ledger_sequence, o.transaction_index, o.operation_index
@@ -1083,6 +1086,47 @@ func (r *BronzeColdReader) QueryContractDataSnapshot(ctx context.Context, startL
 		return nil, fmt.Errorf("failed to query contract data snapshot from cold: %w", err)
 	}
 
+	return rows, nil
+}
+
+// QueryBalanceHolderSnapshots mirrors the hot-reader version for DuckLake cold.
+// See bronze_reader.go for rationale.
+func (r *BronzeColdReader) QueryBalanceHolderSnapshots(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
+	query := fmt.Sprintf(`
+		WITH ranked AS (
+			SELECT
+				contract_id,
+				balance_holder,
+				balance,
+				asset_type,
+				asset_code,
+				asset_issuer,
+				last_modified_ledger,
+				closed_at,
+				ROW_NUMBER() OVER (PARTITION BY contract_id, balance_holder ORDER BY ledger_sequence DESC) AS rn
+			FROM %s
+			WHERE ledger_sequence BETWEEN $1 AND $2
+			  AND deleted = false
+			  AND balance_holder IS NOT NULL
+			  AND balance IS NOT NULL
+		)
+		SELECT
+			contract_id,
+			balance_holder,
+			balance,
+			asset_type,
+			asset_code,
+			asset_issuer,
+			last_modified_ledger,
+			closed_at
+		FROM ranked
+		WHERE rn = 1
+	`, r.tableName("contract_data_snapshot_v1"))
+
+	rows, err := r.db.QueryContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query balance holder snapshots from cold: %w", err)
+	}
 	return rows, nil
 }
 

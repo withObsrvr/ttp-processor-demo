@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/hex"
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -24,6 +23,7 @@ func NewContractIndexHandlers(reader *ContractIndexReader) *ContractIndexHandler
 // Accepts both:
 //   - Stellar StrKey contract address (starts with 'C', like CBLJ2...)
 //   - Hex-encoded contract hash (64 chars)
+//
 // Returns hex format (64 chars) for querying the index
 func normalizeContractID(input string) (string, error) {
 	// If it starts with 'C', decode from StrKey
@@ -281,8 +281,8 @@ func (h *ContractIndexHandlers) HandleBatchContractLookup(w http.ResponseWriter,
 		ContractIDs []string `json:"contract_ids"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		respondError(w, "invalid JSON body", http.StatusBadRequest)
+	if err := readJSON(w, r, &request); err != nil {
+		respondError(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 

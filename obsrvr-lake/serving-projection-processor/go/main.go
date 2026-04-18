@@ -117,7 +117,7 @@ func main() {
 	for _, p := range projectors {
 		healthServer.RegisterProjector(p.Name())
 	}
-	if err := RunProjectors(ctx, healthServer, projectors); err != nil {
+	if err := RunProjectors(ctx, healthServer, projectors, 0); err != nil {
 		log.Printf("initial run error: %v", err)
 	}
 
@@ -138,7 +138,7 @@ func runPolling(ctx context.Context, cfg *Config, healthServer *HealthServer, pr
 			log.Println("shutdown requested")
 			return
 		case <-ticker.C:
-			_ = RunProjectors(ctx, healthServer, projectors)
+			_ = RunProjectors(ctx, healthServer, projectors, 0)
 		}
 	}
 }
@@ -166,7 +166,7 @@ func runGRPCTriggered(ctx context.Context, cfg *Config, healthServer *HealthServ
 		pending = false
 		go func() {
 			log.Printf("triggered projector run reason=%s target_ledger=%d", reason, latestTarget)
-			_ = RunProjectors(ctx, healthServer, projectors)
+			_ = RunProjectors(ctx, healthServer, projectors, latestTarget)
 			select {
 			case cycleDone <- struct{}{}:
 			case <-ctx.Done():

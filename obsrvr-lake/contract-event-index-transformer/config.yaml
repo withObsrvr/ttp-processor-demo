@@ -3,6 +3,7 @@
 service:
   name: "contract-event-index-transformer"
   version: "1.0.0"
+  allow_retention_gap_start: false  # Set true only when intentionally accepting pre-start history gaps
 
 # Source: Bronze Hot (PostgreSQL)
 bronze_hot:
@@ -32,9 +33,9 @@ s3:
 
 # Indexing Configuration
 indexing:
-  poll_interval: "30s"              # Poll Bronze Hot every 30 seconds
-  batch_size: 1000                  # Process 1000 ledgers per batch
-  checkpoint_file: "checkpoint.json" # File-based checkpoint
+  poll_interval: "30s"                               # Poll Bronze Hot every 30 seconds
+  batch_size: 1000                                   # Process 1000 ledgers per batch
+  checkpoint_table: "index.contract_event_transformer_checkpoint" # PostgreSQL-backed checkpoint
 
 # Health Endpoint
 health:

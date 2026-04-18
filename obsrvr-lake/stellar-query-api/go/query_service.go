@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -88,42 +87,33 @@ func (qs *QueryService) determineSource(start, end int64) (queryHot, queryCold b
 // @Router /api/v1/bronze/ledgers [get]
 func (qs *QueryService) HandleLedgers(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
-	// Parse query parameters
 	startStr := r.URL.Query().Get("start")
 	endStr := r.URL.Query().Get("end")
-	limitStr := r.URL.Query().Get("limit")
 	sortParam := r.URL.Query().Get("sort")
 
 	if startStr == "" || endStr == "" {
-		http.Error(w, "Missing required parameters: start, end", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "missing required parameters: start, end")
 		return
 	}
 
 	start, err := strconv.ParseInt(startStr, 10, 64)
 	if err != nil {
-		http.Error(w, "Invalid start parameter", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid start parameter")
 		return
 	}
 
 	end, err := strconv.ParseInt(endStr, 10, 64)
 	if err != nil {
-		http.Error(w, "Invalid end parameter", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid end parameter")
 		return
 	}
 
-	limit := qs.config.DefaultLimit
-	if limitStr != "" {
-		parsedLimit, err := strconv.Atoi(limitStr)
-		if err == nil && parsedLimit > 0 && parsedLimit <= qs.config.MaxLimit {
-			limit = parsedLimit
-		}
-	}
+	limit := parseLimit(r, qs.config.DefaultLimit, qs.config.MaxLimit)
 
-	// Validate and normalize sort parameter
 	validSorts := map[string]bool{
 		"sequence_asc":   true,
 		"sequence_desc":  true,
@@ -132,10 +122,10 @@ func (qs *QueryService) HandleLedgers(w http.ResponseWriter, r *http.Request) {
 		"tx_count_desc":  true,
 	}
 	if sortParam == "" {
-		sortParam = "sequence_asc" // default
+		sortParam = "sequence_asc"
 	}
 	if !validSorts[sortParam] {
-		http.Error(w, "Invalid sort parameter: must be sequence_asc, sequence_desc, closed_at_asc, closed_at_desc, or tx_count_desc", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid sort parameter: must be sequence_asc, sequence_desc, closed_at_asc, closed_at_desc, or tx_count_desc")
 		return
 	}
 
@@ -218,15 +208,15 @@ func (qs *QueryService) HandleLedgers(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Return JSON response
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	if err := writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ledgers": results,
 		"count":   len(results),
 		"start":   start,
 		"end":     end,
 		"sort":    sortParam,
-	})
+	}, nil); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to encode ledger response")
+	}
 }
 
 // HandleLedgerBySequence returns a single ledger by exact sequence.
@@ -234,13 +224,13 @@ func (qs *QueryService) HandleLedgerBySequence(w http.ResponseWriter, r *http.Re
 	vars := mux.Vars(r)
 	seqStr := vars["seq"]
 	if seqStr == "" {
-		http.Error(w, "Missing required path parameter: seq", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "missing required path parameter: seq")
 		return
 	}
 
 	seq, err := strconv.ParseInt(seqStr, 10, 64)
 	if err != nil {
-		http.Error(w, "Invalid seq parameter", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid seq parameter")
 		return
 	}
 
@@ -291,38 +281,31 @@ func (qs *QueryService) HandleLedgerBySequence(w http.ResponseWriter, r *http.Re
 // @Router /api/v1/bronze/transactions [get]
 func (qs *QueryService) HandleTransactions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	startStr := r.URL.Query().Get("start")
 	endStr := r.URL.Query().Get("end")
-	limitStr := r.URL.Query().Get("limit")
 
 	if startStr == "" || endStr == "" {
-		http.Error(w, "Missing required parameters: start, end", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "missing required parameters: start, end")
 		return
 	}
 
 	start, err := strconv.ParseInt(startStr, 10, 64)
 	if err != nil {
-		http.Error(w, "Invalid start parameter", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid start parameter")
 		return
 	}
 
 	end, err := strconv.ParseInt(endStr, 10, 64)
 	if err != nil {
-		http.Error(w, "Invalid end parameter", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid end parameter")
 		return
 	}
 
-	limit := qs.config.DefaultLimit
-	if limitStr != "" {
-		parsedLimit, err := strconv.Atoi(limitStr)
-		if err == nil && parsedLimit > 0 && parsedLimit <= qs.config.MaxLimit {
-			limit = parsedLimit
-		}
-	}
+	limit := parseLimit(r, qs.config.DefaultLimit, qs.config.MaxLimit)
 
 	queryHot, queryCold, hotStart, hotEnd, coldStart, coldEnd := qs.determineSource(start, end)
 
@@ -361,13 +344,14 @@ func (qs *QueryService) HandleTransactions(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	if err := writeJSON(w, http.StatusOK, map[string]interface{}{
 		"transactions": results,
 		"count":        len(results),
 		"start":        start,
 		"end":          end,
-	})
+	}, nil); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to encode transaction response")
+	}
 }
 
 // HandleOperations returns raw operation data from the Bronze layer
@@ -385,38 +369,31 @@ func (qs *QueryService) HandleTransactions(w http.ResponseWriter, r *http.Reques
 // @Router /api/v1/bronze/operations [get]
 func (qs *QueryService) HandleOperations(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	startStr := r.URL.Query().Get("start")
 	endStr := r.URL.Query().Get("end")
-	limitStr := r.URL.Query().Get("limit")
 
 	if startStr == "" || endStr == "" {
-		http.Error(w, "Missing required parameters: start, end", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "missing required parameters: start, end")
 		return
 	}
 
 	start, err := strconv.ParseInt(startStr, 10, 64)
 	if err != nil {
-		http.Error(w, "Invalid start parameter", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid start parameter")
 		return
 	}
 
 	end, err := strconv.ParseInt(endStr, 10, 64)
 	if err != nil {
-		http.Error(w, "Invalid end parameter", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid end parameter")
 		return
 	}
 
-	limit := qs.config.DefaultLimit
-	if limitStr != "" {
-		parsedLimit, err := strconv.Atoi(limitStr)
-		if err == nil && parsedLimit > 0 && parsedLimit <= qs.config.MaxLimit {
-			limit = parsedLimit
-		}
-	}
+	limit := parseLimit(r, qs.config.DefaultLimit, qs.config.MaxLimit)
 
 	queryHot, queryCold, hotStart, hotEnd, coldStart, coldEnd := qs.determineSource(start, end)
 
@@ -455,13 +432,14 @@ func (qs *QueryService) HandleOperations(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	if err := writeJSON(w, http.StatusOK, map[string]interface{}{
 		"operations": results,
 		"count":      len(results),
 		"start":      start,
 		"end":        end,
-	})
+	}, nil); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to encode operation response")
+	}
 }
 
 // HandleEffects returns raw effect data from the Bronze layer
@@ -479,38 +457,31 @@ func (qs *QueryService) HandleOperations(w http.ResponseWriter, r *http.Request)
 // @Router /api/v1/bronze/effects [get]
 func (qs *QueryService) HandleEffects(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	startStr := r.URL.Query().Get("start")
 	endStr := r.URL.Query().Get("end")
-	limitStr := r.URL.Query().Get("limit")
 
 	if startStr == "" || endStr == "" {
-		http.Error(w, "Missing required parameters: start, end", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "missing required parameters: start, end")
 		return
 	}
 
 	start, err := strconv.ParseInt(startStr, 10, 64)
 	if err != nil {
-		http.Error(w, "Invalid start parameter", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid start parameter")
 		return
 	}
 
 	end, err := strconv.ParseInt(endStr, 10, 64)
 	if err != nil {
-		http.Error(w, "Invalid end parameter", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid end parameter")
 		return
 	}
 
-	limit := qs.config.DefaultLimit
-	if limitStr != "" {
-		parsedLimit, err := strconv.Atoi(limitStr)
-		if err == nil && parsedLimit > 0 && parsedLimit <= qs.config.MaxLimit {
-			limit = parsedLimit
-		}
-	}
+	limit := parseLimit(r, qs.config.DefaultLimit, qs.config.MaxLimit)
 
 	queryHot, queryCold, hotStart, hotEnd, coldStart, coldEnd := qs.determineSource(start, end)
 
@@ -549,13 +520,14 @@ func (qs *QueryService) HandleEffects(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	if err := writeJSON(w, http.StatusOK, map[string]interface{}{
 		"effects": results,
 		"count":   len(results),
 		"start":   start,
 		"end":     end,
-	})
+	}, nil); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to encode effect response")
+	}
 }
 
 // HandleTrades returns raw trade data from the Bronze layer
@@ -573,38 +545,31 @@ func (qs *QueryService) HandleEffects(w http.ResponseWriter, r *http.Request) {
 // @Router /api/v1/bronze/trades [get]
 func (qs *QueryService) HandleTrades(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	startStr := r.URL.Query().Get("start")
 	endStr := r.URL.Query().Get("end")
-	limitStr := r.URL.Query().Get("limit")
 
 	if startStr == "" || endStr == "" {
-		http.Error(w, "Missing required parameters: start, end", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "missing required parameters: start, end")
 		return
 	}
 
 	start, err := strconv.ParseInt(startStr, 10, 64)
 	if err != nil {
-		http.Error(w, "Invalid start parameter", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid start parameter")
 		return
 	}
 
 	end, err := strconv.ParseInt(endStr, 10, 64)
 	if err != nil {
-		http.Error(w, "Invalid end parameter", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid end parameter")
 		return
 	}
 
-	limit := qs.config.DefaultLimit
-	if limitStr != "" {
-		parsedLimit, err := strconv.Atoi(limitStr)
-		if err == nil && parsedLimit > 0 && parsedLimit <= qs.config.MaxLimit {
-			limit = parsedLimit
-		}
-	}
+	limit := parseLimit(r, qs.config.DefaultLimit, qs.config.MaxLimit)
 
 	queryHot, queryCold, hotStart, hotEnd, coldStart, coldEnd := qs.determineSource(start, end)
 
@@ -643,13 +608,14 @@ func (qs *QueryService) HandleTrades(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	if err := writeJSON(w, http.StatusOK, map[string]interface{}{
 		"trades": results,
 		"count":  len(results),
 		"start":  start,
 		"end":    end,
-	})
+	}, nil); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to encode trade response")
+	}
 }
 
 // HandleAccounts returns raw account data from the Bronze layer
@@ -666,25 +632,17 @@ func (qs *QueryService) HandleTrades(w http.ResponseWriter, r *http.Request) {
 // @Router /api/v1/bronze/accounts [get]
 func (qs *QueryService) HandleAccounts(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	accountID := r.URL.Query().Get("account_id")
-	limitStr := r.URL.Query().Get("limit")
-
 	if accountID == "" {
-		http.Error(w, "Missing required parameter: account_id", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "missing required parameter: account_id")
 		return
 	}
 
-	limit := qs.config.DefaultLimit
-	if limitStr != "" {
-		parsedLimit, err := strconv.Atoi(limitStr)
-		if err == nil && parsedLimit > 0 && parsedLimit <= qs.config.MaxLimit {
-			limit = parsedLimit
-		}
-	}
+	limit := parseLimit(r, qs.config.DefaultLimit, qs.config.MaxLimit)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
@@ -721,12 +679,13 @@ func (qs *QueryService) HandleAccounts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	if err := writeJSON(w, http.StatusOK, map[string]interface{}{
 		"accounts":   results,
 		"count":      len(results),
 		"account_id": accountID,
-	})
+	}, nil); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to encode account response")
+	}
 }
 
 // HandleTrustlines returns raw trustline data from the Bronze layer
@@ -743,25 +702,17 @@ func (qs *QueryService) HandleAccounts(w http.ResponseWriter, r *http.Request) {
 // @Router /api/v1/bronze/trustlines [get]
 func (qs *QueryService) HandleTrustlines(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	accountID := r.URL.Query().Get("account_id")
-	limitStr := r.URL.Query().Get("limit")
-
 	if accountID == "" {
-		http.Error(w, "Missing required parameter: account_id", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "missing required parameter: account_id")
 		return
 	}
 
-	limit := qs.config.DefaultLimit
-	if limitStr != "" {
-		parsedLimit, err := strconv.Atoi(limitStr)
-		if err == nil && parsedLimit > 0 && parsedLimit <= qs.config.MaxLimit {
-			limit = parsedLimit
-		}
-	}
+	limit := parseLimit(r, qs.config.DefaultLimit, qs.config.MaxLimit)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
@@ -796,12 +747,13 @@ func (qs *QueryService) HandleTrustlines(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	if err := writeJSON(w, http.StatusOK, map[string]interface{}{
 		"trustlines": results,
 		"count":      len(results),
 		"account_id": accountID,
-	})
+	}, nil); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to encode trustline response")
+	}
 }
 
 // HandleOffers returns raw offer data from the Bronze layer
@@ -818,25 +770,17 @@ func (qs *QueryService) HandleTrustlines(w http.ResponseWriter, r *http.Request)
 // @Router /api/v1/bronze/offers [get]
 func (qs *QueryService) HandleOffers(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	sellerID := r.URL.Query().Get("seller_id")
-	limitStr := r.URL.Query().Get("limit")
-
 	if sellerID == "" {
-		http.Error(w, "Missing required parameter: seller_id", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "missing required parameter: seller_id")
 		return
 	}
 
-	limit := qs.config.DefaultLimit
-	if limitStr != "" {
-		parsedLimit, err := strconv.Atoi(limitStr)
-		if err == nil && parsedLimit > 0 && parsedLimit <= qs.config.MaxLimit {
-			limit = parsedLimit
-		}
-	}
+	limit := parseLimit(r, qs.config.DefaultLimit, qs.config.MaxLimit)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
@@ -871,12 +815,13 @@ func (qs *QueryService) HandleOffers(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	if err := writeJSON(w, http.StatusOK, map[string]interface{}{
 		"offers":    results,
 		"count":     len(results),
 		"seller_id": sellerID,
-	})
+	}, nil); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to encode offer response")
+	}
 }
 
 // HandleContractEvents returns raw Soroban contract event data from the Bronze layer
@@ -894,38 +839,31 @@ func (qs *QueryService) HandleOffers(w http.ResponseWriter, r *http.Request) {
 // @Router /api/v1/bronze/contract_events [get]
 func (qs *QueryService) HandleContractEvents(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	startStr := r.URL.Query().Get("start")
 	endStr := r.URL.Query().Get("end")
-	limitStr := r.URL.Query().Get("limit")
 
 	if startStr == "" || endStr == "" {
-		http.Error(w, "Missing required parameters: start, end", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "missing required parameters: start, end")
 		return
 	}
 
 	start, err := strconv.ParseInt(startStr, 10, 64)
 	if err != nil {
-		http.Error(w, "Invalid start parameter", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid start parameter")
 		return
 	}
 
 	end, err := strconv.ParseInt(endStr, 10, 64)
 	if err != nil {
-		http.Error(w, "Invalid end parameter", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid end parameter")
 		return
 	}
 
-	limit := qs.config.DefaultLimit
-	if limitStr != "" {
-		parsedLimit, err := strconv.Atoi(limitStr)
-		if err == nil && parsedLimit > 0 && parsedLimit <= qs.config.MaxLimit {
-			limit = parsedLimit
-		}
-	}
+	limit := parseLimit(r, qs.config.DefaultLimit, qs.config.MaxLimit)
 
 	queryHot, queryCold, hotStart, hotEnd, coldStart, coldEnd := qs.determineSource(start, end)
 
@@ -964,13 +902,14 @@ func (qs *QueryService) HandleContractEvents(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	if err := writeJSON(w, http.StatusOK, map[string]interface{}{
 		"contract_events": results,
 		"count":           len(results),
 		"start":           start,
 		"end":             end,
-	})
+	}, nil); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to encode contract event response")
+	}
 }
 
 // Scanning functions to convert sql.Rows to map[string]interface{}

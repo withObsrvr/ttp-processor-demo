@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -184,7 +183,7 @@ func (h *GoldHandlers) HandleAssetHolders(w http.ResponseWriter, r *http.Request
 func (h *GoldHandlers) HandleBatchAccounts(w http.ResponseWriter, r *http.Request) {
 	// Parse request body
 	var req BatchAccountsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSON(w, r, &req); err != nil {
 		respondError(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
 		return
 	}

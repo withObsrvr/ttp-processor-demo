@@ -73,9 +73,10 @@ func (h *TxDiffHandlers) HandleTransactionDiffs(w http.ResponseWriter, r *http.R
 
 // SmartWalletHandlers contains HTTP handlers for SEP-50 smart wallet detection
 type SmartWalletHandlers struct {
-	hotReader  *SilverHotReader
-	coldReader *SilverColdReader
-	bronzeCold *ColdReader
+	hotReader     *SilverHotReader
+	coldReader    *SilverColdReader
+	bronzeCold    *ColdReader
+	unifiedReader *UnifiedDuckDBReader
 }
 
 // NewSmartWalletHandlers creates new smart wallet API handlers

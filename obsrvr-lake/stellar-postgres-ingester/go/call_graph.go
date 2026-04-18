@@ -245,6 +245,47 @@ func extractCallsFromAuthEntries(
 	return calls
 }
 
+// extractAuthCredentials walks the SorobanAuthorizationEntry slice on an
+// InvokeHostFunction op and returns parallel arrays describing each auth
+// entry's credentials: its type discriminant ("SOURCE_ACCOUNT" or "ADDRESS")
+// and, for ADDRESS credentials, the strkey-encoded authorizer (a G- or
+// C-address). SOURCE_ACCOUNT entries get an empty address — the tx source
+// account is implied and already captured elsewhere.
+//
+// Returns (nil, nil) when there are zero auth entries so the caller can
+// leave the row NULL. A returned type-array of length N is always matched
+// by an address-array of length N.
+func extractAuthCredentials(authEntries []xdr.SorobanAuthorizationEntry) ([]string, []string) {
+	if len(authEntries) == 0 {
+		return nil, nil
+	}
+	types := make([]string, 0, len(authEntries))
+	addrs := make([]string, 0, len(authEntries))
+	for _, entry := range authEntries {
+		switch entry.Credentials.Type {
+		case xdr.SorobanCredentialsTypeSorobanCredentialsSourceAccount:
+			types = append(types, "SOURCE_ACCOUNT")
+			addrs = append(addrs, "")
+		case xdr.SorobanCredentialsTypeSorobanCredentialsAddress:
+			types = append(types, "ADDRESS")
+			addr := ""
+			if ac, ok := entry.Credentials.GetAddress(); ok {
+				if s, err := ac.Address.String(); err == nil {
+					addr = s
+				}
+			}
+			addrs = append(addrs, addr)
+		default:
+			// Forward-compatibility: record the numeric discriminant as a
+			// string so we don't silently drop new credentials types if the
+			// XDR schema extends.
+			types = append(types, fmt.Sprintf("UNKNOWN_%d", entry.Credentials.Type))
+			addrs = append(addrs, "")
+		}
+	}
+	return types, addrs
+}
+
 // extractCallsFromAuthInvocation recursively extracts calls from auth invocations
 func extractCallsFromAuthInvocation(
 	invocation *xdr.SorobanAuthorizedInvocation,
@@ -434,13 +475,24 @@ func callGraphToJSON(result *CallGraphResult) (*string, []string, *int, error) {
 }
 
 // integrateCallGraph integrates call graph extraction into operation data extraction
-// Call this from the main extraction loop after extracting basic operation details
+// Call this from the main extraction loop after extracting basic operation details.
+// Also populates the Soroban authorization credentials fields (auth-entry-level
+// discriminant + authorizer address).
 func integrateCallGraph(
 	tx ingest.LedgerTransaction,
 	opIndex int,
 	op xdr.Operation,
 	opData *OperationData,
 ) error {
+	// Extract auth credentials first — these are independent of the call graph
+	// and are useful even when the op has no cross-contract sub-invocations
+	// (e.g. a passkey wallet authorizing a simple token transfer).
+	if invokeOp, ok := op.Body.GetInvokeHostFunctionOp(); ok {
+		types, addrs := extractAuthCredentials(invokeOp.Auth)
+		opData.SorobanAuthCredentialsTypes = types
+		opData.SorobanAuthAddresses = addrs
+	}
+
 	// Extract call graph
 	callGraph, err := extractCallGraph(tx, opIndex, op)
 	if err != nil {
