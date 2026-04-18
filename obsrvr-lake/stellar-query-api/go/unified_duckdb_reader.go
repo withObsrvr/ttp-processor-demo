@@ -3018,6 +3018,93 @@ func (r *UnifiedDuckDBReader) GetTTL(ctx context.Context, keyHash string) (*TTLE
 	return &entry, nil
 }
 
+// GetTTLByContract returns TTL entries for all storage keys belonging to a contract.
+// Joins ttl_current against contract_data_current on key_hash in both hot and cold schemas.
+func (r *UnifiedDuckDBReader) GetTTLByContract(ctx context.Context, contractID string, filters TTLFilters) ([]TTLEntry, string, bool, error) {
+	var cursorClause string
+	args := []interface{}{contractID}
+	argNum := 2
+
+	if filters.Cursor != nil {
+		cursorClause = fmt.Sprintf(" AND (t.live_until_ledger_seq, t.key_hash) > ($%d, $%d)", argNum, argNum+1)
+		args = append(args, filters.Cursor.LiveUntilLedger, filters.Cursor.KeyHash)
+		argNum += 2
+	}
+
+	limit := filters.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+
+	joinedSelect := func(ttlSchema, dataSchema string) string {
+		return fmt.Sprintf(`
+			SELECT t.key_hash, t.live_until_ledger_seq, t.expired, t.last_modified_ledger, t.closed_at,
+				cd.contract_id, cd.durability
+			FROM %s.ttl_current t
+			JOIN %s.contract_data_current cd ON cd.key_hash = t.key_hash
+			WHERE cd.contract_id = $1%s
+		`, ttlSchema, dataSchema, cursorClause)
+	}
+
+	query := fmt.Sprintf(`
+		SELECT key_hash, live_until_ledger_seq, expired, last_modified_ledger, closed_at,
+			contract_id, durability
+		FROM (
+			%s
+			UNION ALL
+			%s
+		) combined
+		ORDER BY live_until_ledger_seq ASC, key_hash ASC
+		LIMIT $%d
+	`, joinedSelect(r.hotSchema, r.hotSchema), joinedSelect(r.coldSchema, r.coldSchema), argNum)
+	args = append(args, limit+1)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		// If cold tables missing, fall back to hot-only.
+		if strings.Contains(err.Error(), "does not exist") {
+			hotQuery := fmt.Sprintf(`
+				%s
+				ORDER BY live_until_ledger_seq ASC, key_hash ASC
+				LIMIT $%d
+			`, joinedSelect(r.hotSchema, r.hotSchema), argNum)
+			rows, err = r.db.QueryContext(ctx, hotQuery, args...)
+			if err != nil {
+				return nil, "", false, fmt.Errorf("unified GetTTLByContract (hot-only): %w", err)
+			}
+		} else {
+			return nil, "", false, fmt.Errorf("unified GetTTLByContract: %w", err)
+		}
+	}
+	defer rows.Close()
+
+	var entries []TTLEntry
+	for rows.Next() {
+		var e TTLEntry
+		if err := rows.Scan(&e.KeyHash, &e.LiveUntilLedger, &e.Expired,
+			&e.LastModifiedLedger, &e.ClosedAt, &e.ContractID, &e.Durability); err != nil {
+			return nil, "", false, err
+		}
+		entries = append(entries, e)
+	}
+
+	hasMore := len(entries) > limit
+	if hasMore {
+		entries = entries[:limit]
+	}
+
+	var nextCursor string
+	if hasMore && len(entries) > 0 {
+		last := entries[len(entries)-1]
+		nextCursor = TTLCursor{
+			LiveUntilLedger: last.LiveUntilLedger,
+			KeyHash:         last.KeyHash,
+		}.Encode()
+	}
+
+	return entries, nextCursor, hasMore, nil
+}
+
 // GetTTLExpiring returns TTL entries expiring within N ledgers from unified storage
 func (r *UnifiedDuckDBReader) GetTTLExpiring(ctx context.Context, currentLedger int64, filters TTLFilters) ([]TTLEntry, string, bool, error) {
 	var conditions []string

@@ -29,6 +29,20 @@ func NewSilverHandlers(legacyReader *UnifiedSilverReader, unifiedReader *Unified
 	}
 }
 
+func normalizeTTLEntryForCurrentLedger(entry *TTLEntry, currentLedger int64) {
+	if entry == nil {
+		return
+	}
+	entry.LedgersRemaining = entry.LiveUntilLedger - currentLedger
+	entry.Expired = entry.LedgersRemaining <= 0
+}
+
+func normalizeTTLEntriesForCurrentLedger(entries []TTLEntry, currentLedger int64) {
+	for i := range entries {
+		normalizeTTLEntryForCurrentLedger(&entries[i], currentLedger)
+	}
+}
+
 // logMismatch logs when legacy and unified reader results differ (for hybrid mode validation)
 func logMismatch(endpoint string, legacyCount, unifiedCount int, details string) {
 	log.Printf("⚠️ HYBRID MISMATCH [%s]: legacy=%d, unified=%d | %s", endpoint, legacyCount, unifiedCount, details)
@@ -2937,37 +2951,139 @@ func (h *SilverHandlers) HandleContractCode(w http.ResponseWriter, r *http.Reque
 	})
 }
 
-// HandleTTL returns TTL entry for a specific key hash
+// HandleTTL returns TTL entries.
+//
+// Lookup modes:
+//   - key_hash=<hex>            → single TTL entry by hash
+//   - contract_id=C...          → all TTL entries for the contract's storage (paginated)
+//
 // GET /api/v1/silver/soroban/ttl?key_hash=...
+// GET /api/v1/silver/soroban/ttl?contract_id=C...&limit=100&cursor=...
 func (h *SilverHandlers) HandleTTL(w http.ResponseWriter, r *http.Request) {
-	keyHash := r.URL.Query().Get("key_hash")
-	if keyHash == "" {
-		respondError(w, "key_hash parameter required", http.StatusBadRequest)
-		return
-	}
-
-	var ttl *TTLEntry
-	var err error
-
-	if h.unifiedReader != nil {
-		ttl, err = h.unifiedReader.GetTTL(r.Context(), keyHash)
-	} else {
+	if h.unifiedReader == nil {
 		respondError(w, "ttl endpoint requires unified reader", http.StatusInternalServerError)
 		return
 	}
 
+	keyHash := r.URL.Query().Get("key_hash")
+	contractID := r.URL.Query().Get("contract_id")
+
+	if keyHash == "" && contractID == "" {
+		respondError(w, "key_hash or contract_id parameter required", http.StatusBadRequest)
+		return
+	}
+	if keyHash != "" && contractID != "" {
+		respondError(w, "specify key_hash or contract_id, not both", http.StatusBadRequest)
+		return
+	}
+
+	currentLedger, err := h.unifiedReader.GetCurrentLedger(r.Context())
+	if err != nil {
+		respondError(w, "failed to get current ledger: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if keyHash != "" {
+		ttl, err := h.unifiedReader.GetTTL(r.Context(), keyHash)
+		if err != nil {
+			respondError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if ttl == nil {
+			respondError(w, "TTL entry not found", http.StatusNotFound)
+			return
+		}
+		normalizeTTLEntryForCurrentLedger(ttl, currentLedger)
+		respondJSON(w, map[string]interface{}{"ttl": ttl})
+		return
+	}
+
+	cursor, err := DecodeTTLCursor(r.URL.Query().Get("cursor"))
+	if err != nil {
+		respondError(w, "invalid cursor: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	filters := TTLFilters{
+		ContractID: contractID,
+		Limit:      parseLimit(r, 100, 1000),
+		Cursor:     cursor,
+	}
+
+	entries, nextCursor, hasMore, err := h.unifiedReader.GetTTLByContract(r.Context(), contractID, filters)
 	if err != nil {
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	normalizeTTLEntriesForCurrentLedger(entries, currentLedger)
 
+	resp := map[string]interface{}{
+		"contract_id": contractID,
+		"ttl_entries": entries,
+		"count":       len(entries),
+		"has_more":    hasMore,
+	}
+	if nextCursor != "" {
+		resp["cursor"] = nextCursor
+	}
+	respondJSON(w, resp)
+}
+
+// HandleTTLResolve computes the ledger-key hash for a (contract_id, durability, ScVal key)
+// tuple server-side and returns the matching TTL entry. Removes the need for clients to
+// XDR-marshal the LedgerKey themselves.
+//
+// GET /api/v1/silver/soroban/ttl/resolve?contract_id=C...&durability=persistent&key=<base64-ScVal>
+// GET /api/v1/silver/soroban/ttl/resolve?contract_id=C...&durability=persistent&key_type=instance
+func (h *SilverHandlers) HandleTTLResolve(w http.ResponseWriter, r *http.Request) {
+	if h.unifiedReader == nil {
+		respondError(w, "ttl endpoint requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	contractID := r.URL.Query().Get("contract_id")
+	durabilityParam := strings.ToLower(r.URL.Query().Get("durability"))
+	keyB64 := r.URL.Query().Get("key")
+	keyType := strings.ToLower(r.URL.Query().Get("key_type"))
+
+	if contractID == "" {
+		respondError(w, "contract_id required", http.StatusBadRequest)
+		return
+	}
+	if keyB64 == "" && keyType == "" {
+		respondError(w, "key (base64 ScVal) or key_type=instance required", http.StatusBadRequest)
+		return
+	}
+	if keyB64 != "" && keyType != "" {
+		respondError(w, "specify key or key_type, not both", http.StatusBadRequest)
+		return
+	}
+
+	keyHash, err := computeContractDataKeyHash(contractID, durabilityParam, keyB64, keyType)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	ttl, err := h.unifiedReader.GetTTL(r.Context(), keyHash)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	if ttl == nil {
 		respondError(w, "TTL entry not found", http.StatusNotFound)
 		return
 	}
 
+	currentLedger, err := h.unifiedReader.GetCurrentLedger(r.Context())
+	if err != nil {
+		respondError(w, "failed to get current ledger: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	normalizeTTLEntryForCurrentLedger(ttl, currentLedger)
+
 	respondJSON(w, map[string]interface{}{
-		"ttl": ttl,
+		"key_hash": keyHash,
+		"ttl":      ttl,
 	})
 }
 

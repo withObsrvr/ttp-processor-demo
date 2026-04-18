@@ -1409,11 +1409,15 @@ type TTLEntry struct {
 	Expired            bool      `json:"expired"`
 	LastModifiedLedger int64     `json:"last_modified_ledger"`
 	ClosedAt           time.Time `json:"closed_at"`
+	// Populated when the TTL row is joined against contract_data_current.
+	ContractID string `json:"contract_id,omitempty"`
+	Durability string `json:"durability,omitempty"`
 }
 
 // TTLFilters contains filter options for TTL queries
 type TTLFilters struct {
 	KeyHash       string
+	ContractID    string
 	WithinLedgers int64 // Entries expiring within N ledgers
 	ExpiredOnly   bool  // Only show expired entries
 	Limit         int
