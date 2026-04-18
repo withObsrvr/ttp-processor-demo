@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"strings"
 
 	"github.com/stellar/go/strkey"
 	"github.com/stellar/go/xdr"
@@ -37,8 +38,10 @@ func computeContractDataKeyHash(contractID, durability, keyB64, keyType string) 
 	switch {
 	case keyType == "instance":
 		keyScVal = xdr.ScVal{Type: xdr.ScValTypeScvLedgerKeyContractInstance}
+	case keyType != "":
+		return "", fmt.Errorf("unsupported key_type %q; only 'instance' is supported", keyType)
 	case keyB64 != "":
-		decoded, err := base64.StdEncoding.DecodeString(keyB64)
+		decoded, err := decodeScValBase64(keyB64)
 		if err != nil {
 			return "", fmt.Errorf("decode key (base64): %w", err)
 		}
@@ -78,4 +81,29 @@ func parseDurability(s string) (xdr.ContractDataDurability, error) {
 	default:
 		return 0, fmt.Errorf("durability must be 'persistent' or 'temporary', got %q", s)
 	}
+}
+
+func decodeScValBase64(s string) ([]byte, error) {
+	candidates := []string{
+		s,
+		strings.ReplaceAll(s, " ", "+"),
+	}
+	encodings := []*base64.Encoding{
+		base64.StdEncoding,
+		base64.RawStdEncoding,
+		base64.URLEncoding,
+		base64.RawURLEncoding,
+	}
+
+	var lastErr error
+	for _, candidate := range candidates {
+		for _, enc := range encodings {
+			decoded, err := enc.DecodeString(candidate)
+			if err == nil {
+				return decoded, nil
+			}
+			lastErr = err
+		}
+	}
+	return nil, lastErr
 }

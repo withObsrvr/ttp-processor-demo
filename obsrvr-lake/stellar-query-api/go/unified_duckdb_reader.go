@@ -3019,7 +3019,8 @@ func (r *UnifiedDuckDBReader) GetTTL(ctx context.Context, keyHash string) (*TTLE
 }
 
 // GetTTLByContract returns TTL entries for all storage keys belonging to a contract.
-// Joins ttl_current against contract_data_current on key_hash in both hot and cold schemas.
+// It deduplicates contract-data and TTL rows across hot/cold so keys are not dropped
+// when the two tables transition between storage tiers at different times.
 func (r *UnifiedDuckDBReader) GetTTLByContract(ctx context.Context, contractID string, filters TTLFilters) ([]TTLEntry, string, bool, error) {
 	var cursorClause string
 	args := []interface{}{contractID}
@@ -3036,39 +3037,56 @@ func (r *UnifiedDuckDBReader) GetTTLByContract(ctx context.Context, contractID s
 		limit = 100
 	}
 
-	joinedSelect := func(ttlSchema, dataSchema string) string {
+	buildQuery := func(includeCold bool) string {
+		contractDataUnion := fmt.Sprintf(`
+			SELECT DISTINCT contract_id, key_hash, durability
+			FROM %s.contract_data_current
+			WHERE contract_id = $1
+		`, r.hotSchema)
+		ttlUnion := fmt.Sprintf(`
+			SELECT DISTINCT key_hash, live_until_ledger_seq, expired, last_modified_ledger, closed_at
+			FROM %s.ttl_current
+		`, r.hotSchema)
+
+		if includeCold {
+			contractDataUnion = fmt.Sprintf(`
+				%s
+				UNION
+				SELECT DISTINCT contract_id, key_hash, durability
+				FROM %s.contract_data_current
+				WHERE contract_id = $1
+			`, contractDataUnion, r.coldSchema)
+			ttlUnion = fmt.Sprintf(`
+				%s
+				UNION
+				SELECT DISTINCT key_hash, live_until_ledger_seq, expired, last_modified_ledger, closed_at
+				FROM %s.ttl_current
+			`, ttlUnion, r.coldSchema)
+		}
+
 		return fmt.Sprintf(`
+			WITH contract_keys AS (
+				%s
+			), ttl_rows AS (
+				%s
+			)
 			SELECT t.key_hash, t.live_until_ledger_seq, t.expired, t.last_modified_ledger, t.closed_at,
-				cd.contract_id, cd.durability
-			FROM %s.ttl_current t
-			JOIN %s.contract_data_current cd ON cd.key_hash = t.key_hash
-			WHERE cd.contract_id = $1%s
-		`, ttlSchema, dataSchema, cursorClause)
+				ck.contract_id, ck.durability
+			FROM ttl_rows t
+			JOIN contract_keys ck ON ck.key_hash = t.key_hash
+			WHERE 1=1%s
+			ORDER BY t.live_until_ledger_seq ASC, t.key_hash ASC
+			LIMIT $%d
+		`, contractDataUnion, ttlUnion, cursorClause, argNum)
 	}
 
-	query := fmt.Sprintf(`
-		SELECT key_hash, live_until_ledger_seq, expired, last_modified_ledger, closed_at,
-			contract_id, durability
-		FROM (
-			%s
-			UNION ALL
-			%s
-		) combined
-		ORDER BY live_until_ledger_seq ASC, key_hash ASC
-		LIMIT $%d
-	`, joinedSelect(r.hotSchema, r.hotSchema), joinedSelect(r.coldSchema, r.coldSchema), argNum)
 	args = append(args, limit+1)
-
-	rows, err := r.db.QueryContext(ctx, query, args...)
+	rows, err := r.db.QueryContext(ctx, buildQuery(true), args...)
 	if err != nil {
-		// If cold tables missing, fall back to hot-only.
-		if strings.Contains(err.Error(), "does not exist") {
-			hotQuery := fmt.Sprintf(`
-				%s
-				ORDER BY live_until_ledger_seq ASC, key_hash ASC
-				LIMIT $%d
-			`, joinedSelect(r.hotSchema, r.hotSchema), argNum)
-			rows, err = r.db.QueryContext(ctx, hotQuery, args...)
+		errStr := err.Error()
+		if strings.Contains(errStr, "does not exist") &&
+			(strings.Contains(errStr, "ttl_current") || strings.Contains(errStr, "contract_data_current")) {
+			rows, err = r.db.QueryContext(ctx, buildQuery(false), args...)
 			if err != nil {
 				return nil, "", false, fmt.Errorf("unified GetTTLByContract (hot-only): %w", err)
 			}
