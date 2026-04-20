@@ -302,6 +302,19 @@ func summarizeSingleProjectorOp(op projectorDecodedOperation, contracts []string
 			InvolvedContracts: contracts,
 			Transfer:          &TransferDetail{Asset: asset, Amount: amount, From: op.SourceAccount, To: stringValue(op.Destination)},
 		}
+	case "change_trust":
+		if asset != "" && asset != "XLM" {
+			return &TxSummary{
+				Description:       fmt.Sprintf("Added trustline for %s", asset),
+				Type:              "change_trust",
+				InvolvedContracts: contracts,
+			}
+		}
+		return &TxSummary{
+			Description:       "Updated trustline",
+			Type:              "change_trust",
+			InvolvedContracts: contracts,
+		}
 	}
 
 	if op.IsSorobanOp && op.FunctionName != nil && *op.FunctionName != "" {

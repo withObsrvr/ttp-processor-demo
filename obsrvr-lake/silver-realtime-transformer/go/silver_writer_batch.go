@@ -166,6 +166,14 @@ var tokenTransferColumns = []string{
 
 const tokenTransferConflict = `ON CONFLICT DO NOTHING`
 
+var unmatchedContractEventColumns = []string{
+	"timestamp", "transaction_hash", "ledger_sequence", "contract_id",
+	"event_index", "event_name", "topics_decoded", "data_decoded",
+	"successful", "parse_reason",
+}
+
+const unmatchedContractEventConflict = `ON CONFLICT DO NOTHING`
+
 var accountSnapshotColumns = []string{
 	"account_id", "ledger_sequence", "closed_at", "balance", "sequence_number",
 	"num_subentries", "num_sponsoring", "num_sponsored", "home_domain",

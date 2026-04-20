@@ -106,6 +106,17 @@ func (c *DuckDBClient) applySilverMigrations() error {
 				c.config.CatalogName, c.config.SchemaName,
 			),
 		},
+		{
+			// Soroban i128/u128 token balances can exceed DECIMAL(38, 0)
+			// max — e.g. 99999999999999997748809823456034029568 fails to
+			// cast during flush. Convert to VARCHAR so the column holds
+			// arbitrary-precision values losslessly.
+			name: "address_balances_current.balance_raw -> VARCHAR",
+			sql: fmt.Sprintf(
+				`ALTER TABLE %s.%s.address_balances_current ALTER COLUMN balance_raw SET DATA TYPE VARCHAR`,
+				c.config.CatalogName, c.config.SchemaName,
+			),
+		},
 	}
 
 	for _, m := range migrations {
@@ -139,6 +150,11 @@ var tablesWithLedgerRange = map[string]bool{
 	"contract_invocations_raw":            true,
 	"effects":                             true,
 	"evicted_keys":                        true,
+	"trades":                              true,
+	"restored_keys":                       true,
+	"native_balances_current":             true,
+	"ttl_current":                         true,
+	// address_balances_current has no ledger_range column — deliberately omitted
 }
 
 // partitionSilverTables adds DuckLake partitioning to Silver tables that have ledger_range

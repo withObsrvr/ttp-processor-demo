@@ -446,6 +446,83 @@ func (br *BronzeReader) QueryTokenTransfers(ctx context.Context, startLedger, en
 	return rows, nil
 }
 
+// QueryUnmatchedTokenLikeContractEvents returns token-like Soroban contract
+// events we intentionally preserve but cannot confidently normalize into
+// token_transfers_raw semantics.
+func (br *BronzeReader) QueryUnmatchedTokenLikeContractEvents(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
+	query := `
+		WITH token_like AS (
+			SELECT
+				e.closed_at AS timestamp,
+				e.transaction_hash,
+				e.ledger_sequence,
+				e.contract_id,
+				e.event_index,
+				replace(e.topics_decoded, '\u0000', '')::jsonb->>0 AS event_name,
+				replace(e.topics_decoded, '\u0000', '') AS topics_decoded,
+				replace(e.data_decoded, '\u0000', '') AS data_decoded,
+				e.successful,
+				CASE
+					WHEN replace(e.topics_decoded, '\u0000', '')::jsonb->>0 = 'transfer' THEN
+						replace(e.topics_decoded, '\u0000', '')::jsonb->1->>'address'
+					WHEN replace(e.topics_decoded, '\u0000', '')::jsonb->>0 IN ('burn', 'clawback') THEN
+						replace(e.topics_decoded, '\u0000', '')::jsonb->1->>'address'
+				END AS parsed_from_account,
+				CASE
+					WHEN replace(e.topics_decoded, '\u0000', '')::jsonb->>0 = 'transfer' THEN
+						replace(e.topics_decoded, '\u0000', '')::jsonb->2->>'address'
+					WHEN replace(e.topics_decoded, '\u0000', '')::jsonb->>0 = 'mint'
+						AND jsonb_typeof(replace(e.topics_decoded, '\u0000', '')::jsonb->2) = 'object' THEN
+						replace(e.topics_decoded, '\u0000', '')::jsonb->2->>'address'
+					WHEN replace(e.topics_decoded, '\u0000', '')::jsonb->>0 = 'mint'
+						AND jsonb_typeof(replace(e.topics_decoded, '\u0000', '')::jsonb->1) = 'object'
+						AND (replace(e.topics_decoded, '\u0000', '')::jsonb->1->>'type') = 'account' THEN
+						replace(e.topics_decoded, '\u0000', '')::jsonb->1->>'address'
+				END AS parsed_to_account,
+				COALESCE(
+					replace(e.data_decoded, '\u0000', '')::jsonb->>'value',
+					replace(e.data_decoded, '\u0000', '')::jsonb->'entries'->'amount'->>'value'
+				) AS parsed_amount
+			FROM contract_events_stream_v1 e
+			WHERE e.ledger_sequence BETWEEN $1 AND $2
+			  AND e.event_type = 'contract'
+			  AND e.topic_count >= 2
+			  AND replace(e.topics_decoded, '\u0000', '')::jsonb->>0 IN ('transfer', 'mint', 'burn', 'clawback')
+		)
+		SELECT
+			timestamp,
+			transaction_hash,
+			ledger_sequence,
+			contract_id,
+			event_index,
+			event_name,
+			topics_decoded,
+			data_decoded,
+			successful,
+			CASE
+				WHEN event_name = 'transfer' THEN 'unsupported_transfer_shape'
+				WHEN event_name = 'mint' THEN 'unsupported_mint_shape'
+				WHEN event_name = 'burn' THEN 'unsupported_burn_shape'
+				WHEN event_name = 'clawback' THEN 'unsupported_clawback_shape'
+				ELSE 'unparseable_token_like_event'
+			END AS parse_reason
+		FROM token_like
+		WHERE NOT (
+			(event_name = 'transfer' AND parsed_from_account IS NOT NULL AND parsed_to_account IS NOT NULL AND parsed_amount IS NOT NULL)
+			OR (event_name = 'mint' AND parsed_to_account IS NOT NULL AND parsed_amount IS NOT NULL)
+			OR (event_name IN ('burn', 'clawback') AND parsed_from_account IS NOT NULL AND parsed_amount IS NOT NULL)
+		)
+		ORDER BY ledger_sequence, transaction_hash, event_index
+	`
+
+	rows, err := br.db.QueryContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query unmatched token-like contract events: %w", err)
+	}
+
+	return rows, nil
+}
+
 // QueryAccountsSnapshot reads accounts from bronze hot snapshot for a ledger range
 // Uses the latest state for each account in the range (deduplicated)
 func (br *BronzeReader) QueryAccountsSnapshot(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {

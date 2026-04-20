@@ -159,6 +159,21 @@ type TokenTransferRow struct {
 	EventIndex            sql.NullInt32
 }
 
+// UnmatchedContractEventRow preserves token-like Soroban contract events whose
+// payload shape could not be confidently normalized into token_transfers_raw.
+type UnmatchedContractEventRow struct {
+	Timestamp       time.Time
+	TransactionHash string
+	LedgerSequence  int64
+	ContractID      sql.NullString
+	EventIndex      sql.NullInt32
+	EventName       sql.NullString
+	TopicsDecoded   sql.NullString
+	DataDecoded     sql.NullString
+	Successful      bool
+	ParseReason     string
+}
+
 // AccountCurrentRow represents a row in the accounts_current table
 type AccountCurrentRow struct {
 	AccountID           string
@@ -675,6 +690,15 @@ func (row *TokenTransferRow) Values() []interface{} {
 		row.Timestamp, row.TransactionHash, row.LedgerSequence, row.SourceType,
 		row.FromAccount, row.ToAccount, row.AssetCode, row.AssetIssuer, row.Amount,
 		row.TokenContractID, row.OperationType, row.TransactionSuccessful, row.EventIndex,
+	}
+}
+
+// Values returns the ordered column values for batch insertion into contract_events_unmatched.
+func (row *UnmatchedContractEventRow) Values() []interface{} {
+	return []interface{}{
+		row.Timestamp, row.TransactionHash, row.LedgerSequence, row.ContractID,
+		row.EventIndex, row.EventName, row.TopicsDecoded, row.DataDecoded,
+		row.Successful, row.ParseReason,
 	}
 }
 

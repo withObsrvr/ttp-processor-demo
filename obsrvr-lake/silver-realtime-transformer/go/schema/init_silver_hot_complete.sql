@@ -219,6 +219,35 @@ CREATE INDEX IF NOT EXISTS idx_token_transfers_asset ON token_transfers_raw(asse
 CREATE INDEX IF NOT EXISTS idx_token_transfers_contract ON token_transfers_raw(token_contract_id);
 CREATE INDEX IF NOT EXISTS idx_token_transfers_ledger ON token_transfers_raw(ledger_sequence);
 
+-- Table: contract_events_unmatched
+-- Token-like Soroban contract events we intentionally preserve but could not
+-- normalize into token_transfers_raw with validated semantics.
+CREATE TABLE IF NOT EXISTS contract_events_unmatched (
+    timestamp TIMESTAMP NOT NULL,
+    transaction_hash VARCHAR(64) NOT NULL,
+    ledger_sequence BIGINT NOT NULL,
+    contract_id VARCHAR(100),
+    event_index INTEGER,
+    event_name VARCHAR(64),
+    topics_decoded TEXT,
+    data_decoded TEXT,
+    successful BOOLEAN,
+    parse_reason TEXT,
+    inserted_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_contract_events_unmatched_unique
+ON contract_events_unmatched(
+    transaction_hash,
+    ledger_sequence,
+    COALESCE(event_index, -1)
+);
+
+CREATE INDEX IF NOT EXISTS idx_contract_events_unmatched_contract ON contract_events_unmatched(contract_id);
+CREATE INDEX IF NOT EXISTS idx_contract_events_unmatched_event_name ON contract_events_unmatched(event_name);
+CREATE INDEX IF NOT EXISTS idx_contract_events_unmatched_ledger ON contract_events_unmatched(ledger_sequence);
+CREATE INDEX IF NOT EXISTS idx_contract_events_unmatched_timestamp ON contract_events_unmatched(timestamp DESC);
+
 -- ============================================================================
 -- PHASE 1: CURRENT STATE TABLES (10 tables) - Starting with 5 most important
 -- ============================================================================

@@ -1,0 +1,499 @@
+openapi: 3.0.3
+info:
+  title: Obsrvr Lake DeFi Positions API
+  version: 0.1.0
+  description: |
+    Semantic DeFi positions API for Obsrvr Lake.
+
+    Provides normalized protocol registry, market metadata, user exposure summaries,
+    current positions, and historical time-series across supported Stellar DeFi protocols.
+
+    This API is designed to sit on top of serving.sv_defi_* tables populated by a
+    dedicated DeFi position processor.
+servers:
+  - url: https://gateway.withobsrvr.com/lake/v1/testnet
+    description: Testnet (via gateway)
+  - url: http://localhost:8080
+    description: Local development
+
+tags:
+  - name: DeFi
+  - name: DeFi Registry
+  - name: DeFi Markets
+  - name: DeFi Positions
+  - name: DeFi Status
+
+paths:
+  /api/v1/semantic/defi/protocols:
+    get:
+      tags: [DeFi Registry]
+      summary: List supported DeFi protocols
+      operationId: getDefiProtocols
+      parameters:
+        - in: query
+          name: status
+          schema: { type: string, enum: [active, degraded, paused, retired] }
+        - in: query
+          name: category
+          schema: { type: string }
+        - in: query
+          name: network
+          schema: { type: string, default: testnet }
+      responses:
+        '200':
+          description: Supported protocol registry entries.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  protocols:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DefiProtocol'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/semantic/defi/markets:
+    get:
+      tags: [DeFi Markets]
+      summary: List DeFi markets
+      operationId: getDefiMarkets
+      parameters:
+        - in: query
+          name: protocol
+          schema: { type: string }
+        - in: query
+          name: market_type
+          schema: { type: string }
+        - in: query
+          name: active_only
+          schema: { type: boolean, default: true }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+        - in: query
+          name: cursor
+          schema: { type: string }
+      responses:
+        '200':
+          description: Paginated list of markets.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  markets:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DefiMarket'
+                  count:
+                    type: integer
+                  has_more:
+                    type: boolean
+                  next_cursor:
+                    type: string
+                    nullable: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/semantic/defi/status:
+    get:
+      tags: [DeFi Status]
+      summary: Get DeFi protocol freshness and degradation status
+      operationId: getDefiStatus
+      responses:
+        '200':
+          description: Current operational status for the DeFi layer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DefiStatusResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/semantic/defi/exposure:
+    get:
+      tags: [DeFi Positions]
+      summary: Get aggregated DeFi exposure for a user
+      operationId: getDefiExposure
+      parameters:
+        - in: query
+          name: address
+          required: true
+          schema: { type: string }
+          description: User G-address or C-address.
+        - in: query
+          name: quote
+          schema: { type: string, default: USD }
+        - in: query
+          name: protocol
+          schema: { type: string }
+      responses:
+        '200':
+          description: Aggregated exposure summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DefiExposureResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/semantic/defi/positions:
+    get:
+      tags: [DeFi Positions]
+      summary: List DeFi positions for a user
+      operationId: getDefiPositions
+      parameters:
+        - in: query
+          name: address
+          required: true
+          schema: { type: string }
+        - in: query
+          name: quote
+          schema: { type: string, default: USD }
+        - in: query
+          name: protocol
+          schema: { type: string }
+        - in: query
+          name: include_closed
+          schema: { type: boolean, default: false }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+        - in: query
+          name: cursor
+          schema: { type: string }
+      responses:
+        '200':
+          description: Paginated list of normalized positions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DefiPositionsResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/semantic/defi/positions/{position_id}:
+    get:
+      tags: [DeFi Positions]
+      summary: Get a single DeFi position
+      operationId: getDefiPosition
+      parameters:
+        - in: path
+          name: position_id
+          required: true
+          schema: { type: string }
+        - in: query
+          name: quote
+          schema: { type: string, default: USD }
+      responses:
+        '200':
+          description: Detailed position including components.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  position:
+                    $ref: '#/components/schemas/DefiPosition'
+                  components:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DefiPositionComponent'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/semantic/defi/positions/history:
+    get:
+      tags: [DeFi Positions]
+      summary: Get DeFi exposure history for a user
+      operationId: getDefiPositionHistory
+      parameters:
+        - in: query
+          name: address
+          required: true
+          schema: { type: string }
+        - in: query
+          name: quote
+          schema: { type: string, default: USD }
+        - in: query
+          name: from
+          required: true
+          schema: { type: string, format: date-time }
+        - in: query
+          name: to
+          required: true
+          schema: { type: string, format: date-time }
+        - in: query
+          name: interval
+          required: true
+          schema: { type: string, enum: [1h, 1d] }
+      responses:
+        '200':
+          description: Historical exposure time series.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DefiHistoryResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  responses:
+    BadRequest:
+      description: Invalid request parameters.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Requested resource was not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InternalError:
+      description: Internal server error.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+
+    DefiAsset:
+      type: object
+      properties:
+        asset_type: { type: string, nullable: true }
+        asset_code: { type: string, nullable: true }
+        asset_issuer: { type: string, nullable: true }
+        asset_contract_id: { type: string, nullable: true }
+        symbol: { type: string, nullable: true }
+        decimals: { type: integer, nullable: true }
+
+    DefiProtocol:
+      type: object
+      properties:
+        protocol_id: { type: string }
+        network: { type: string }
+        display_name: { type: string }
+        slug: { type: string }
+        version: { type: string, nullable: true }
+        category: { type: string }
+        status: { type: string }
+        adapter_name: { type: string }
+        pricing_model: { type: string }
+        health_model: { type: string, nullable: true }
+        supports_history: { type: boolean }
+        supports_rewards: { type: boolean }
+        supports_health_factor: { type: boolean }
+        website_url: { type: string, nullable: true }
+        docs_url: { type: string, nullable: true }
+        icon_url: { type: string, nullable: true }
+        verified: { type: boolean }
+        config_json:
+          type: object
+          additionalProperties: true
+
+    DefiMarket:
+      type: object
+      properties:
+        market_id: { type: string }
+        protocol_id: { type: string }
+        market_type: { type: string }
+        market_address: { type: string, nullable: true }
+        pool_address: { type: string, nullable: true }
+        router_address: { type: string, nullable: true }
+        oracle_contract_id: { type: string, nullable: true }
+        input_asset_1:
+          $ref: '#/components/schemas/DefiAsset'
+        input_asset_2:
+          $ref: '#/components/schemas/DefiAsset'
+        tvl_value_usd: { type: string, nullable: true }
+        total_deposit_value_usd: { type: string, nullable: true }
+        total_borrowed_value_usd: { type: string, nullable: true }
+        apr_deposit: { type: string, nullable: true }
+        apr_borrow: { type: string, nullable: true }
+        apr_rewards: { type: string, nullable: true }
+        is_active: { type: boolean }
+        metadata_json:
+          type: object
+          additionalProperties: true
+        as_of_ledger: { type: integer, format: int64 }
+        as_of_time: { type: string, format: date-time }
+
+    DefiPositionComponent:
+      type: object
+      properties:
+        component_id: { type: string }
+        component_type: { type: string }
+        asset:
+          $ref: '#/components/schemas/DefiAsset'
+        amount: { type: string, nullable: true }
+        value: { type: string, nullable: true }
+        price: { type: string, nullable: true }
+        price_source: { type: string, nullable: true }
+        metadata_json:
+          type: object
+          additionalProperties: true
+
+    DefiPosition:
+      type: object
+      properties:
+        position_id: { type: string }
+        protocol_id: { type: string }
+        protocol_version: { type: string, nullable: true }
+        position_type: { type: string }
+        status: { type: string }
+        owner_address: { type: string }
+        account_address: { type: string, nullable: true }
+        related_address: { type: string, nullable: true }
+        market_id: { type: string, nullable: true }
+        market_address: { type: string, nullable: true }
+        position_key_hash: { type: string, nullable: true }
+        underlying_asset:
+          $ref: '#/components/schemas/DefiAsset'
+        quote_currency: { type: string }
+        deposit_amount: { type: string, nullable: true }
+        borrow_amount: { type: string, nullable: true }
+        share_amount: { type: string, nullable: true }
+        claimable_reward_amount: { type: string, nullable: true }
+        deposit_value: { type: string, nullable: true }
+        borrowed_value: { type: string, nullable: true }
+        current_value: { type: string, nullable: true }
+        net_value: { type: string, nullable: true }
+        current_return_value: { type: string, nullable: true }
+        current_return_percent: { type: string, nullable: true }
+        claimable_rewards_value: { type: string, nullable: true }
+        health_factor: { type: string, nullable: true }
+        ltv: { type: string, nullable: true }
+        collateral_ratio: { type: string, nullable: true }
+        liquidation_threshold: { type: string, nullable: true }
+        risk_status: { type: string, nullable: true }
+        protocol_state_json:
+          type: object
+          additionalProperties: true
+        valuation_json:
+          type: object
+          additionalProperties: true
+        source_json:
+          type: object
+          additionalProperties: true
+        as_of_ledger: { type: integer, format: int64 }
+        as_of_time: { type: string, format: date-time }
+        last_updated_ledger: { type: integer, format: int64 }
+        last_updated_at: { type: string, format: date-time }
+
+    DefiExposureSummary:
+      type: object
+      properties:
+        total_value: { type: string }
+        total_deposit_value: { type: string }
+        total_borrowed_value: { type: string }
+        net_value: { type: string }
+        total_claimable_rewards_value: { type: string }
+        open_position_count: { type: integer }
+        protocol_count: { type: integer }
+        lowest_health_factor: { type: string, nullable: true }
+        positions_at_risk: { type: integer }
+
+    DefiExposureResponse:
+      type: object
+      properties:
+        address: { type: string }
+        quote: { type: string }
+        as_of_ledger: { type: integer, format: int64 }
+        as_of_time: { type: string, format: date-time }
+        freshness_seconds: { type: integer }
+        data_status: { type: string }
+        totals:
+          $ref: '#/components/schemas/DefiExposureSummary'
+        by_protocol:
+          type: array
+          items:
+            type: object
+            properties:
+              protocol_id: { type: string }
+              total_value: { type: string }
+              total_deposit_value: { type: string }
+              total_borrowed_value: { type: string }
+              net_value: { type: string }
+              position_count: { type: integer }
+
+    DefiPositionsResponse:
+      type: object
+      properties:
+        address: { type: string }
+        quote: { type: string }
+        as_of_ledger: { type: integer, format: int64 }
+        as_of_time: { type: string, format: date-time }
+        freshness_seconds: { type: integer }
+        data_status: { type: string }
+        summary:
+          $ref: '#/components/schemas/DefiExposureSummary'
+        positions:
+          type: array
+          items:
+            $ref: '#/components/schemas/DefiPosition'
+        has_more: { type: boolean }
+        next_cursor: { type: string, nullable: true }
+
+    DefiHistoryPoint:
+      type: object
+      properties:
+        timestamp: { type: string, format: date-time }
+        total_value: { type: string }
+        total_deposit_value: { type: string }
+        total_borrowed_value: { type: string }
+        net_value: { type: string }
+        total_claimable_rewards_value: { type: string }
+        open_position_count: { type: integer }
+
+    DefiHistoryResponse:
+      type: object
+      properties:
+        address: { type: string }
+        quote: { type: string }
+        interval: { type: string }
+        series:
+          type: array
+          items:
+            $ref: '#/components/schemas/DefiHistoryPoint'
+
+    DefiStatusResponse:
+      type: object
+      properties:
+        status: { type: string }
+        as_of_ledger: { type: integer, format: int64, nullable: true }
+        freshness_seconds: { type: integer, nullable: true }
+        protocols:
+          type: array
+          items:
+            type: object
+            properties:
+              protocol_id: { type: string }
+              status: { type: string }
+              reason: { type: string, nullable: true }
+              last_successful_ledger: { type: integer, format: int64, nullable: true }
+              last_successful_time: { type: string, format: date-time, nullable: true }
+              freshness_seconds: { type: integer, nullable: true }
+              source_divergence: { type: boolean }

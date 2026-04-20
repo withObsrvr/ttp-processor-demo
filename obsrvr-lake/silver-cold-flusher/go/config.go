@@ -141,5 +141,18 @@ func GetTablesToFlush() []string {
 		// testnet despite the rest of silver being pruned to a ~50-min window.
 		"effects",
 		"evicted_keys",
+
+		// Append-only DEX/ledger events (added April 2026 — same leak class
+		// as effects/evicted_keys, just quieter on testnet so it went unnoticed
+		// longer).
+		"trades",
+		"restored_keys",
+
+		// Additional current-state tables (were only in hot PG; now flushed
+		// to cold like accounts_current / trustlines_current / etc. so cold
+		// queries can reconstruct historical state).
+		"native_balances_current",
+		"ttl_current",
+		"address_balances_current",
 	}
 }

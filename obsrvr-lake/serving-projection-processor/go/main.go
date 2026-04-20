@@ -51,6 +51,9 @@ func buildProjectors(cfg *Config, bronze, silver, serving *pgxpool.Pool, checkpo
 	if cfg.Projectors.ContractCallsRecent.Enabled {
 		projectors = append(projectors, NewContractCallsRecentProjector("testnet", cfg.Projectors.ContractCallsRecent.BatchSize, silver, serving, checkpoints))
 	}
+	if cfg.Projectors.TxReceipts.Enabled {
+		projectors = append(projectors, NewTxReceiptsProjector("testnet", cfg.Projectors.TxReceipts.BatchSize, bronze, silver, serving, checkpoints))
+	}
 	return projectors
 }
 

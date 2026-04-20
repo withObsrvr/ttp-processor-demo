@@ -53,6 +53,16 @@ var SilverTables = []string{
 	// absent from the flush list, causing silver_hot to grow unbounded)
 	"effects",
 	"evicted_keys",
+
+	// Additional event tables (added April 2026 — same leak class as effects;
+	// testnet DEX activity is quiet so these were small when caught)
+	"trades",
+	"restored_keys",
+
+	// Additional current-state tables
+	"native_balances_current",
+	"ttl_current",
+	"address_balances_current",
 }
 
 // HighVolumeSilverTables are tables that accumulate files fastest and need

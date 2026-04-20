@@ -65,6 +65,7 @@ type ProjectorsConfig struct {
 	EventsRecent         ProjectorConfig `yaml:"events_recent"`
 	ExplorerEventsRecent ProjectorConfig `yaml:"explorer_events_recent"`
 	ContractCallsRecent  ProjectorConfig `yaml:"contract_calls_recent"`
+	TxReceipts           ProjectorConfig `yaml:"tx_receipts"`
 }
 
 type ProjectorConfig struct {
@@ -128,6 +129,12 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.Projectors.ContractCallsRecent.BatchSize <= 0 {
 		cfg.Projectors.ContractCallsRecent.BatchSize = 1
+	}
+	if cfg.Projectors.TxReceipts.BatchSize <= 0 {
+		// tx_receipts does 4 sub-queries per batch and builds JSON blobs in
+		// memory; 256 is a safe starting point. Raise if throughput is fine
+		// and memory headroom allows.
+		cfg.Projectors.TxReceipts.BatchSize = 256
 	}
 	if cfg.Health.Port == 0 {
 		cfg.Health.Port = 8097
