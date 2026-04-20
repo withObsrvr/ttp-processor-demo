@@ -428,6 +428,77 @@ func (r *BronzeColdReader) QueryTokenTransfers(ctx context.Context, startLedger,
 	return rows, nil
 }
 
+// QueryUnmatchedTokenLikeContractEvents returns token-like Soroban contract
+// events whose payload shape is not currently supported by token_transfers_raw.
+func (r *BronzeColdReader) QueryUnmatchedTokenLikeContractEvents(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
+	query := fmt.Sprintf(`
+		WITH token_like AS (
+			SELECT
+				e.closed_at AS timestamp,
+				e.transaction_hash,
+				e.ledger_sequence,
+				e.contract_id,
+				e.event_index,
+				json_extract_string(e.topics_decoded, '$[0]') AS event_name,
+				e.topics_decoded AS topics_decoded,
+				e.data_decoded AS data_decoded,
+				e.successful,
+				CASE
+					WHEN json_extract_string(e.topics_decoded, '$[0]') = 'transfer' THEN json_extract_string(e.topics_decoded, '$[1].address')
+					WHEN json_extract_string(e.topics_decoded, '$[0]') IN ('burn', 'clawback') THEN json_extract_string(e.topics_decoded, '$[1].address')
+				END AS parsed_from_account,
+				CASE
+					WHEN json_extract_string(e.topics_decoded, '$[0]') = 'transfer' THEN json_extract_string(e.topics_decoded, '$[2].address')
+					WHEN json_extract_string(e.topics_decoded, '$[0]') = 'mint' AND json_type(e.topics_decoded, '$[2]') = 'OBJECT'
+						THEN json_extract_string(e.topics_decoded, '$[2].address')
+					WHEN json_extract_string(e.topics_decoded, '$[0]') = 'mint' AND json_type(e.topics_decoded, '$[1]') = 'OBJECT'
+						AND json_extract_string(e.topics_decoded, '$[1].type') = 'account'
+						THEN json_extract_string(e.topics_decoded, '$[1].address')
+				END AS parsed_to_account,
+				COALESCE(
+					json_extract_string(e.data_decoded, '$.value'),
+					json_extract_string(e.data_decoded, '$.entries.amount.value')
+				) AS parsed_amount
+			FROM %s e
+			WHERE e.ledger_sequence BETWEEN $1 AND $2
+			  AND e.event_type = 'contract'
+			  AND e.topic_count >= 2
+			  AND json_extract_string(e.topics_decoded, '$[0]') IN ('transfer', 'mint', 'burn', 'clawback')
+		)
+		SELECT
+			timestamp,
+			transaction_hash,
+			ledger_sequence,
+			contract_id,
+			event_index,
+			event_name,
+			topics_decoded,
+			data_decoded,
+			successful,
+			CASE
+				WHEN event_name = 'transfer' THEN 'unsupported_transfer_shape'
+				WHEN event_name = 'mint' THEN 'unsupported_mint_shape'
+				WHEN event_name = 'burn' THEN 'unsupported_burn_shape'
+				WHEN event_name = 'clawback' THEN 'unsupported_clawback_shape'
+				ELSE 'unparseable_token_like_event'
+			END AS parse_reason
+		FROM token_like
+		WHERE NOT (
+			(event_name = 'transfer' AND parsed_from_account IS NOT NULL AND parsed_to_account IS NOT NULL AND parsed_amount IS NOT NULL)
+			OR (event_name = 'mint' AND parsed_to_account IS NOT NULL AND parsed_amount IS NOT NULL)
+			OR (event_name IN ('burn', 'clawback') AND parsed_from_account IS NOT NULL AND parsed_amount IS NOT NULL)
+		)
+		ORDER BY ledger_sequence, transaction_hash, event_index
+	`, r.tableName("contract_events_stream_v1"))
+
+	rows, err := r.db.QueryContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query unmatched token-like contract events from cold: %w", err)
+	}
+
+	return rows, nil
+}
+
 // =============================================================================
 // Phase 2: State Tables (Accounts, Trustlines, Offers)
 // =============================================================================

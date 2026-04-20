@@ -14,7 +14,18 @@ func (h *DecodeHandlers) getTransactionForSemantic(ctx context.Context, txHash s
 	requestStart := time.Now()
 	if h.hotPathReader != nil {
 		hotStart := time.Now()
-		hotCtx, cancel := context.WithTimeout(ctx, 1200*time.Millisecond)
+		// Aggressive timeout (was 1200ms). The hot lookup is a tx_hash
+		// primary-key-ish read — if it's actually in hot it returns in
+		// <50ms. If it isn't, the old 1200ms wait was pure overhead per
+		// observed logs (/semantic reliably burned ~1.4s on the miss before
+		// fallback). Dropping to 200ms caps the worst-case miss cost at
+		// ~200ms with no impact on hot hits.
+		//
+		// Better long-term fix: maintain a cached "hot retention floor"
+		// ledger and skip the hot attempt entirely when the requested tx
+		// must be below it. That requires knowing the tx's ledger up-front
+		// (extra lookup) so saved for a follow-up.
+		hotCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 		defer cancel()
 		decoded, err := h.hotPathReader.GetTransactionForDecode(hotCtx, txHash)
 		if err == nil {

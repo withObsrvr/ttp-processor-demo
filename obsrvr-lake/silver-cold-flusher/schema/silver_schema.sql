@@ -627,3 +627,89 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.evicted_keys (
     inserted_at TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS testnet_catalog.silver.trades (
+    ledger_sequence BIGINT,
+    transaction_hash VARCHAR,
+    operation_index INTEGER,
+    trade_index INTEGER,
+    trade_type VARCHAR,
+    trade_timestamp TIMESTAMP,
+    seller_account VARCHAR,
+    selling_asset_code VARCHAR,
+    selling_asset_issuer VARCHAR,
+    selling_amount BIGINT,
+    buyer_account VARCHAR,
+    buying_asset_code VARCHAR,
+    buying_asset_issuer VARCHAR,
+    buying_amount BIGINT,
+    price DECIMAL(38, 10),
+    created_at TIMESTAMP,
+    ledger_range BIGINT,
+    inserted_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS testnet_catalog.silver.restored_keys (
+    contract_id VARCHAR,
+    key_hash VARCHAR,
+    ledger_sequence BIGINT,
+    closed_at TIMESTAMP,
+    created_at TIMESTAMP,
+    ledger_range BIGINT,
+    inserted_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS testnet_catalog.silver.native_balances_current (
+    account_id VARCHAR,
+    balance BIGINT,
+    buying_liabilities BIGINT,
+    selling_liabilities BIGINT,
+    num_subentries INTEGER,
+    num_sponsoring INTEGER,
+    num_sponsored INTEGER,
+    sequence_number BIGINT,
+    last_modified_ledger BIGINT,
+    ledger_sequence BIGINT,
+    ledger_range BIGINT,
+    inserted_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS testnet_catalog.silver.ttl_current (
+    key_hash VARCHAR,
+    live_until_ledger_seq BIGINT,
+    ttl_remaining INTEGER,
+    expired BOOLEAN,
+    last_modified_ledger BIGINT,
+    ledger_sequence BIGINT,
+    closed_at TIMESTAMP,
+    created_at TIMESTAMP,
+    ledger_range BIGINT,
+    updated_at TIMESTAMP
+);
+
+-- address_balances_current has NO ledger_range column — intentional omission
+-- in the partitioning whitelist in silver_schema.go. Uses last_updated_ledger
+-- as its flush watermark (custom, see flusher.go customWatermarkCol).
+--
+-- balance_raw is VARCHAR (not DECIMAL) because Soroban i128/u128 token
+-- balances can exceed DECIMAL(38, 0) max. Observed failing value during
+-- initial rollout: 99999999999999997748809823456034029568 (right at the
+-- 38-digit boundary where DuckDB's cast conservatively rejects). VARCHAR
+-- preserves full precision; downstream Go can parse to big.Int if needed.
+CREATE TABLE IF NOT EXISTS testnet_catalog.silver.address_balances_current (
+    owner_address VARCHAR,
+    asset_key VARCHAR,
+    asset_type VARCHAR,
+    token_contract_id VARCHAR,
+    asset_code VARCHAR,
+    asset_issuer VARCHAR,
+    symbol VARCHAR,
+    decimals INTEGER,
+    balance_raw VARCHAR,
+    balance_display VARCHAR,
+    balance_source VARCHAR,
+    last_updated_ledger BIGINT,
+    last_updated_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+

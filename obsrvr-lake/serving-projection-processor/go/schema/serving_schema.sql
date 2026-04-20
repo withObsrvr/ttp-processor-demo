@@ -581,6 +581,309 @@ create table if not exists serving.sv_rebuild_jobs (
 );
 
 -- ============================================================
+-- 6. DEFI SERVING TABLES
+-- ============================================================
+
+create table if not exists serving.sv_defi_protocols (
+    protocol_id                    text primary key,
+    network                        text not null,
+    display_name                   text not null,
+    slug                           text not null,
+    version                        text,
+    category                       text not null,
+    status                         text not null default 'active',
+    adapter_name                   text not null,
+    pricing_model                  text not null,
+    health_model                   text,
+    supports_history               boolean not null default true,
+    supports_rewards               boolean not null default false,
+    supports_health_factor         boolean not null default false,
+    website_url                    text,
+    docs_url                       text,
+    icon_url                       text,
+    config_json                    jsonb not null default '{}'::jsonb,
+    source                         text not null default 'manual',
+    verified                       boolean not null default false,
+    last_updated_ledger            bigint,
+    last_updated_at                timestamptz,
+    created_at                     timestamptz not null default now(),
+    updated_at                     timestamptz not null default now(),
+    constraint sv_defi_protocols_status_chk check (status in ('active', 'degraded', 'paused', 'retired'))
+);
+
+create unique index if not exists idx_sv_defi_protocols_network_slug
+    on serving.sv_defi_protocols (network, slug);
+create index if not exists idx_sv_defi_protocols_category
+    on serving.sv_defi_protocols (category);
+create index if not exists idx_sv_defi_protocols_status
+    on serving.sv_defi_protocols (status);
+
+create table if not exists serving.sv_defi_protocol_contracts (
+    protocol_id                    text not null references serving.sv_defi_protocols(protocol_id) on delete cascade,
+    contract_id                    text not null,
+    role                           text not null,
+    market_id                      text,
+    is_active                      boolean not null default true,
+    verified                       boolean not null default false,
+    source                         text not null default 'manual',
+    metadata_json                  jsonb not null default '{}'::jsonb,
+    first_seen_ledger              bigint,
+    last_seen_ledger               bigint,
+    created_at                     timestamptz not null default now(),
+    updated_at                     timestamptz not null default now(),
+    primary key (protocol_id, contract_id, role)
+);
+
+create index if not exists idx_sv_defi_protocol_contracts_contract
+    on serving.sv_defi_protocol_contracts (contract_id);
+create index if not exists idx_sv_defi_protocol_contracts_role
+    on serving.sv_defi_protocol_contracts (protocol_id, role, is_active);
+create index if not exists idx_sv_defi_protocol_contracts_market
+    on serving.sv_defi_protocol_contracts (market_id) where market_id is not null;
+
+create table if not exists serving.sv_defi_markets_current (
+    market_id                      text primary key,
+    protocol_id                    text not null references serving.sv_defi_protocols(protocol_id) on delete cascade,
+    market_type                    text not null,
+    market_address                 text,
+    pool_address                   text,
+    router_address                 text,
+    oracle_contract_id             text,
+    input_asset_1_type             text,
+    input_asset_1_code             text,
+    input_asset_1_issuer           text,
+    input_asset_1_contract_id      text,
+    input_asset_1_symbol           text,
+    input_asset_1_decimals         integer,
+    input_asset_2_type             text,
+    input_asset_2_code             text,
+    input_asset_2_issuer           text,
+    input_asset_2_contract_id      text,
+    input_asset_2_symbol           text,
+    input_asset_2_decimals         integer,
+    share_asset_contract_id        text,
+    debt_asset_contract_id         text,
+    collateral_asset_contract_id   text,
+    oracle_source                  text,
+    is_active                      boolean not null default true,
+    metadata_json                  jsonb not null default '{}'::jsonb,
+    tvl_value_usd                  numeric(38,10),
+    total_deposit_value_usd        numeric(38,10),
+    total_borrowed_value_usd       numeric(38,10),
+    total_rewards_value_usd        numeric(38,10),
+    apr_deposit                    numeric(20,10),
+    apr_borrow                     numeric(20,10),
+    apr_rewards                    numeric(20,10),
+    as_of_ledger                   bigint not null,
+    as_of_time                     timestamptz not null,
+    updated_at                     timestamptz not null default now()
+);
+
+create index if not exists idx_sv_defi_markets_protocol
+    on serving.sv_defi_markets_current (protocol_id, market_type, is_active);
+create index if not exists idx_sv_defi_markets_market_address
+    on serving.sv_defi_markets_current (market_address) where market_address is not null;
+create index if not exists idx_sv_defi_markets_pool_address
+    on serving.sv_defi_markets_current (pool_address) where pool_address is not null;
+create index if not exists idx_sv_defi_markets_tvl
+    on serving.sv_defi_markets_current (tvl_value_usd desc);
+
+create table if not exists serving.sv_defi_positions_current (
+    position_id                    text primary key,
+    protocol_id                    text not null references serving.sv_defi_protocols(protocol_id) on delete cascade,
+    protocol_version               text,
+    position_type                  text not null,
+    status                         text not null,
+    owner_address                  text not null,
+    account_address                text,
+    related_address                text,
+    market_id                      text references serving.sv_defi_markets_current(market_id) on delete set null,
+    market_address                 text,
+    position_key_hash              text,
+    underlying_asset_type          text,
+    underlying_asset_code          text,
+    underlying_asset_issuer        text,
+    underlying_asset_contract_id   text,
+    underlying_symbol              text,
+    underlying_decimals            integer,
+    quote_currency                 text not null default 'USD',
+    deposit_amount                 numeric(38,18),
+    borrow_amount                  numeric(38,18),
+    share_amount                   numeric(38,18),
+    claimable_reward_amount        numeric(38,18),
+    deposit_value                  numeric(38,10),
+    borrowed_value                 numeric(38,10),
+    current_value                  numeric(38,10),
+    net_value                      numeric(38,10),
+    current_return_value           numeric(38,10),
+    current_return_percent         numeric(20,10),
+    claimable_rewards_value        numeric(38,10),
+    health_factor                  numeric(20,10),
+    ltv                            numeric(20,10),
+    collateral_ratio               numeric(20,10),
+    liquidation_threshold          numeric(20,10),
+    risk_status                    text,
+    opened_at                      timestamptz,
+    opened_ledger                  bigint,
+    closed_at                      timestamptz,
+    closed_ledger                  bigint,
+    protocol_state_json            jsonb not null default '{}'::jsonb,
+    valuation_json                 jsonb not null default '{}'::jsonb,
+    source_json                    jsonb not null default '{}'::jsonb,
+    as_of_ledger                   bigint not null,
+    as_of_time                     timestamptz not null,
+    last_updated_ledger            bigint not null,
+    last_updated_at                timestamptz not null,
+    updated_at                     timestamptz not null default now()
+);
+
+create index if not exists idx_sv_defi_positions_owner
+    on serving.sv_defi_positions_current (owner_address, status, as_of_time desc);
+create index if not exists idx_sv_defi_positions_owner_protocol
+    on serving.sv_defi_positions_current (owner_address, protocol_id, status);
+create index if not exists idx_sv_defi_positions_market
+    on serving.sv_defi_positions_current (market_id) where market_id is not null;
+create index if not exists idx_sv_defi_positions_risk
+    on serving.sv_defi_positions_current (risk_status, health_factor);
+create index if not exists idx_sv_defi_positions_current_value
+    on serving.sv_defi_positions_current (current_value desc);
+
+create table if not exists serving.sv_defi_position_components_current (
+    component_id                   text primary key,
+    position_id                    text not null references serving.sv_defi_positions_current(position_id) on delete cascade,
+    protocol_id                    text not null references serving.sv_defi_protocols(protocol_id) on delete cascade,
+    component_type                 text not null,
+    asset_type                     text,
+    asset_code                     text,
+    asset_issuer                   text,
+    asset_contract_id              text,
+    symbol                         text,
+    decimals                       integer,
+    amount                         numeric(38,18),
+    value                          numeric(38,10),
+    price                          numeric(38,18),
+    price_source                   text,
+    metadata_json                  jsonb not null default '{}'::jsonb,
+    as_of_ledger                   bigint not null,
+    as_of_time                     timestamptz not null,
+    updated_at                     timestamptz not null default now()
+);
+
+create index if not exists idx_sv_defi_position_components_position
+    on serving.sv_defi_position_components_current (position_id, component_type);
+create index if not exists idx_sv_defi_position_components_protocol
+    on serving.sv_defi_position_components_current (protocol_id, component_type);
+
+create table if not exists serving.sv_defi_user_totals_current (
+    owner_address                  text not null,
+    quote_currency                 text not null default 'USD',
+    total_value                    numeric(38,10) not null default 0,
+    total_deposit_value            numeric(38,10) not null default 0,
+    total_borrowed_value           numeric(38,10) not null default 0,
+    net_value                      numeric(38,10) not null default 0,
+    total_claimable_rewards_value  numeric(38,10) not null default 0,
+    open_position_count            integer not null default 0,
+    protocol_count                 integer not null default 0,
+    lowest_health_factor           numeric(20,10),
+    positions_at_risk              integer not null default 0,
+    by_protocol_json               jsonb not null default '[]'::jsonb,
+    source_json                    jsonb not null default '{}'::jsonb,
+    as_of_ledger                   bigint not null,
+    as_of_time                     timestamptz not null,
+    updated_at                     timestamptz not null default now(),
+    primary key (owner_address, quote_currency)
+);
+
+create index if not exists idx_sv_defi_user_totals_current_value
+    on serving.sv_defi_user_totals_current (total_value desc);
+create index if not exists idx_sv_defi_user_totals_health
+    on serving.sv_defi_user_totals_current (lowest_health_factor);
+
+create table if not exists serving.sv_defi_user_totals_history (
+    owner_address                  text not null,
+    bucket_start                   timestamptz not null,
+    interval                       text not null,
+    quote_currency                 text not null default 'USD',
+    total_value                    numeric(38,10) not null default 0,
+    total_deposit_value            numeric(38,10) not null default 0,
+    total_borrowed_value           numeric(38,10) not null default 0,
+    net_value                      numeric(38,10) not null default 0,
+    total_claimable_rewards_value  numeric(38,10) not null default 0,
+    open_position_count            integer not null default 0,
+    as_of_ledger                   bigint,
+    as_of_time                     timestamptz,
+    primary key (owner_address, interval, quote_currency, bucket_start)
+);
+
+create index if not exists idx_sv_defi_user_totals_history_lookup
+    on serving.sv_defi_user_totals_history (owner_address, interval, bucket_start desc);
+
+create table if not exists serving.sv_defi_position_history (
+    position_id                    text not null,
+    bucket_start                   timestamptz not null,
+    interval                       text not null,
+    quote_currency                 text not null default 'USD',
+    protocol_id                    text not null,
+    owner_address                  text not null,
+    status                         text,
+    deposit_value                  numeric(38,10),
+    borrowed_value                 numeric(38,10),
+    current_value                  numeric(38,10),
+    net_value                      numeric(38,10),
+    current_return_value           numeric(38,10),
+    health_factor                  numeric(20,10),
+    risk_status                    text,
+    as_of_ledger                   bigint,
+    as_of_time                     timestamptz,
+    primary key (position_id, interval, quote_currency, bucket_start)
+);
+
+create index if not exists idx_sv_defi_position_history_owner
+    on serving.sv_defi_position_history (owner_address, interval, bucket_start desc);
+create index if not exists idx_sv_defi_position_history_protocol
+    on serving.sv_defi_position_history (protocol_id, interval, bucket_start desc);
+
+create table if not exists serving.sv_defi_prices_current (
+    asset_key                      text not null,
+    quote_currency                 text not null default 'USD',
+    asset_type                     text,
+    asset_code                     text,
+    asset_issuer                   text,
+    asset_contract_id              text,
+    symbol                         text,
+    price                          numeric(38,18) not null,
+    price_source                   text not null,
+    confidence                     numeric(20,10),
+    source_timestamp               timestamptz,
+    source_ledger                  bigint,
+    stale_after_seconds            integer,
+    status                         text not null default 'ok',
+    metadata_json                  jsonb not null default '{}'::jsonb,
+    updated_at                     timestamptz not null default now(),
+    primary key (asset_key, quote_currency)
+);
+
+create index if not exists idx_sv_defi_prices_status
+    on serving.sv_defi_prices_current (status, updated_at desc);
+create index if not exists idx_sv_defi_prices_contract
+    on serving.sv_defi_prices_current (asset_contract_id) where asset_contract_id is not null;
+
+create table if not exists serving.sv_defi_protocol_status (
+    protocol_id                    text primary key references serving.sv_defi_protocols(protocol_id) on delete cascade,
+    status                         text not null,
+    reason                         text,
+    last_successful_ledger         bigint,
+    last_successful_time           timestamptz,
+    freshness_seconds              integer,
+    source_divergence              boolean not null default false,
+    source_json                    jsonb not null default '{}'::jsonb,
+    updated_at                     timestamptz not null default now()
+);
+
+create index if not exists idx_sv_defi_protocol_status_status
+    on serving.sv_defi_protocol_status (status, updated_at desc);
+
+-- ============================================================
 -- OPTIONAL VIEW EXAMPLES
 -- ============================================================
 
@@ -609,3 +912,55 @@ select
 from serving.sv_assets_current a
 join serving.sv_asset_stats_current s using (asset_key)
 order by s.volume_24h desc nulls last;
+
+-- ---------------------------------------------------------------------------
+-- sv_tx_receipts
+-- ---------------------------------------------------------------------------
+-- Pre-materialized "transaction receipt" rows for Prism's tx detail page.
+-- One row per transaction containing everything the page needs, so the
+-- frontend does a single PK lookup instead of 5–7 parallel queries that each
+-- hit cold DuckLake. Previous per-page cost: ~5s (bounded by /diffs). New
+-- target: <50ms.
+--
+-- All derived fields are stored as JSONB so the projection can evolve without
+-- requiring migrations, and Prism can select just the slice it renders.
+create table if not exists serving.sv_tx_receipts (
+    tx_hash                text primary key,
+    ledger_sequence        bigint not null,
+    created_at             timestamptz not null,
+    source_account         text,
+    successful             boolean not null,
+    operation_count        integer,
+
+    -- Core payload — the union of /full + /semantic + /effects + /diffs,
+    -- each as a JSON blob. Prism can pick what it needs per section.
+    full_json              jsonb,   -- operations, metadata, fee info
+    semantic_json          jsonb,   -- tx_type + summary + actor classification
+    effects_json           jsonb,   -- compact effect list (op_idx, type, account, amount, asset)
+    diffs_json             jsonb,   -- per-account balance changes
+    events_json            jsonb,   -- token-transfer events scoped to this tx
+
+    -- Denormalized for cheap filtering/linking
+    involved_contracts     text[],  -- for Prism to build links to /smart-wallet/{c}
+    involved_accounts      text[],  -- same, for account pages
+    primary_contract_id    text,
+    tx_type                text,
+
+    -- Materialization bookkeeping
+    materialized_at        timestamptz not null default now(),
+    source_version         text not null default 'v1'
+);
+
+create index if not exists sv_tx_receipts_ledger_idx
+    on serving.sv_tx_receipts (ledger_sequence desc);
+create index if not exists sv_tx_receipts_created_idx
+    on serving.sv_tx_receipts (created_at desc);
+create index if not exists sv_tx_receipts_source_idx
+    on serving.sv_tx_receipts (source_account, created_at desc) where source_account is not null;
+create index if not exists sv_tx_receipts_primary_contract_idx
+    on serving.sv_tx_receipts (primary_contract_id, created_at desc) where primary_contract_id is not null;
+-- GIN on array columns so "txs involving contract X" becomes a single index scan
+create index if not exists sv_tx_receipts_contracts_gin_idx
+    on serving.sv_tx_receipts using gin (involved_contracts);
+create index if not exists sv_tx_receipts_accounts_gin_idx
+    on serving.sv_tx_receipts using gin (involved_accounts);

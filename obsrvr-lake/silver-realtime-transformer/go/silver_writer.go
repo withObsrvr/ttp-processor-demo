@@ -222,6 +222,39 @@ func (sw *SilverWriter) WriteTokenTransfer(ctx context.Context, tx *sql.Tx, row 
 	return nil
 }
 
+// WriteUnmatchedContractEvent preserves a token-like contract event that could
+// not be safely normalized into token_transfers_raw.
+func (sw *SilverWriter) WriteUnmatchedContractEvent(ctx context.Context, tx *sql.Tx, row *UnmatchedContractEventRow) error {
+	if row.ContractID.Valid && row.ContractID.String != "" {
+		encoded, err := hexToStrKey(row.ContractID.String)
+		if err != nil {
+			return fmt.Errorf("failed to convert unmatched contract ID to strkey: %w", err)
+		}
+		row.ContractID.String = encoded
+	}
+
+	query := `
+		INSERT INTO contract_events_unmatched (
+			timestamp, transaction_hash, ledger_sequence, contract_id,
+			event_index, event_name, topics_decoded, data_decoded,
+			successful, parse_reason
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+		)
+		ON CONFLICT DO NOTHING
+	`
+
+	_, err := tx.ExecContext(ctx, query,
+		row.Timestamp, row.TransactionHash, row.LedgerSequence, row.ContractID,
+		row.EventIndex, row.EventName, row.TopicsDecoded, row.DataDecoded,
+		row.Successful, row.ParseReason,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to write unmatched contract event: %w", err)
+	}
+	return nil
+}
+
 // WriteAccountCurrent upserts an account current state row
 func (sw *SilverWriter) WriteAccountCurrent(ctx context.Context, tx *sql.Tx, row *AccountCurrentRow) error {
 	query := `

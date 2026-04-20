@@ -253,12 +253,15 @@ func (f *Flusher) flushAllTables(watermark, lastFlushed int64) (int64, []string,
 		"semantic_flows_value":                true,
 		"effects":                             true,
 		"evicted_keys":                        true,
+		"trades":                              true,
+		"restored_keys":                       true,
 	}
 
 	// Tables with non-standard watermark column
 	customWatermarkCol := map[string]string{
-		"contract_metadata": "created_ledger",
-		"token_registry":    "last_updated_ledger",
+		"contract_metadata":        "created_ledger",
+		"token_registry":           "last_updated_ledger",
+		"address_balances_current": "last_updated_ledger",
 	}
 
 	for _, tableName := range tables {
@@ -314,12 +317,15 @@ func (f *Flusher) deleteFlushedData(watermark int64, tables []string) (int64, er
 		"semantic_flows_value":                true,
 		"effects":                             true,
 		"evicted_keys":                        true,
+		"trades":                              true,
+		"restored_keys":                       true,
 	}
 
 	// Tables with non-standard watermark column
 	customWatermarkCol := map[string]string{
-		"contract_metadata": "created_ledger",
-		"token_registry":    "last_updated_ledger",
+		"contract_metadata":        "created_ledger",
+		"token_registry":           "last_updated_ledger",
+		"address_balances_current": "last_updated_ledger",
 	}
 
 	for _, tableName := range tables {

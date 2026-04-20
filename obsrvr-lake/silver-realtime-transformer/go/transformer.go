@@ -376,7 +376,11 @@ func (rt *RealtimeTransformer) migrateSorobanTransfers() {
 	//       SAC balances (including newly-decoded native XLM entries from the
 	//       ingester fix) land in address_balances_current without waiting
 	//       for new on-chain activity per wallet.
-	const currentMigrationVersion = 5
+	//   v6: 2026-04-19 — stop treating null/null/null Soroban rows as a reason
+	//       to rebuild all history on restart. Preserve unsupported token-like
+	//       contract events in contract_events_unmatched and only write
+	//       validated token semantics to token_transfers_raw.
+	const currentMigrationVersion = 6
 
 	// Ensure migration-tracking table exists.
 	if _, err := rt.silverDB.ExecContext(ctx, `
@@ -390,7 +394,7 @@ func (rt *RealtimeTransformer) migrateSorobanTransfers() {
 		return
 	}
 
-	// Check if migration is needed: event_index column must exist AND no soroban rows with NULL from_account
+	// Check if migration is needed: event_index column must exist.
 	var colExists bool
 	err := rt.silverDB.QueryRowContext(ctx, `
 		SELECT EXISTS (
@@ -413,7 +417,6 @@ func (rt *RealtimeTransformer) migrateSorobanTransfers() {
 	}
 
 	if colExists && appliedVersion >= currentMigrationVersion {
-		// Check if there are stale soroban rows (NULL from_account indicates unparsed)
 		var staleCount int64
 		err := rt.silverDB.QueryRowContext(ctx, `
 			SELECT COUNT(*) FROM token_transfers_raw
@@ -423,11 +426,11 @@ func (rt *RealtimeTransformer) migrateSorobanTransfers() {
 			log.Printf("⚠️  Soroban migration: failed to check stale rows: %v", err)
 			return
 		}
-		if staleCount == 0 {
-			log.Printf("ℹ️  Soroban migration: already complete at v%d, skipping", appliedVersion)
-			return
+		if staleCount > 0 {
+			log.Printf("⚠️  Soroban migration: found %d legacy null Soroban rows, but will not trigger a full rebuild at v%d", staleCount, appliedVersion)
 		}
-		log.Printf("🔄 Soroban migration: found %d stale soroban rows, re-running backfill", staleCount)
+		log.Printf("ℹ️  Soroban migration: already complete at v%d, skipping", appliedVersion)
+		return
 	} else if colExists && appliedVersion < currentMigrationVersion {
 		log.Printf("🔄 Soroban migration: applied=v%d, current=v%d — re-running backfill with fixed query", appliedVersion, currentMigrationVersion)
 	} else {
@@ -489,7 +492,20 @@ func (rt *RealtimeTransformer) migrateSorobanTransfers() {
 	}
 	deletedFlows, _ := result.RowsAffected()
 
-	log.Printf("🗑️  Soroban migration: deleted %d stale transfers, %d stale semantic flows", deletedTransfers, deletedFlows)
+	// Step 5b: Delete preserved unmatched token-like events so the backfill can
+	// repopulate them deterministically with the current parser rules.
+	result, err = rt.silverDB.ExecContext(ctx, `
+		DELETE FROM contract_events_unmatched
+		WHERE event_name IN ('transfer', 'mint', 'burn', 'clawback')
+	`)
+	var deletedUnmatched int64
+	if err != nil {
+		log.Printf("⚠️  Soroban migration: failed to delete unmatched token-like contract events: %v", err)
+	} else {
+		deletedUnmatched, _ = result.RowsAffected()
+	}
+
+	log.Printf("🗑️  Soroban migration: deleted %d stale transfers, %d stale semantic flows, %d preserved unmatched token-like events", deletedTransfers, deletedFlows, deletedUnmatched)
 
 	// Step 6: Backfill from bronze hot using JSON extraction
 	// Get the current ledger range in bronze hot
@@ -583,6 +599,7 @@ func (rt *RealtimeTransformer) migrateSorobanTransfers() {
 	// Use direct query approach: read from bronze hot, write to silver hot
 	const batchSize int64 = 5000
 	var totalInserted int64
+	var totalUnmatched int64
 
 	for batchStart := minLedger; batchStart <= maxLedger; batchStart += batchSize {
 		batchEnd := batchStart + batchSize - 1
@@ -618,8 +635,8 @@ func (rt *RealtimeTransformer) migrateSorobanTransfers() {
 				break
 			}
 
-			// Only backfill soroban rows
-			if row.SourceType != "soroban" {
+			// Only backfill validated soroban semantic rows.
+			if row.SourceType != "soroban" || !isValidTokenTransferSemantic(row) {
 				continue
 			}
 
@@ -649,9 +666,59 @@ func (rt *RealtimeTransformer) migrateSorobanTransfers() {
 			continue
 		}
 		totalInserted += batchCount
+
+		unmatchedRows, err := bronzeHotReader.QueryUnmatchedTokenLikeContractEvents(ctx, batchStart, batchEnd)
+		if err != nil {
+			log.Printf("⚠️  Soroban migration: failed to query unmatched token-like events for batch %d-%d: %v", batchStart, batchEnd, err)
+			continue
+		}
+
+		unmatchedTx, err := rt.silverDB.BeginTx(ctx, nil)
+		if err != nil {
+			unmatchedRows.Close()
+			log.Printf("⚠️  Soroban migration: failed to begin tx for unmatched batch %d-%d: %v", batchStart, batchEnd, err)
+			continue
+		}
+
+		unmatchedCount := int64(0)
+		unmatchedFailed := false
+		for unmatchedRows.Next() {
+			row := &UnmatchedContractEventRow{}
+			if err := unmatchedRows.Scan(
+				&row.Timestamp, &row.TransactionHash, &row.LedgerSequence, &row.ContractID,
+				&row.EventIndex, &row.EventName, &row.TopicsDecoded, &row.DataDecoded,
+				&row.Successful, &row.ParseReason,
+			); err != nil {
+				log.Printf("⚠️  Soroban migration: unmatched scan error in batch %d-%d: %v", batchStart, batchEnd, err)
+				unmatchedFailed = true
+				break
+			}
+			if err := rt.silverWriter.WriteUnmatchedContractEvent(ctx, unmatchedTx, row); err != nil {
+				log.Printf("⚠️  Soroban migration: unmatched write error in batch %d-%d: %v", batchStart, batchEnd, err)
+				unmatchedFailed = true
+				break
+			}
+			unmatchedCount++
+		}
+		unmatchedRows.Close()
+		if err := unmatchedRows.Err(); err != nil {
+			log.Printf("⚠️  Soroban migration: unmatched rows iteration error in batch %d-%d: %v", batchStart, batchEnd, err)
+			unmatchedFailed = true
+		}
+		if unmatchedFailed {
+			if rbErr := unmatchedTx.Rollback(); rbErr != nil {
+				log.Printf("⚠️  Soroban migration: unmatched rollback error for batch %d-%d: %v", batchStart, batchEnd, rbErr)
+			}
+			continue
+		}
+		if err := unmatchedTx.Commit(); err != nil {
+			log.Printf("⚠️  Soroban migration: unmatched commit error for batch %d-%d: %v", batchStart, batchEnd, err)
+			continue
+		}
+		totalUnmatched += unmatchedCount
 	}
 
-	log.Printf("✅ Soroban migration: backfilled %d SEP-41 token transfer events from bronze hot", totalInserted)
+	log.Printf("✅ Soroban migration: backfilled %d SEP-41 token transfer events from bronze hot and preserved %d unmatched token-like contract events", totalInserted, totalUnmatched)
 
 	// Step 7: Rebuild semantic_flows_value for the backfilled ledger range
 	if totalInserted > 0 {
@@ -818,6 +885,7 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 	bronzeTransforms := []transformJob{
 		{"enriched_operations", rt.transformEnrichedOperations},
 		{"token_transfers", rt.transformTokenTransfers},
+		{"contract_events_unmatched", rt.transformUnmatchedTokenLikeContractEvents},
 		{"accounts_current", rt.transformAccountsCurrent},
 		{"trustlines_current", rt.transformTrustlinesCurrent},
 		{"offers_current", rt.transformOffersCurrent},
@@ -1207,6 +1275,26 @@ func (rt *RealtimeTransformer) transformEnrichedOperations(ctx context.Context, 
 	return count, nil
 }
 
+func isValidTokenTransferSemantic(row *TokenTransferRow) bool {
+	if row == nil {
+		return false
+	}
+	if row.SourceType != "soroban" {
+		return true
+	}
+	if !row.TokenContractID.Valid || row.TokenContractID.String == "" || !row.Amount.Valid || row.Amount.String == "" {
+		return false
+	}
+	fromValid := row.FromAccount.Valid && row.FromAccount.String != ""
+	toValid := row.ToAccount.Valid && row.ToAccount.String != ""
+
+	// Supported Soroban semantic shapes:
+	//   transfer: from + to + amount
+	//   mint:     to + amount
+	//   burn / clawback: from + amount
+	return (fromValid && toValid) || (!fromValid && toValid) || (fromValid && !toValid)
+}
+
 // transformTokenTransfers transforms token transfers for the ledger range
 func (rt *RealtimeTransformer) transformTokenTransfers(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
 	rows, err := rt.sourceManager.QueryTokenTransfers(ctx, startLedger, endLedger)
@@ -1241,6 +1329,10 @@ func (rt *RealtimeTransformer) transformTokenTransfers(ctx context.Context, tx *
 			row.TokenContractID.String = encoded
 		}
 
+		if !isValidTokenTransferSemantic(row) {
+			continue
+		}
+
 		if err := batch.Add(row.Values()...); err != nil {
 			return count, fmt.Errorf("failed to add token transfer to batch: %w", err)
 		}
@@ -1257,6 +1349,55 @@ func (rt *RealtimeTransformer) transformTokenTransfers(ctx context.Context, tx *
 
 	if err := batch.Flush(ctx, tx); err != nil {
 		return count, fmt.Errorf("failed to flush token transfers remainder: %w", err)
+	}
+
+	return count, nil
+}
+
+// transformUnmatchedTokenLikeContractEvents preserves token-like Soroban
+// contract events that could not be safely normalized into token_transfers_raw.
+func (rt *RealtimeTransformer) transformUnmatchedTokenLikeContractEvents(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	rows, err := rt.sourceManager.QueryUnmatchedTokenLikeContractEvents(ctx, startLedger, endLedger)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	batch := NewBatchInserter("contract_events_unmatched", unmatchedContractEventColumns, unmatchedContractEventConflict, rt.insertBatchSize())
+	count := int64(0)
+
+	for rows.Next() {
+		row := &UnmatchedContractEventRow{}
+		if err := rows.Scan(
+			&row.Timestamp, &row.TransactionHash, &row.LedgerSequence, &row.ContractID,
+			&row.EventIndex, &row.EventName, &row.TopicsDecoded, &row.DataDecoded,
+			&row.Successful, &row.ParseReason,
+		); err != nil {
+			return count, fmt.Errorf("failed to scan unmatched contract event row: %w", err)
+		}
+
+		if row.ContractID.Valid && row.ContractID.String != "" {
+			encoded, err := hexToStrKey(row.ContractID.String)
+			if err != nil {
+				return count, fmt.Errorf("failed to convert unmatched contract ID to strkey: %w", err)
+			}
+			row.ContractID.String = encoded
+		}
+
+		if err := batch.Add(row.Values()...); err != nil {
+			return count, fmt.Errorf("failed to add unmatched contract event to batch: %w", err)
+		}
+		if err := batch.FlushIfNeeded(ctx, tx); err != nil {
+			return count, fmt.Errorf("failed to flush unmatched contract events batch: %w", err)
+		}
+		count++
+	}
+
+	if err := rows.Err(); err != nil {
+		return count, fmt.Errorf("error iterating unmatched contract events: %w", err)
+	}
+	if err := batch.Flush(ctx, tx); err != nil {
+		return count, fmt.Errorf("failed to flush unmatched contract events remainder: %w", err)
 	}
 
 	return count, nil
@@ -2627,16 +2768,18 @@ func (rt *RealtimeTransformer) transformSemanticActivities(ctx context.Context, 
 				WHEN e.type = 0 THEN 'account_created'
 				WHEN e.type = 1 THEN 'payment'
 				WHEN e.type = 2 THEN 'path_payment'
-				WHEN e.type = 6 THEN 'path_payment'
-				WHEN e.type = 13 THEN 'path_payment'
 				WHEN e.type = 3 THEN 'manage_offer'
 				WHEN e.type = 4 THEN 'create_passive_offer'
 				WHEN e.type = 5 THEN 'set_options'
-				WHEN e.type = 7 THEN 'account_merge'
-				WHEN e.type = 8 THEN 'inflation'
-				WHEN e.type = 9 THEN 'manage_data'
-				WHEN e.type = 10 THEN 'bump_sequence'
+				WHEN e.type = 6 THEN 'change_trust'
+				WHEN e.type = 7 THEN 'allow_trust'
+				WHEN e.type = 8 THEN 'account_merge'
+				WHEN e.type = 9 THEN 'inflation'
+				WHEN e.type = 10 THEN 'manage_data'
+				WHEN e.type = 11 THEN 'bump_sequence'
 				WHEN e.type = 12 THEN 'manage_offer'
+				WHEN e.type = 13 THEN 'path_payment'
+				WHEN e.type = 21 THEN 'set_trust_line_flags'
 				WHEN e.type = 24 AND e.function_name IS NOT NULL THEN 'contract_call'
 				WHEN e.type = 24 THEN 'invoke_host_function'
 				ELSE 'other'
@@ -2644,8 +2787,14 @@ func (rt *RealtimeTransformer) transformSemanticActivities(ctx context.Context, 
 			CASE
 				WHEN e.type = 0 THEN 'Created account ' || COALESCE(e.destination, '')
 				WHEN e.type = 1 THEN 'Sent ' || COALESCE(CAST(e.amount AS TEXT), '?') || ' ' || COALESCE(e.asset_code, 'XLM') || ' to ' || COALESCE(e.destination, '')
-				WHEN e.type IN (2, 6, 13) THEN 'Path payment ' || COALESCE(CAST(e.amount AS TEXT), '?') || ' ' || COALESCE(e.asset_code, 'XLM')
-				WHEN e.type = 7 THEN 'Merged into ' || COALESCE(e.into_account, '')
+				WHEN e.type IN (2, 13) THEN 'Path payment ' || COALESCE(CAST(e.amount AS TEXT), '?') || ' ' || COALESCE(e.asset_code, 'XLM')
+				WHEN e.type = 6 THEN CASE
+					WHEN COALESCE(e.asset_code, '') <> '' THEN 'Added trustline for ' || e.asset_code
+					ELSE 'Updated trustline'
+				END
+				WHEN e.type = 7 THEN 'Updated trust authorization'
+				WHEN e.type = 8 THEN 'Merged into ' || COALESCE(e.into_account, '')
+				WHEN e.type = 21 THEN 'Updated trustline flags'
 				WHEN e.type = 24 AND e.function_name IS NOT NULL THEN 'Called ' || e.function_name || ' on ' || COALESCE(e.contract_id, '')
 				WHEN e.type = 24 THEN 'Invoked host function'
 				ELSE NULL
