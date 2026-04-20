@@ -498,10 +498,12 @@ func (rt *RealtimeTransformer) migrateSorobanTransfers() {
 		DELETE FROM contract_events_unmatched
 		WHERE event_name IN ('transfer', 'mint', 'burn', 'clawback')
 	`)
+	var deletedUnmatched int64
 	if err != nil {
 		log.Printf("⚠️  Soroban migration: failed to delete unmatched token-like contract events: %v", err)
+	} else {
+		deletedUnmatched, _ = result.RowsAffected()
 	}
-	deletedUnmatched, _ := result.RowsAffected()
 
 	log.Printf("🗑️  Soroban migration: deleted %d stale transfers, %d stale semantic flows, %d preserved unmatched token-like events", deletedTransfers, deletedFlows, deletedUnmatched)
 

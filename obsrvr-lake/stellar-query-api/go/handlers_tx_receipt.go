@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/lib/pq"
@@ -34,26 +35,26 @@ func NewTxReceiptHandlers(hotReader *SilverHotReader) *TxReceiptHandlers {
 }
 
 type TxReceiptResponse struct {
-	TxHash             string          `json:"tx_hash"`
-	LedgerSequence     int64           `json:"ledger_sequence"`
-	CreatedAt          string          `json:"created_at"`
-	SourceAccount      *string         `json:"source_account,omitempty"`
-	Successful         bool            `json:"successful"`
-	OperationCount     *int            `json:"operation_count,omitempty"`
-	TxType             *string         `json:"tx_type,omitempty"`
-	PrimaryContractID  *string         `json:"primary_contract_id,omitempty"`
-	InvolvedContracts  []string        `json:"involved_contracts,omitempty"`
-	InvolvedAccounts   []string        `json:"involved_accounts,omitempty"`
+	TxHash            string   `json:"tx_hash"`
+	LedgerSequence    int64    `json:"ledger_sequence"`
+	CreatedAt         string   `json:"created_at"`
+	SourceAccount     *string  `json:"source_account,omitempty"`
+	Successful        bool     `json:"successful"`
+	OperationCount    *int     `json:"operation_count,omitempty"`
+	TxType            *string  `json:"tx_type,omitempty"`
+	PrimaryContractID *string  `json:"primary_contract_id,omitempty"`
+	InvolvedContracts []string `json:"involved_contracts,omitempty"`
+	InvolvedAccounts  []string `json:"involved_accounts,omitempty"`
 
 	// Raw JSONB sections — callers pick whichever they need.
-	Full               json.RawMessage `json:"full,omitempty"`
-	Semantic           json.RawMessage `json:"semantic,omitempty"`
-	Effects            json.RawMessage `json:"effects,omitempty"`
-	Diffs              json.RawMessage `json:"diffs,omitempty"`
-	Events             json.RawMessage `json:"events,omitempty"`
+	Full     json.RawMessage `json:"full,omitempty"`
+	Semantic json.RawMessage `json:"semantic,omitempty"`
+	Effects  json.RawMessage `json:"effects,omitempty"`
+	Diffs    json.RawMessage `json:"diffs,omitempty"`
+	Events   json.RawMessage `json:"events,omitempty"`
 
-	MaterializedAt     string          `json:"materialized_at"`
-	SourceVersion      string          `json:"source_version"`
+	MaterializedAt string `json:"materialized_at"`
+	SourceVersion  string `json:"source_version"`
 }
 
 // HandleTxReceipt serves GET /api/v1/silver/tx/{hash}/receipt.
@@ -80,7 +81,7 @@ func (h *TxReceiptHandlers) HandleTxReceipt(w http.ResponseWriter, r *http.Reque
 	`
 	var (
 		resp              TxReceiptResponse
-		createdAt         sql.NullString
+		createdAt         sql.NullTime
 		sourceAccount     sql.NullString
 		opCount           sql.NullInt64
 		txType            sql.NullString
@@ -92,7 +93,7 @@ func (h *TxReceiptHandlers) HandleTxReceipt(w http.ResponseWriter, r *http.Reque
 		effectsJSON       []byte
 		diffsJSON         []byte
 		eventsJSON        []byte
-		materializedAt    sql.NullString
+		materializedAt    sql.NullTime
 	)
 
 	err := h.hotReader.db.QueryRowContext(r.Context(), q, txHash).Scan(
@@ -112,7 +113,7 @@ func (h *TxReceiptHandlers) HandleTxReceipt(w http.ResponseWriter, r *http.Reque
 	}
 
 	if createdAt.Valid {
-		resp.CreatedAt = createdAt.String
+		resp.CreatedAt = createdAt.Time.UTC().Format(time.RFC3339)
 	}
 	if sourceAccount.Valid {
 		s := sourceAccount.String
@@ -148,9 +149,8 @@ func (h *TxReceiptHandlers) HandleTxReceipt(w http.ResponseWriter, r *http.Reque
 		resp.Events = eventsJSON
 	}
 	if materializedAt.Valid {
-		resp.MaterializedAt = materializedAt.String
+		resp.MaterializedAt = materializedAt.Time.UTC().Format(time.RFC3339)
 	}
 
 	respondJSON(w, resp)
 }
-

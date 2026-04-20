@@ -23,14 +23,14 @@ func TestDecodeDefiCursorInvalid(t *testing.T) {
 }
 
 func TestHandleDefiExposureRequiresAddress(t *testing.T) {
-	h := &SemanticHandlers{}
+	h := &SemanticHandlers{unified: &UnifiedSilverReader{hot: &SilverHotReader{}}}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/semantic/defi/exposure", nil)
 	w := httptest.NewRecorder()
 
 	h.HandleDefiExposure(w, req)
 
-	if w.Code != http.StatusServiceUnavailable && w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 503 or 400, got %d", w.Code)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
 	}
 }
 

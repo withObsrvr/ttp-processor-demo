@@ -212,42 +212,6 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
-  /api/v1/semantic/defi/positions/history:
-    get:
-      tags: [DeFi Positions]
-      summary: Get DeFi exposure history for a user
-      operationId: getDefiPositionHistory
-      parameters:
-        - in: query
-          name: address
-          required: true
-          schema: { type: string }
-        - in: query
-          name: quote
-          schema: { type: string, default: USD }
-        - in: query
-          name: from
-          required: true
-          schema: { type: string, format: date-time }
-        - in: query
-          name: to
-          required: true
-          schema: { type: string, format: date-time }
-        - in: query
-          name: interval
-          required: true
-          schema: { type: string, enum: [1h, 1d] }
-      responses:
-        '200':
-          description: Historical exposure time series.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/DefiHistoryResponse'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '500':
-          $ref: '#/components/responses/InternalError'
 
 components:
   responses:

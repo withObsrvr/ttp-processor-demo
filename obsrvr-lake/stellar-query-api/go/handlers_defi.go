@@ -207,14 +207,14 @@ type DefiCursor struct {
 }
 
 func (c DefiCursor) Encode() string {
-	return base64.StdEncoding.EncodeToString([]byte(c.ID))
+	return base64.URLEncoding.EncodeToString([]byte(c.ID))
 }
 
 func DecodeDefiCursor(raw string) (*DefiCursor, error) {
 	if raw == "" {
 		return nil, nil
 	}
-	decoded, err := base64.StdEncoding.DecodeString(raw)
+	decoded, err := base64.URLEncoding.DecodeString(raw)
 	if err != nil {
 		return nil, err
 	}
