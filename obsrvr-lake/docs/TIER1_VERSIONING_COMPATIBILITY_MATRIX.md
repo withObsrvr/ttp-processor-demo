@@ -269,7 +269,7 @@ These are the main remaining Tier 1 gaps after the current implementation slice.
 Current operational checks validate representative tables, but there is not yet a full table-by-table integration test proving hot and cold parity everywhere.
 
 Evidence:
-- `/home/tillman/Documents/infra/environments/prod/latitude/obsrvr-lake-testnet/scripts/10-verify.sh`
+- operational validation script used in the deployment environment (`scripts/10-verify.sh` in infra)
 
 ---
 

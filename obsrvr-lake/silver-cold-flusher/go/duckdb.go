@@ -165,7 +165,27 @@ func (c *DuckDBClient) FlushTable(tableName string, watermark int64, pgConnStr s
 		// them before inserted_at/updated_at. Use an explicit projection so
 		// hot/cold flushing is stable across both layouts.
 		query = fmt.Sprintf(`
-			INSERT INTO %s.%s.%s
+			INSERT INTO %s.%s.%s (
+				account_id,
+				asset_type,
+				asset_issuer,
+				asset_code,
+				liquidity_pool_id,
+				balance,
+				trust_line_limit,
+				buying_liabilities,
+				selling_liabilities,
+				flags,
+				last_modified_ledger,
+				ledger_sequence,
+				created_at,
+				sponsor,
+				ledger_range,
+				era_id,
+				version_label,
+				inserted_at,
+				updated_at
+			)
 			SELECT
 				account_id,
 				asset_type,
@@ -192,7 +212,30 @@ func (c *DuckDBClient) FlushTable(tableName string, watermark int64, pgConnStr s
 	case "offers_current":
 		// Same column-order issue as trustlines_current.
 		query = fmt.Sprintf(`
-			INSERT INTO %s.%s.%s
+			INSERT INTO %s.%s.%s (
+				offer_id,
+				seller_id,
+				selling_asset_type,
+				selling_asset_code,
+				selling_asset_issuer,
+				buying_asset_type,
+				buying_asset_code,
+				buying_asset_issuer,
+				amount,
+				price_n,
+				price_d,
+				price,
+				flags,
+				last_modified_ledger,
+				ledger_sequence,
+				created_at,
+				sponsor,
+				ledger_range,
+				era_id,
+				version_label,
+				inserted_at,
+				updated_at
+			)
 			SELECT
 				offer_id,
 				seller_id,
@@ -286,7 +329,22 @@ func (c *DuckDBClient) FlushSnapshotTable(tableName string, watermark int64, pgC
 		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, lastFlushed, watermark)
 	} else if tableName == "contract_invocations_raw" {
 		query = fmt.Sprintf(`
-			INSERT INTO %s.%s.%s
+			INSERT INTO %s.%s.%s (
+				ledger_sequence,
+				transaction_index,
+				operation_index,
+				transaction_hash,
+				source_account,
+				contract_id,
+				function_name,
+				arguments_json,
+				successful,
+				closed_at,
+				ledger_range,
+				inserted_at,
+				era_id,
+				version_label
+			)
 			SELECT ledger_sequence, transaction_index, operation_index, transaction_hash,
 			       source_account, contract_id, function_name, arguments_json,
 			       successful, closed_at, ledger_range, inserted_at,
@@ -326,7 +384,16 @@ func (c *DuckDBClient) FlushTableWithColumn(tableName string, watermark int64, p
 
 	if tableName == "contract_metadata" {
 		query = fmt.Sprintf(`
-			INSERT INTO %s.%s.%s
+			INSERT INTO %s.%s.%s (
+				contract_id,
+				creator_address,
+				wasm_hash,
+				created_ledger,
+				created_at,
+				inserted_at,
+				era_id,
+				version_label
+			)
 			SELECT contract_id, creator_address, wasm_hash, created_ledger,
 			       created_at, inserted_at, era_id, version_label
 			FROM postgres_scan('%s', 'public', '%s')

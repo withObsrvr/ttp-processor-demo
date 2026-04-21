@@ -326,6 +326,10 @@ CREATE INDEX IF NOT EXISTS idx_trustlines_account ON trustlines_current(account_
 CREATE INDEX IF NOT EXISTS idx_trustlines_asset ON trustlines_current(asset_code, asset_issuer);
 CREATE INDEX IF NOT EXISTS idx_trustlines_last_modified ON trustlines_current(last_modified_ledger DESC);
 
+-- Upgrade existing deployments created before versioning metadata existed
+ALTER TABLE IF EXISTS trustlines_current ADD COLUMN IF NOT EXISTS era_id TEXT;
+ALTER TABLE IF EXISTS trustlines_current ADD COLUMN IF NOT EXISTS version_label TEXT;
+
 -- Table: offers_current
 -- Current state of all offers
 CREATE TABLE IF NOT EXISTS offers_current (
@@ -359,6 +363,10 @@ CREATE INDEX IF NOT EXISTS idx_offers_seller ON offers_current(seller_id);
 CREATE INDEX IF NOT EXISTS idx_offers_selling_asset ON offers_current(selling_asset_code, selling_asset_issuer);
 CREATE INDEX IF NOT EXISTS idx_offers_buying_asset ON offers_current(buying_asset_code, buying_asset_issuer);
 CREATE INDEX IF NOT EXISTS idx_offers_last_modified ON offers_current(last_modified_ledger DESC);
+
+-- Upgrade existing deployments created before versioning metadata existed
+ALTER TABLE IF EXISTS offers_current ADD COLUMN IF NOT EXISTS era_id TEXT;
+ALTER TABLE IF EXISTS offers_current ADD COLUMN IF NOT EXISTS version_label TEXT;
 
 -- Table: claimable_balances_current
 -- Current state of claimable balances
@@ -777,6 +785,10 @@ CREATE INDEX IF NOT EXISTS idx_contract_invocations_ledger_range ON contract_inv
 CREATE INDEX IF NOT EXISTS idx_contract_invocations_closed_at ON contract_invocations_raw(closed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_contract_invocations_contract_function ON contract_invocations_raw(contract_id, function_name);
 
+-- Upgrade existing deployments created before versioning metadata existed
+ALTER TABLE IF EXISTS contract_invocations_raw ADD COLUMN IF NOT EXISTS era_id TEXT;
+ALTER TABLE IF EXISTS contract_invocations_raw ADD COLUMN IF NOT EXISTS version_label TEXT;
+
 -- Table: contract_metadata
 -- Contract creation metadata (creator, wasm hash, creation time)
 CREATE TABLE IF NOT EXISTS contract_metadata (
@@ -792,6 +804,10 @@ CREATE TABLE IF NOT EXISTS contract_metadata (
 
 CREATE INDEX IF NOT EXISTS idx_contract_metadata_creator ON contract_metadata(creator_address);
 CREATE INDEX IF NOT EXISTS idx_contract_metadata_wasm ON contract_metadata(wasm_hash) WHERE wasm_hash IS NOT NULL;
+
+-- Upgrade existing deployments created before versioning metadata existed
+ALTER TABLE IF EXISTS contract_metadata ADD COLUMN IF NOT EXISTS era_id TEXT;
+ALTER TABLE IF EXISTS contract_metadata ADD COLUMN IF NOT EXISTS version_label TEXT;
 
 -- ============================================================================
 -- SEMANTIC LAYER TABLES

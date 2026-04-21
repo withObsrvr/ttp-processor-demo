@@ -288,7 +288,10 @@ func (h *LedgerSummaryHandler) HandleLedgerSummary(w http.ResponseWriter, r *htt
 		hydratePrimaryCategories(txAggs)
 		resp.ClassificationCounts = buildClassificationCounts(txAggs)
 		resp.Composition = buildComposition(resp.Totals, txAggs)
-		resp.Sampling, resp.RepresentativeTransactions = h.buildSamplingAndSamples(ctx, txAggs)
+		resp.Sampling, resp.RepresentativeTransactions, err = h.buildSamplingAndSamples(ctx, txAggs)
+		if err != nil {
+			resp.Provenance.Partial = true
+		}
 	}
 
 	utilization, err := h.getSorobanUtilization(ctx, seq)
@@ -342,6 +345,9 @@ func (h *LedgerSummaryHandler) getLedgerTxAggs(ctx context.Context, seq int64) (
 	}
 
 	summaryQuery := fmt.Sprintf(`
+		WITH dedup_ops AS (
+			%s
+		)
 		SELECT transaction_hash,
 		       MIN(ledger_sequence) as ledger_seq,
 		       MIN(ledger_closed_at) as closed_at,
@@ -350,12 +356,24 @@ func (h *LedgerSummaryHandler) getLedgerTxAggs(ctx context.Context, seq int64) (
 		       COUNT(*) as op_count,
 		       BOOL_AND(tx_successful) as successful,
 		       BOOL_OR(is_soroban_op) as has_soroban,
-		       MIN(contract_id) FILTER (WHERE contract_id IS NOT NULL) as primary_contract
-		FROM %s.enriched_history_operations
-		WHERE ledger_sequence = $1
+		       MIN(contract_id) FILTER (WHERE contract_id IS NOT NULL AND contract_id <> '') as primary_contract
+		FROM dedup_ops
 		GROUP BY transaction_hash
 		ORDER BY MIN(operation_index)
-	`, h.unified.hotSchema)
+	`, h.unifiedLedgerOpsQuery(`
+		SELECT DISTINCT ON (ledger_sequence, operation_index)
+			transaction_hash,
+			ledger_sequence,
+			ledger_closed_at,
+			source_account,
+			tx_fee_charged,
+			operation_index,
+			tx_successful,
+			is_soroban_op,
+			contract_id
+		FROM combined
+		ORDER BY ledger_sequence, operation_index, source
+	`))
 
 	rows, err := h.unified.db.QueryContext(ctx, summaryQuery, seq)
 	if err != nil {
@@ -410,7 +428,10 @@ func (h *LedgerSummaryHandler) getLedgerTxAggs(ctx context.Context, seq int64) (
 		return h.getServingLedgerTxAggs(ctx, seq)
 	}
 
-	opRows, err := h.unified.db.QueryContext(ctx, fmt.Sprintf(`
+	opQuery := fmt.Sprintf(`
+		WITH dedup_ops AS (
+			%s
+		)
 		SELECT transaction_hash,
 		       COALESCE(is_payment_op, false),
 		       COALESCE(type, 0),
@@ -419,10 +440,24 @@ func (h *LedgerSummaryHandler) getLedgerTxAggs(ctx context.Context, seq int64) (
 		       COALESCE(asset_code, ''),
 		       COALESCE(CAST(amount AS VARCHAR), ''),
 		       COALESCE(destination, '')
-		FROM %s.enriched_history_operations
-		WHERE ledger_sequence = $1
+		FROM dedup_ops
 		ORDER BY transaction_hash, operation_index
-	`, h.unified.hotSchema), seq)
+	`, h.unifiedLedgerOpsQuery(`
+		SELECT DISTINCT ON (ledger_sequence, operation_index)
+			transaction_hash,
+			is_payment_op,
+			type,
+			contract_id,
+			function_name,
+			asset_code,
+			amount,
+			destination,
+			operation_index
+		FROM combined
+		ORDER BY ledger_sequence, operation_index, source
+	`))
+
+	opRows, err := h.unified.db.QueryContext(ctx, opQuery, seq)
 	if err != nil {
 		return nil, err
 	}
@@ -467,6 +502,28 @@ func (h *LedgerSummaryHandler) getLedgerTxAggs(ctx context.Context, seq int64) (
 	}
 
 	return out, nil
+}
+
+func (h *LedgerSummaryHandler) unifiedLedgerOpsQuery(selectFromCombined string) string {
+	combined := fmt.Sprintf(`
+		WITH combined AS (
+			SELECT *, 1 AS source
+			FROM %s.enriched_history_operations
+			WHERE ledger_sequence = $1
+		`, h.unified.hotSchema)
+	if h.unified.coldSchema != "" {
+		combined += fmt.Sprintf(`
+			UNION ALL
+			SELECT *, 2 AS source
+			FROM %s.enriched_history_operations
+			WHERE ledger_sequence = $1
+		`, h.unified.coldSchema)
+	}
+	combined += fmt.Sprintf(`
+		)
+		%s
+	`, selectFromCombined)
+	return combined
 }
 
 func (h *LedgerSummaryHandler) getServingLedgerTxAggs(ctx context.Context, seq int64) ([]ledgerSummaryTxAgg, error) {
@@ -834,13 +891,13 @@ func buildComposition(totals LedgerSummaryTotals, items []ledgerSummaryTxAgg) *L
 	}
 }
 
-func (h *LedgerSummaryHandler) buildSamplingAndSamples(ctx context.Context, items []ledgerSummaryTxAgg) (*LedgerSummarySampling, []LedgerRepresentativeTx) {
+func (h *LedgerSummaryHandler) buildSamplingAndSamples(ctx context.Context, items []ledgerSummaryTxAgg) (*LedgerSummarySampling, []LedgerRepresentativeTx, error) {
 	if len(items) == 0 {
 		return &LedgerSummarySampling{
 			Strategy:              "one_per_dominant_kind",
 			SampleCount:           0,
 			TotalTransactionCount: 0,
-		}, nil
+		}, nil, nil
 	}
 
 	counts := map[string]int64{}
@@ -864,7 +921,10 @@ func (h *LedgerSummaryHandler) buildSamplingAndSamples(ctx context.Context, item
 		categories = categories[:3]
 	}
 
-	previews := h.fetchSamplePreviews(ctx, selectedHashesForCategories(items, categories))
+	previews, err := h.fetchSamplePreviews(ctx, selectedHashesForCategories(items, categories))
+	if err != nil {
+		return nil, nil, err
+	}
 	represented := int64(0)
 	samples := make([]LedgerRepresentativeTx, 0, len(categories))
 	for _, category := range categories {
@@ -881,7 +941,7 @@ func (h *LedgerSummaryHandler) buildSamplingAndSamples(ctx context.Context, item
 		SampleCount:                 len(samples),
 		RepresentedTransactionCount: represented,
 		TotalTransactionCount:       int64(len(items)),
-	}, samples
+	}, samples, nil
 }
 
 func selectedHashesForCategories(items []ledgerSummaryTxAgg, categories []string) []string {
@@ -1001,9 +1061,9 @@ func representativeDescription(item ledgerSummaryTxAgg, preview txSummaryPreview
 	}
 }
 
-func (h *LedgerSummaryHandler) fetchSamplePreviews(ctx context.Context, txHashes []string) map[string]txSummaryPreview {
+func (h *LedgerSummaryHandler) fetchSamplePreviews(ctx context.Context, txHashes []string) (map[string]txSummaryPreview, error) {
 	if h.hot == nil || h.hot.db == nil || len(txHashes) == 0 {
-		return map[string]txSummaryPreview{}
+		return map[string]txSummaryPreview{}, nil
 	}
 	placeholders := make([]string, len(txHashes))
 	args := make([]interface{}, len(txHashes))
@@ -1020,7 +1080,7 @@ func (h *LedgerSummaryHandler) fetchSamplePreviews(ctx context.Context, txHashes
 
 	rows, err := h.hot.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return map[string]txSummaryPreview{}
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -1045,7 +1105,10 @@ func (h *LedgerSummaryHandler) fetchSamplePreviews(ctx context.Context, txHashes
 		}
 		out[hash] = preview
 	}
-	return out
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func pct(used, limit int64) float64 {
@@ -1155,8 +1218,20 @@ func categoryLabel(category string) string {
 	case "classic":
 		return "Classic"
 	default:
-		return strings.Title(strings.ReplaceAll(category, "_", " "))
+		return titleSnakeCase(category)
 	}
+}
+
+func titleSnakeCase(s string) string {
+	parts := strings.Split(strings.ReplaceAll(s, "-", "_"), "_")
+	for i, part := range parts {
+		part = strings.TrimSpace(strings.ToLower(part))
+		if part == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(part[:1]) + part[1:]
+	}
+	return strings.Join(parts, " ")
 }
 
 func sampleCategoryRank(category string) int {

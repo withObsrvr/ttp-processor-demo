@@ -5,7 +5,7 @@
 This document captures the current gap between:
 
 1. the **desired reconciliation-safe versioning model** described in
-   `/home/tillman/Documents/ttp-processor-demo/ducklake-ingestion-obsrvr-v3/INCREMENTAL_VERSIONING_GUIDE.md`
+   `../ducklake-ingestion-obsrvr-v3/INCREMENTAL_VERSIONING_GUIDE.md`
 2. the **currently implemented obsrvr-lake ingestion/query stack**
 
 It is intended to answer a practical operational question:
@@ -29,7 +29,7 @@ But the currently active stack does **not yet** provide a complete, reconciliati
 
 Main gaps:
 
-- hot bronze ingestion does not consistently populate `era_id` / `version_label`
+- hot bronze ingestion now broadly populates `era_id` / `version_label`, but end-to-end validation for all paths is still incomplete
 - some cold readers/flushers explicitly null them out
 - no active-era / active-version resolver was found in the current obsrvr-lake runtime path
 - no evidence that API queries enforce version filtering or overlay logic
@@ -61,7 +61,7 @@ Minimum required capabilities:
 
 | Component | `ledger_range` | `era_id` / `version_label` in schema | Populates them | Preserves them | Routes by them | Reconciliation-safe today? |
 |---|---:|---:|---:|---:|---:|---:|
-| `stellar-postgres-ingester` | Yes | Partial / schema-aware | No (active hot path) | N/A | No | No |
+| `stellar-postgres-ingester` | Yes | Partial / schema-aware | Yes | N/A | No | No |
 | `stellar-history-loader` | Yes | Yes | Yes | Yes | No | Partial |
 | `postgres-ducklake-flusher` | Yes | Yes | Depends on source | Partial | No | Partial |
 | `silver-realtime-transformer` hot bronze reader/writer | Yes | Yes | Reads/writes some | Partial | No | Partial |
@@ -79,9 +79,9 @@ Minimum required capabilities:
 ### Current findings
 
 - Uses `ledger_range` actively.
-- Local runtime structs do **not** consistently carry `EraID` / `VersionLabel`.
-- Conversion helpers from `stellar-extract` explicitly drop library-only fields.
-- Active PostgreSQL insert paths were observed writing `ledger_range` but not consistently writing `era_id` / `version_label`.
+- Runtime structs and writers now broadly carry and write `EraID` / `VersionLabel`.
+- PostgreSQL migrations add versioning columns across the active bronze tables.
+- Remaining gap is end-to-end validation and reconciliation-aware routing, not basic field population.
 
 ### Evidence
 
@@ -91,10 +91,10 @@ Minimum required capabilities:
 
 ### Gaps
 
-- [ ] Add `EraID` to all relevant hot bronze runtime structs.
-- [ ] Add `VersionLabel` to all relevant hot bronze runtime structs.
-- [ ] Preserve `EraID` / `VersionLabel` in conversion helpers from `stellar-extract`.
-- [ ] Update all hot bronze insert statements to write `era_id` / `version_label`.
+- [x] Add `EraID` to all relevant hot bronze runtime structs.
+- [x] Add `VersionLabel` to all relevant hot bronze runtime structs.
+- [x] Preserve `EraID` / `VersionLabel` in conversion helpers from `stellar-extract`.
+- [x] Update active hot bronze insert statements to write `era_id` / `version_label`.
 - [ ] Ensure conflict/update clauses behave correctly when a new version is ingested for overlapping ledger ranges.
 - [ ] Decide whether hot bronze should allow coexistence of multiple versions or remain single-version with explicit correction workflow.
 
