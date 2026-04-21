@@ -8,6 +8,8 @@ source:
   network_passphrase: "Test SDF Network ; September 2015"
   start_ledger: 1000000
   end_ledger: 1001000
+  era_id: ""
+  version_label: "live"
 
 postgres:
   host: localhost

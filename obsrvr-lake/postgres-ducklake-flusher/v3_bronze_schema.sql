@@ -537,5 +537,7 @@ CREATE TABLE IF NOT EXISTS bronze.token_transfers_stream_v1 (
     contract_id       TEXT,
     closed_at         TIMESTAMP,
     created_at        TIMESTAMP,
-    ledger_range      INTEGER
+    ledger_range      INTEGER,
+    era_id            TEXT,
+    version_label     TEXT
 );

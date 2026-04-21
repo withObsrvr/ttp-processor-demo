@@ -314,14 +314,15 @@ func (sw *SilverWriter) WriteTrustlineCurrent(ctx context.Context, tx *sql.Tx, r
 		INSERT INTO trustlines_current (
 			account_id, asset_type, asset_issuer, asset_code, liquidity_pool_id,
 			balance, trust_line_limit, buying_liabilities, selling_liabilities,
-			flags, last_modified_ledger, ledger_sequence, created_at, sponsor, ledger_range
+			flags, last_modified_ledger, ledger_sequence, created_at, sponsor, ledger_range,
+			era_id, version_label
 		) VALUES (
 			$1, $2, $3, $4, $5,
 			ROUND($6::NUMERIC * 10000000)::BIGINT,
 			ROUND($7::NUMERIC * 10000000)::BIGINT,
 			ROUND($8::NUMERIC * 10000000)::BIGINT,
 			ROUND($9::NUMERIC * 10000000)::BIGINT,
-			$10, $11, $12, $13, $14, $15
+			$10, $11, $12, $13, $14, $15, $16, $17
 		)
 		ON CONFLICT (account_id, asset_type, COALESCE(asset_code, ''), COALESCE(asset_issuer, ''), COALESCE(liquidity_pool_id, '')) DO UPDATE SET
 			balance = EXCLUDED.balance,
@@ -333,6 +334,8 @@ func (sw *SilverWriter) WriteTrustlineCurrent(ctx context.Context, tx *sql.Tx, r
 			ledger_sequence = EXCLUDED.ledger_sequence,
 			sponsor = EXCLUDED.sponsor,
 			ledger_range = EXCLUDED.ledger_range,
+			era_id = EXCLUDED.era_id,
+			version_label = EXCLUDED.version_label,
 			updated_at = NOW()
 	`
 
@@ -340,6 +343,7 @@ func (sw *SilverWriter) WriteTrustlineCurrent(ctx context.Context, tx *sql.Tx, r
 		row.AccountID, row.AssetType, row.AssetIssuer, row.AssetCode, row.LiquidityPoolID,
 		row.Balance, row.TrustLineLimit, row.BuyingLiabilities, row.SellingLiabilities,
 		row.Flags, row.LastModifiedLedger, row.LedgerSequence, row.CreatedAt, row.Sponsor, row.LedgerRange,
+		row.EraID, row.VersionLabel,
 	)
 
 	if err != nil {
@@ -356,11 +360,12 @@ func (sw *SilverWriter) WriteOfferCurrent(ctx context.Context, tx *sql.Tx, row *
 			offer_id, seller_id, selling_asset_type, selling_asset_code, selling_asset_issuer,
 			buying_asset_type, buying_asset_code, buying_asset_issuer,
 			amount, price_n, price_d, price, flags,
-			last_modified_ledger, ledger_sequence, created_at, sponsor, ledger_range
+			last_modified_ledger, ledger_sequence, created_at, sponsor, ledger_range,
+			era_id, version_label
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8,
 			$9::BIGINT, $10, $11, $12::DECIMAL, $13,
-			$14, $15, $16, $17, $18
+			$14, $15, $16, $17, $18, $19, $20
 		)
 		ON CONFLICT (offer_id) DO UPDATE SET
 			seller_id = EXCLUDED.seller_id,
@@ -379,6 +384,8 @@ func (sw *SilverWriter) WriteOfferCurrent(ctx context.Context, tx *sql.Tx, row *
 			ledger_sequence = EXCLUDED.ledger_sequence,
 			sponsor = EXCLUDED.sponsor,
 			ledger_range = EXCLUDED.ledger_range,
+			era_id = EXCLUDED.era_id,
+			version_label = EXCLUDED.version_label,
 			updated_at = NOW()
 	`
 
@@ -387,6 +394,7 @@ func (sw *SilverWriter) WriteOfferCurrent(ctx context.Context, tx *sql.Tx, row *
 		row.BuyingAssetType, row.BuyingAssetCode, row.BuyingAssetIssuer,
 		row.Amount, row.PriceN, row.PriceD, row.Price, row.Flags,
 		row.LastModifiedLedger, row.LedgerSequence, row.CreatedAt, row.Sponsor, row.LedgerRange,
+		row.EraID, row.VersionLabel,
 	)
 
 	if err != nil {
@@ -693,19 +701,21 @@ func (sw *SilverWriter) UpdateAccountSignerSnapshotValidTo(ctx context.Context, 
 }
 
 // WriteContractMetadata upserts a contract metadata row
-func (sw *SilverWriter) WriteContractMetadata(ctx context.Context, tx *sql.Tx, contractID, creatorAddress string, wasmHash *string, createdLedger int64, createdAt interface{}) error {
+func (sw *SilverWriter) WriteContractMetadata(ctx context.Context, tx *sql.Tx, contractID, creatorAddress string, wasmHash *string, createdLedger int64, createdAt interface{}, eraID, versionLabel interface{}) error {
 	query := `
 		INSERT INTO contract_metadata (
-			contract_id, creator_address, wasm_hash, created_ledger, created_at
-		) VALUES ($1, $2, $3, $4, $5)
+			contract_id, creator_address, wasm_hash, created_ledger, created_at, era_id, version_label
+		) VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (contract_id) DO UPDATE SET
 			creator_address = EXCLUDED.creator_address,
 			wasm_hash = COALESCE(EXCLUDED.wasm_hash, contract_metadata.wasm_hash),
 			created_ledger = EXCLUDED.created_ledger,
-			created_at = EXCLUDED.created_at
+			created_at = EXCLUDED.created_at,
+			era_id = EXCLUDED.era_id,
+			version_label = EXCLUDED.version_label
 	`
 
-	_, err := tx.ExecContext(ctx, query, contractID, creatorAddress, wasmHash, createdLedger, createdAt)
+	_, err := tx.ExecContext(ctx, query, contractID, creatorAddress, wasmHash, createdLedger, createdAt, eraID, versionLabel)
 	if err != nil {
 		return fmt.Errorf("failed to write contract metadata: %w", err)
 	}
@@ -727,15 +737,19 @@ func (sw *SilverWriter) WriteContractInvocation(ctx context.Context, tx *sql.Tx,
 			arguments_json,
 			successful,
 			closed_at,
-			ledger_range
+			ledger_range,
+			era_id,
+			version_label
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
 		)
 		ON CONFLICT (ledger_sequence, transaction_index, operation_index) DO UPDATE SET
 			contract_id = EXCLUDED.contract_id,
 			function_name = EXCLUDED.function_name,
 			arguments_json = EXCLUDED.arguments_json,
-			successful = EXCLUDED.successful
+			successful = EXCLUDED.successful,
+			era_id = EXCLUDED.era_id,
+			version_label = EXCLUDED.version_label
 	`
 
 	_, err := tx.ExecContext(ctx, query,
@@ -750,6 +764,8 @@ func (sw *SilverWriter) WriteContractInvocation(ctx context.Context, tx *sql.Tx,
 		row.Successful,
 		row.ClosedAt,
 		row.LedgerRange,
+		row.EraID,
+		row.VersionLabel,
 	)
 
 	if err != nil {

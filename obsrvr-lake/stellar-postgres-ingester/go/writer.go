@@ -56,6 +56,8 @@ type LedgerData struct {
 	EvictedKeysCount     *int
 	IngestionTimestamp   time.Time
 	LedgerRange          uint32
+	EraID                *string
+	VersionLabel         string
 	// Soroban aggregates per ledger
 	SorobanOpCount      *int
 	TotalFeeCharged     *int64
@@ -142,18 +144,22 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 	// Contract creation tracking (C11)
 	var allContractCreations []ContractCreationData
 
+	versionLabel := w.config.VersionLabel()
 	for _, rawLedger := range rawLedgers {
 		// Create the library input ONCE per ledger (decodes XDR)
 		input, err := extract.NewLedgerInputFromXDR(rawLedger.LedgerCloseMetaXdr, w.config.Source.NetworkPassphrase)
 		if err != nil {
 			return fmt.Errorf("failed to decode ledger %d: %w", rawLedger.Sequence, err)
 		}
+		input.EraID = w.config.EraIDPtr()
 
 		// Extract ledger data (local method — uses pre-decoded LCM)
 		ledgerData, err := w.extractLedgerDataFromLCM(input.LCM)
 		if err != nil {
 			return fmt.Errorf("failed to extract ledger %d: %w", rawLedger.Sequence, err)
 		}
+		ledgerData.EraID = input.EraID
+		ledgerData.VersionLabel = versionLabel
 
 		// Extract transactions via library
 		libTransactions, err := extract.ExtractTransactions(input)
@@ -161,7 +167,10 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 			log.Printf("Warning: Failed to extract transactions for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
 			for _, r := range libTransactions {
-				allTransactions = append(allTransactions, convertTransaction(r))
+				row := convertTransaction(r)
+				row.EraID = input.EraID
+				row.VersionLabel = versionLabel
+				allTransactions = append(allTransactions, row)
 			}
 		}
 
@@ -173,7 +182,10 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 			sorobanOps := 0
 			convertedOps := make([]OperationData, 0, len(libOperations))
 			for _, r := range libOperations {
-				convertedOps = append(convertedOps, convertOperation(r))
+				row := convertOperation(r)
+				row.EraID = input.EraID
+				row.VersionLabel = versionLabel
+				convertedOps = append(convertedOps, row)
 				if r.LedgerSequence == ledgerData.Sequence {
 					if r.OpType == 24 || r.OpType == 25 || r.OpType == 26 {
 						sorobanOps++
@@ -203,7 +215,10 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 			log.Printf("Warning: Failed to extract effects for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
 			for _, r := range libEffects {
-				allEffects = append(allEffects, convertEffect(r))
+				row := convertEffect(r)
+				row.EraID = input.EraID
+				row.VersionLabel = versionLabel
+				allEffects = append(allEffects, row)
 			}
 		}
 
@@ -213,7 +228,10 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 			log.Printf("Warning: Failed to extract trades for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
 			for _, r := range libTrades {
-				allTrades = append(allTrades, convertTrade(r))
+				row := convertTrade(r)
+				row.EraID = input.EraID
+				row.VersionLabel = versionLabel
+				allTrades = append(allTrades, row)
 			}
 		}
 
@@ -223,7 +241,10 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 			log.Printf("Warning: Failed to extract accounts for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
 			for _, r := range libAccounts {
-				allAccounts = append(allAccounts, convertAccount(r))
+				row := convertAccount(r)
+				row.EraID = input.EraID
+				row.VersionLabel = versionLabel
+				allAccounts = append(allAccounts, row)
 			}
 		}
 
@@ -233,7 +254,10 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 			log.Printf("Warning: Failed to extract offers for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
 			for _, r := range libOffers {
-				allOffers = append(allOffers, convertOffer(r))
+				row := convertOffer(r)
+				row.EraID = input.EraID
+				row.VersionLabel = versionLabel
+				allOffers = append(allOffers, row)
 			}
 		}
 
@@ -243,7 +267,10 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 			log.Printf("Warning: Failed to extract trustlines for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
 			for _, r := range libTrustlines {
-				allTrustlines = append(allTrustlines, convertTrustline(r))
+				row := convertTrustline(r)
+				row.EraID = input.EraID
+				row.VersionLabel = versionLabel
+				allTrustlines = append(allTrustlines, row)
 			}
 		}
 
@@ -253,7 +280,10 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 			log.Printf("Warning: Failed to extract account signers for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
 			for _, r := range libAccountSigners {
-				allAccountSigners = append(allAccountSigners, convertAccountSigner(r))
+				row := convertAccountSigner(r)
+				row.EraID = input.EraID
+				row.VersionLabel = versionLabel
+				allAccountSigners = append(allAccountSigners, row)
 			}
 		}
 
@@ -263,7 +293,10 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 			log.Printf("Warning: Failed to extract claimable balances for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
 			for _, r := range libClaimableBalances {
-				allClaimableBalances = append(allClaimableBalances, convertClaimableBalance(r))
+				row := convertClaimableBalance(r)
+				row.EraID = input.EraID
+				row.VersionLabel = versionLabel
+				allClaimableBalances = append(allClaimableBalances, row)
 			}
 		}
 
@@ -273,7 +306,10 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 			log.Printf("Warning: Failed to extract liquidity pools for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
 			for _, r := range libLiquidityPools {
-				allLiquidityPools = append(allLiquidityPools, convertLiquidityPool(r))
+				row := convertLiquidityPool(r)
+				row.EraID = input.EraID
+				row.VersionLabel = versionLabel
+				allLiquidityPools = append(allLiquidityPools, row)
 			}
 		}
 
@@ -283,7 +319,10 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 			log.Printf("Warning: Failed to extract config settings for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
 			for _, r := range libConfigSettings {
-				allConfigSettings = append(allConfigSettings, convertConfigSetting(r))
+				row := convertConfigSetting(r)
+				row.EraID = input.EraID
+				row.VersionLabel = versionLabel
+				allConfigSettings = append(allConfigSettings, row)
 			}
 		}
 
@@ -293,7 +332,10 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 			log.Printf("Warning: Failed to extract TTL for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
 			for _, r := range libTTL {
-				allTTL = append(allTTL, convertTTL(r))
+				row := convertTTL(r)
+				row.EraID = input.EraID
+				row.VersionLabel = versionLabel
+				allTTL = append(allTTL, row)
 			}
 		}
 
@@ -303,7 +345,10 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 			log.Printf("Warning: Failed to extract evicted keys for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
 			for _, r := range libEvictedKeys {
-				allEvictedKeys = append(allEvictedKeys, convertEvictedKey(r))
+				row := convertEvictedKey(r)
+				row.EraID = input.EraID
+				row.VersionLabel = versionLabel
+				allEvictedKeys = append(allEvictedKeys, row)
 			}
 		}
 
@@ -313,7 +358,10 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 			log.Printf("Warning: Failed to extract contract events for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
 			for _, r := range libContractEvents {
-				allContractEvents = append(allContractEvents, convertContractEvent(r))
+				row := convertContractEvent(r)
+				row.EraID = input.EraID
+				row.VersionLabel = versionLabel
+				allContractEvents = append(allContractEvents, row)
 			}
 		}
 
@@ -323,7 +371,10 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 			log.Printf("Warning: Failed to extract contract data for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
 			for _, r := range libContractData {
-				allContractData = append(allContractData, convertContractData(r))
+				row := convertContractData(r)
+				row.EraID = input.EraID
+				row.VersionLabel = versionLabel
+				allContractData = append(allContractData, row)
 			}
 		}
 
@@ -333,7 +384,10 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 			log.Printf("Warning: Failed to extract contract code for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
 			for _, r := range libContractCode {
-				allContractCode = append(allContractCode, convertContractCode(r))
+				row := convertContractCode(r)
+				row.EraID = input.EraID
+				row.VersionLabel = versionLabel
+				allContractCode = append(allContractCode, row)
 			}
 		}
 
@@ -343,7 +397,10 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 			log.Printf("Warning: Failed to extract native balances for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
 			for _, r := range libNativeBalances {
-				allNativeBalances = append(allNativeBalances, convertNativeBalance(r))
+				row := convertNativeBalance(r)
+				row.EraID = input.EraID
+				row.VersionLabel = versionLabel
+				allNativeBalances = append(allNativeBalances, row)
 			}
 		}
 
@@ -353,7 +410,10 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 			log.Printf("Warning: Failed to extract restored keys for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
 			for _, r := range libRestoredKeys {
-				allRestoredKeys = append(allRestoredKeys, convertRestoredKey(r))
+				row := convertRestoredKey(r)
+				row.EraID = input.EraID
+				row.VersionLabel = versionLabel
+				allRestoredKeys = append(allRestoredKeys, row)
 			}
 		}
 
@@ -363,7 +423,10 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 			log.Printf("Warning: Failed to extract contract creations for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
 			for _, r := range libContractCreations {
-				allContractCreations = append(allContractCreations, convertContractCreation(r))
+				row := convertContractCreation(r)
+				row.EraID = input.EraID
+				row.VersionLabel = versionLabel
+				allContractCreations = append(allContractCreations, row)
 			}
 		}
 
@@ -373,7 +436,10 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 			log.Printf("Warning: Failed to extract token transfers for ledger %d: %v", rawLedger.Sequence, err)
 		} else {
 			for _, r := range libTokenTransfers {
-				allTokenTransfers = append(allTokenTransfers, convertTokenTransfer(r))
+				row := convertTokenTransfer(r)
+				row.EraID = input.EraID
+				row.VersionLabel = versionLabel
+				allTokenTransfers = append(allTokenTransfers, row)
 			}
 		}
 
@@ -1347,11 +1413,12 @@ func (w *Writer) insertLedger(ctx context.Context, tx pgx.Tx, ledger *LedgerData
 			transaction_count, operation_count, tx_set_operation_count,
 			soroban_fee_write1kb, node_id, signature, ledger_header,
 			bucket_list_size, live_soroban_state_size, evicted_keys_count,
-			soroban_op_count, total_fee_charged, contract_events_count
+			soroban_op_count, total_fee_charged, contract_events_count,
+			era_id, version_label
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
 			$11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-			$21, $22, $23, $24, $25, $26, $27
+			$21, $22, $23, $24, $25, $26, $27, $28, $29
 		)
 		ON CONFLICT (sequence) DO UPDATE SET
 			ledger_hash = EXCLUDED.ledger_hash,
@@ -1362,7 +1429,9 @@ func (w *Writer) insertLedger(ctx context.Context, tx pgx.Tx, ledger *LedgerData
 			failed_tx_count = EXCLUDED.failed_tx_count,
 			soroban_op_count = EXCLUDED.soroban_op_count,
 			total_fee_charged = EXCLUDED.total_fee_charged,
-			contract_events_count = EXCLUDED.contract_events_count
+			contract_events_count = EXCLUDED.contract_events_count,
+			era_id = EXCLUDED.era_id,
+			version_label = EXCLUDED.version_label
 	`
 
 	_, err := tx.Exec(ctx, query,
@@ -1393,6 +1462,8 @@ func (w *Writer) insertLedger(ctx context.Context, tx pgx.Tx, ledger *LedgerData
 		ledger.SorobanOpCount,
 		ledger.TotalFeeCharged,
 		ledger.ContractEventsCount,
+		ledger.EraID,
+		ledger.VersionLabel,
 	)
 
 	return err
@@ -1409,12 +1480,14 @@ func (w *Writer) insertTransactions(ctx context.Context, tx pgx.Tx, transactions
 			ledger_sequence, transaction_hash, transaction_id, source_account, fee_charged,
 			max_fee, successful, transaction_result_code, operation_count,
 			memo_type, memo, created_at, account_sequence, ledger_range,
+			era_id, version_label,
 			signatures_count, new_account, rent_fee_charged,
 			soroban_resources_instructions, soroban_resources_read_bytes,
 			soroban_resources_write_bytes
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-			$11, $12, $13, $14, $15, $16, $17, $18, $19, $20
+			$11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+			$21, $22
 		)
 		ON CONFLICT (ledger_sequence, transaction_hash) DO UPDATE SET
 			transaction_id = EXCLUDED.transaction_id,
@@ -1423,7 +1496,9 @@ func (w *Writer) insertTransactions(ctx context.Context, tx pgx.Tx, transactions
 			rent_fee_charged = EXCLUDED.rent_fee_charged,
 			soroban_resources_instructions = EXCLUDED.soroban_resources_instructions,
 			soroban_resources_read_bytes = EXCLUDED.soroban_resources_read_bytes,
-			soroban_resources_write_bytes = EXCLUDED.soroban_resources_write_bytes
+			soroban_resources_write_bytes = EXCLUDED.soroban_resources_write_bytes,
+			era_id = EXCLUDED.era_id,
+			version_label = EXCLUDED.version_label
 	`
 
 	batch := &pgx.Batch{}
@@ -1450,6 +1525,8 @@ func (w *Writer) insertTransactions(ctx context.Context, tx pgx.Tx, transactions
 			txData.CreatedAt,
 			txData.AccountSequence,
 			txData.LedgerRange,
+			txData.EraID,
+			txData.VersionLabel,
 			txData.SignaturesCount,
 			txData.NewAccount,
 			txData.RentFeeCharged,
@@ -1481,14 +1558,14 @@ func (w *Writer) insertOperations(ctx context.Context, tx pgx.Tx, operations []O
 			transaction_hash, transaction_id, operation_id,
 			transaction_index, operation_index, ledger_sequence, source_account,
 			type, type_string, created_at, transaction_successful,
-			operation_result_code, ledger_range, amount, asset, destination,
+			operation_result_code, ledger_range, era_id, version_label, amount, asset, destination,
 			soroban_operation, soroban_contract_id, soroban_function, soroban_arguments_json,
 			contract_calls_json, contracts_involved, max_call_depth,
 			soroban_auth_credentials_types, soroban_auth_addresses
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
 			$11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23,
-			$24, $25
+			$24, $25, $26, $27
 		)
 		ON CONFLICT (ledger_sequence, transaction_hash, operation_index) DO UPDATE SET
 			transaction_id = EXCLUDED.transaction_id,
@@ -1503,7 +1580,9 @@ func (w *Writer) insertOperations(ctx context.Context, tx pgx.Tx, operations []O
 			contracts_involved = EXCLUDED.contracts_involved,
 			max_call_depth = EXCLUDED.max_call_depth,
 			soroban_auth_credentials_types = EXCLUDED.soroban_auth_credentials_types,
-			soroban_auth_addresses = EXCLUDED.soroban_auth_addresses
+			soroban_auth_addresses = EXCLUDED.soroban_auth_addresses,
+			era_id = EXCLUDED.era_id,
+			version_label = EXCLUDED.version_label
 	`
 
 	batch := &pgx.Batch{}
@@ -1532,6 +1611,8 @@ func (w *Writer) insertOperations(ctx context.Context, tx pgx.Tx, operations []O
 			opData.TransactionSuccessful,
 			opData.OperationResultCode,
 			opData.LedgerRange,
+			opData.EraID,
+			opData.VersionLabel,
 			opData.Amount,
 			opData.Asset,
 			opData.Destination,
@@ -1573,10 +1654,10 @@ func (w *Writer) insertEffects(ctx context.Context, tx pgx.Tx, effects []EffectD
 			trustline_limit, authorize_flag, clawback_flag,
 			signer_account, signer_weight,
 			offer_id, seller_account,
-			created_at, ledger_range
+			created_at, ledger_range, era_id, version_label
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-			$11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22
+			$11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24
 		)
 		ON CONFLICT (ledger_sequence, transaction_hash, operation_index, effect_index) DO NOTHING
 	`
@@ -1619,6 +1700,8 @@ func (w *Writer) insertEffects(ctx context.Context, tx pgx.Tx, effects []EffectD
 			e.SellerAccount,
 			e.CreatedAt,
 			e.LedgerRange,
+			e.EraID,
+			e.VersionLabel,
 		)
 	}
 
@@ -1646,10 +1729,10 @@ func (w *Writer) insertTrades(ctx context.Context, tx pgx.Tx, trades []TradeData
 			trade_type, trade_timestamp,
 			seller_account, selling_asset_code, selling_asset_issuer, selling_amount,
 			buyer_account, buying_asset_code, buying_asset_issuer, buying_amount,
-			price, created_at, ledger_range
+			price, created_at, ledger_range, era_id, version_label
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-			$11, $12, $13, $14, $15, $16, $17
+			$11, $12, $13, $14, $15, $16, $17, $18, $19
 		)
 		ON CONFLICT (ledger_sequence, transaction_hash, operation_index, trade_index) DO NOTHING
 	`
@@ -1673,6 +1756,8 @@ func (w *Writer) insertTrades(ctx context.Context, tx pgx.Tx, trades []TradeData
 			tradeData.Price,
 			tradeData.CreatedAt,
 			tradeData.LedgerRange,
+			tradeData.EraID,
+			tradeData.VersionLabel,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to insert trade %s:%d:%d: %w",
@@ -1696,18 +1781,20 @@ func (w *Writer) insertAccounts(ctx context.Context, tx pgx.Tx, accounts []Accou
 			master_weight, low_threshold, med_threshold, high_threshold,
 			flags, auth_required, auth_revocable, auth_immutable, auth_clawback_enabled,
 			signers, sponsor_account,
-			created_at, updated_at, ledger_range
+			created_at, updated_at, ledger_range, era_id, version_label
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
 			$11, $12, $13, $14, $15, $16, $17, $18,
-			$19, $20, $21, $22, $23
+			$19, $20, $21, $22, $23, $24, $25
 		)
 		ON CONFLICT (account_id, ledger_sequence) DO UPDATE SET
 			balance = EXCLUDED.balance,
 			sequence_number = EXCLUDED.sequence_number,
 			num_subentries = EXCLUDED.num_subentries,
 			flags = EXCLUDED.flags,
-			updated_at = EXCLUDED.updated_at
+			updated_at = EXCLUDED.updated_at,
+			era_id = EXCLUDED.era_id,
+			version_label = EXCLUDED.version_label
 	`
 
 	batch := &pgx.Batch{}
@@ -1742,6 +1829,8 @@ func (w *Writer) insertAccounts(ctx context.Context, tx pgx.Tx, accounts []Accou
 			acct.CreatedAt,
 			acct.UpdatedAt,
 			acct.LedgerRange,
+			acct.EraID,
+			acct.VersionLabel,
 		)
 	}
 
@@ -1768,15 +1857,17 @@ func (w *Writer) insertOffers(ctx context.Context, tx pgx.Tx, offers []OfferData
 			selling_asset_type, selling_asset_code, selling_asset_issuer,
 			buying_asset_type, buying_asset_code, buying_asset_issuer,
 			amount, price, flags,
-			created_at, ledger_range
+			created_at, ledger_range, era_id, version_label
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-			$11, $12, $13, $14, $15
+			$11, $12, $13, $14, $15, $16, $17
 		)
 		ON CONFLICT (offer_id, ledger_sequence) DO UPDATE SET
 			amount = EXCLUDED.amount,
 			price = EXCLUDED.price,
-			created_at = EXCLUDED.created_at
+			created_at = EXCLUDED.created_at,
+			era_id = EXCLUDED.era_id,
+			version_label = EXCLUDED.version_label
 	`
 
 	batch := &pgx.Batch{}
@@ -1798,6 +1889,8 @@ func (w *Writer) insertOffers(ctx context.Context, tx pgx.Tx, offers []OfferData
 			offer.Flags,
 			offer.CreatedAt,
 			offer.LedgerRange,
+			offer.EraID,
+			offer.VersionLabel,
 		)
 	}
 
@@ -1823,10 +1916,10 @@ func (w *Writer) insertTrustlines(ctx context.Context, tx pgx.Tx, trustlines []T
 			account_id, asset_code, asset_issuer, asset_type,
 			balance, trust_limit, buying_liabilities, selling_liabilities,
 			authorized, authorized_to_maintain_liabilities, clawback_enabled,
-			ledger_sequence, created_at, ledger_range
+			ledger_sequence, created_at, ledger_range, era_id, version_label
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-			$11, $12, $13, $14
+			$11, $12, $13, $14, $15, $16
 		)
 		ON CONFLICT (account_id, asset_code, asset_issuer, asset_type, ledger_sequence) DO UPDATE SET
 			balance = EXCLUDED.balance,
@@ -1835,7 +1928,9 @@ func (w *Writer) insertTrustlines(ctx context.Context, tx pgx.Tx, trustlines []T
 			selling_liabilities = EXCLUDED.selling_liabilities,
 			authorized = EXCLUDED.authorized,
 			authorized_to_maintain_liabilities = EXCLUDED.authorized_to_maintain_liabilities,
-			clawback_enabled = EXCLUDED.clawback_enabled
+			clawback_enabled = EXCLUDED.clawback_enabled,
+			era_id = EXCLUDED.era_id,
+			version_label = EXCLUDED.version_label
 	`
 
 	batch := &pgx.Batch{}
@@ -1856,6 +1951,8 @@ func (w *Writer) insertTrustlines(ctx context.Context, tx pgx.Tx, trustlines []T
 			tl.LedgerSequence,
 			tl.CreatedAt,
 			tl.LedgerRange,
+			tl.EraID,
+			tl.VersionLabel,
 		)
 	}
 
@@ -1880,15 +1977,17 @@ func (w *Writer) insertAccountSigners(ctx context.Context, tx pgx.Tx, signers []
 	query := `
 		INSERT INTO account_signers_snapshot_v1 (
 			account_id, signer, ledger_sequence, weight, sponsor,
-			deleted, closed_at, ledger_range, created_at
+			deleted, closed_at, ledger_range, created_at, era_id, version_label
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
 		)
 		ON CONFLICT (account_id, signer, ledger_sequence) DO UPDATE SET
 			weight = EXCLUDED.weight,
 			sponsor = EXCLUDED.sponsor,
 			deleted = EXCLUDED.deleted,
-			closed_at = EXCLUDED.closed_at
+			closed_at = EXCLUDED.closed_at,
+			era_id = EXCLUDED.era_id,
+			version_label = EXCLUDED.version_label
 	`
 
 	batch := &pgx.Batch{}
@@ -1904,6 +2003,8 @@ func (w *Writer) insertAccountSigners(ctx context.Context, tx pgx.Tx, signers []
 			s.ClosedAt,
 			s.LedgerRange,
 			s.CreatedAt,
+			s.EraID,
+			s.VersionLabel,
 		)
 	}
 
@@ -1937,9 +2038,9 @@ func (w *Writer) insertClaimableBalances(ctx context.Context, tx pgx.Tx, balance
 		INSERT INTO claimable_balances_snapshot_v1 (
 			balance_id, sponsor, ledger_sequence, closed_at,
 			asset_type, asset_code, asset_issuer, amount,
-			claimants_count, flags, created_at, ledger_range
+			claimants_count, flags, created_at, ledger_range, era_id, version_label
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
 		)
 		ON CONFLICT (balance_id, ledger_sequence) DO UPDATE SET
 			sponsor = EXCLUDED.sponsor,
@@ -1948,7 +2049,9 @@ func (w *Writer) insertClaimableBalances(ctx context.Context, tx pgx.Tx, balance
 			asset_issuer = EXCLUDED.asset_issuer,
 			amount = EXCLUDED.amount,
 			claimants_count = EXCLUDED.claimants_count,
-			flags = EXCLUDED.flags
+			flags = EXCLUDED.flags,
+			era_id = EXCLUDED.era_id,
+			version_label = EXCLUDED.version_label
 	`
 
 	batch := &pgx.Batch{}
@@ -1967,6 +2070,8 @@ func (w *Writer) insertClaimableBalances(ctx context.Context, tx pgx.Tx, balance
 			bal.Flags,
 			bal.CreatedAt,
 			bal.LedgerRange,
+			bal.EraID,
+			bal.VersionLabel,
 		)
 	}
 
@@ -1993,9 +2098,9 @@ func (w *Writer) insertLiquidityPools(ctx context.Context, tx pgx.Tx, pools []Li
 			pool_type, fee, trustline_count, total_pool_shares,
 			asset_a_type, asset_a_code, asset_a_issuer, asset_a_amount,
 			asset_b_type, asset_b_code, asset_b_issuer, asset_b_amount,
-			created_at, ledger_range
+			created_at, ledger_range, era_id, version_label
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
 		)
 		ON CONFLICT (liquidity_pool_id, ledger_sequence) DO UPDATE SET
 			pool_type = EXCLUDED.pool_type,
@@ -2003,7 +2108,9 @@ func (w *Writer) insertLiquidityPools(ctx context.Context, tx pgx.Tx, pools []Li
 			trustline_count = EXCLUDED.trustline_count,
 			total_pool_shares = EXCLUDED.total_pool_shares,
 			asset_a_amount = EXCLUDED.asset_a_amount,
-			asset_b_amount = EXCLUDED.asset_b_amount
+			asset_b_amount = EXCLUDED.asset_b_amount,
+			era_id = EXCLUDED.era_id,
+			version_label = EXCLUDED.version_label
 	`
 
 	batch := &pgx.Batch{}
@@ -2027,6 +2134,8 @@ func (w *Writer) insertLiquidityPools(ctx context.Context, tx pgx.Tx, pools []Li
 			pool.AssetBAmount,
 			pool.CreatedAt,
 			pool.LedgerRange,
+			pool.EraID,
+			pool.VersionLabel,
 		)
 	}
 
@@ -2053,9 +2162,9 @@ func (w *Writer) insertConfigSettings(ctx context.Context, tx pgx.Tx, settings [
 			ledger_max_instructions, tx_max_instructions, fee_rate_per_instructions_increment, tx_memory_limit,
 			ledger_max_read_ledger_entries, ledger_max_read_bytes, ledger_max_write_ledger_entries, ledger_max_write_bytes,
 			tx_max_read_ledger_entries, tx_max_read_bytes, tx_max_write_ledger_entries, tx_max_write_bytes,
-			contract_max_size_bytes, config_setting_xdr, created_at, ledger_range
+			contract_max_size_bytes, config_setting_xdr, created_at, ledger_range, era_id, version_label
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23
 		)
 		ON CONFLICT (config_setting_id, ledger_sequence) DO UPDATE SET
 			last_modified_ledger = EXCLUDED.last_modified_ledger,
@@ -2073,7 +2182,9 @@ func (w *Writer) insertConfigSettings(ctx context.Context, tx pgx.Tx, settings [
 			tx_max_write_ledger_entries = EXCLUDED.tx_max_write_ledger_entries,
 			tx_max_write_bytes = EXCLUDED.tx_max_write_bytes,
 			contract_max_size_bytes = EXCLUDED.contract_max_size_bytes,
-			config_setting_xdr = EXCLUDED.config_setting_xdr
+			config_setting_xdr = EXCLUDED.config_setting_xdr,
+			era_id = EXCLUDED.era_id,
+			version_label = EXCLUDED.version_label
 	`
 
 	batch := &pgx.Batch{}
@@ -2101,6 +2212,8 @@ func (w *Writer) insertConfigSettings(ctx context.Context, tx pgx.Tx, settings [
 			setting.ConfigSettingXDR,
 			setting.CreatedAt,
 			setting.LedgerRange,
+			setting.EraID,
+			setting.VersionLabel,
 		)
 	}
 
@@ -2124,16 +2237,18 @@ func (w *Writer) insertTTL(ctx context.Context, tx pgx.Tx, ttls []TTLData) error
 	query := `
 		INSERT INTO ttl_snapshot_v1 (
 			key_hash, ledger_sequence, live_until_ledger_seq, ttl_remaining, expired,
-			last_modified_ledger, deleted, closed_at, created_at, ledger_range
+			last_modified_ledger, deleted, closed_at, created_at, ledger_range, era_id, version_label
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
 		)
 		ON CONFLICT (key_hash, ledger_sequence) DO UPDATE SET
 			live_until_ledger_seq = EXCLUDED.live_until_ledger_seq,
 			ttl_remaining = EXCLUDED.ttl_remaining,
 			expired = EXCLUDED.expired,
 			last_modified_ledger = EXCLUDED.last_modified_ledger,
-			deleted = EXCLUDED.deleted
+			deleted = EXCLUDED.deleted,
+			era_id = EXCLUDED.era_id,
+			version_label = EXCLUDED.version_label
 	`
 
 	batch := &pgx.Batch{}
@@ -2150,6 +2265,8 @@ func (w *Writer) insertTTL(ctx context.Context, tx pgx.Tx, ttls []TTLData) error
 			ttl.ClosedAt,
 			ttl.CreatedAt,
 			ttl.LedgerRange,
+			ttl.EraID,
+			ttl.VersionLabel,
 		)
 	}
 
@@ -2173,14 +2290,16 @@ func (w *Writer) insertEvictedKeys(ctx context.Context, tx pgx.Tx, keys []Evicte
 	query := `
 		INSERT INTO evicted_keys_state_v1 (
 			key_hash, ledger_sequence, contract_id, key_type, durability,
-			closed_at, ledger_range, created_at
+			closed_at, ledger_range, created_at, era_id, version_label
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10
 		)
 		ON CONFLICT (key_hash, ledger_sequence) DO UPDATE SET
 			contract_id = EXCLUDED.contract_id,
 			key_type = EXCLUDED.key_type,
-			durability = EXCLUDED.durability
+			durability = EXCLUDED.durability,
+			era_id = EXCLUDED.era_id,
+			version_label = EXCLUDED.version_label
 	`
 
 	batch := &pgx.Batch{}
@@ -2195,6 +2314,8 @@ func (w *Writer) insertEvictedKeys(ctx context.Context, tx pgx.Tx, keys []Evicte
 			key.ClosedAt,
 			key.LedgerRange,
 			key.CreatedAt,
+			key.EraID,
+			key.VersionLabel,
 		)
 	}
 
@@ -2235,7 +2356,7 @@ func (w *Writer) insertContractEvents(ctx context.Context, tx pgx.Tx, events []C
 		"event_type", "in_successful_contract_call", "successful", "contract_event_xdr",
 		"topics_json", "topics_decoded", "data_xdr", "data_decoded", "topic_count",
 		"topic0_decoded", "topic1_decoded", "topic2_decoded", "topic3_decoded",
-		"operation_index", "event_index", "created_at", "ledger_range",
+		"operation_index", "event_index", "created_at", "ledger_range", "era_id", "version_label",
 	}
 
 	rows := make([][]interface{}, len(events))
@@ -2263,6 +2384,8 @@ func (w *Writer) insertContractEvents(ctx context.Context, tx pgx.Tx, events []C
 			event.EventIndex,
 			event.CreatedAt,
 			event.LedgerRange,
+			event.EraID,
+			event.VersionLabel,
 		}
 	}
 
@@ -2282,14 +2405,14 @@ func (w *Writer) insertContractEvents(ctx context.Context, tx pgx.Tx, events []C
 			event_type, in_successful_contract_call, successful, contract_event_xdr,
 			topics_json, topics_decoded, data_xdr, data_decoded, topic_count,
 			topic0_decoded, topic1_decoded, topic2_decoded, topic3_decoded,
-			operation_index, event_index, created_at, ledger_range
+			operation_index, event_index, created_at, ledger_range, era_id, version_label
 		)
 		SELECT DISTINCT ON (ledger_sequence, transaction_hash, event_index)
 			event_id, contract_id, ledger_sequence, transaction_hash, closed_at,
 			event_type, in_successful_contract_call, successful, contract_event_xdr,
 			topics_json, topics_decoded, data_xdr, data_decoded, topic_count,
 			topic0_decoded, topic1_decoded, topic2_decoded, topic3_decoded,
-			operation_index, event_index, created_at, ledger_range
+			operation_index, event_index, created_at, ledger_range, era_id, version_label
 		FROM _tmp_events
 		ON CONFLICT (ledger_sequence, transaction_hash, event_index) DO UPDATE SET
 			contract_id = EXCLUDED.contract_id,
@@ -2305,7 +2428,9 @@ func (w *Writer) insertContractEvents(ctx context.Context, tx pgx.Tx, events []C
 			topic0_decoded = EXCLUDED.topic0_decoded,
 			topic1_decoded = EXCLUDED.topic1_decoded,
 			topic2_decoded = EXCLUDED.topic2_decoded,
-			topic3_decoded = EXCLUDED.topic3_decoded
+			topic3_decoded = EXCLUDED.topic3_decoded,
+			era_id = EXCLUDED.era_id,
+			version_label = EXCLUDED.version_label
 	`)
 	if err != nil {
 		return fmt.Errorf("failed to upsert contract events from temp: %w", err)
@@ -2347,7 +2472,7 @@ func (w *Writer) insertContractData(ctx context.Context, tx pgx.Tx, contractData
 		"balance_holder", "balance",
 		"last_modified_ledger", "ledger_entry_change", "deleted", "closed_at",
 		"contract_data_xdr", "created_at", "ledger_range",
-		"token_name", "token_symbol", "token_decimals",
+		"token_name", "token_symbol", "token_decimals", "era_id", "version_label",
 	}
 
 	rows := make([][]interface{}, len(contractDataList))
@@ -2373,6 +2498,8 @@ func (w *Writer) insertContractData(ctx context.Context, tx pgx.Tx, contractData
 			data.TokenName,
 			data.TokenSymbol,
 			data.TokenDecimals,
+			data.EraID,
+			data.VersionLabel,
 		}
 	}
 
@@ -2392,7 +2519,7 @@ func (w *Writer) insertContractData(ctx context.Context, tx pgx.Tx, contractData
 			balance_holder, balance,
 			last_modified_ledger, ledger_entry_change, deleted, closed_at,
 			contract_data_xdr, created_at, ledger_range,
-			token_name, token_symbol, token_decimals
+			token_name, token_symbol, token_decimals, era_id, version_label
 		)
 		SELECT DISTINCT ON (contract_id, ledger_key_hash, ledger_sequence)
 			contract_id, ledger_sequence, ledger_key_hash,
@@ -2401,7 +2528,7 @@ func (w *Writer) insertContractData(ctx context.Context, tx pgx.Tx, contractData
 			balance_holder, balance,
 			last_modified_ledger, ledger_entry_change, deleted, closed_at,
 			contract_data_xdr, created_at, ledger_range,
-			token_name, token_symbol, token_decimals
+			token_name, token_symbol, token_decimals, era_id, version_label
 		FROM _tmp_contract_data
 		ON CONFLICT (contract_id, ledger_key_hash, ledger_sequence) DO UPDATE SET
 			contract_key_type = EXCLUDED.contract_key_type,
@@ -2417,7 +2544,9 @@ func (w *Writer) insertContractData(ctx context.Context, tx pgx.Tx, contractData
 			contract_data_xdr = EXCLUDED.contract_data_xdr,
 			token_name = EXCLUDED.token_name,
 			token_symbol = EXCLUDED.token_symbol,
-			token_decimals = EXCLUDED.token_decimals
+			token_decimals = EXCLUDED.token_decimals,
+			era_id = EXCLUDED.era_id,
+			version_label = EXCLUDED.version_label
 	`)
 	if err != nil {
 		return fmt.Errorf("failed to upsert contract data from temp: %w", err)
@@ -2439,9 +2568,9 @@ func (w *Writer) insertContractCode(ctx context.Context, tx pgx.Tx, contractCode
 			ledger_sequence,
 			n_instructions, n_functions, n_globals, n_table_entries, n_types,
 			n_data_segments, n_elem_segments, n_imports, n_exports, n_data_segment_bytes,
-			created_at, ledger_range
+			created_at, ledger_range, era_id, version_label
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22
 		)
 		ON CONFLICT (contract_code_hash, ledger_sequence) DO UPDATE SET
 			ledger_key_hash = EXCLUDED.ledger_key_hash,
@@ -2458,7 +2587,9 @@ func (w *Writer) insertContractCode(ctx context.Context, tx pgx.Tx, contractCode
 			n_elem_segments = EXCLUDED.n_elem_segments,
 			n_imports = EXCLUDED.n_imports,
 			n_exports = EXCLUDED.n_exports,
-			n_data_segment_bytes = EXCLUDED.n_data_segment_bytes
+			n_data_segment_bytes = EXCLUDED.n_data_segment_bytes,
+			era_id = EXCLUDED.era_id,
+			version_label = EXCLUDED.version_label
 	`
 
 	for _, code := range contractCodeList {
@@ -2483,6 +2614,8 @@ func (w *Writer) insertContractCode(ctx context.Context, tx pgx.Tx, contractCode
 			code.NDataSegmentBytes,
 			code.CreatedAt,
 			code.LedgerRange,
+			code.EraID,
+			code.VersionLabel,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to insert contract code %s: %w", code.ContractCodeHash, err)
@@ -2502,9 +2635,9 @@ func (w *Writer) insertNativeBalances(ctx context.Context, tx pgx.Tx, nativeBala
 		INSERT INTO native_balances_snapshot_v1 (
 			account_id, balance, buying_liabilities, selling_liabilities,
 			num_subentries, num_sponsoring, num_sponsored, sequence_number,
-			last_modified_ledger, ledger_sequence, ledger_range
+			last_modified_ledger, ledger_sequence, ledger_range, era_id, version_label
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
 		)
 		ON CONFLICT (account_id, ledger_sequence) DO UPDATE SET
 			balance = EXCLUDED.balance,
@@ -2514,7 +2647,9 @@ func (w *Writer) insertNativeBalances(ctx context.Context, tx pgx.Tx, nativeBala
 			num_sponsoring = EXCLUDED.num_sponsoring,
 			num_sponsored = EXCLUDED.num_sponsored,
 			sequence_number = EXCLUDED.sequence_number,
-			last_modified_ledger = EXCLUDED.last_modified_ledger
+			last_modified_ledger = EXCLUDED.last_modified_ledger,
+			era_id = EXCLUDED.era_id,
+			version_label = EXCLUDED.version_label
 	`
 
 	batch := &pgx.Batch{}
@@ -2532,6 +2667,8 @@ func (w *Writer) insertNativeBalances(ctx context.Context, tx pgx.Tx, nativeBala
 			nb.LastModifiedLedger,
 			nb.LedgerSequence,
 			nb.LedgerRange,
+			nb.EraID,
+			nb.VersionLabel,
 		)
 	}
 
@@ -2556,15 +2693,17 @@ func (w *Writer) insertRestoredKeys(ctx context.Context, tx pgx.Tx, restoredKeys
 		INSERT INTO restored_keys_state_v1 (
 			key_hash, ledger_sequence,
 			contract_id, key_type, durability, restored_from_ledger,
-			closed_at, ledger_range, created_at
+			closed_at, ledger_range, created_at, era_id, version_label
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
 		)
 		ON CONFLICT (key_hash, ledger_sequence) DO UPDATE SET
 			contract_id = EXCLUDED.contract_id,
 			key_type = EXCLUDED.key_type,
 			durability = EXCLUDED.durability,
-			restored_from_ledger = EXCLUDED.restored_from_ledger
+			restored_from_ledger = EXCLUDED.restored_from_ledger,
+			era_id = EXCLUDED.era_id,
+			version_label = EXCLUDED.version_label
 	`
 
 	for _, rk := range restoredKeysList {
@@ -2578,6 +2717,8 @@ func (w *Writer) insertRestoredKeys(ctx context.Context, tx pgx.Tx, restoredKeys
 			rk.ClosedAt,
 			rk.LedgerRange,
 			rk.CreatedAt,
+			rk.EraID,
+			rk.VersionLabel,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to insert restored key %s: %w", rk.KeyHash, err)
@@ -2596,8 +2737,8 @@ func (w *Writer) insertContractCreations(ctx context.Context, tx pgx.Tx, creatio
 	query := `
 		INSERT INTO contract_creations_v1 (
 			contract_id, creator_address, wasm_hash,
-			created_ledger, created_at, ledger_range
-		) VALUES ($1, $2, $3, $4, $5, $6)
+			created_ledger, created_at, ledger_range, era_id, version_label
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (contract_id) DO NOTHING
 	`
 
@@ -2609,6 +2750,8 @@ func (w *Writer) insertContractCreations(ctx context.Context, tx pgx.Tx, creatio
 			c.CreatedLedger,
 			c.CreatedAt,
 			c.LedgerRange,
+			c.EraID,
+			c.VersionLabel,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to insert contract creation %s: %w", c.ContractID, err)
@@ -2680,7 +2823,7 @@ func (w *Writer) insertTokenTransfers(ctx context.Context, tx pgx.Tx, transfers 
 		"ledger_sequence", "transaction_hash", "transaction_id", "operation_id",
 		"operation_index", "event_type", "from", "to", "asset", "asset_type",
 		"asset_code", "asset_issuer", "amount", "amount_raw", "contract_id",
-		"closed_at", "created_at", "ledger_range",
+		"closed_at", "created_at", "ledger_range", "era_id", "version_label",
 	}
 
 	rows := make([][]interface{}, len(transfers))
@@ -2704,6 +2847,8 @@ func (w *Writer) insertTokenTransfers(ctx context.Context, tx pgx.Tx, transfers 
 			t.ClosedAt,
 			t.CreatedAt,
 			t.LedgerRange,
+			t.EraID,
+			t.VersionLabel,
 		}
 	}
 
@@ -2720,13 +2865,13 @@ func (w *Writer) insertTokenTransfers(ctx context.Context, tx pgx.Tx, transfers 
 			ledger_sequence, transaction_hash, transaction_id, operation_id,
 			operation_index, event_type, "from", "to", asset, asset_type,
 			asset_code, asset_issuer, amount, amount_raw, contract_id,
-			closed_at, created_at, ledger_range
+			closed_at, created_at, ledger_range, era_id, version_label
 		)
 		SELECT DISTINCT ON (ledger_sequence, transaction_hash, operation_index, event_type, "from", "to", amount_raw)
 			ledger_sequence, transaction_hash, transaction_id, operation_id,
 			operation_index, event_type, "from", "to", asset, asset_type,
 			asset_code, asset_issuer, amount, amount_raw, contract_id,
-			closed_at, created_at, ledger_range
+			closed_at, created_at, ledger_range, era_id, version_label
 		FROM _tmp_token_transfers
 		ON CONFLICT DO NOTHING
 	`)

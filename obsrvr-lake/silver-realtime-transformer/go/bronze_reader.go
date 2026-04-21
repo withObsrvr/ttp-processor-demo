@@ -662,7 +662,9 @@ func (br *BronzeReader) QueryTrustlinesSnapshot(ctx context.Context, startLedger
 			clawback_enabled,
 			ledger_sequence,
 			created_at,
-			ledger_range
+			ledger_range,
+			era_id,
+			version_label
 		FROM trustlines_snapshot_v1
 		WHERE ledger_sequence BETWEEN $1 AND $2
 		ORDER BY account_id, asset_type, asset_code, asset_issuer, ledger_sequence DESC
@@ -694,7 +696,9 @@ func (br *BronzeReader) QueryOffersSnapshot(ctx context.Context, startLedger, en
 			flags,
 			ledger_sequence,
 			created_at,
-			ledger_range
+			ledger_range,
+			era_id,
+			version_label
 		FROM offers_snapshot_v1
 		WHERE ledger_sequence BETWEEN $1 AND $2
 		ORDER BY offer_id, ledger_sequence DESC
@@ -786,7 +790,9 @@ func (br *BronzeReader) QueryContractInvocations(ctx context.Context, startLedge
 			o.soroban_arguments_json,
 			o.transaction_successful,
 			o.created_at,
-			o.ledger_range
+			o.ledger_range,
+			o.era_id,
+			o.version_label
 		FROM operations_row_v2 o
 		WHERE o.ledger_sequence BETWEEN $1 AND $2
 		  AND o.type = 24  -- InvokeHostFunction
@@ -1268,7 +1274,9 @@ func (br *BronzeReader) QueryContractCreations(ctx context.Context, startLedger,
 			creator_address,
 			wasm_hash,
 			created_ledger,
-			created_at
+			created_at,
+			era_id,
+			version_label
 		FROM contract_creations_v1
 		WHERE created_ledger BETWEEN $1 AND $2
 		ORDER BY created_ledger

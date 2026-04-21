@@ -1468,7 +1468,7 @@ func (rt *RealtimeTransformer) transformTrustlinesCurrent(ctx context.Context, t
 			&row.AccountID, &row.AssetType, &row.AssetIssuer, &row.AssetCode,
 			&row.Balance, &row.TrustLineLimit, &row.BuyingLiabilities, &row.SellingLiabilities,
 			&row.Authorized, &row.AuthorizedToMaintainLiabilities, &row.ClawbackEnabled,
-			&row.LedgerSequence, &row.CreatedAt, &row.LedgerRange,
+			&row.LedgerSequence, &row.CreatedAt, &row.LedgerRange, &row.EraID, &row.VersionLabel,
 		)
 
 		if err != nil {
@@ -1534,7 +1534,7 @@ func (rt *RealtimeTransformer) transformOffersCurrent(ctx context.Context, tx *s
 			&row.OfferID, &row.SellerID, &row.SellingAssetType, &row.SellingAssetCode, &row.SellingAssetIssuer,
 			&row.BuyingAssetType, &row.BuyingAssetCode, &row.BuyingAssetIssuer,
 			&row.Amount, &row.Price, &row.Flags,
-			&row.LedgerSequence, &row.CreatedAt, &row.LedgerRange,
+			&row.LedgerSequence, &row.CreatedAt, &row.LedgerRange, &row.EraID, &row.VersionLabel,
 		)
 
 		if err != nil {
@@ -1858,6 +1858,7 @@ func (rt *RealtimeTransformer) transformContractInvocations(ctx context.Context,
 			&row.LedgerSequence, &row.TransactionIndex, &row.OperationIndex,
 			&row.TransactionHash, &row.SourceAccount, &row.ContractID, &row.FunctionName,
 			&row.ArgumentsJSON, &row.Successful, &row.ClosedAt, &row.LedgerRange,
+			&row.EraID, &row.VersionLabel,
 		)
 		if err != nil {
 			return count, fmt.Errorf("failed to scan contract invocation row: %w", err)
@@ -1897,8 +1898,10 @@ func (rt *RealtimeTransformer) transformContractMetadata(ctx context.Context, tx
 			wasmHash       sql.NullString
 			createdLedger  int64
 			createdAt      time.Time
+			eraID          sql.NullString
+			versionLabel   sql.NullString
 		)
-		if err := rows.Scan(&contractID, &creatorAddress, &wasmHash, &createdLedger, &createdAt); err != nil {
+		if err := rows.Scan(&contractID, &creatorAddress, &wasmHash, &createdLedger, &createdAt, &eraID, &versionLabel); err != nil {
 			return count, fmt.Errorf("failed to scan contract creation row: %w", err)
 		}
 
@@ -1907,7 +1910,7 @@ func (rt *RealtimeTransformer) transformContractMetadata(ctx context.Context, tx
 			wasmHashPtr = &wasmHash.String
 		}
 
-		if err := batch.Add(contractID, creatorAddress, wasmHashPtr, createdLedger, createdAt); err != nil {
+		if err := batch.Add(contractID, creatorAddress, wasmHashPtr, createdLedger, createdAt, eraID, versionLabel); err != nil {
 			return count, fmt.Errorf("failed to add contract metadata to batch: %w", err)
 		}
 		if err := batch.FlushIfNeeded(ctx, tx); err != nil {

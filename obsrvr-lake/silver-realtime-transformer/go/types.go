@@ -13,17 +13,17 @@ import (
 // EnrichedOperationRow represents a row in the enriched_history_operations table
 type EnrichedOperationRow struct {
 	// Operation fields
-	TransactionHash      *string
-	OperationIndex       *int
-	LedgerSequence       *int64
-	SourceAccount        *string
-	Type                 *int
-	TypeString           *string
-	CreatedAt            *time.Time
+	TransactionHash       *string
+	OperationIndex        *int
+	LedgerSequence        *int64
+	SourceAccount         *string
+	Type                  *int
+	TypeString            *string
+	CreatedAt             *time.Time
 	TransactionSuccessful *bool
-	OperationResultCode  *string
-	OperationTraceCode   *string
-	LedgerRange          *int64
+	OperationResultCode   *string
+	OperationTraceCode    *string
+	LedgerRange           *int64
 
 	// Asset fields
 	SourceAccountMuxed *string
@@ -69,14 +69,14 @@ type EnrichedOperationRow struct {
 	InflationDest   *string
 
 	// Flags and thresholds
-	SetFlags       *int
-	SetFlagsS      interface{} // PostgreSQL array
-	ClearFlags     *int
-	ClearFlagsS    interface{} // PostgreSQL array
+	SetFlags        *int
+	SetFlagsS       interface{} // PostgreSQL array
+	ClearFlags      *int
+	ClearFlagsS     interface{} // PostgreSQL array
 	MasterKeyWeight *int
-	LowThreshold   *int
-	MedThreshold   *int
-	HighThreshold  *int
+	LowThreshold    *int
+	MedThreshold    *int
+	HighThreshold   *int
 
 	// Signer fields
 	SignerAccountID *string
@@ -95,10 +95,10 @@ type EnrichedOperationRow struct {
 	FunctionName     *string
 
 	// Claimable balance fields
-	BalanceID      *string
-	Claimant       *string
-	ClaimantMuxed  *string
-	Predicate      *string
+	BalanceID     *string
+	Claimant      *string
+	ClaimantMuxed *string
+	Predicate     *string
 
 	// Liquidity pool fields
 	LiquidityPoolID *string
@@ -127,15 +127,15 @@ type EnrichedOperationRow struct {
 	TxMemo           *string
 
 	// Ledger fields (enriched)
-	LedgerClosedAt           *time.Time
-	LedgerTotalCoins         *int64
-	LedgerFeePool            *int64
-	LedgerBaseFee            *int
-	LedgerBaseReserve        *int
-	LedgerTransactionCount   *int
-	LedgerOperationCount     *int
-	LedgerSuccessfulTxCount  *int
-	LedgerFailedTxCount      *int
+	LedgerClosedAt          *time.Time
+	LedgerTotalCoins        *int64
+	LedgerFeePool           *int64
+	LedgerBaseFee           *int
+	LedgerBaseReserve       *int
+	LedgerTransactionCount  *int
+	LedgerOperationCount    *int
+	LedgerSuccessfulTxCount *int
+	LedgerFailedTxCount     *int
 
 	// Derived fields
 	IsPaymentOp *bool
@@ -254,21 +254,23 @@ type TrustlineSnapshotRow struct {
 
 // TrustlineCurrentRow represents a row in the trustlines_current table
 type TrustlineCurrentRow struct {
-	AccountID                       string
-	AssetType                       string
-	AssetIssuer                     string
-	AssetCode                       string
-	LiquidityPoolID                 sql.NullString // NULL for classic trustlines
-	Balance                         string         // stored as TEXT in bronze, converted to BIGINT for silver
-	TrustLineLimit                  string
-	BuyingLiabilities               string
-	SellingLiabilities              string
-	Flags                           int // Computed from: authorized(1) + auth_to_maintain(2) + clawback(4)
-	LastModifiedLedger              int64
-	LedgerSequence                  int64
-	CreatedAt                       time.Time
-	Sponsor                         sql.NullString
-	LedgerRange                     int64
+	AccountID          string
+	AssetType          string
+	AssetIssuer        string
+	AssetCode          string
+	LiquidityPoolID    sql.NullString // NULL for classic trustlines
+	Balance            string         // stored as TEXT in bronze, converted to BIGINT for silver
+	TrustLineLimit     string
+	BuyingLiabilities  string
+	SellingLiabilities string
+	Flags              int // Computed from: authorized(1) + auth_to_maintain(2) + clawback(4)
+	LastModifiedLedger int64
+	LedgerSequence     int64
+	CreatedAt          time.Time
+	Sponsor            sql.NullString
+	LedgerRange        int64
+	EraID              sql.NullString
+	VersionLabel       sql.NullString
 
 	// Temporary fields for bronze parsing (not written to silver)
 	Authorized                      bool
@@ -317,6 +319,8 @@ type OfferCurrentRow struct {
 	CreatedAt          time.Time
 	Sponsor            sql.NullString
 	LedgerRange        int64
+	EraID              sql.NullString
+	VersionLabel       sql.NullString
 }
 
 // AccountSignerSnapshotRow represents a row in the account_signers_snapshot table (SCD Type 2)
@@ -359,7 +363,9 @@ type ContractInvocationRow struct {
 	ClosedAt   time.Time
 
 	// Partitioning
-	LedgerRange int64
+	LedgerRange  int64
+	EraID        sql.NullString
+	VersionLabel sql.NullString
 }
 
 // ContractCallRow represents a row in the contract_invocation_calls table
@@ -375,10 +381,10 @@ type ContractCallRow struct {
 	TransactionHash  string
 
 	// Call relationship
-	FromContract string
-	ToContract   string
-	FunctionName string
-	CallDepth    int
+	FromContract   string
+	ToContract     string
+	FunctionName   string
+	CallDepth      int
 	ExecutionOrder int
 
 	// Status
@@ -407,24 +413,24 @@ type ContractHierarchyRow struct {
 
 // LiquidityPoolCurrentRow represents a row in the liquidity_pools_current table
 type LiquidityPoolCurrentRow struct {
-	LiquidityPoolID   string
-	PoolType          string
-	Fee               int
-	TrustlineCount    int
-	TotalPoolShares   int64
-	AssetAType        string
-	AssetACode        sql.NullString
-	AssetAIssuer      sql.NullString
-	AssetAAmount      int64
-	AssetBType        string
-	AssetBCode        sql.NullString
-	AssetBIssuer      sql.NullString
-	AssetBAmount      int64
+	LiquidityPoolID    string
+	PoolType           string
+	Fee                int
+	TrustlineCount     int
+	TotalPoolShares    int64
+	AssetAType         string
+	AssetACode         sql.NullString
+	AssetAIssuer       sql.NullString
+	AssetAAmount       int64
+	AssetBType         string
+	AssetBCode         sql.NullString
+	AssetBIssuer       sql.NullString
+	AssetBAmount       int64
 	LastModifiedLedger int64
-	LedgerSequence    int64
-	ClosedAt          time.Time
-	CreatedAt         time.Time
-	LedgerRange       int64
+	LedgerSequence     int64
+	ClosedAt           time.Time
+	CreatedAt          time.Time
+	LedgerRange        int64
 }
 
 // ClaimableBalanceCurrentRow represents a row in the claimable_balances_current table
@@ -555,15 +561,15 @@ type ContractCodeCurrentRow struct {
 // TTLCurrentRow represents a row in the ttl_current table
 // Extracted from Bronze ttl_snapshot_v1 (UPSERT pattern)
 type TTLCurrentRow struct {
-	KeyHash             string
-	LiveUntilLedgerSeq  int64
-	TTLRemaining        sql.NullInt32 // Computed: live_until_ledger_seq - ledger_sequence
-	Expired             bool
-	LastModifiedLedger  int64
-	LedgerSequence      int64
-	ClosedAt            time.Time
-	CreatedAt           time.Time
-	LedgerRange         int64
+	KeyHash            string
+	LiveUntilLedgerSeq int64
+	TTLRemaining       sql.NullInt32 // Computed: live_until_ledger_seq - ledger_sequence
+	Expired            bool
+	LastModifiedLedger int64
+	LedgerSequence     int64
+	ClosedAt           time.Time
+	CreatedAt          time.Time
+	LedgerRange        int64
 }
 
 // EvictedKeyRow represents a row in the evicted_keys table (event stream - append only)
@@ -595,14 +601,14 @@ type RestoredKeyRow struct {
 // TokenRegistryRow represents a row in the token_registry table
 // Materialized from Bronze contract_data_snapshot_v1 instance entries with token metadata
 type TokenRegistryRow struct {
-	ContractID        string
-	TokenName         sql.NullString
-	TokenSymbol       sql.NullString
-	TokenDecimals     int
-	AssetCode         sql.NullString
-	AssetIssuer       sql.NullString
-	TokenType         string // "sac" or "custom_soroban"
-	FirstSeenLedger   int64
+	ContractID         string
+	TokenName          sql.NullString
+	TokenSymbol        sql.NullString
+	TokenDecimals      int
+	AssetCode          sql.NullString
+	AssetIssuer        sql.NullString
+	TokenType          string // "sac" or "custom_soroban"
+	FirstSeenLedger    int64
 	LastModifiedLedger int64
 }
 
@@ -762,6 +768,7 @@ func (row *TrustlineCurrentRow) TrustlineCurrentValues() ([]interface{}, error) 
 		row.AccountID, row.AssetType, row.AssetIssuer, row.AssetCode, row.LiquidityPoolID,
 		balance, limit, buyLiab, sellLiab,
 		row.Flags, row.LastModifiedLedger, row.LedgerSequence, row.CreatedAt, row.Sponsor, row.LedgerRange,
+		row.EraID, row.VersionLabel,
 	}, nil
 }
 
@@ -798,6 +805,7 @@ func (row *OfferCurrentRow) OfferCurrentValues() ([]interface{}, error) {
 		row.BuyingAssetType, row.BuyingAssetCode, row.BuyingAssetIssuer,
 		amount, row.PriceN, row.PriceD, row.Price, row.Flags,
 		row.LastModifiedLedger, row.LedgerSequence, row.CreatedAt, row.Sponsor, row.LedgerRange,
+		row.EraID, row.VersionLabel,
 	}, nil
 }
 
@@ -816,6 +824,7 @@ func (row *ContractInvocationRow) Values() []interface{} {
 		row.LedgerSequence, row.TransactionIndex, row.OperationIndex,
 		row.TransactionHash, row.SourceAccount, row.ContractID, row.FunctionName,
 		row.ArgumentsJSON, row.Successful, row.ClosedAt, row.LedgerRange,
+		row.EraID, row.VersionLabel,
 	}
 }
 

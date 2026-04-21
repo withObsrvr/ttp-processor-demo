@@ -233,7 +233,8 @@ var explicitColumnTables = map[string]string{
 		operation_index, event_type, "from", "to",
 		asset, asset_type, asset_code, asset_issuer,
 		amount, amount_raw, contract_id,
-		closed_at, created_at, ledger_range`,
+		closed_at, created_at, ledger_range,
+		era_id, version_label`,
 }
 
 // buildFlushSQL constructs the INSERT...SELECT SQL for flushing a table.

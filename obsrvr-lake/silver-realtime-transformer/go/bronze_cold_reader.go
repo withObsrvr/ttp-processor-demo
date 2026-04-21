@@ -530,8 +530,8 @@ func (r *BronzeColdReader) QueryAccountsSnapshot(ctx context.Context, startLedge
 				closed_at AS updated_at,
 				ledger_sequence,
 				ledger_range,
-				NULL AS era_id,
-				NULL AS version_label,
+				era_id,
+				version_label,
 				ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY ledger_sequence DESC) as rn
 			FROM %s
 			WHERE ledger_sequence BETWEEN $1 AND $2
@@ -601,8 +601,8 @@ func (r *BronzeColdReader) QueryAccountsSnapshotAll(ctx context.Context, startLe
 			closed_at AS created_at,
 			closed_at AS updated_at,
 			ledger_range,
-			NULL AS era_id,
-			NULL AS version_label
+			era_id,
+			version_label
 		FROM %s
 		WHERE ledger_sequence BETWEEN $1 AND $2
 		ORDER BY account_id, ledger_sequence
@@ -635,8 +635,8 @@ func (r *BronzeColdReader) QueryTrustlinesSnapshotAll(ctx context.Context, start
 			l.closed_at,
 			l.closed_at AS created_at,
 			t.ledger_range,
-			NULL AS era_id,
-			NULL AS version_label
+			t.era_id,
+			t.version_label
 		FROM %s t
 		INNER JOIN %s l ON t.ledger_sequence = l.sequence
 		WHERE t.ledger_sequence BETWEEN $1 AND $2
@@ -670,6 +670,8 @@ func (r *BronzeColdReader) QueryTrustlinesSnapshot(ctx context.Context, startLed
 				ledger_sequence,
 				TIMESTAMP '1970-01-01' AS created_at,
 				ledger_range,
+				era_id,
+				version_label,
 				ROW_NUMBER() OVER (PARTITION BY account_id, asset_type, asset_code, asset_issuer ORDER BY ledger_sequence DESC) as rn
 			FROM %s
 			WHERE ledger_sequence BETWEEN $1 AND $2
@@ -688,7 +690,9 @@ func (r *BronzeColdReader) QueryTrustlinesSnapshot(ctx context.Context, startLed
 			clawback_enabled,
 			ledger_sequence,
 			created_at,
-			ledger_range
+			ledger_range,
+			era_id,
+			version_label
 		FROM ranked
 		WHERE rn = 1
 	`, r.tableName("trustlines_snapshot_v1"))
@@ -720,6 +724,8 @@ func (r *BronzeColdReader) QueryOffersSnapshot(ctx context.Context, startLedger,
 				ledger_sequence,
 				closed_at AS created_at,
 				ledger_range,
+				era_id,
+				version_label,
 				ROW_NUMBER() OVER (PARTITION BY offer_id ORDER BY ledger_sequence DESC) as rn
 			FROM %s
 			WHERE ledger_sequence BETWEEN $1 AND $2
@@ -738,7 +744,9 @@ func (r *BronzeColdReader) QueryOffersSnapshot(ctx context.Context, startLedger,
 			flags,
 			ledger_sequence,
 			created_at,
-			ledger_range
+			ledger_range,
+			era_id,
+			version_label
 		FROM ranked
 		WHERE rn = 1
 	`, r.tableName("offers_snapshot_v1"))
@@ -770,8 +778,8 @@ func (r *BronzeColdReader) QueryOffersSnapshotAll(ctx context.Context, startLedg
 			flags,
 			closed_at AS created_at,
 			ledger_range,
-			NULL AS era_id,
-			NULL AS version_label
+			era_id,
+			version_label
 		FROM %s
 		WHERE ledger_sequence BETWEEN $1 AND $2
 		ORDER BY offer_id, ledger_sequence
@@ -796,8 +804,8 @@ func (r *BronzeColdReader) QueryAccountSignersSnapshotAll(ctx context.Context, s
 			weight,
 			sponsor,
 			ledger_range,
-			NULL AS era_id,
-			NULL AS version_label
+			era_id,
+			version_label
 		FROM %s
 		WHERE ledger_sequence BETWEEN $1 AND $2
 		  AND deleted = false
@@ -830,7 +838,9 @@ func (r *BronzeColdReader) QueryContractInvocations(ctx context.Context, startLe
 			o.soroban_arguments_json,
 			o.transaction_successful,
 			o.created_at,
-			o.ledger_range
+			o.ledger_range,
+			o.era_id,
+			o.version_label
 		FROM %s o
 		WHERE o.ledger_sequence BETWEEN $1 AND $2
 		  AND o.type = 24
