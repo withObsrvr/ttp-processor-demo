@@ -117,6 +117,62 @@ func (c *DuckDBClient) applySilverMigrations() error {
 				c.config.CatalogName, c.config.SchemaName,
 			),
 		},
+		{
+			name: "contract_invocations_raw.era_id",
+			sql: fmt.Sprintf(
+				`ALTER TABLE %s.%s.contract_invocations_raw ADD COLUMN IF NOT EXISTS era_id VARCHAR`,
+				c.config.CatalogName, c.config.SchemaName,
+			),
+		},
+		{
+			name: "contract_invocations_raw.version_label",
+			sql: fmt.Sprintf(
+				`ALTER TABLE %s.%s.contract_invocations_raw ADD COLUMN IF NOT EXISTS version_label VARCHAR`,
+				c.config.CatalogName, c.config.SchemaName,
+			),
+		},
+		{
+			name: "contract_metadata.era_id",
+			sql: fmt.Sprintf(
+				`ALTER TABLE %s.%s.contract_metadata ADD COLUMN IF NOT EXISTS era_id VARCHAR`,
+				c.config.CatalogName, c.config.SchemaName,
+			),
+		},
+		{
+			name: "contract_metadata.version_label",
+			sql: fmt.Sprintf(
+				`ALTER TABLE %s.%s.contract_metadata ADD COLUMN IF NOT EXISTS version_label VARCHAR`,
+				c.config.CatalogName, c.config.SchemaName,
+			),
+		},
+		{
+			name: "trustlines_current.era_id",
+			sql: fmt.Sprintf(
+				`ALTER TABLE %s.%s.trustlines_current ADD COLUMN IF NOT EXISTS era_id VARCHAR`,
+				c.config.CatalogName, c.config.SchemaName,
+			),
+		},
+		{
+			name: "trustlines_current.version_label",
+			sql: fmt.Sprintf(
+				`ALTER TABLE %s.%s.trustlines_current ADD COLUMN IF NOT EXISTS version_label VARCHAR`,
+				c.config.CatalogName, c.config.SchemaName,
+			),
+		},
+		{
+			name: "offers_current.era_id",
+			sql: fmt.Sprintf(
+				`ALTER TABLE %s.%s.offers_current ADD COLUMN IF NOT EXISTS era_id VARCHAR`,
+				c.config.CatalogName, c.config.SchemaName,
+			),
+		},
+		{
+			name: "offers_current.version_label",
+			sql: fmt.Sprintf(
+				`ALTER TABLE %s.%s.offers_current ADD COLUMN IF NOT EXISTS version_label VARCHAR`,
+				c.config.CatalogName, c.config.SchemaName,
+			),
+		},
 	}
 
 	for _, m := range migrations {

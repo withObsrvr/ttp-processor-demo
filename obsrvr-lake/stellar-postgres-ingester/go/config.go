@@ -20,6 +20,8 @@ type Config struct {
 		NetworkPassphrase string `yaml:"network_passphrase"`
 		StartLedger       uint32 `yaml:"start_ledger"`
 		EndLedger         uint32 `yaml:"end_ledger"` // 0 = continuous (live mode)
+		EraID             string `yaml:"era_id"`
+		VersionLabel      string `yaml:"version_label"`
 	} `yaml:"source"`
 
 	Postgres struct {
@@ -72,8 +74,22 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.Postgres.SSLMode == "" {
 		cfg.Postgres.SSLMode = "disable"
 	}
+	if cfg.Source.VersionLabel == "" {
+		cfg.Source.VersionLabel = "live"
+	}
 
 	return &cfg, nil
+}
+
+func (c *Config) EraIDPtr() *string {
+	if c.Source.EraID == "" {
+		return nil
+	}
+	return &c.Source.EraID
+}
+
+func (c *Config) VersionLabel() string {
+	return c.Source.VersionLabel
 }
 
 // GetPostgresConnectionString returns a connection string for PostgreSQL

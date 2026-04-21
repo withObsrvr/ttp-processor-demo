@@ -294,7 +294,7 @@ const accountCurrentConflict = `ON CONFLICT (account_id) DO UPDATE SET
 var trustlineCurrentColumns = []string{
 	"account_id", "asset_type", "asset_issuer", "asset_code", "liquidity_pool_id",
 	"balance", "trust_line_limit", "buying_liabilities", "selling_liabilities",
-	"flags", "last_modified_ledger", "ledger_sequence", "created_at", "sponsor", "ledger_range",
+	"flags", "last_modified_ledger", "ledger_sequence", "created_at", "sponsor", "ledger_range", "era_id", "version_label",
 }
 
 const trustlineCurrentConflict = `ON CONFLICT (account_id, asset_type, COALESCE(asset_code, ''), COALESCE(asset_issuer, ''), COALESCE(liquidity_pool_id, '')) DO UPDATE SET
@@ -307,13 +307,15 @@ const trustlineCurrentConflict = `ON CONFLICT (account_id, asset_type, COALESCE(
 	ledger_sequence = EXCLUDED.ledger_sequence,
 	sponsor = EXCLUDED.sponsor,
 	ledger_range = EXCLUDED.ledger_range,
+	era_id = EXCLUDED.era_id,
+	version_label = EXCLUDED.version_label,
 	updated_at = NOW()`
 
 var offerCurrentColumns = []string{
 	"offer_id", "seller_id", "selling_asset_type", "selling_asset_code", "selling_asset_issuer",
 	"buying_asset_type", "buying_asset_code", "buying_asset_issuer",
 	"amount", "price_n", "price_d", "price", "flags",
-	"last_modified_ledger", "ledger_sequence", "created_at", "sponsor", "ledger_range",
+	"last_modified_ledger", "ledger_sequence", "created_at", "sponsor", "ledger_range", "era_id", "version_label",
 }
 
 const offerCurrentConflict = `ON CONFLICT (offer_id) DO UPDATE SET
@@ -333,29 +335,35 @@ const offerCurrentConflict = `ON CONFLICT (offer_id) DO UPDATE SET
 	ledger_sequence = EXCLUDED.ledger_sequence,
 	sponsor = EXCLUDED.sponsor,
 	ledger_range = EXCLUDED.ledger_range,
+	era_id = EXCLUDED.era_id,
+	version_label = EXCLUDED.version_label,
 	updated_at = NOW()`
 
 var contractInvocationColumns = []string{
 	"ledger_sequence", "transaction_index", "operation_index",
 	"transaction_hash", "source_account", "contract_id", "function_name",
-	"arguments_json", "successful", "closed_at", "ledger_range",
+	"arguments_json", "successful", "closed_at", "ledger_range", "era_id", "version_label",
 }
 
 const contractInvocationConflict = `ON CONFLICT (ledger_sequence, transaction_index, operation_index) DO UPDATE SET
 	contract_id = EXCLUDED.contract_id,
 	function_name = EXCLUDED.function_name,
 	arguments_json = EXCLUDED.arguments_json,
-	successful = EXCLUDED.successful`
+	successful = EXCLUDED.successful,
+	era_id = EXCLUDED.era_id,
+	version_label = EXCLUDED.version_label`
 
 var contractMetadataColumns = []string{
-	"contract_id", "creator_address", "wasm_hash", "created_ledger", "created_at",
+	"contract_id", "creator_address", "wasm_hash", "created_ledger", "created_at", "era_id", "version_label",
 }
 
 const contractMetadataConflict = `ON CONFLICT (contract_id) DO UPDATE SET
 	creator_address = EXCLUDED.creator_address,
 	wasm_hash = COALESCE(EXCLUDED.wasm_hash, contract_metadata.wasm_hash),
 	created_ledger = EXCLUDED.created_ledger,
-	created_at = EXCLUDED.created_at`
+	created_at = EXCLUDED.created_at,
+	era_id = EXCLUDED.era_id,
+	version_label = EXCLUDED.version_label`
 
 var liquidityPoolCurrentColumns = []string{
 	"liquidity_pool_id", "pool_type", "fee", "trustline_count", "total_pool_shares",

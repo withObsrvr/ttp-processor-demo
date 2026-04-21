@@ -304,6 +304,8 @@ CREATE TABLE IF NOT EXISTS trustlines_current (
     created_at TIMESTAMP,
     sponsor VARCHAR(56),
     ledger_range BIGINT,
+    era_id TEXT,
+    version_label TEXT,
 
     -- Metadata
     inserted_at TIMESTAMP DEFAULT NOW(),
@@ -345,6 +347,8 @@ CREATE TABLE IF NOT EXISTS offers_current (
     created_at TIMESTAMP,
     sponsor VARCHAR(56),
     ledger_range BIGINT,
+    era_id TEXT,
+    version_label TEXT,
 
     -- Metadata
     inserted_at TIMESTAMP DEFAULT NOW(),
@@ -755,6 +759,10 @@ CREATE TABLE IF NOT EXISTS contract_invocations_raw (
     -- Partitioning
     ledger_range BIGINT NOT NULL,
 
+    -- Versioning metadata
+    era_id TEXT,
+    version_label TEXT,
+
     -- Metadata
     inserted_at TIMESTAMP DEFAULT NOW(),
 
@@ -777,7 +785,9 @@ CREATE TABLE IF NOT EXISTS contract_metadata (
     wasm_hash TEXT,
     created_ledger BIGINT NOT NULL,
     created_at TIMESTAMP NOT NULL,
-    inserted_at TIMESTAMP DEFAULT NOW()
+    inserted_at TIMESTAMP DEFAULT NOW(),
+    era_id TEXT,
+    version_label TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_contract_metadata_creator ON contract_metadata(creator_address);

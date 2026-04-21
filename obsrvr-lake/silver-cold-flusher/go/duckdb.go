@@ -159,6 +159,66 @@ func (c *DuckDBClient) FlushTable(tableName string, watermark int64, pgConnStr s
 			FROM postgres_scan('%s', 'public', '%s')
 			WHERE last_modified_ledger > %d AND last_modified_ledger <= %d
 		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, lastFlushed, watermark)
+	case "trustlines_current":
+		// Versioning columns may be appended at the tail of silver_hot via
+		// ALTER TABLE on existing deployments, while fresh schemas can place
+		// them before inserted_at/updated_at. Use an explicit projection so
+		// hot/cold flushing is stable across both layouts.
+		query = fmt.Sprintf(`
+			INSERT INTO %s.%s.%s
+			SELECT
+				account_id,
+				asset_type,
+				asset_issuer,
+				asset_code,
+				liquidity_pool_id,
+				balance,
+				trust_line_limit,
+				buying_liabilities,
+				selling_liabilities,
+				flags,
+				last_modified_ledger,
+				ledger_sequence,
+				created_at,
+				sponsor,
+				ledger_range,
+				era_id,
+				version_label,
+				inserted_at,
+				updated_at
+			FROM postgres_scan('%s', 'public', '%s')
+			WHERE last_modified_ledger > %d AND last_modified_ledger <= %d
+		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, lastFlushed, watermark)
+	case "offers_current":
+		// Same column-order issue as trustlines_current.
+		query = fmt.Sprintf(`
+			INSERT INTO %s.%s.%s
+			SELECT
+				offer_id,
+				seller_id,
+				selling_asset_type,
+				selling_asset_code,
+				selling_asset_issuer,
+				buying_asset_type,
+				buying_asset_code,
+				buying_asset_issuer,
+				amount,
+				price_n,
+				price_d,
+				price,
+				flags,
+				last_modified_ledger,
+				ledger_sequence,
+				created_at,
+				sponsor,
+				ledger_range,
+				era_id,
+				version_label,
+				inserted_at,
+				updated_at
+			FROM postgres_scan('%s', 'public', '%s')
+			WHERE last_modified_ledger > %d AND last_modified_ledger <= %d
+		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, lastFlushed, watermark)
 	case "claimable_balances_current":
 		// Source table in silver_hot has 15 columns, while DuckLake carries two
 		// additional compatibility columns (claimants, asset). Project explicitly.
@@ -225,13 +285,12 @@ func (c *DuckDBClient) FlushSnapshotTable(tableName string, watermark int64, pgC
 			WHERE ledger_sequence > %d AND ledger_sequence <= %d
 		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, lastFlushed, watermark)
 	} else if tableName == "contract_invocations_raw" {
-		// PG has 12 columns, DuckLake has 14 (extra: era_id, version_label)
 		query = fmt.Sprintf(`
 			INSERT INTO %s.%s.%s
 			SELECT ledger_sequence, transaction_index, operation_index, transaction_hash,
 			       source_account, contract_id, function_name, arguments_json,
 			       successful, closed_at, ledger_range, inserted_at,
-			       NULL AS era_id, NULL AS version_label
+			       era_id, version_label
 			FROM postgres_scan('%s', 'public', '%s')
 			WHERE ledger_sequence > %d AND ledger_sequence <= %d
 		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, lastFlushed, watermark)
@@ -266,11 +325,10 @@ func (c *DuckDBClient) FlushTableWithColumn(tableName string, watermark int64, p
 	var query string
 
 	if tableName == "contract_metadata" {
-		// PG has 6 columns, DuckLake has 8 (extra: era_id, version_label)
 		query = fmt.Sprintf(`
 			INSERT INTO %s.%s.%s
 			SELECT contract_id, creator_address, wasm_hash, created_ledger,
-			       created_at, inserted_at, NULL AS era_id, NULL AS version_label
+			       created_at, inserted_at, era_id, version_label
 			FROM postgres_scan('%s', 'public', '%s')
 			WHERE %s > %d AND %s <= %d
 		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, column, lastFlushed, column, watermark)

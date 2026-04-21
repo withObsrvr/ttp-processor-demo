@@ -157,6 +157,42 @@ func (c *DuckDBClient) applyBronzeMigrations(ctx context.Context) error {
 		},
 	}
 
+	versionedTables := []string{
+		"ledgers_row_v2",
+		"transactions_row_v2",
+		"operations_row_v2",
+		"effects_row_v1",
+		"trades_row_v1",
+		"accounts_snapshot_v1",
+		"offers_snapshot_v1",
+		"trustlines_snapshot_v1",
+		"account_signers_snapshot_v1",
+		"claimable_balances_snapshot_v1",
+		"liquidity_pools_snapshot_v1",
+		"config_settings_snapshot_v1",
+		"ttl_snapshot_v1",
+		"evicted_keys_state_v1",
+		"contract_events_stream_v1",
+		"contract_data_snapshot_v1",
+		"contract_code_snapshot_v1",
+		"native_balances_snapshot_v1",
+		"restored_keys_state_v1",
+		"contract_creations_v1",
+		"token_transfers_stream_v1",
+	}
+	for _, table := range versionedTables {
+		migrations = append(migrations,
+			migration{
+				name: fmt.Sprintf("%s.era_id", table),
+				sql:  fmt.Sprintf(`ALTER TABLE %s.%s ADD COLUMN IF NOT EXISTS era_id VARCHAR`, qualified, table),
+			},
+			migration{
+				name: fmt.Sprintf("%s.version_label", table),
+				sql:  fmt.Sprintf(`ALTER TABLE %s.%s ADD COLUMN IF NOT EXISTS version_label VARCHAR`, qualified, table),
+			},
+		)
+	}
+
 	for _, m := range migrations {
 		if _, err := c.db.ExecContext(ctx, m.sql); err != nil {
 			// DuckLake may report "already exists" even with IF NOT EXISTS on

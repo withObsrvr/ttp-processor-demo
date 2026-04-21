@@ -18,6 +18,8 @@ type TransactionData struct {
 	CreatedAt             time.Time
 	AccountSequence       int64
 	LedgerRange           uint32
+	EraID                 *string
+	VersionLabel          string
 	SignaturesCount       int
 	NewAccount            bool
 	// Soroban rent tracking (C13)
@@ -43,19 +45,21 @@ type OperationData struct {
 	TransactionSuccessful bool
 	OperationResultCode   *string
 	LedgerRange           uint32
+	EraID                 *string
+	VersionLabel          string
 	// Core operation fields
-	Amount                *int64
-	Asset                 *string
-	Destination           *string
+	Amount      *int64
+	Asset       *string
+	Destination *string
 	// Soroban contract invocation fields
 	SorobanOperation     *string // Host function type: InvokeContract, CreateContract, UploadWasm, etc.
 	SorobanContractID    *string
 	SorobanFunction      *string
 	SorobanArgumentsJSON *string
 	// Call graph fields (cross-contract call tracking)
-	ContractCallsJSON  *string   // JSON array of {from, to, function, depth, order}
-	ContractsInvolved  []string  // All contracts in the call chain
-	MaxCallDepth       *int      // Maximum depth of nested calls
+	ContractCallsJSON *string  // JSON array of {from, to, function, depth, order}
+	ContractsInvolved []string // All contracts in the call chain
+	MaxCallDepth      *int     // Maximum depth of nested calls
 	// Soroban authorization fields (SorobanAuthorizationEntry.Credentials).
 	// Parallel arrays; same length; one entry per auth entry on the op.
 	// nil on non-Soroban ops and InvokeHostFunction ops with zero auth entries.
@@ -66,11 +70,11 @@ type OperationData struct {
 // EffectData represents a single effect (state changes from operations)
 type EffectData struct {
 	// Identity
-	LedgerSequence   uint32
-	TransactionHash  string
-	OperationIndex   int
-	EffectIndex      int
-	OperationID      int64 // TOID of parent operation
+	LedgerSequence  uint32
+	TransactionHash string
+	OperationIndex  int
+	EffectIndex     int
+	OperationID     int64 // TOID of parent operation
 
 	// Effect type
 	EffectType       int
@@ -98,8 +102,10 @@ type EffectData struct {
 	SellerAccount  *string
 
 	// Metadata
-	CreatedAt   time.Time
-	LedgerRange uint32
+	CreatedAt    time.Time
+	LedgerRange  uint32
+	EraID        *string
+	VersionLabel string
 }
 
 // TradeData represents a single trade execution (DEX trades)
@@ -130,8 +136,10 @@ type TradeData struct {
 	Price string
 
 	// Metadata
-	CreatedAt   time.Time
-	LedgerRange uint32
+	CreatedAt    time.Time
+	LedgerRange  uint32
+	EraID        *string
+	VersionLabel string
 }
 
 // AccountData represents account snapshot state (accounts_snapshot_v1)
@@ -172,9 +180,11 @@ type AccountData struct {
 	SponsorAccount *string
 
 	// Metadata (3 fields)
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	LedgerRange uint32
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	LedgerRange  uint32
+	EraID        *string
+	VersionLabel string
 }
 
 // OfferData represents DEX offer snapshot state (offers_snapshot_v1)
@@ -204,8 +214,10 @@ type OfferData struct {
 	Flags uint32
 
 	// Metadata (2 fields)
-	CreatedAt   time.Time
-	LedgerRange uint32
+	CreatedAt    time.Time
+	LedgerRange  uint32
+	EraID        *string
+	VersionLabel string
 }
 
 // TrustlineData represents trustline snapshot state (trustlines_snapshot_v1)
@@ -232,6 +244,8 @@ type TrustlineData struct {
 	LedgerSequence uint32
 	CreatedAt      time.Time
 	LedgerRange    uint32
+	EraID          *string
+	VersionLabel   string
 }
 
 // AccountSignerData represents account signer snapshot state (account_signers_snapshot_v1)
@@ -250,9 +264,11 @@ type AccountSignerData struct {
 	Deleted bool
 
 	// Metadata (3 fields)
-	ClosedAt    time.Time
-	LedgerRange uint32
-	CreatedAt   time.Time
+	ClosedAt     time.Time
+	LedgerRange  uint32
+	CreatedAt    time.Time
+	EraID        *string
+	VersionLabel string
 }
 
 // ClaimableBalanceData represents claimable balance snapshot state (claimable_balances_snapshot_v1)
@@ -277,8 +293,10 @@ type ClaimableBalanceData struct {
 	Flags uint32
 
 	// Metadata (2 fields)
-	CreatedAt   time.Time
-	LedgerRange uint32
+	CreatedAt    time.Time
+	LedgerRange  uint32
+	EraID        *string
+	VersionLabel string
 }
 
 // LiquidityPoolData represents liquidity pool snapshot state (liquidity_pools_snapshot_v1)
@@ -312,8 +330,10 @@ type LiquidityPoolData struct {
 	AssetBAmount int64
 
 	// Metadata (2 fields)
-	CreatedAt   time.Time
-	LedgerRange uint32
+	CreatedAt    time.Time
+	LedgerRange  uint32
+	EraID        *string
+	VersionLabel string
 }
 
 // ConfigSettingData represents network configuration settings snapshot (config_settings_snapshot_v1)
@@ -351,8 +371,10 @@ type ConfigSettingData struct {
 	ConfigSettingXDR string
 
 	// Metadata (2 fields)
-	CreatedAt   time.Time
-	LedgerRange uint32
+	CreatedAt    time.Time
+	LedgerRange  uint32
+	EraID        *string
+	VersionLabel string
 }
 
 // TTLData represents time-to-live entries snapshot (ttl_snapshot_v1)
@@ -373,8 +395,10 @@ type TTLData struct {
 	ClosedAt           time.Time
 
 	// Metadata (2 fields)
-	CreatedAt   time.Time
-	LedgerRange uint32
+	CreatedAt    time.Time
+	LedgerRange  uint32
+	EraID        *string
+	VersionLabel string
 }
 
 // EvictedKeyData represents evicted storage keys state (evicted_keys_state_v1)
@@ -390,9 +414,11 @@ type EvictedKeyData struct {
 	Durability string
 
 	// Metadata (3 fields)
-	ClosedAt    time.Time
-	LedgerRange uint32
-	CreatedAt   time.Time
+	ClosedAt     time.Time
+	LedgerRange  uint32
+	CreatedAt    time.Time
+	EraID        *string
+	VersionLabel string
 }
 
 // ContractEventData represents Soroban contract events stream (contract_events_stream_v1)
@@ -429,8 +455,10 @@ type ContractEventData struct {
 	EventIndex     uint32
 
 	// Metadata (2 fields)
-	CreatedAt   time.Time
-	LedgerRange uint32
+	CreatedAt    time.Time
+	LedgerRange  uint32
+	EraID        *string
+	VersionLabel string
 }
 
 // ContractCall represents a single cross-contract call in the call graph
@@ -488,8 +516,10 @@ type ContractDataData struct {
 	TokenDecimals *int32
 
 	// Metadata (2 fields)
-	CreatedAt   time.Time
-	LedgerRange uint32
+	CreatedAt    time.Time
+	LedgerRange  uint32
+	EraID        *string
+	VersionLabel string
 }
 
 // ContractCodeData represents Soroban contract code snapshot (contract_code_snapshot_v1)
@@ -524,8 +554,10 @@ type ContractCodeData struct {
 	NDataSegmentBytes *int64
 
 	// Metadata (2 fields)
-	CreatedAt   time.Time
-	LedgerRange uint32
+	CreatedAt    time.Time
+	LedgerRange  uint32
+	EraID        *string
+	VersionLabel string
 }
 
 // NativeBalanceData represents XLM-only balances snapshot (native_balances_snapshot_v1)
@@ -548,7 +580,9 @@ type NativeBalanceData struct {
 	LedgerSequence     int64
 
 	// Partition key (1 field)
-	LedgerRange int64
+	LedgerRange  int64
+	EraID        *string
+	VersionLabel string
 }
 
 // RestoredKeyData represents restored storage keys state (restored_keys_state_v1)
@@ -565,9 +599,11 @@ type RestoredKeyData struct {
 	RestoredFromLedger uint32
 
 	// Metadata (3 fields)
-	ClosedAt    time.Time
-	LedgerRange uint32
-	CreatedAt   time.Time
+	ClosedAt     time.Time
+	LedgerRange  uint32
+	CreatedAt    time.Time
+	EraID        *string
+	VersionLabel string
 }
 
 // ContractCreationData represents a contract creation event
@@ -578,6 +614,8 @@ type ContractCreationData struct {
 	CreatedLedger  uint32
 	CreatedAt      time.Time
 	LedgerRange    uint32
+	EraID          *string
+	VersionLabel   string
 }
 
 // TokenTransferData represents a unified token transfer event (token_transfers_stream_v1)
@@ -601,6 +639,8 @@ type TokenTransferData struct {
 	ClosedAt        time.Time
 	CreatedAt       time.Time
 	LedgerRange     uint32
+	EraID           *string
+	VersionLabel    string
 }
 
 // Note: Cycle 2 MVP complete (5 of 19 Hubble tables): ledgers, transactions, operations, effects, trades

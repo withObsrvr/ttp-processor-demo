@@ -354,6 +354,8 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.offers_current (
     created_at TIMESTAMP,
     sponsor VARCHAR,
     ledger_range BIGINT,
+    era_id VARCHAR,
+    version_label VARCHAR,
     inserted_at TIMESTAMP,
     updated_at TIMESTAMP
 );
@@ -413,6 +415,8 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.trustlines_current (
     created_at TIMESTAMP,
     sponsor VARCHAR,
     ledger_range BIGINT,
+    era_id VARCHAR,
+    version_label VARCHAR,
     inserted_at TIMESTAMP,
     updated_at TIMESTAMP
 );

@@ -80,6 +80,11 @@ func (app *application) registerSilverRoutes(router *mux.Router) {
 
 	router.HandleFunc("/api/v1/silver/ledgers/{seq:[0-9]+}", queryService.HandleLedgerBySequence).Methods("GET")
 	router.HandleFunc("/api/v1/silver/ledger/{seq:[0-9]+}", queryService.HandleLedgerBySequence).Methods("GET")
+	if unifiedDuckDBReader != nil {
+		ledgerSummaryHandler := NewLedgerSummaryHandler(queryService, unifiedDuckDBReader, silverHotReader)
+		router.HandleFunc("/api/v1/silver/ledgers/{seq:[0-9]+}/summary", ledgerSummaryHandler.HandleLedgerSummary).Methods("GET")
+		router.HandleFunc("/api/v1/silver/ledger/{seq:[0-9]+}/summary", ledgerSummaryHandler.HandleLedgerSummary).Methods("GET")
+	}
 
 	ledgerFullHandler := NewLedgerFullHandler(queryService, silverHotReader, unifiedSilverReader)
 	router.HandleFunc("/api/v1/silver/ledger/{seq:[0-9]+}/full", ledgerFullHandler.HandleLedgerFull).Methods("GET")
