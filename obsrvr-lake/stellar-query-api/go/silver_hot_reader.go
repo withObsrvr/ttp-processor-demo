@@ -43,10 +43,11 @@ type ServingRecentLedger struct {
 type SilverHotReader struct {
 	db          *sql.DB
 	bronzeHotPG *sql.DB
+	network     string
 }
 
 // NewSilverHotReader creates a new Silver hot layer reader
-func NewSilverHotReader(config PostgresConfig) (*SilverHotReader, error) {
+func NewSilverHotReader(config PostgresConfig, network string) (*SilverHotReader, error) {
 	dsn := config.DSN()
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
@@ -61,7 +62,10 @@ func NewSilverHotReader(config PostgresConfig) (*SilverHotReader, error) {
 		return nil, fmt.Errorf("failed to ping PostgreSQL: %w", err)
 	}
 
-	return &SilverHotReader{db: db}, nil
+	if network == "" {
+		network = "testnet"
+	}
+	return &SilverHotReader{db: db, network: network}, nil
 }
 
 func (h *SilverHotReader) SetBronzeHotPG(db *sql.DB) {
@@ -306,9 +310,9 @@ func (h *SilverHotReader) GetServingNetworkStats(ctx context.Context) (*NetworkS
 		SELECT generated_at, latest_ledger, latest_ledger_closed_at, avg_close_time_seconds,
 		       protocol_version, tx_24h_total, tx_24h_failed, active_accounts_24h, created_accounts_24h
 		FROM serving.sv_network_stats_current
-		WHERE network = 'testnet'
+		WHERE network = $1
 		LIMIT 1
-	`).Scan(&generatedAt, &stats.Ledger.CurrentSequence, &latestClosedAt, &avgClose, &proto, &txTotal, &txFailed, &activeAccounts, &createdAccounts); err != nil {
+	`, h.network).Scan(&generatedAt, &stats.Ledger.CurrentSequence, &latestClosedAt, &avgClose, &proto, &txTotal, &txFailed, &activeAccounts, &createdAccounts); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -564,9 +568,9 @@ func (h *SilverHotReader) GetServingLatestLedgerSequence(ctx context.Context) (i
 	if err := h.db.QueryRowContext(ctx, `
 		SELECT COALESCE(latest_ledger, 0)
 		FROM serving.sv_network_stats_current
-		WHERE network = 'testnet'
+		WHERE network = $1
 		LIMIT 1
-	`).Scan(&latestSequence); err != nil {
+	`, h.network).Scan(&latestSequence); err != nil {
 		if err == sql.ErrNoRows {
 			return 0, nil
 		}

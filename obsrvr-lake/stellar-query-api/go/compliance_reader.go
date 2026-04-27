@@ -2,9 +2,9 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"math/big"
+	"sort"
 	"strings"
 	"time"
 )
@@ -22,6 +22,151 @@ func formatSupplyTimestamp(dateStr string) string {
 	}
 	// Otherwise, add midnight UTC
 	return dateStr + "T00:00:00Z"
+}
+
+type complianceXLMBalanceRow struct {
+	AccountID      string
+	Balance        string
+	LedgerSequence int64
+}
+
+func parseBigFloatOrZero(value string) *big.Float {
+	out := new(big.Float)
+	if value == "" {
+		return out
+	}
+	if _, ok := out.SetString(value); !ok {
+		return new(big.Float)
+	}
+	return out
+}
+
+func (r *UnifiedSilverReader) getXLMBalancesAtTimestamp(ctx context.Context, timestamp time.Time) ([]complianceXLMBalanceRow, error) {
+	merged := map[string]complianceXLMBalanceRow{}
+
+	if r.hot != nil && r.hot.db != nil {
+		rows, err := r.hot.db.QueryContext(ctx, `
+			SELECT account_id, balance, ledger_sequence
+			FROM accounts_snapshot
+			WHERE closed_at <= $1
+			  AND (valid_to IS NULL OR valid_to > $1)
+			  AND CAST(balance AS NUMERIC) > 0
+		`, timestamp)
+		if err != nil {
+			return nil, fmt.Errorf("failed to query hot XLM balances: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var row complianceXLMBalanceRow
+			if err := rows.Scan(&row.AccountID, &row.Balance, &row.LedgerSequence); err != nil {
+				return nil, fmt.Errorf("failed to scan hot XLM balance row: %w", err)
+			}
+			merged[row.AccountID] = row
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("failed iterating hot XLM balances: %w", err)
+		}
+	}
+
+	if r.cold != nil && r.cold.db != nil {
+		query := fmt.Sprintf(`
+			SELECT account_id, balance, ledger_sequence
+			FROM %s.%s.accounts_snapshot
+			WHERE closed_at <= ?
+			  AND (valid_to IS NULL OR valid_to > ?)
+			  AND CAST(balance AS NUMERIC) > 0
+		`, r.cold.catalogName, r.cold.schemaName)
+		rows, err := r.cold.db.QueryContext(ctx, query, timestamp, timestamp)
+		if err != nil {
+			return nil, fmt.Errorf("failed to query cold XLM balances: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var row complianceXLMBalanceRow
+			if err := rows.Scan(&row.AccountID, &row.Balance, &row.LedgerSequence); err != nil {
+				return nil, fmt.Errorf("failed to scan cold XLM balance row: %w", err)
+			}
+			existing, ok := merged[row.AccountID]
+			if !ok || row.LedgerSequence > existing.LedgerSequence {
+				merged[row.AccountID] = row
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("failed iterating cold XLM balances: %w", err)
+		}
+	}
+
+	out := make([]complianceXLMBalanceRow, 0, len(merged))
+	for _, row := range merged {
+		out = append(out, row)
+	}
+	return out, nil
+}
+
+func (r *UnifiedSilverReader) getIssuedAssetBalancesAtTimestamp(ctx context.Context, assetCode, assetIssuer string, timestamp time.Time) ([]complianceXLMBalanceRow, error) {
+	merged := map[string]complianceXLMBalanceRow{}
+
+	if r.hot != nil && r.hot.db != nil {
+		rows, err := r.hot.db.QueryContext(ctx, `
+			SELECT account_id, balance, ledger_sequence
+			FROM trustlines_snapshot
+			WHERE asset_code = $1
+			  AND asset_issuer = $2
+			  AND created_at <= $3
+			  AND (valid_to IS NULL OR valid_to > $3)
+			  AND CAST(balance AS NUMERIC) > 0
+		`, assetCode, assetIssuer, timestamp)
+		if err != nil {
+			return nil, fmt.Errorf("failed to query hot issued-asset balances: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var row complianceXLMBalanceRow
+			if err := rows.Scan(&row.AccountID, &row.Balance, &row.LedgerSequence); err != nil {
+				return nil, fmt.Errorf("failed to scan hot issued-asset balance row: %w", err)
+			}
+			merged[row.AccountID] = row
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("failed iterating hot issued-asset balances: %w", err)
+		}
+	}
+
+	if r.cold != nil && r.cold.db != nil {
+		query := fmt.Sprintf(`
+			SELECT account_id, balance, ledger_sequence
+			FROM %s.%s.trustlines_snapshot
+			WHERE asset_code = ?
+			  AND asset_issuer = ?
+			  AND created_at <= ?
+			  AND (valid_to IS NULL OR valid_to > ?)
+			  AND CAST(balance AS NUMERIC) > 0
+		`, r.cold.catalogName, r.cold.schemaName)
+		rows, err := r.cold.db.QueryContext(ctx, query, assetCode, assetIssuer, timestamp, timestamp)
+		if err != nil {
+			return nil, fmt.Errorf("failed to query cold issued-asset balances: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var row complianceXLMBalanceRow
+			if err := rows.Scan(&row.AccountID, &row.Balance, &row.LedgerSequence); err != nil {
+				return nil, fmt.Errorf("failed to scan cold issued-asset balance row: %w", err)
+			}
+			existing, ok := merged[row.AccountID]
+			if !ok || row.LedgerSequence > existing.LedgerSequence {
+				merged[row.AccountID] = row
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("failed iterating cold issued-asset balances: %w", err)
+		}
+	}
+
+	out := make([]complianceXLMBalanceRow, 0, len(merged))
+	for _, row := range merged {
+		out = append(out, row)
+	}
+	return out, nil
 }
 
 // GetAssetTransactions returns all transactions for an asset within a date range
@@ -316,144 +461,87 @@ func (r *UnifiedSilverReader) GetComplianceBalances(ctx context.Context, assetCo
 	var totalHolderCount int
 
 	if assetCode == "XLM" || assetCode == "native" {
-		// First, get aggregate totals (total supply and holder count) from ALL accounts
-		aggQuery := `
-			SELECT
-				COALESCE(SUM(CAST(balance AS NUMERIC)), 0) as total_supply,
-				COUNT(DISTINCT account_id) as holder_count,
-				COALESCE(MAX(ledger_sequence), 0) as max_ledger
-			FROM accounts_snapshot
-			WHERE closed_at <= $1
-			  AND (valid_to IS NULL OR valid_to > $1)
-			  AND CAST(balance AS NUMERIC) > 0
-		`
-		var totalSupplyStr string
-		err := r.hot.db.QueryRowContext(ctx, aggQuery, timestamp).Scan(&totalSupplyStr, &totalHolderCount, &maxLedger)
-		if err != nil {
-			return nil, fmt.Errorf("failed to query XLM supply totals: %w", err)
-		}
-		totalSupply.SetString(totalSupplyStr)
-
-		// Now query individual holders with limit
-		query := `
-			SELECT
-				account_id,
-				balance,
-				ledger_sequence
-			FROM accounts_snapshot
-			WHERE closed_at <= $1
-			  AND (valid_to IS NULL OR valid_to > $1)
-			  AND CAST(balance AS NUMERIC) > 0
-		`
-		args := []interface{}{timestamp}
-		argIdx := 2
-
-		if minBalance != "" {
-			query += fmt.Sprintf(" AND CAST(balance AS NUMERIC) >= $%d", argIdx)
-			args = append(args, minBalance)
-			argIdx++
-		}
-
-		query += fmt.Sprintf(" ORDER BY CAST(balance AS NUMERIC) DESC LIMIT $%d", argIdx)
-		args = append(args, limit)
-
-		rows, err := r.hot.db.QueryContext(ctx, query, args...)
+		rows, err := r.getXLMBalancesAtTimestamp(ctx, timestamp)
 		if err != nil {
 			return nil, fmt.Errorf("failed to query XLM balances: %w", err)
 		}
-		defer rows.Close()
 
-		for rows.Next() {
-			var accountID, balance string
-			var ledgerSeq int64
-			if err := rows.Scan(&accountID, &balance, &ledgerSeq); err != nil {
+		minBalanceFloat := parseBigFloatOrZero(minBalance)
+		filtered := make([]complianceXLMBalanceRow, 0, len(rows))
+		for _, row := range rows {
+			bal := parseBigFloatOrZero(row.Balance)
+			if minBalance != "" && bal.Cmp(minBalanceFloat) < 0 {
 				continue
 			}
+			if bal.Cmp(big.NewFloat(0)) <= 0 {
+				continue
+			}
+			filtered = append(filtered, row)
+			totalSupply.Add(&totalSupply, bal)
+			if row.LedgerSequence > maxLedger {
+				maxLedger = row.LedgerSequence
+			}
+		}
+		totalHolderCount = len(filtered)
 
-			holders = append(holders, ComplianceHolder{
-				AccountID: accountID,
-				Balance:   balance,
-			})
+		sort.Slice(filtered, func(i, j int) bool {
+			bi := parseBigFloatOrZero(filtered[i].Balance)
+			bj := parseBigFloatOrZero(filtered[j].Balance)
+			cmp := bi.Cmp(bj)
+			if cmp == 0 {
+				return filtered[i].AccountID < filtered[j].AccountID
+			}
+			return cmp > 0
+		})
+
+		if len(filtered) > limit {
+			filtered = filtered[:limit]
+		}
+		for _, row := range filtered {
+			holders = append(holders, ComplianceHolder{AccountID: row.AccountID, Balance: row.Balance})
 		}
 	} else {
-		// First, get aggregate totals for issued assets
-		aggQuery := `
-			SELECT
-				COALESCE(SUM(CAST(balance AS NUMERIC)), 0) as total_supply,
-				COUNT(DISTINCT account_id) as holder_count,
-				COALESCE(MAX(ledger_sequence), 0) as max_ledger
-			FROM trustlines_snapshot
-			WHERE asset_code = $1
-			  AND asset_issuer = $2
-			  AND created_at <= $3
-			  AND (valid_to IS NULL OR valid_to > $3)
-			  AND CAST(balance AS NUMERIC) > 0
-		`
-		var totalSupplyStr string
-		err := r.hot.db.QueryRowContext(ctx, aggQuery, assetCode, assetIssuer, timestamp).Scan(&totalSupplyStr, &totalHolderCount, &maxLedger)
-		if err != nil {
-			return nil, fmt.Errorf("failed to query asset supply totals: %w", err)
-		}
-		totalSupply.SetString(totalSupplyStr)
-
-		// Now query individual holders with limit
-		query := `
-			SELECT
-				account_id,
-				balance,
-				ledger_sequence
-			FROM trustlines_snapshot
-			WHERE asset_code = $1
-			  AND asset_issuer = $2
-			  AND created_at <= $3
-			  AND (valid_to IS NULL OR valid_to > $3)
-			  AND CAST(balance AS NUMERIC) > 0
-		`
-		args := []interface{}{assetCode, assetIssuer, timestamp}
-		argIdx := 4
-
-		if minBalance != "" {
-			query += fmt.Sprintf(" AND CAST(balance AS NUMERIC) >= $%d", argIdx)
-			args = append(args, minBalance)
-			argIdx++
-		}
-
-		query += fmt.Sprintf(" ORDER BY CAST(balance AS NUMERIC) DESC LIMIT $%d", argIdx)
-		args = append(args, limit)
-
-		rows, err := r.hot.db.QueryContext(ctx, query, args...)
+		rows, err := r.getIssuedAssetBalancesAtTimestamp(ctx, assetCode, assetIssuer, timestamp)
 		if err != nil {
 			return nil, fmt.Errorf("failed to query trustline balances: %w", err)
 		}
-		defer rows.Close()
 
-		for rows.Next() {
-			var accountID, balance string
-			var ledgerSeq int64
-			if err := rows.Scan(&accountID, &balance, &ledgerSeq); err != nil {
+		minBalanceFloat := parseBigFloatOrZero(minBalance)
+		filtered := make([]complianceXLMBalanceRow, 0, len(rows))
+		for _, row := range rows {
+			bal := parseBigFloatOrZero(row.Balance)
+			if bal.Cmp(big.NewFloat(0)) <= 0 {
 				continue
 			}
-
-			holders = append(holders, ComplianceHolder{
-				AccountID: accountID,
-				Balance:   balance,
-			})
+			totalSupply.Add(&totalSupply, bal)
+			if row.AccountID == assetIssuer {
+				issuerBalance.Set(bal)
+			}
+			if minBalance != "" && bal.Cmp(minBalanceFloat) < 0 {
+				continue
+			}
+			filtered = append(filtered, row)
+			if row.LedgerSequence > maxLedger {
+				maxLedger = row.LedgerSequence
+			}
 		}
+		totalHolderCount = len(filtered)
 
-		// Get issuer balance from accounts_snapshot
-		issuerQuery := `
-			SELECT balance
-			FROM accounts_snapshot
-			WHERE account_id = $1
-			  AND closed_at <= $2
-			  AND (valid_to IS NULL OR valid_to > $2)
-			ORDER BY closed_at DESC
-			LIMIT 1
-		`
-		var issuerBalStr sql.NullString
-		err = r.hot.db.QueryRowContext(ctx, issuerQuery, assetIssuer, timestamp).Scan(&issuerBalStr)
-		if err == nil && issuerBalStr.Valid {
-			issuerBalance.SetString(issuerBalStr.String)
+		sort.Slice(filtered, func(i, j int) bool {
+			bi := parseBigFloatOrZero(filtered[i].Balance)
+			bj := parseBigFloatOrZero(filtered[j].Balance)
+			cmp := bi.Cmp(bj)
+			if cmp == 0 {
+				return filtered[i].AccountID < filtered[j].AccountID
+			}
+			return cmp > 0
+		})
+
+		if len(filtered) > limit {
+			filtered = filtered[:limit]
+		}
+		for _, row := range filtered {
+			holders = append(holders, ComplianceHolder{AccountID: row.AccountID, Balance: row.Balance})
 		}
 	}
 
@@ -568,12 +656,8 @@ func (r *UnifiedSilverReader) GetComplianceBalancesWithOffset(ctx context.Contex
 			})
 		}
 	} else {
-		// Query issued asset holders from trustlines_snapshot with pagination
 		query := `
-			SELECT
-				account_id,
-				balance,
-				ledger_sequence
+			SELECT account_id, balance, ledger_sequence
 			FROM trustlines_snapshot
 			WHERE asset_code = $1
 			  AND asset_issuer = $2
@@ -590,7 +674,7 @@ func (r *UnifiedSilverReader) GetComplianceBalancesWithOffset(ctx context.Contex
 			argIdx++
 		}
 
-		query += fmt.Sprintf(" ORDER BY CAST(balance AS NUMERIC) DESC LIMIT $%d OFFSET $%d", argIdx, argIdx+1)
+		query += fmt.Sprintf(" ORDER BY CAST(balance AS NUMERIC) DESC, account_id ASC LIMIT $%d OFFSET $%d", argIdx, argIdx+1)
 		args = append(args, limit, offset)
 
 		rows, err := r.hot.db.QueryContext(ctx, query, args...)
@@ -606,10 +690,7 @@ func (r *UnifiedSilverReader) GetComplianceBalancesWithOffset(ctx context.Contex
 				continue
 			}
 
-			holders = append(holders, ComplianceHolder{
-				AccountID: accountID,
-				Balance:   balance,
-			})
+			holders = append(holders, ComplianceHolder{AccountID: accountID, Balance: balance})
 		}
 	}
 
@@ -622,50 +703,41 @@ func (r *UnifiedSilverReader) GetSupplyTimeline(ctx context.Context, assetCode, 
 	var timeline []SupplyDataPoint
 
 	if assetCode == "XLM" || assetCode == "native" {
-		// For XLM, use accounts_snapshot with proper SCD2 point-in-time queries
-		// Generate list of dates to query
 		var prevSupply *big.Float
 		for d := startDate; !d.After(endDate); d = d.AddDate(0, 0, 1) {
-			// End of day timestamp for this date
 			endOfDay := time.Date(d.Year(), d.Month(), d.Day(), 23, 59, 59, 0, time.UTC)
-
-			// Query point-in-time supply using SCD2 logic
-			query := `
-				SELECT
-					COALESCE(SUM(CAST(balance AS NUMERIC)), 0) as total_supply,
-					COUNT(DISTINCT account_id) as holder_count,
-					COALESCE(MAX(ledger_sequence), 0) as max_ledger
-				FROM accounts_snapshot
-				WHERE closed_at <= $1
-				  AND (valid_to IS NULL OR valid_to > $1)
-				  AND CAST(balance AS NUMERIC) > 0
-			`
-
-			var totalSupplyStr string
-			var holderCount int
-			var maxLedger int64
-
-			err := r.hot.db.QueryRowContext(ctx, query, endOfDay).Scan(&totalSupplyStr, &holderCount, &maxLedger)
+			rows, err := r.getXLMBalancesAtTimestamp(ctx, endOfDay)
 			if err != nil {
-				continue // Skip this day if query fails
+				continue
 			}
 
-			var totalSupply big.Float
-			totalSupply.SetString(totalSupplyStr)
+			totalSupply := new(big.Float)
+			holderCount := 0
+			maxLedger := int64(0)
+			for _, row := range rows {
+				bal := parseBigFloatOrZero(row.Balance)
+				if bal.Cmp(big.NewFloat(0)) <= 0 {
+					continue
+				}
+				totalSupply.Add(totalSupply, bal)
+				holderCount++
+				if row.LedgerSequence > maxLedger {
+					maxLedger = row.LedgerSequence
+				}
+			}
 
 			dataPoint := SupplyDataPoint{
 				Timestamp:         d.Format("2006-01-02") + "T00:00:00Z",
 				LedgerSequence:    maxLedger,
 				TotalSupply:       totalSupply.Text('f', 7),
-				CirculatingSupply: totalSupply.Text('f', 7), // For XLM, all is circulating
+				CirculatingSupply: totalSupply.Text('f', 7),
 				IssuerBalance:     "0",
 				HolderCount:       holderCount,
 			}
 
-			// Calculate supply change
 			if prevSupply != nil {
 				var change big.Float
-				change.Sub(&totalSupply, prevSupply)
+				change.Sub(totalSupply, prevSupply)
 				changeStr := change.Text('f', 7)
 				dataPoint.SupplyChange = &changeStr
 
@@ -679,54 +751,49 @@ func (r *UnifiedSilverReader) GetSupplyTimeline(ctx context.Context, assetCode, 
 			}
 
 			timeline = append(timeline, dataPoint)
-			prevSupply = new(big.Float).Copy(&totalSupply)
+			prevSupply = new(big.Float).Copy(totalSupply)
 		}
 	} else {
-		// For issued assets, use trustlines_snapshot with proper SCD2 point-in-time queries
 		var prevSupply *big.Float
 		for d := startDate; !d.After(endDate); d = d.AddDate(0, 0, 1) {
-			// End of day timestamp for this date
 			endOfDay := time.Date(d.Year(), d.Month(), d.Day(), 23, 59, 59, 0, time.UTC)
-
-			// Query point-in-time supply using SCD2 logic
-			query := `
-				SELECT
-					COALESCE(SUM(CAST(balance AS NUMERIC)), 0) as total_supply,
-					COUNT(DISTINCT account_id) as holder_count,
-					COALESCE(MAX(ledger_sequence), 0) as max_ledger
-				FROM trustlines_snapshot
-				WHERE asset_code = $1
-				  AND asset_issuer = $2
-				  AND created_at <= $3
-				  AND (valid_to IS NULL OR valid_to > $3)
-				  AND CAST(balance AS NUMERIC) > 0
-			`
-
-			var totalSupplyStr string
-			var holderCount int
-			var maxLedger int64
-
-			err := r.hot.db.QueryRowContext(ctx, query, assetCode, assetIssuer, endOfDay).Scan(&totalSupplyStr, &holderCount, &maxLedger)
+			rows, err := r.getIssuedAssetBalancesAtTimestamp(ctx, assetCode, assetIssuer, endOfDay)
 			if err != nil {
-				continue // Skip this day if query fails
+				continue
 			}
 
-			var totalSupply big.Float
-			totalSupply.SetString(totalSupplyStr)
+			totalSupply := new(big.Float)
+			issuerBalance := new(big.Float)
+			holderCount := 0
+			maxLedger := int64(0)
+			for _, row := range rows {
+				bal := parseBigFloatOrZero(row.Balance)
+				if bal.Cmp(big.NewFloat(0)) <= 0 {
+					continue
+				}
+				totalSupply.Add(totalSupply, bal)
+				if row.AccountID == assetIssuer {
+					issuerBalance.Set(bal)
+				}
+				holderCount++
+				if row.LedgerSequence > maxLedger {
+					maxLedger = row.LedgerSequence
+				}
+			}
+			circulatingSupply := new(big.Float).Sub(totalSupply, issuerBalance)
 
 			dataPoint := SupplyDataPoint{
 				Timestamp:         d.Format("2006-01-02") + "T00:00:00Z",
 				LedgerSequence:    maxLedger,
 				TotalSupply:       totalSupply.Text('f', 7),
-				CirculatingSupply: totalSupply.Text('f', 7), // TODO: subtract issuer balance
-				IssuerBalance:     "0",                      // TODO: get from accounts_snapshot
+				CirculatingSupply: circulatingSupply.Text('f', 7),
+				IssuerBalance:     issuerBalance.Text('f', 7),
 				HolderCount:       holderCount,
 			}
 
-			// Calculate supply change
 			if prevSupply != nil {
 				var change big.Float
-				change.Sub(&totalSupply, prevSupply)
+				change.Sub(totalSupply, prevSupply)
 				changeStr := change.Text('f', 7)
 				dataPoint.SupplyChange = &changeStr
 
@@ -740,7 +807,7 @@ func (r *UnifiedSilverReader) GetSupplyTimeline(ctx context.Context, assetCode, 
 			}
 
 			timeline = append(timeline, dataPoint)
-			prevSupply = new(big.Float).Copy(&totalSupply)
+			prevSupply = new(big.Float).Copy(totalSupply)
 		}
 	}
 

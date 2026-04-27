@@ -3168,6 +3168,162 @@ func (rt *RealtimeTransformer) transformSemanticFlows(ctx context.Context, tx *s
 
 // transformSemanticContractFunctions upserts per-function call stats from contract_invocations_raw.
 func (rt *RealtimeTransformer) transformAddressBalancesCurrent(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	var total int64
+
+	nativeStart := time.Now()
+	nativeCount, err := rt.upsertAddressBalancesNativeState(ctx, tx, startLedger, endLedger)
+	if err != nil {
+		return total, err
+	}
+	total += nativeCount
+	log.Printf("      ↳ address_balances_current.native: %d rows in %v", nativeCount, time.Since(nativeStart))
+
+	trustlineStart := time.Now()
+	trustlineCount, err := rt.upsertAddressBalancesTrustlineState(ctx, tx, startLedger, endLedger)
+	if err != nil {
+		return total, err
+	}
+	total += trustlineCount
+	log.Printf("      ↳ address_balances_current.trustlines: %d rows in %v", trustlineCount, time.Since(trustlineStart))
+
+	return total, nil
+}
+
+func (rt *RealtimeTransformer) upsertAddressBalancesNativeState(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	upsertQuery := `
+		INSERT INTO address_balances_current (
+			owner_address, asset_key, asset_type, token_contract_id,
+			asset_code, asset_issuer, symbol, decimals,
+			balance_raw, balance_display, balance_source,
+			last_updated_ledger, last_updated_at, updated_at
+		)
+		SELECT
+			nb.account_id,
+			'native',
+			'native',
+			NULL,
+			'XLM',
+			NULL,
+			'XLM',
+			7,
+			nb.balance::numeric,
+			(nb.balance::numeric / 10000000.0)::text,
+			'classic_account_state',
+			nb.last_modified_ledger,
+			NULL,
+			NOW()
+		FROM native_balances_current nb
+		WHERE nb.last_modified_ledger BETWEEN $1 AND $2
+		  AND COALESCE(nb.balance, 0) > 0
+		ON CONFLICT (owner_address, asset_key) DO UPDATE SET
+			asset_type = EXCLUDED.asset_type,
+			token_contract_id = EXCLUDED.token_contract_id,
+			asset_code = EXCLUDED.asset_code,
+			asset_issuer = EXCLUDED.asset_issuer,
+			symbol = EXCLUDED.symbol,
+			decimals = EXCLUDED.decimals,
+			balance_raw = EXCLUDED.balance_raw,
+			balance_display = EXCLUDED.balance_display,
+			balance_source = EXCLUDED.balance_source,
+			last_updated_ledger = EXCLUDED.last_updated_ledger,
+			last_updated_at = EXCLUDED.last_updated_at,
+			updated_at = NOW()
+		WHERE EXCLUDED.last_updated_ledger >= COALESCE(address_balances_current.last_updated_ledger, 0)
+	`
+	result, err := tx.ExecContext(ctx, upsertQuery, startLedger, endLedger)
+	if err != nil {
+		return 0, fmt.Errorf("failed to upsert native address balances: %w", err)
+	}
+	count, _ := result.RowsAffected()
+
+	deleteQuery := `
+		DELETE FROM address_balances_current abc
+		USING native_balances_current nb
+		WHERE abc.owner_address = nb.account_id
+		  AND abc.asset_key = 'native'
+		  AND nb.last_modified_ledger BETWEEN $1 AND $2
+		  AND COALESCE(nb.balance, 0) <= 0
+		  AND nb.last_modified_ledger >= COALESCE(abc.last_updated_ledger, 0)
+	`
+	deleteResult, err := tx.ExecContext(ctx, deleteQuery, startLedger, endLedger)
+	if err != nil {
+		return count, fmt.Errorf("failed to delete zero native address balances: %w", err)
+	}
+	deleteCount, _ := deleteResult.RowsAffected()
+	return count + deleteCount, nil
+}
+
+func (rt *RealtimeTransformer) upsertAddressBalancesTrustlineState(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	upsertQuery := `
+		INSERT INTO address_balances_current (
+			owner_address, asset_key, asset_type, token_contract_id,
+			asset_code, asset_issuer, symbol, decimals,
+			balance_raw, balance_display, balance_source,
+			last_updated_ledger, last_updated_at, updated_at
+		)
+		SELECT
+			tl.account_id,
+			CASE
+				WHEN tl.liquidity_pool_id IS NOT NULL AND tl.liquidity_pool_id != '' THEN 'liquidity_pool:' || tl.liquidity_pool_id
+				ELSE COALESCE(tl.asset_code, '') || ':' || COALESCE(tl.asset_issuer, '')
+			END AS asset_key,
+			tl.asset_type,
+			NULL,
+			tl.asset_code,
+			tl.asset_issuer,
+			COALESCE(tl.asset_code, tl.liquidity_pool_id),
+			7,
+			tl.balance::numeric,
+			(tl.balance::numeric / 10000000.0)::text,
+			'classic_trustline_state',
+			tl.last_modified_ledger,
+			tl.created_at,
+			NOW()
+		FROM trustlines_current tl
+		WHERE tl.last_modified_ledger BETWEEN $1 AND $2
+		  AND COALESCE(tl.balance, 0) > 0
+		ON CONFLICT (owner_address, asset_key) DO UPDATE SET
+			asset_type = EXCLUDED.asset_type,
+			token_contract_id = EXCLUDED.token_contract_id,
+			asset_code = EXCLUDED.asset_code,
+			asset_issuer = EXCLUDED.asset_issuer,
+			symbol = EXCLUDED.symbol,
+			decimals = EXCLUDED.decimals,
+			balance_raw = EXCLUDED.balance_raw,
+			balance_display = EXCLUDED.balance_display,
+			balance_source = EXCLUDED.balance_source,
+			last_updated_ledger = EXCLUDED.last_updated_ledger,
+			last_updated_at = EXCLUDED.last_updated_at,
+			updated_at = NOW()
+		WHERE EXCLUDED.last_updated_ledger >= COALESCE(address_balances_current.last_updated_ledger, 0)
+	`
+	result, err := tx.ExecContext(ctx, upsertQuery, startLedger, endLedger)
+	if err != nil {
+		return 0, fmt.Errorf("failed to upsert trustline address balances: %w", err)
+	}
+	count, _ := result.RowsAffected()
+
+	deleteQuery := `
+		DELETE FROM address_balances_current abc
+		USING trustlines_current tl
+		WHERE abc.owner_address = tl.account_id
+		  AND abc.asset_key = CASE
+			WHEN tl.liquidity_pool_id IS NOT NULL AND tl.liquidity_pool_id != '' THEN 'liquidity_pool:' || tl.liquidity_pool_id
+			ELSE COALESCE(tl.asset_code, '') || ':' || COALESCE(tl.asset_issuer, '')
+		  END
+		  AND tl.last_modified_ledger BETWEEN $1 AND $2
+		  AND COALESCE(tl.balance, 0) <= 0
+		  AND tl.last_modified_ledger >= COALESCE(abc.last_updated_ledger, 0)
+	`
+	deleteResult, err := tx.ExecContext(ctx, deleteQuery, startLedger, endLedger)
+	if err != nil {
+		return count, fmt.Errorf("failed to delete zero trustline address balances: %w", err)
+	}
+	deleteCount, _ := deleteResult.RowsAffected()
+	return count + deleteCount, nil
+}
+
+func (rt *RealtimeTransformer) transformAddressBalancesCurrentHistoricalRebuild(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
 	deleteQuery := `
 		DELETE FROM address_balances_current
 		WHERE owner_address IN (

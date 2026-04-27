@@ -13,46 +13,47 @@ import (
 )
 
 func buildProjectors(cfg *Config, bronze, silver, serving *pgxpool.Pool, checkpoints *CheckpointStore) []ProjectorRunner {
+	network := cfg.Service.Network
 
 	var projectors []ProjectorRunner
 	if cfg.Projectors.LedgersRecent.Enabled {
-		projectors = append(projectors, NewLedgersRecentProjector("testnet", cfg.Projectors.LedgersRecent.BatchSize, bronze, serving, checkpoints))
+		projectors = append(projectors, NewLedgersRecentProjector(network, cfg.Projectors.LedgersRecent.BatchSize, bronze, serving, checkpoints))
 	}
 	if cfg.Projectors.TransactionsRecent.Enabled {
-		projectors = append(projectors, NewTransactionsRecentProjector("testnet", cfg.Projectors.TransactionsRecent.BatchSize, bronze, silver, serving, checkpoints))
+		projectors = append(projectors, NewTransactionsRecentProjector(network, cfg.Projectors.TransactionsRecent.BatchSize, bronze, silver, serving, checkpoints))
 	}
 	if cfg.Projectors.AccountsCurrent.Enabled {
-		projectors = append(projectors, NewAccountsCurrentProjector("testnet", cfg.Projectors.AccountsCurrent.BatchSize, silver, serving, checkpoints))
+		projectors = append(projectors, NewAccountsCurrentProjector(network, cfg.Projectors.AccountsCurrent.BatchSize, silver, serving, checkpoints))
 	}
 	if cfg.Projectors.AccountBalances.Enabled {
-		projectors = append(projectors, NewAccountBalancesProjector("testnet", cfg.Projectors.AccountBalances.BatchSize, silver, serving, checkpoints))
+		projectors = append(projectors, NewAccountBalancesProjector(network, cfg.Projectors.AccountBalances.BatchSize, silver, serving, checkpoints))
 	}
 	if cfg.Projectors.NetworkStats.Enabled {
-		projectors = append(projectors, NewNetworkStatsProjector("testnet", serving))
+		projectors = append(projectors, NewNetworkStatsProjector(network, serving))
 	}
 	if cfg.Projectors.AssetStats.Enabled {
-		projectors = append(projectors, NewAssetStatsProjector("testnet", serving))
+		projectors = append(projectors, NewAssetStatsProjector(network, serving))
 	}
 	if cfg.Projectors.ContractsCurrent.Enabled {
-		projectors = append(projectors, NewContractsCurrentProjector("testnet", silver, serving))
+		projectors = append(projectors, NewContractsCurrentProjector(network, silver, serving))
 	}
 	if cfg.Projectors.ContractStats.Enabled {
-		projectors = append(projectors, NewContractStatsProjector("testnet", silver, serving))
+		projectors = append(projectors, NewContractStatsProjector(network, silver, serving))
 	}
 	if cfg.Projectors.OperationsRecent.Enabled {
-		projectors = append(projectors, NewOperationsRecentProjector("testnet", cfg.Projectors.OperationsRecent.BatchSize, silver, serving, checkpoints))
+		projectors = append(projectors, NewOperationsRecentProjector(network, cfg.Projectors.OperationsRecent.BatchSize, silver, serving, checkpoints))
 	}
 	if cfg.Projectors.EventsRecent.Enabled {
-		projectors = append(projectors, NewEventsRecentProjector("testnet", cfg.Projectors.EventsRecent.BatchSize, bronze, serving, checkpoints))
+		projectors = append(projectors, NewEventsRecentProjector(network, cfg.Projectors.EventsRecent.BatchSize, bronze, serving, checkpoints))
 	}
 	if cfg.Projectors.ExplorerEventsRecent.Enabled {
-		projectors = append(projectors, NewExplorerEventsRecentProjector("testnet", cfg.Projectors.ExplorerEventsRecent.BatchSize, bronze, silver, serving, checkpoints))
+		projectors = append(projectors, NewExplorerEventsRecentProjector(network, cfg.Projectors.ExplorerEventsRecent.BatchSize, bronze, silver, serving, checkpoints))
 	}
 	if cfg.Projectors.ContractCallsRecent.Enabled {
-		projectors = append(projectors, NewContractCallsRecentProjector("testnet", cfg.Projectors.ContractCallsRecent.BatchSize, silver, serving, checkpoints))
+		projectors = append(projectors, NewContractCallsRecentProjector(network, cfg.Projectors.ContractCallsRecent.BatchSize, silver, serving, checkpoints))
 	}
 	if cfg.Projectors.TxReceipts.Enabled {
-		projectors = append(projectors, NewTxReceiptsProjector("testnet", cfg.Projectors.TxReceipts.BatchSize, bronze, silver, serving, checkpoints))
+		projectors = append(projectors, NewTxReceiptsProjector(network, cfg.Projectors.TxReceipts.BatchSize, bronze, silver, serving, checkpoints))
 	}
 	return projectors
 }
@@ -66,6 +67,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
+	log.Printf("loaded config service=%s network=%s trigger_mode=%s", cfg.Service.Name, cfg.Service.Network, cfg.Trigger.Mode)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

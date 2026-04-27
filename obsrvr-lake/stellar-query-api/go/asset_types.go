@@ -30,6 +30,57 @@ type AssetListResponse struct {
 	GeneratedAt string         `json:"generated_at"`
 }
 
+// AssetIssuerMetadata captures issuer/home-domain level trust signals derivable
+// from on-chain account state without external TOML fetching.
+type AssetIssuerMetadata struct {
+	AccountID           string  `json:"account_id"`
+	HomeDomain          *string `json:"home_domain,omitempty"`
+	AuthRequired        bool    `json:"auth_required"`
+	AuthRevocable       bool    `json:"auth_revocable"`
+	AuthImmutable       bool    `json:"auth_immutable"`
+	AuthClawbackEnabled bool    `json:"auth_clawback_enabled"`
+}
+
+// LinkedTokenSummary describes a classic↔token relationship observable from
+// token_registry today. This is useful but not yet authoritative/canonical.
+type LinkedTokenSummary struct {
+	ContractID    string  `json:"contract_id"`
+	TokenType     string  `json:"token_type"`
+	TokenName     *string `json:"token_name,omitempty"`
+	TokenSymbol   *string `json:"token_symbol,omitempty"`
+	TokenDecimals *int    `json:"token_decimals,omitempty"`
+}
+
+// AssetPairSummary describes a related market/pair for an asset.
+type AssetPairSummary struct {
+	CounterAsset     AssetInfo `json:"counter_asset"`
+	TradeCount24h    int64     `json:"trade_count_24h"`
+	BaseVolume24h    string    `json:"base_volume_24h"`
+	CounterVolume24h string    `json:"counter_volume_24h"`
+	LastPrice        *string   `json:"last_price,omitempty"`
+}
+
+// AssetDetailResponse is a composite explorer-oriented asset response built
+// entirely from currently available silver/query-api data sources.
+type AssetDetailResponse struct {
+	Asset            AssetInfo              `json:"asset"`
+	CanonicalSlug    string                 `json:"canonical_slug"`
+	DisplayName      *string                `json:"display_name,omitempty"`
+	Symbol           *string                `json:"symbol,omitempty"`
+	Decimals         *int                   `json:"decimals,omitempty"`
+	Verified         *bool                  `json:"verified,omitempty"`
+	TokenType        *string                `json:"token_type,omitempty"`
+	LinkedContractID *string                `json:"linked_contract_id,omitempty"`
+	Issuer           *AssetIssuerMetadata   `json:"issuer,omitempty"`
+	Stats            any                    `json:"stats,omitempty"`
+	TopHolders       any                    `json:"top_holders,omitempty"`
+	RecentTransfers  []TokenTransfer        `json:"recent_transfers,omitempty"`
+	LinkedTokens     []LinkedTokenSummary   `json:"linked_tokens,omitempty"`
+	TopPairs         []AssetPairSummary     `json:"top_pairs,omitempty"`
+	LiquidityPools   []LiquidityPoolCurrent `json:"liquidity_pools,omitempty"`
+	GeneratedAt      string                 `json:"generated_at"`
+}
+
 // AssetListFilters contains filter options for the asset list query
 type AssetListFilters struct {
 	SortBy       string // holder_count, volume_24h, transfers_24h, circulating_supply

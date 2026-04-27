@@ -344,6 +344,17 @@ func (h *LedgerSummaryHandler) getLedgerTxAggs(ctx context.Context, seq int64) (
 		return nil, fmt.Errorf("unified reader unavailable")
 	}
 
+	servingItems, err := h.getServingLedgerTxAggs(ctx, seq)
+	if err != nil {
+		return nil, err
+	}
+	if len(servingItems) > 0 {
+		if err := h.enrichLedgerTxAggsFromOps(ctx, seq, servingItems); err != nil {
+			return nil, err
+		}
+		return servingItems, nil
+	}
+
 	summaryQuery := fmt.Sprintf(`
 		WITH dedup_ops AS (
 			%s
@@ -382,7 +393,6 @@ func (h *LedgerSummaryHandler) getLedgerTxAggs(ctx context.Context, seq int64) (
 	defer rows.Close()
 
 	var out []ledgerSummaryTxAgg
-	indexByHash := map[string]int{}
 	for rows.Next() {
 		var item ledgerSummaryTxAgg
 		var closedAt sql.NullString
@@ -418,14 +428,28 @@ func (h *LedgerSummaryHandler) getLedgerTxAggs(ctx context.Context, seq int64) (
 		if primaryContract.Valid {
 			item.PrimaryContract = primaryContract.String
 		}
-		indexByHash[item.TxHash] = len(out)
 		out = append(out, item)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	if len(out) == 0 {
-		return h.getServingLedgerTxAggs(ctx, seq)
+		return nil, nil
+	}
+	if err := h.enrichLedgerTxAggsFromOps(ctx, seq, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (h *LedgerSummaryHandler) enrichLedgerTxAggsFromOps(ctx context.Context, seq int64, items []ledgerSummaryTxAgg) error {
+	if len(items) == 0 {
+		return nil
+	}
+
+	indexByHash := make(map[string]int, len(items))
+	for i := range items {
+		indexByHash[items[i].TxHash] = i
 	}
 
 	opQuery := fmt.Sprintf(`
@@ -459,7 +483,7 @@ func (h *LedgerSummaryHandler) getLedgerTxAggs(ctx context.Context, seq int64) (
 
 	opRows, err := h.unified.db.QueryContext(ctx, opQuery, seq)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer opRows.Close()
 
@@ -468,13 +492,13 @@ func (h *LedgerSummaryHandler) getLedgerTxAggs(ctx context.Context, seq int64) (
 		var isPayment bool
 		var opType int32
 		if err := opRows.Scan(&txHash, &isPayment, &opType, &contractID, &functionName, &assetCode, &amount, &destination); err != nil {
-			return nil, err
+			return err
 		}
 		idx, ok := indexByHash[txHash]
 		if !ok {
 			continue
 		}
-		item := &out[idx]
+		item := &items[idx]
 		if isPayment {
 			item.HasPayment = true
 			if item.PaymentAssetCode == "" {
@@ -497,11 +521,7 @@ func (h *LedgerSummaryHandler) getLedgerTxAggs(ctx context.Context, seq int64) (
 			item.FunctionName = functionName
 		}
 	}
-	if err := opRows.Err(); err != nil {
-		return nil, err
-	}
-
-	return out, nil
+	return opRows.Err()
 }
 
 func (h *LedgerSummaryHandler) unifiedLedgerOpsQuery(selectFromCombined string) string {
