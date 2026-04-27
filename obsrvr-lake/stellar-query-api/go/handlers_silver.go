@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
@@ -531,6 +532,226 @@ func (h *SilverHandlers) HandleAssetList(w http.ResponseWriter, r *http.Request)
 	if queryErr != nil {
 		respondError(w, queryErr.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	respondJSON(w, response)
+}
+
+// HandleAssetDetail returns a composite asset detail response for classic
+// assets, XLM, and token contract IDs that can be served with currently
+// available query-api data sources.
+func (h *SilverHandlers) HandleAssetDetail(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	slug := vars["asset"]
+	if slug == "" {
+		respondError(w, "asset parameter required", http.StatusBadRequest)
+		return
+	}
+
+	ref, err := parseAssetSlug(slug)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	resp := &AssetDetailResponse{
+		Asset:         ref.AssetInfo(),
+		CanonicalSlug: ref.CanonicalSlug(),
+		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
+	}
+
+	if ref.IsContract {
+		if h.unifiedReader == nil {
+			respondError(w, "contract asset detail requires unified reader", http.StatusServiceUnavailable)
+			return
+		}
+
+		meta, err := h.unifiedReader.GetSEP41TokenMetadata(r.Context(), ref.ContractID)
+		if err != nil {
+			respondError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		stats, err := h.unifiedReader.GetSEP41TokenStats(r.Context(), ref.ContractID)
+		if err != nil {
+			respondError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		balances, _, _, err := h.unifiedReader.GetSEP41Balances(r.Context(), SEP41BalanceFilters{ContractID: ref.ContractID, Limit: 10, Order: "desc"})
+		if err != nil {
+			respondError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		resp.DisplayName = meta.Name
+		if resp.DisplayName == nil {
+			resp.DisplayName = meta.Symbol
+		}
+		resp.Symbol = meta.Symbol
+		resp.TokenType = &meta.TokenType
+		resp.Decimals = &meta.Decimals
+		resp.Stats = stats
+		resp.TopHolders = balances
+		resp.RecentTransfers, _ = h.queryRecentAssetTransfers(r.Context(), ref, 20)
+
+		if meta.AssetCode != nil {
+			classicRef := assetRef{AssetCode: *meta.AssetCode, IsNative: *meta.AssetCode == "XLM" || *meta.AssetCode == "native"}
+			if meta.AssetIssuer != nil {
+				classicRef.AssetIssuer = *meta.AssetIssuer
+			}
+			resp.LinkedContractID = &ref.ContractID
+			if meta.AssetIssuer != nil || classicRef.IsNative {
+				linkedSlug := classicRef.CanonicalSlug()
+				resp.Asset = ref.AssetInfo()
+				resp.LinkedTokens = []LinkedTokenSummary{{ContractID: ref.ContractID, TokenType: meta.TokenType, TokenName: meta.Name, TokenSymbol: meta.Symbol, TokenDecimals: &meta.Decimals}}
+				_ = linkedSlug
+			}
+			if meta.AssetIssuer != nil {
+				pairs, _ := h.queryTopAssetPairs(r.Context(), assetRef{AssetCode: *meta.AssetCode, AssetIssuer: *meta.AssetIssuer}, 5)
+				resp.TopPairs = pairs
+			}
+		}
+
+		respondJSON(w, resp)
+		return
+	}
+
+	stats, err := h.getClassicAssetStats(r.Context(), ref)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	resp.Stats = stats
+
+	holders, err := h.getClassicAssetTopHolders(r.Context(), ref, 10)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	resp.TopHolders = holders
+	resp.RecentTransfers, _ = h.queryRecentAssetTransfers(r.Context(), ref, 20)
+	resp.Issuer, _ = h.queryIssuerMetadata(r.Context(), ref.AssetIssuer)
+	resp.LinkedTokens, _ = h.queryLinkedTokens(r.Context(), ref)
+	if len(resp.LinkedTokens) > 0 {
+		resp.LinkedContractID = &resp.LinkedTokens[0].ContractID
+		resp.TokenType = &resp.LinkedTokens[0].TokenType
+		if resp.DisplayName == nil {
+			resp.DisplayName = resp.LinkedTokens[0].TokenName
+		}
+		if resp.Symbol == nil {
+			resp.Symbol = resp.LinkedTokens[0].TokenSymbol
+		}
+		if resp.Decimals == nil {
+			resp.Decimals = resp.LinkedTokens[0].TokenDecimals
+		}
+	}
+	resp.TopPairs, _ = h.queryTopAssetPairs(r.Context(), ref, 5)
+	if h.unifiedReader != nil {
+		pools, _, _, err := h.unifiedReader.GetLiquidityPools(r.Context(), LiquidityPoolFilters{AssetCode: ref.AssetCode, AssetIssuer: ref.AssetIssuer, Limit: 5})
+		if err == nil {
+			resp.LiquidityPools = pools
+		}
+	}
+
+	respondJSON(w, resp)
+}
+
+// HandleAssetLinks returns observed classic↔token linkage information that can
+// be derived from token_registry today.
+func (h *SilverHandlers) HandleAssetLinks(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	slug := vars["asset"]
+	if slug == "" {
+		respondError(w, "asset parameter required", http.StatusBadRequest)
+		return
+	}
+
+	ref, err := parseAssetSlug(slug)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	response := map[string]any{
+		"asset":          ref.AssetInfo(),
+		"canonical_slug": ref.CanonicalSlug(),
+		"generated_at":   time.Now().UTC().Format(time.RFC3339),
+	}
+
+	if ref.IsContract {
+		if h.unifiedReader == nil {
+			respondError(w, "contract asset links require unified reader", http.StatusServiceUnavailable)
+			return
+		}
+		meta, err := h.unifiedReader.GetSEP41TokenMetadata(r.Context(), ref.ContractID)
+		if err != nil {
+			respondError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		response["linked_tokens"] = []LinkedTokenSummary{{
+			ContractID:    ref.ContractID,
+			TokenType:     meta.TokenType,
+			TokenName:     meta.Name,
+			TokenSymbol:   meta.Symbol,
+			TokenDecimals: &meta.Decimals,
+		}}
+		if meta.AssetCode != nil {
+			classic := map[string]any{"asset_code": *meta.AssetCode, "canonical_slug": *meta.AssetCode}
+			if meta.AssetIssuer != nil && *meta.AssetIssuer != "" {
+				classic["asset_issuer"] = *meta.AssetIssuer
+				classic["canonical_slug"] = *meta.AssetCode + ":" + *meta.AssetIssuer
+			}
+			response["linked_classic_asset"] = classic
+		}
+		respondJSON(w, response)
+		return
+	}
+
+	links, err := h.queryLinkedTokens(r.Context(), ref)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	response["linked_tokens"] = links
+	respondJSON(w, response)
+}
+
+// HandleAssetPairs returns pair/trade and liquidity-pool relationships for an asset.
+func (h *SilverHandlers) HandleAssetPairs(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	slug := vars["asset"]
+	if slug == "" {
+		respondError(w, "asset parameter required", http.StatusBadRequest)
+		return
+	}
+
+	ref, err := parseAssetSlug(slug)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	limit := parseLimit(r, 10, 100)
+	pairs, err := h.queryTopAssetPairs(r.Context(), ref, limit)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]any{
+		"asset":          ref.AssetInfo(),
+		"canonical_slug": ref.CanonicalSlug(),
+		"pairs":          pairs,
+		"pair_count":     len(pairs),
+		"generated_at":   time.Now().UTC().Format(time.RFC3339),
+	}
+
+	if !ref.IsContract && h.unifiedReader != nil {
+		if pools, _, _, err := h.unifiedReader.GetLiquidityPools(r.Context(), LiquidityPoolFilters{
+			AssetCode: ref.AssetCode, AssetIssuer: ref.AssetIssuer, Limit: limit,
+		}); err == nil {
+			response["liquidity_pools"] = pools
+			response["liquidity_pool_count"] = len(pools)
+		}
 	}
 
 	respondJSON(w, response)
@@ -3854,6 +4075,348 @@ func parseAssetParam(assetParam string) (code string, issuer string) {
 		return "", ""
 	}
 	return parts[0], parts[1]
+}
+
+type assetRef struct {
+	IsContract  bool
+	ContractID  string
+	AssetCode   string
+	AssetIssuer string
+	IsNative    bool
+}
+
+func (a assetRef) CanonicalSlug() string {
+	if a.IsContract {
+		return a.ContractID
+	}
+	if a.IsNative {
+		return "XLM"
+	}
+	return a.AssetCode + ":" + a.AssetIssuer
+}
+
+func (a assetRef) AssetInfo() AssetInfo {
+	if a.IsContract {
+		return AssetInfo{Code: a.ContractID, Type: "soroban_token"}
+	}
+	if a.IsNative {
+		return AssetInfo{Code: "XLM", Type: "native"}
+	}
+	issuer := a.AssetIssuer
+	assetType := "credit_alphanum4"
+	if len(a.AssetCode) > 4 {
+		assetType = "credit_alphanum12"
+	}
+	return AssetInfo{Code: a.AssetCode, Issuer: &issuer, Type: assetType}
+}
+
+func parseAssetSlug(assetParam string) (assetRef, error) {
+	if assetParam == "XLM" || assetParam == "native" {
+		return assetRef{AssetCode: "XLM", IsNative: true}, nil
+	}
+	if strings.HasPrefix(assetParam, "C") {
+		return assetRef{IsContract: true, ContractID: assetParam}, nil
+	}
+	if code, issuer := parseAssetParam(assetParam); code != "" {
+		return assetRef{AssetCode: code, AssetIssuer: issuer}, nil
+	}
+	if idx := strings.LastIndex(assetParam, "-"); idx > 0 {
+		code := assetParam[:idx]
+		issuer := assetParam[idx+1:]
+		if strings.HasPrefix(issuer, "G") {
+			return assetRef{AssetCode: code, AssetIssuer: issuer}, nil
+		}
+	}
+	return assetRef{}, fmt.Errorf("invalid asset format, expected XLM, CODE:ISSUER, CODE-G..., or C...")
+}
+
+func stellarFlagSet(flags int64, mask int64) bool { return flags&mask == mask }
+
+func (h *SilverHandlers) queryIssuerMetadata(ctx context.Context, issuer string) (*AssetIssuerMetadata, error) {
+	if issuer == "" {
+		return nil, nil
+	}
+
+	if h.unifiedReader != nil {
+		query := fmt.Sprintf(`
+			WITH combined AS (
+				SELECT account_id, home_domain, flags, last_modified_ledger, 1 as source
+				FROM %s.accounts_current WHERE account_id = $1
+				UNION ALL
+				SELECT account_id, home_domain, flags, last_modified_ledger, 2 as source
+				FROM %s.accounts_current WHERE account_id = $1
+			)
+			SELECT account_id, home_domain, COALESCE(flags, 0)
+			FROM combined
+			ORDER BY last_modified_ledger DESC, source ASC
+			LIMIT 1
+		`, h.unifiedReader.hotSchema, h.unifiedReader.coldSchema)
+		var meta AssetIssuerMetadata
+		var home sql.NullString
+		var flags int64
+		if err := h.unifiedReader.db.QueryRowContext(ctx, query, issuer).Scan(&meta.AccountID, &home, &flags); err != nil {
+			if err == sql.ErrNoRows {
+				return nil, nil
+			}
+			return nil, err
+		}
+		if home.Valid && home.String != "" {
+			meta.HomeDomain = &home.String
+		}
+		meta.AuthRequired = stellarFlagSet(flags, 1)
+		meta.AuthRevocable = stellarFlagSet(flags, 2)
+		meta.AuthImmutable = stellarFlagSet(flags, 4)
+		meta.AuthClawbackEnabled = stellarFlagSet(flags, 8)
+		return &meta, nil
+	}
+
+	if h.legacyReader != nil && h.legacyReader.hot != nil {
+		var meta AssetIssuerMetadata
+		var home sql.NullString
+		var flags int64
+		if err := h.legacyReader.hot.db.QueryRowContext(ctx, `
+			SELECT account_id, home_domain, COALESCE(flags, 0)
+			FROM accounts_current WHERE account_id = $1
+		`, issuer).Scan(&meta.AccountID, &home, &flags); err != nil {
+			if err == sql.ErrNoRows {
+				return nil, nil
+			}
+			return nil, err
+		}
+		if home.Valid && home.String != "" {
+			meta.HomeDomain = &home.String
+		}
+		meta.AuthRequired = stellarFlagSet(flags, 1)
+		meta.AuthRevocable = stellarFlagSet(flags, 2)
+		meta.AuthImmutable = stellarFlagSet(flags, 4)
+		meta.AuthClawbackEnabled = stellarFlagSet(flags, 8)
+		return &meta, nil
+	}
+
+	return nil, nil
+}
+
+func (h *SilverHandlers) queryLinkedTokens(ctx context.Context, ref assetRef) ([]LinkedTokenSummary, error) {
+	if ref.IsContract {
+		return nil, nil
+	}
+
+	var rows *sql.Rows
+	var err error
+	if h.unifiedReader != nil {
+		query := fmt.Sprintf(`
+			SELECT DISTINCT ON (contract_id) contract_id, token_name, token_symbol, token_decimals, token_type
+			FROM (
+				SELECT contract_id, token_name, token_symbol, token_decimals, token_type FROM %s.token_registry WHERE asset_code = $1 AND COALESCE(asset_issuer, '') = $2
+				UNION ALL
+				SELECT contract_id, token_name, token_symbol, token_decimals, token_type FROM %s.token_registry WHERE asset_code = $1 AND COALESCE(asset_issuer, '') = $2
+			) t
+			ORDER BY contract_id
+		`, h.unifiedReader.hotSchema, h.unifiedReader.coldSchema)
+		rows, err = h.unifiedReader.db.QueryContext(ctx, query, ref.AssetCode, ref.AssetIssuer)
+	} else if h.legacyReader != nil && h.legacyReader.hot != nil {
+		rows, err = h.legacyReader.hot.db.QueryContext(ctx, `
+			SELECT contract_id, token_name, token_symbol, token_decimals, token_type
+			FROM token_registry WHERE asset_code = $1 AND COALESCE(asset_issuer, '') = $2
+			ORDER BY contract_id
+		`, ref.AssetCode, ref.AssetIssuer)
+	}
+	if err != nil || rows == nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var links []LinkedTokenSummary
+	for rows.Next() {
+		var link LinkedTokenSummary
+		var name, symbol, tokenType sql.NullString
+		var decimals sql.NullInt32
+		if err := rows.Scan(&link.ContractID, &name, &symbol, &decimals, &tokenType); err != nil {
+			return nil, err
+		}
+		if name.Valid && name.String != "" {
+			link.TokenName = &name.String
+		}
+		if symbol.Valid && symbol.String != "" {
+			link.TokenSymbol = &symbol.String
+		}
+		if decimals.Valid {
+			d := int(decimals.Int32)
+			link.TokenDecimals = &d
+		}
+		if tokenType.Valid {
+			link.TokenType = tokenType.String
+		}
+		links = append(links, link)
+	}
+	return links, rows.Err()
+}
+
+func (h *SilverHandlers) queryRecentAssetTransfers(ctx context.Context, ref assetRef, limit int) ([]TokenTransfer, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	var rows *sql.Rows
+	var err error
+	if h.unifiedReader != nil {
+		query := fmt.Sprintf(`
+			SELECT timestamp, transaction_hash, ledger_sequence, source_type, from_account, to_account,
+			       asset_code, asset_issuer, amount, token_contract_id, transaction_successful
+			FROM (
+				SELECT timestamp, transaction_hash, ledger_sequence, source_type, from_account, to_account,
+				       asset_code, asset_issuer, amount, token_contract_id, transaction_successful
+				FROM %s.token_transfers_raw
+				UNION ALL
+				SELECT timestamp, transaction_hash, ledger_sequence, source_type, from_account, to_account,
+				       asset_code, asset_issuer, amount, token_contract_id, transaction_successful
+				FROM %s.token_transfers_raw
+			) t
+			WHERE transaction_successful = true AND %s
+			ORDER BY ledger_sequence DESC, timestamp DESC
+			LIMIT %d
+		`, h.unifiedReader.hotSchema, h.unifiedReader.coldSchema, assetTransferPredicate(ref, "$1", "$2"), limit)
+		if ref.IsContract {
+			rows, err = h.unifiedReader.db.QueryContext(ctx, query, ref.ContractID, "")
+		} else {
+			rows, err = h.unifiedReader.db.QueryContext(ctx, query, ref.AssetCode, ref.AssetIssuer)
+		}
+	} else if h.legacyReader != nil && h.legacyReader.hot != nil {
+		query := fmt.Sprintf(`
+			SELECT timestamp, transaction_hash, ledger_sequence, source_type, from_account, to_account,
+			       asset_code, asset_issuer, amount, token_contract_id, transaction_successful
+			FROM token_transfers_raw
+			WHERE transaction_successful = true AND %s
+			ORDER BY ledger_sequence DESC, timestamp DESC
+			LIMIT %d
+		`, assetTransferPredicate(ref, "$1", "$2"), limit)
+		if ref.IsContract {
+			rows, err = h.legacyReader.hot.db.QueryContext(ctx, query, ref.ContractID, "")
+		} else {
+			rows, err = h.legacyReader.hot.db.QueryContext(ctx, query, ref.AssetCode, ref.AssetIssuer)
+		}
+	}
+	if err != nil || rows == nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var transfers []TokenTransfer
+	for rows.Next() {
+		var t TokenTransfer
+		if err := rows.Scan(&t.Timestamp, &t.TransactionHash, &t.LedgerSequence, &t.SourceType, &t.FromAccount, &t.ToAccount, &t.AssetCode, &t.AssetIssuer, &t.Amount, &t.TokenContractID, &t.TransactionSuccessful); err != nil {
+			return nil, err
+		}
+		transfers = append(transfers, t)
+	}
+	return transfers, rows.Err()
+}
+
+func assetTransferPredicate(ref assetRef, p1, p2 string) string {
+	if ref.IsContract {
+		return "token_contract_id = " + p1
+	}
+	if ref.IsNative {
+		return "(asset_code = 'XLM' OR asset_code IS NULL OR asset_code = '')"
+	}
+	return "asset_code = " + p1 + " AND COALESCE(asset_issuer, '') = " + p2
+}
+
+func (h *SilverHandlers) queryTopAssetPairs(ctx context.Context, ref assetRef, limit int) ([]AssetPairSummary, error) {
+	if ref.IsContract || limit <= 0 {
+		return nil, nil
+	}
+	if h.legacyReader == nil || h.legacyReader.hot == nil {
+		return nil, nil
+	}
+	query := `
+		WITH matched AS (
+			SELECT buying_asset_code AS counter_code,
+			       buying_asset_issuer AS counter_issuer,
+			       selling_amount::numeric AS base_volume,
+			       buying_amount::numeric AS counter_volume,
+			       price::text AS last_price,
+			       trade_timestamp
+			FROM trades
+			WHERE trade_timestamp >= NOW() - INTERVAL '24 hours'
+			  AND (( $1 = 'XLM' AND (selling_asset_code IS NULL OR selling_asset_code = ''))
+			       OR (selling_asset_code = $1 AND COALESCE(selling_asset_issuer, '') = $2))
+			UNION ALL
+			SELECT selling_asset_code AS counter_code,
+			       selling_asset_issuer AS counter_issuer,
+			       buying_amount::numeric AS base_volume,
+			       selling_amount::numeric AS counter_volume,
+			       CASE WHEN price IS NULL OR price = 0 THEN NULL ELSE (1 / price)::text END AS last_price,
+			       trade_timestamp
+			FROM trades
+			WHERE trade_timestamp >= NOW() - INTERVAL '24 hours'
+			  AND (( $1 = 'XLM' AND (buying_asset_code IS NULL OR buying_asset_code = ''))
+			       OR (buying_asset_code = $1 AND COALESCE(buying_asset_issuer, '') = $2))
+		)
+		SELECT COALESCE(counter_code, 'XLM') AS counter_code,
+		       COALESCE(counter_issuer, '') AS counter_issuer,
+		       COUNT(*) AS trade_count_24h,
+		       COALESCE(SUM(base_volume), 0)::text,
+		       COALESCE(SUM(counter_volume), 0)::text,
+		       (ARRAY_AGG(last_price ORDER BY trade_timestamp DESC))[1]
+		FROM matched
+		GROUP BY counter_code, counter_issuer
+		ORDER BY trade_count_24h DESC, counter_code ASC
+		LIMIT $3
+	`
+	rows, err := h.legacyReader.hot.db.QueryContext(ctx, query, ref.AssetCode, ref.AssetIssuer, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var pairs []AssetPairSummary
+	for rows.Next() {
+		var p AssetPairSummary
+		var counterCode, counterIssuer, baseVol, counterVol sql.NullString
+		var lastPrice sql.NullString
+		if err := rows.Scan(&counterCode, &counterIssuer, &p.TradeCount24h, &baseVol, &counterVol, &lastPrice); err != nil {
+			return nil, err
+		}
+		p.CounterAsset = buildAssetInfo("", counterCode.String, counterIssuer.String)
+		p.BaseVolume24h = baseVol.String
+		p.CounterVolume24h = counterVol.String
+		if lastPrice.Valid && lastPrice.String != "" {
+			p.LastPrice = &lastPrice.String
+		}
+		pairs = append(pairs, p)
+	}
+	return pairs, rows.Err()
+}
+
+func (h *SilverHandlers) getClassicAssetStats(ctx context.Context, ref assetRef) (any, error) {
+	if h.legacyReader != nil && h.legacyReader.hot != nil {
+		if resp, err := h.legacyReader.hot.GetServingTokenStats(ctx, ref.AssetCode, ref.AssetIssuer); err == nil && resp != nil {
+			return resp, nil
+		}
+	}
+	if h.unifiedReader != nil {
+		return h.unifiedReader.GetTokenStats(ctx, ref.AssetCode, ref.AssetIssuer)
+	}
+	return nil, fmt.Errorf("asset stats require unified reader")
+}
+
+func (h *SilverHandlers) getClassicAssetTopHolders(ctx context.Context, ref assetRef, limit int) (any, error) {
+	filters := TokenHoldersFilters{AssetCode: ref.AssetCode, AssetIssuer: ref.AssetIssuer, Limit: limit}
+	if h.legacyReader != nil && h.legacyReader.hot != nil {
+		if resp, err := h.legacyReader.hot.GetServingTokenHolders(ctx, filters); err == nil && resp != nil {
+			return resp.Holders, nil
+		}
+	}
+	if h.unifiedReader != nil {
+		resp, err := h.unifiedReader.GetTokenHolders(ctx, filters)
+		if err != nil {
+			return nil, err
+		}
+		if resp != nil {
+			return resp.Holders, nil
+		}
+	}
+	return nil, fmt.Errorf("asset holders require unified reader")
 }
 
 func parseLimit(r *http.Request, defaultLimit, maxLimit int) int {

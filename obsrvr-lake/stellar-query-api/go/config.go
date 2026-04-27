@@ -22,6 +22,7 @@ type Config struct {
 
 type ServiceConfig struct {
 	Name                string `yaml:"name"`
+	Network             string `yaml:"network"`
 	Port                int    `yaml:"port"`
 	ReadTimeoutSeconds  int    `yaml:"read_timeout_seconds"`
 	WriteTimeoutSeconds int    `yaml:"write_timeout_seconds"`
@@ -150,6 +151,9 @@ func LoadConfig(path string) (*Config, error) {
 	var config Config
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
+	}
+	if config.Service.Network == "" {
+		config.Service.Network = "testnet"
 	}
 
 	return &config, nil

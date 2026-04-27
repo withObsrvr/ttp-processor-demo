@@ -88,7 +88,7 @@ func mainWithSilver() {
 	if config.DuckLakeSilver != nil && config.PostgresSilver != nil {
 		// Create hot reader (PostgreSQL silver_hot)
 		var err error
-		silverHotReader, err = NewSilverHotReader(*config.PostgresSilver)
+		silverHotReader, err = NewSilverHotReader(*config.PostgresSilver, config.Service.Network)
 		if err != nil {
 			log.Fatalf("Failed to create Silver hot reader: %v", err)
 		}

@@ -19,30 +19,29 @@ func NewContractIndexHandlers(reader *ContractIndexReader) *ContractIndexHandler
 	return &ContractIndexHandlers{reader: reader}
 }
 
-// normalizeContractID converts a contract address to hex format
+// normalizeContractID validates a contract ID for contract-index lookups.
+//
+// IMPORTANT: the contract event index currently stores contract_id values in
+// the same format they arrive from bronze contract_events_stream_v1, which is
+// Stellar StrKey form (C...). Therefore StrKey inputs must remain StrKey for
+// successful lookups.
+//
 // Accepts both:
 //   - Stellar StrKey contract address (starts with 'C', like CBLJ2...)
 //   - Hex-encoded contract hash (64 chars)
-//
-// Returns hex format (64 chars) for querying the index
 func normalizeContractID(input string) (string, error) {
-	// If it starts with 'C', decode from StrKey
 	if strings.HasPrefix(input, "C") {
-		decoded, err := strkey.Decode(strkey.VersionByteContract, input)
-		if err != nil {
+		if _, err := strkey.Decode(strkey.VersionByteContract, input); err != nil {
 			return "", err
 		}
-		return hex.EncodeToString(decoded), nil
+		return input, nil
 	}
 
-	// Otherwise, validate as hex
 	if len(input) != 64 {
 		return "", strkey.ErrInvalidVersionByte
 	}
 
-	// Validate it's valid hex
-	_, err := hex.DecodeString(input)
-	if err != nil {
+	if _, err := hex.DecodeString(input); err != nil {
 		return "", err
 	}
 
@@ -149,11 +148,12 @@ func (h *ContractIndexHandlers) HandleContractLedgers(w http.ResponseWriter, r *
 		return
 	}
 
-	// Convert hex to StrKey for response
-	contractAddress, err := hexToStrKey(contractID)
-	if err != nil {
-		// If conversion fails, just use hex
-		contractAddress = ""
+	contractAddress := contractID
+	if !strings.HasPrefix(contractID, "C") {
+		converted, err := hexToStrKey(contractID)
+		if err == nil {
+			contractAddress = converted
+		}
 	}
 
 	if len(ledgers) == 0 {
@@ -244,11 +244,12 @@ func (h *ContractIndexHandlers) HandleContractEventSummary(w http.ResponseWriter
 		return
 	}
 
-	// Convert hex to StrKey for response
-	contractAddress, err := hexToStrKey(contractID)
-	if err != nil {
-		// If conversion fails, just use hex
-		contractAddress = ""
+	contractAddress := contractID
+	if !strings.HasPrefix(contractID, "C") {
+		converted, err := hexToStrKey(contractID)
+		if err == nil {
+			contractAddress = converted
+		}
 	}
 
 	respondJSON(w, map[string]interface{}{
@@ -331,11 +332,12 @@ func (h *ContractIndexHandlers) HandleBatchContractLookup(w http.ResponseWriter,
 			ledgers = []int64{}
 		}
 
-		// Convert hex to StrKey for response
-		contractAddress, err := hexToStrKey(normalizedID)
-		if err != nil {
-			// If conversion fails, just use empty string
-			contractAddress = ""
+		contractAddress := normalizedID
+		if !strings.HasPrefix(normalizedID, "C") {
+			converted, err := hexToStrKey(normalizedID)
+			if err == nil {
+				contractAddress = converted
+			}
 		}
 
 		responseResults = append(responseResults, Result{

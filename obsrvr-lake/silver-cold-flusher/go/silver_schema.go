@@ -173,6 +173,34 @@ func (c *DuckDBClient) applySilverMigrations() error {
 				c.config.CatalogName, c.config.SchemaName,
 			),
 		},
+		{
+			name: "trustlines_current.inserted_at",
+			sql: fmt.Sprintf(
+				`ALTER TABLE %s.%s.trustlines_current ADD COLUMN IF NOT EXISTS inserted_at TIMESTAMP`,
+				c.config.CatalogName, c.config.SchemaName,
+			),
+		},
+		{
+			name: "trustlines_current.updated_at",
+			sql: fmt.Sprintf(
+				`ALTER TABLE %s.%s.trustlines_current ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP`,
+				c.config.CatalogName, c.config.SchemaName,
+			),
+		},
+		{
+			name: "offers_current.inserted_at",
+			sql: fmt.Sprintf(
+				`ALTER TABLE %s.%s.offers_current ADD COLUMN IF NOT EXISTS inserted_at TIMESTAMP`,
+				c.config.CatalogName, c.config.SchemaName,
+			),
+		},
+		{
+			name: "offers_current.updated_at",
+			sql: fmt.Sprintf(
+				`ALTER TABLE %s.%s.offers_current ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP`,
+				c.config.CatalogName, c.config.SchemaName,
+			),
+		},
 	}
 
 	for _, m := range migrations {

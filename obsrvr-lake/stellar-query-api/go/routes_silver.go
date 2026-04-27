@@ -33,9 +33,15 @@ func (app *application) registerSilverRoutes(router *mux.Router) {
 	log.Println("  ✓ /api/v1/silver/accounts/{id}/contracts")
 
 	router.HandleFunc("/api/v1/silver/assets", silverHandlers.HandleAssetList).Methods("GET")
+	router.HandleFunc("/api/v1/silver/assets/{asset}", silverHandlers.HandleAssetDetail).Methods("GET")
+	router.HandleFunc("/api/v1/silver/assets/{asset}/links", silverHandlers.HandleAssetLinks).Methods("GET")
+	router.HandleFunc("/api/v1/silver/assets/{asset}/pairs", silverHandlers.HandleAssetPairs).Methods("GET")
 	router.HandleFunc("/api/v1/silver/assets/{asset}/holders", silverHandlers.HandleTokenHolders).Methods("GET")
 	router.HandleFunc("/api/v1/silver/assets/{asset}/stats", silverHandlers.HandleTokenStats).Methods("GET")
 	log.Println("  ✓ /api/v1/silver/assets (list all assets)")
+	log.Println("  ✓ /api/v1/silver/assets/{asset}")
+	log.Println("  ✓ /api/v1/silver/assets/{asset}/links")
+	log.Println("  ✓ /api/v1/silver/assets/{asset}/pairs")
 	log.Println("  ✓ /api/v1/silver/assets/{asset}/holders")
 	log.Println("  ✓ /api/v1/silver/assets/{asset}/stats")
 

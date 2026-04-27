@@ -34,6 +34,10 @@ func (app *application) registerExplorerRoutes(router *mux.Router) {
 		router.HandleFunc("/api/v1/explorer/events/rules/reload", requireAdmin(explorerEventHandlers.HandleExplorerEventRulesReload)).Methods("POST")
 	}
 
+	homeSummaryHandler := NewExplorerHomeSummaryHandler(silverHotReader, unifiedDuckDBReader, app.config.Service.Network)
+	router.HandleFunc("/api/v1/explorer/summary", homeSummaryHandler.HandleExplorerSummary).Methods("GET")
+	router.HandleFunc("/api/v1/home/summary", homeSummaryHandler.HandleExplorerSummary).Methods("GET")
+
 	if unifiedDuckDBReader != nil {
 		registryHandlers := NewContractRegistryHandlers(silverHotReader.DB())
 		router.HandleFunc("/api/v1/explorer/contracts/search", registryHandlers.HandleSearchContracts).Methods("GET")

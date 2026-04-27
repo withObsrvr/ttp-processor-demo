@@ -20,6 +20,7 @@ type Config struct {
 
 type ServiceConfig struct {
 	Name                string `yaml:"name"`
+	Network             string `yaml:"network"`
 	TickIntervalSeconds int    `yaml:"tick_interval_seconds"`
 	LogLevel            string `yaml:"log_level"`
 }
@@ -150,6 +151,12 @@ func LoadConfig(path string) (*Config, error) {
 }
 
 func (c *Config) Validate() error {
+	if c.Service.Network == "" {
+		return fmt.Errorf("service.network is required")
+	}
+	if c.Service.Network != "mainnet" && c.Service.Network != "testnet" {
+		return fmt.Errorf("service.network must be \"mainnet\" or \"testnet\", got %q", c.Service.Network)
+	}
 	if c.Source.BronzeHot.Host == "" {
 		return fmt.Errorf("source.bronze_hot.host is required")
 	}

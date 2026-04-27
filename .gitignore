@@ -284,6 +284,7 @@ obsrvr-lake/silver-realtime-transformer/silver-realtime-transformer
 obsrvr-lake/postgres-ducklake-flusher/config.yaml
 obsrvr-lake/ttp1.png
 obsrvr-lake/ttp2.png
+obsrvr-lake/tmp/
 obsrvr-lake/stellar-query-api/SILVER_API_REFERENCE.md
 obsrvr-lake/stellar-query-api/SILVER_API_EXAMPLES.md
 obsrvr-lake/stellar-query-api/SILVER_API_DOCUMENTATION.md
@@ -315,3 +316,4 @@ tmp-smart-wallets/smart_wallets_clean.tsv
 .claude/scheduled_tasks.lock
 obsrvr-lake/stellar-query-api/docs/refactoring-plan.md
 obsrvr-lake/stellar-query-api/docs/deploying-stellar-query-api.md
+docs/ECOSYSTEM_REPORT_IMPLEMENTATION_PLAN.md

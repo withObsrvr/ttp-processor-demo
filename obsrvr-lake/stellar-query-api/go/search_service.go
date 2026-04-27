@@ -204,9 +204,11 @@ func (h *SearchHandlers) searchAssetCode(ctx context.Context, assetCode string, 
 				ID:    contractID,
 				Label: label,
 				Details: map[string]any{
-					"contract_id":  contractID,
-					"token_name":   name.String,
-					"token_symbol": symbol.String,
+					"contract_id":    contractID,
+					"token_name":     name.String,
+					"token_symbol":   symbol.String,
+					"canonical_slug": contractID,
+					"route":          "/assets/" + contractID,
 				},
 			})
 		}
@@ -229,13 +231,21 @@ func (h *SearchHandlers) searchAssetCode(ctx context.Context, assetCode string, 
 				continue
 			}
 			seen[key] = true
+			canonicalSlug := "XLM"
+			route := "/assets/XLM"
+			if issuerStr != "" {
+				canonicalSlug = code + ":" + issuerStr
+				route = "/assets/" + canonicalSlug
+			}
 			results.Results = append(results.Results, SearchResult{
 				Type:  "asset",
-				ID:    code + ":" + issuerStr,
+				ID:    canonicalSlug,
 				Label: fmt.Sprintf("%s (Classic Asset)", code),
 				Details: map[string]any{
-					"asset_code":   code,
-					"asset_issuer": issuerStr,
+					"asset_code":     code,
+					"asset_issuer":   issuerStr,
+					"canonical_slug": canonicalSlug,
+					"route":          route,
 				},
 			})
 		}

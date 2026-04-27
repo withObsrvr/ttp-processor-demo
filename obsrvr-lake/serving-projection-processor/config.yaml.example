@@ -1,5 +1,6 @@
 service:
   name: serving-projection-processor
+  network: testnet
   tick_interval_seconds: 10
   log_level: info
 
