@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/stellar/go/strkey"
 )
 
 // SilverHandlers contains HTTP handlers for Silver layer queries
@@ -600,10 +601,8 @@ func (h *SilverHandlers) HandleAssetDetail(w http.ResponseWriter, r *http.Reques
 			}
 			resp.LinkedContractID = &ref.ContractID
 			if meta.AssetIssuer != nil || classicRef.IsNative {
-				linkedSlug := classicRef.CanonicalSlug()
 				resp.Asset = ref.AssetInfo()
 				resp.LinkedTokens = []LinkedTokenSummary{{ContractID: ref.ContractID, TokenType: meta.TokenType, TokenName: meta.Name, TokenSymbol: meta.Symbol, TokenDecimals: &meta.Decimals}}
-				_ = linkedSlug
 			}
 			if meta.AssetIssuer != nil {
 				pairs, _ := h.queryTopAssetPairs(r.Context(), assetRef{AssetCode: *meta.AssetCode, AssetIssuer: *meta.AssetIssuer}, 5)
@@ -4115,7 +4114,9 @@ func parseAssetSlug(assetParam string) (assetRef, error) {
 		return assetRef{AssetCode: "XLM", IsNative: true}, nil
 	}
 	if strings.HasPrefix(assetParam, "C") {
-		return assetRef{IsContract: true, ContractID: assetParam}, nil
+		if _, err := strkey.Decode(strkey.VersionByteContract, assetParam); err == nil {
+			return assetRef{IsContract: true, ContractID: assetParam}, nil
+		}
 	}
 	if code, issuer := parseAssetParam(assetParam); code != "" {
 		return assetRef{AssetCode: code, AssetIssuer: issuer}, nil

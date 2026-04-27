@@ -319,7 +319,7 @@ Caution: event-delta fallback is not idempotent if a ledger window is reprocesse
 
 Create a new migration, for example:
 
-`migrations/005_address_balances_current_state_projection_indexes.sql`
+`migrations/007_address_balances_current_state_projection_indexes.sql`
 
 Recommended indexes:
 
@@ -462,7 +462,7 @@ Recommended default should be `state`.
 
 ## Implementation Order
 
-1. Add migration `005_address_balances_current_state_projection_indexes.sql`.
+1. Add migration `007_address_balances_current_state_projection_indexes.sql`.
 2. Extract current `transformAddressBalancesCurrent` into `transformAddressBalancesCurrentHistoricalRebuild` for rollback.
 3. Implement new state-projection `transformAddressBalancesCurrent`.
 4. Add sub-step timing logs.

@@ -155,6 +155,12 @@ func LoadConfig(path string) (*Config, error) {
 	if config.Service.Network == "" {
 		config.Service.Network = "testnet"
 	}
+	switch config.Service.Network {
+	case "mainnet", "testnet":
+		// valid
+	default:
+		return nil, fmt.Errorf("invalid service.network %q: must be one of %q or %q", config.Service.Network, "mainnet", "testnet")
+	}
 
 	return &config, nil
 }

@@ -45,7 +45,7 @@ func normalizeContractID(input string) (string, error) {
 		return "", err
 	}
 
-	return strings.ToLower(input), nil
+	return hexToStrKey(strings.ToLower(input))
 }
 
 // hexToStrKey converts a hex contract ID to Stellar StrKey contract address

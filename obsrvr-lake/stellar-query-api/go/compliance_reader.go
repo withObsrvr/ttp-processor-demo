@@ -510,14 +510,17 @@ func (r *UnifiedSilverReader) GetComplianceBalances(ctx context.Context, assetCo
 		filtered := make([]complianceXLMBalanceRow, 0, len(rows))
 		for _, row := range rows {
 			bal := parseBigFloatOrZero(row.Balance)
-			if minBalance != "" && bal.Cmp(minBalanceFloat) < 0 {
-				continue
-			}
 			if bal.Cmp(big.NewFloat(0)) <= 0 {
 				continue
 			}
-			filtered = append(filtered, row)
 			totalSupply.Add(&totalSupply, bal)
+			if row.AccountID == assetIssuer {
+				issuerBalance.Set(bal)
+			}
+			if minBalance != "" && bal.Cmp(minBalanceFloat) < 0 {
+				continue
+			}
+			filtered = append(filtered, row)
 			if row.LedgerSequence > maxLedger {
 				maxLedger = row.LedgerSequence
 			}
@@ -653,41 +656,41 @@ func (r *UnifiedSilverReader) GetComplianceBalancesWithOffset(ctx context.Contex
 			})
 		}
 	} else {
-		rows, err := r.getIssuedAssetBalancesAtTimestamp(ctx, assetCode, assetIssuer, timestamp)
+		query := `
+			SELECT account_id, balance, ledger_sequence
+			FROM trustlines_snapshot
+			WHERE asset_code = $1
+			  AND asset_issuer = $2
+			  AND created_at <= $3
+			  AND (valid_to IS NULL OR valid_to > $3)
+			  AND CAST(balance AS NUMERIC) > 0
+		`
+		args := []any{assetCode, assetIssuer, timestamp}
+		argIdx := 4
+
+		if minBalance != "" {
+			query += fmt.Sprintf(" AND CAST(balance AS NUMERIC) >= $%d", argIdx)
+			args = append(args, minBalance)
+			argIdx++
+		}
+
+		query += fmt.Sprintf(" ORDER BY CAST(balance AS NUMERIC) DESC, account_id ASC LIMIT $%d OFFSET $%d", argIdx, argIdx+1)
+		args = append(args, limit, offset)
+
+		rows, err := r.hot.db.QueryContext(ctx, query, args...)
 		if err != nil {
 			return nil, fmt.Errorf("failed to query trustline balances with offset: %w", err)
 		}
-		minBalanceFloat := parseBigFloatOrZero(minBalance)
-		filtered := make([]complianceXLMBalanceRow, 0, len(rows))
-		for _, row := range rows {
-			bal := parseBigFloatOrZero(row.Balance)
-			if minBalance != "" && bal.Cmp(minBalanceFloat) < 0 {
+		defer rows.Close()
+
+		for rows.Next() {
+			var accountID, balance string
+			var ledgerSeq int64
+			if err := rows.Scan(&accountID, &balance, &ledgerSeq); err != nil {
 				continue
 			}
-			if bal.Cmp(big.NewFloat(0)) <= 0 {
-				continue
-			}
-			filtered = append(filtered, row)
-		}
-		sort.Slice(filtered, func(i, j int) bool {
-			bi := parseBigFloatOrZero(filtered[i].Balance)
-			bj := parseBigFloatOrZero(filtered[j].Balance)
-			cmp := bi.Cmp(bj)
-			if cmp == 0 {
-				return filtered[i].AccountID < filtered[j].AccountID
-			}
-			return cmp > 0
-		})
-		start := offset
-		if start > len(filtered) {
-			start = len(filtered)
-		}
-		end := start + limit
-		if end > len(filtered) {
-			end = len(filtered)
-		}
-		for _, row := range filtered[start:end] {
-			holders = append(holders, ComplianceHolder{AccountID: row.AccountID, Balance: row.Balance})
+
+			holders = append(holders, ComplianceHolder{AccountID: accountID, Balance: balance})
 		}
 	}
 
@@ -760,6 +763,7 @@ func (r *UnifiedSilverReader) GetSupplyTimeline(ctx context.Context, assetCode, 
 			}
 
 			totalSupply := new(big.Float)
+			issuerBalance := new(big.Float)
 			holderCount := 0
 			maxLedger := int64(0)
 			for _, row := range rows {
@@ -768,18 +772,22 @@ func (r *UnifiedSilverReader) GetSupplyTimeline(ctx context.Context, assetCode, 
 					continue
 				}
 				totalSupply.Add(totalSupply, bal)
+				if row.AccountID == assetIssuer {
+					issuerBalance.Set(bal)
+				}
 				holderCount++
 				if row.LedgerSequence > maxLedger {
 					maxLedger = row.LedgerSequence
 				}
 			}
+			circulatingSupply := new(big.Float).Sub(totalSupply, issuerBalance)
 
 			dataPoint := SupplyDataPoint{
 				Timestamp:         d.Format("2006-01-02") + "T00:00:00Z",
 				LedgerSequence:    maxLedger,
 				TotalSupply:       totalSupply.Text('f', 7),
-				CirculatingSupply: totalSupply.Text('f', 7),
-				IssuerBalance:     "0",
+				CirculatingSupply: circulatingSupply.Text('f', 7),
+				IssuerBalance:     issuerBalance.Text('f', 7),
 				HolderCount:       holderCount,
 			}
 
