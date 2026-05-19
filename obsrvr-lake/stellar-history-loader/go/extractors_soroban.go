@@ -44,6 +44,7 @@ func extractContractEvents(lcm xdr.LedgerCloseMeta, networkPassphrase string, le
 		}
 
 		txHash := hex.EncodeToString(tx.Result.TransactionHash[:])
+		txSuccessful := tx.Result.Successful()
 
 		txEvents, err := tx.GetTransactionEvents()
 		if err != nil {
@@ -52,7 +53,7 @@ func extractContractEvents(lcm xdr.LedgerCloseMeta, networkPassphrase string, le
 
 		// Extract diagnostic events (contains invocation tree)
 		for diagIdx, diagEvent := range txEvents.DiagnosticEvents {
-			eventData := extractDiagnosticEvent(diagEvent, txHash, ledgerSeq, closedAt, ledgerRange, uint32(diagIdx))
+			eventData := extractDiagnosticEvent(diagEvent, txHash, ledgerSeq, closedAt, ledgerRange, uint32(diagIdx), txSuccessful)
 			events = append(events, eventData)
 		}
 
@@ -60,7 +61,7 @@ func extractContractEvents(lcm xdr.LedgerCloseMeta, networkPassphrase string, le
 		// Operation events only appear for successful operations, so in_successful_contract_call is true.
 		for opIdx, opEvents := range txEvents.OperationEvents {
 			for eventIdx, contractEvent := range opEvents {
-				eventData := extractContractEvent(contractEvent, txHash, ledgerSeq, closedAt, ledgerRange, uint32(opIdx), uint32(eventIdx), true)
+				eventData := extractContractEvent(contractEvent, txHash, ledgerSeq, closedAt, ledgerRange, uint32(opIdx), uint32(eventIdx), txSuccessful, true)
 				events = append(events, eventData)
 			}
 		}
@@ -70,7 +71,7 @@ func extractContractEvents(lcm xdr.LedgerCloseMeta, networkPassphrase string, le
 		// than tied to a specific operation. Classic operations can produce
 		// these in TransactionMetaV4+.
 		for txEvtIdx, txEvt := range txEvents.TransactionEvents {
-			eventData := extractContractEvent(txEvt.Event, txHash, ledgerSeq, closedAt, ledgerRange, 0, uint32(txEvtIdx), true)
+			eventData := extractContractEvent(txEvt.Event, txHash, ledgerSeq, closedAt, ledgerRange, 0, uint32(txEvtIdx), txSuccessful, true)
 			events = append(events, eventData)
 		}
 	}
@@ -79,7 +80,7 @@ func extractContractEvents(lcm xdr.LedgerCloseMeta, networkPassphrase string, le
 }
 
 // extractDiagnosticEvent extracts data from a diagnostic event.
-func extractDiagnosticEvent(diagEvent xdr.DiagnosticEvent, txHash string, ledgerSeq uint32, closedAt time.Time, ledgerRange uint32, diagIdx uint32) ContractEventData {
+func extractDiagnosticEvent(diagEvent xdr.DiagnosticEvent, txHash string, ledgerSeq uint32, closedAt time.Time, ledgerRange uint32, diagIdx uint32, txSuccessful bool) ContractEventData {
 	eventData := extractContractEvent(
 		diagEvent.Event,
 		txHash,
@@ -88,6 +89,7 @@ func extractDiagnosticEvent(diagEvent xdr.DiagnosticEvent, txHash string, ledger
 		ledgerRange,
 		diagIdx,
 		0,
+		txSuccessful,
 		diagEvent.InSuccessfulContractCall,
 	)
 	eventData.EventType = "diagnostic"
@@ -103,6 +105,7 @@ func extractContractEvent(
 	ledgerRange uint32,
 	opIndex uint32,
 	eventIndex uint32,
+	txSuccessful bool,
 	inSuccessfulCall bool,
 ) ContractEventData {
 	eventID := fmt.Sprintf("%s:%d:%d", txHash, opIndex, eventIndex)
@@ -126,6 +129,7 @@ func extractContractEvent(
 		ClosedAt:        closedAt,
 
 		EventType:                eventType,
+		Successful:               txSuccessful,
 		InSuccessfulContractCall: inSuccessfulCall,
 
 		TopicsJSON:    topicsJSON,

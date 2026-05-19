@@ -12,11 +12,11 @@ import (
 
 // ContractEventIndexRow represents a single row in the contract_events_index table
 type ContractEventIndexRow struct {
-	ContractID      string
-	LedgerSequence  int64
-	EventCount      int32
-	FirstSeenAt     time.Time
-	LedgerRange     int64 // ledger_sequence / 100000
+	ContractID     string
+	LedgerSequence int64
+	EventCount     int32
+	FirstSeenAt    time.Time
+	LedgerRange    int64 // ledger_sequence / 100000
 }
 
 // IndexWriter writes contract event index data to DuckLake
@@ -278,11 +278,11 @@ func (iw *IndexWriter) GetIndexStats(ctx context.Context) (map[string]interface{
 		if err == sql.ErrNoRows {
 			return map[string]interface{}{
 				"total_contract_ledger_pairs": 0,
-				"unique_contracts":             0,
-				"min_ledger":                   0,
-				"max_ledger":                   0,
-				"ledger_coverage":              0,
-				"last_updated":                 nil,
+				"unique_contracts":            0,
+				"min_ledger":                  0,
+				"max_ledger":                  0,
+				"ledger_coverage":             0,
+				"last_updated":                nil,
 			}, nil
 		}
 		return nil, fmt.Errorf("failed to get index stats: %w", err)
@@ -292,11 +292,11 @@ func (iw *IndexWriter) GetIndexStats(ctx context.Context) (map[string]interface{
 	if totalPairs == 0 {
 		return map[string]interface{}{
 			"total_contract_ledger_pairs": 0,
-			"unique_contracts":             0,
-			"min_ledger":                   0,
-			"max_ledger":                   0,
-			"ledger_coverage":              0,
-			"last_updated":                 nil,
+			"unique_contracts":            0,
+			"min_ledger":                  0,
+			"max_ledger":                  0,
+			"ledger_coverage":             0,
+			"last_updated":                nil,
 		}, nil
 	}
 
@@ -310,11 +310,11 @@ func (iw *IndexWriter) GetIndexStats(ctx context.Context) (map[string]interface{
 
 	return map[string]interface{}{
 		"total_contract_ledger_pairs": totalPairs,
-		"unique_contracts":             uniqueContracts,
-		"min_ledger":                   minLedger,
-		"max_ledger":                   maxLedger,
-		"ledger_coverage":              maxLedger - minLedger + 1,
-		"last_updated":                 lastUpdatedStr,
+		"unique_contracts":            uniqueContracts,
+		"min_ledger":                  minLedger,
+		"max_ledger":                  maxLedger,
+		"ledger_coverage":             maxLedger - minLedger + 1,
+		"last_updated":                lastUpdatedStr,
 	}, nil
 }
 
@@ -327,7 +327,7 @@ func (iw *IndexWriter) RunCheckpoint(ctx context.Context, maxCompactedFiles int)
 	log.Println("🔧 Running DuckLake merge maintenance (merge only, no expire/cleanup)...")
 
 	mergeSQL := fmt.Sprintf(
-		`CALL ducklake_merge_adjacent_files('%s', 'contract_events_index', schema => 'contract_index', max_compacted_files => %d)`,
+		`CALL ducklake_merge_adjacent_files('%s', 'contract_events_index', schema => 'index', max_compacted_files => %d)`,
 		iw.config.Indexing.CatalogName, maxCompactedFiles)
 	if _, err := iw.db.ExecContext(ctx, mergeSQL); err != nil {
 		return fmt.Errorf("merge failed: %w", err)

@@ -6473,7 +6473,7 @@ func (r *UnifiedDuckDBReader) buildExplorerEventConditions(ctx context.Context, 
 
 func (r *UnifiedDuckDBReader) queryExplorerEvents(ctx context.Context, whereClause string, args []any, argIdx int, order string, requestLimit, limit int, classifier *EventClassifier, typeFilter []string) ([]ExplorerEvent, string, bool, error) {
 	selectCols := `event_id, contract_id, ledger_sequence, transaction_hash, closed_at,
-		successful, in_successful_contract_call, topic0_decoded, topic1_decoded, topic2_decoded, topic3_decoded,
+		transaction_successful, in_successful_contract_call, topic0_decoded, topic1_decoded, topic2_decoded, topic3_decoded,
 		topics_decoded, data_decoded, event_index, operation_index`
 
 	// Build type filter set for post-classification filtering
@@ -6484,18 +6484,34 @@ func (r *UnifiedDuckDBReader) queryExplorerEvents(ctx context.Context, whereClau
 
 	var innerParts []string
 	if r.bronzeHotSchema != "" {
-		innerParts = append(innerParts, fmt.Sprintf("SELECT %s FROM %s.contract_events_stream_v1 %s",
-			selectCols, r.bronzeHotSchema, whereClause))
+		innerParts = append(innerParts, fmt.Sprintf(`
+			SELECT %s
+			FROM (
+				SELECT ce.*, COALESCE(tx.successful, ce.successful) AS transaction_successful
+				FROM %s.contract_events_stream_v1 ce
+				LEFT JOIN %s.transactions_row_v2 tx
+				  ON tx.transaction_hash = ce.transaction_hash
+				 AND tx.ledger_sequence = ce.ledger_sequence
+			) events_with_tx_success
+			%s`, selectCols, r.bronzeHotSchema, r.bronzeHotSchema, whereClause))
 	}
 	if r.bronzeColdSchema != "" {
-		innerParts = append(innerParts, fmt.Sprintf("SELECT %s FROM %s.contract_events_stream_v1 %s",
-			selectCols, r.bronzeColdSchema, whereClause))
+		innerParts = append(innerParts, fmt.Sprintf(`
+			SELECT %s
+			FROM (
+				SELECT ce.*, COALESCE(tx.successful, ce.successful) AS transaction_successful
+				FROM %s.contract_events_stream_v1 ce
+				LEFT JOIN %s.transactions_row_v2 tx
+				  ON tx.transaction_hash = ce.transaction_hash
+				 AND tx.ledger_sequence = ce.ledger_sequence
+			) events_with_tx_success
+			%s`, selectCols, r.bronzeColdSchema, r.bronzeColdSchema, whereClause))
 	}
 	innerQuery := strings.Join(innerParts, " UNION ALL ")
 
 	query := fmt.Sprintf(`
 		SELECT event_id, contract_id, ledger_sequence, transaction_hash, closed_at,
-		       successful, in_successful_contract_call, topic0_decoded, topic1_decoded, topic2_decoded, topic3_decoded,
+		       transaction_successful, in_successful_contract_call, topic0_decoded, topic1_decoded, topic2_decoded, topic3_decoded,
 		       topics_decoded, data_decoded, event_index, operation_index
 		FROM (%s) combined
 		ORDER BY ledger_sequence %s, event_index %s
