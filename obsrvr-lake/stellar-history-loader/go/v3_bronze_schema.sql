@@ -157,7 +157,10 @@ CREATE TABLE IF NOT EXISTS bronze.operations_row_v2 (
     max_call_depth INTEGER,
     -- Added via migration 004_add_toid_and_token_transfers
     transaction_id BIGINT,
-    operation_id BIGINT
+    operation_id BIGINT,
+    -- Added via applyBronzeMigrations (soroban auth credentials, 2026-04-15).
+    soroban_auth_credentials_types VARCHAR,
+    soroban_auth_addresses VARCHAR
 );
 
 -- Effects (FIXED: matches PostgreSQL exactly - 22 columns)
@@ -530,5 +533,7 @@ CREATE TABLE IF NOT EXISTS bronze.token_transfers_stream_v1 (
     contract_id       TEXT,
     closed_at         TIMESTAMP,
     created_at        TIMESTAMP,
-    ledger_range      INTEGER
+    ledger_range      INTEGER,
+    era_id            TEXT,
+    version_label     TEXT
 );

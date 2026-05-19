@@ -62,6 +62,8 @@ func (p *LedgersRecentProjector) RunOnce(ctx context.Context) (RunStats, error) 
 		return RunStats{}, err
 	}
 
+	dataTime := resolveDataTimeBy(ctx, p.sourcePool, "ledgers_row_v2", "closed_at", "sequence")
+
 	rows, err := p.sourcePool.Query(ctx, `
 		SELECT
 			sequence,
@@ -77,9 +79,10 @@ func (p *LedgersRecentProjector) RunOnce(ctx context.Context) (RunStats, error) 
 			soroban_op_count
 		FROM ledgers_row_v2
 		WHERE sequence > $1
+		  AND closed_at >= $3::timestamp - INTERVAL '30 days'
 		ORDER BY sequence ASC
 		LIMIT $2
-	`, checkpoint, p.batchSize)
+	`, checkpoint, p.batchSize, dataTime)
 	if err != nil {
 		return RunStats{}, fmt.Errorf("query bronze ledgers: %w", err)
 	}
@@ -182,6 +185,12 @@ func (p *LedgersRecentProjector) RunOnce(ctx context.Context) (RunStats, error) 
 	}
 
 	last := batch[len(batch)-1]
+
+	retainedRows, err := applyRecentRetentionWithReference(ctx, tx, "serving.sv_ledger_stats_recent", "closed_at", "30 days", dataTime)
+	if err != nil {
+		return RunStats{}, err
+	}
+
 	if err := p.checkpoints.Save(ctx, tx, p.Name(), p.network, last.Sequence, &last.ClosedAt); err != nil {
 		return RunStats{}, err
 	}
@@ -190,8 +199,8 @@ func (p *LedgersRecentProjector) RunOnce(ctx context.Context) (RunStats, error) 
 		return RunStats{}, fmt.Errorf("commit target tx: %w", err)
 	}
 
-	log.Printf("projector=%s network=%s applied=%d checkpoint=%d", p.Name(), p.network, len(batch), last.Sequence)
-	return RunStats{RowsApplied: int64(len(batch)), Checkpoint: last.Sequence}, nil
+	log.Printf("projector=%s network=%s applied=%d retention_deleted=%d checkpoint=%d", p.Name(), p.network, len(batch), retainedRows, last.Sequence)
+	return RunStats{RowsApplied: int64(len(batch)), RowsDeleted: retainedRows, Checkpoint: last.Sequence}, nil
 }
 
 func (p *LedgersRecentProjector) previousClosedAt(ctx context.Context, checkpoint, firstSequence int64) (*time.Time, error) {

@@ -390,6 +390,7 @@ func (h *SemanticHandlers) HandleSemanticContractFunctions(w http.ResponseWriter
 			return
 		}
 
+		invRef := resolveDataTime(ctx, h.unified.hot.db, dataTimeQueryContractInvocations).Format("2006-01-02 15:04:05")
 		query := fmt.Sprintf(`
 			SELECT function_name, COUNT(*) as total_calls,
 				COUNT(*) FILTER (WHERE successful = true) as successful_calls,
@@ -398,11 +399,11 @@ func (h *SemanticHandlers) HandleSemanticContractFunctions(w http.ResponseWriter
 				MIN(closed_at)::text as first_called,
 				MAX(closed_at)::text as last_called
 			FROM contract_invocations_raw
-			WHERE contract_id = $1 AND closed_at > NOW() - INTERVAL '%s'
+			WHERE contract_id = $1 AND closed_at > TIMESTAMP '%s' - INTERVAL '%s'
 			GROUP BY function_name
 			ORDER BY total_calls DESC
 			LIMIT $2
-		`, interval)
+		`, invRef, interval)
 
 		rows, err := h.unified.hot.db.QueryContext(ctx, query, contractID, limit+1)
 		if err != nil {

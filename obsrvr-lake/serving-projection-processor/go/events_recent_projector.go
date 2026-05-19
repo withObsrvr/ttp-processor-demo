@@ -31,6 +31,7 @@ type bronzeEventRow struct {
 	Topic2                   *string
 	Topic3                   *string
 	EventType                *string
+	TransactionSuccessful    *bool
 	InSuccessfulContractCall *bool
 	TopicsJSON               *string
 	TopicsDecoded            *string
@@ -64,6 +65,8 @@ func (p *EventsRecentProjector) RunOnce(ctx context.Context) (RunStats, error) {
 		startLedger-- // small replay overlap for idempotent upsert safety near ledger boundaries
 	}
 
+	dataTime := resolveDataTime(ctx, p.sourcePool, "public.contract_events_stream_v1", "closed_at")
+
 	rows, err := p.sourcePool.Query(ctx, `
 		SELECT
 			COALESCE(NULLIF(event_id, ''), ledger_sequence::text || ':' || transaction_hash || ':' || COALESCE(event_index::text, '0')) as event_id,
@@ -93,6 +96,7 @@ func (p *EventsRecentProjector) RunOnce(ctx context.Context) (RunStats, error) {
 				ELSE NULL
 			END as topic3,
 			event_type,
+			successful,
 			in_successful_contract_call,
 			topics_json,
 			topics_decoded,
@@ -103,10 +107,10 @@ func (p *EventsRecentProjector) RunOnce(ctx context.Context) (RunStats, error) {
 			COALESCE(NULLIF(data_decoded, ''), NULLIF(topics_decoded, ''), event_type) as decoded_summary
 		FROM public.contract_events_stream_v1
 		WHERE ledger_sequence >= $1
-		  AND COALESCE(closed_at, created_at, now()) >= NOW() - INTERVAL '30 days'
+		  AND COALESCE(closed_at, created_at, now()) >= $3::timestamp - INTERVAL '30 days'
 		ORDER BY ledger_sequence ASC, transaction_hash ASC, event_index ASC
 		LIMIT $2
-	`, startLedger, p.batchSize)
+	`, startLedger, p.batchSize, dataTime)
 	if err != nil {
 		return RunStats{}, fmt.Errorf("query source events recent: %w", err)
 	}
@@ -127,6 +131,7 @@ func (p *EventsRecentProjector) RunOnce(ctx context.Context) (RunStats, error) {
 			&r.Topic2,
 			&r.Topic3,
 			&r.EventType,
+			&r.TransactionSuccessful,
 			&r.InSuccessfulContractCall,
 			&r.TopicsJSON,
 			&r.TopicsDecoded,
@@ -150,7 +155,7 @@ func (p *EventsRecentProjector) RunOnce(ctx context.Context) (RunStats, error) {
 	}
 	defer tx.Rollback(ctx)
 
-	retainedRows, err := applyRecentRetention(ctx, tx, "serving.sv_events_recent", "created_at", "30 days")
+	retainedRows, err := applyRecentRetentionWithReference(ctx, tx, "serving.sv_events_recent", "created_at", "30 days", dataTime)
 	if err != nil {
 		return RunStats{}, err
 	}
@@ -176,6 +181,8 @@ func (p *EventsRecentProjector) RunOnce(ctx context.Context) (RunStats, error) {
 			"transaction_hash":            r.TxHash,
 			"closed_at":                   r.CreatedAt,
 			"event_type":                  r.EventType,
+			"transaction_successful":      r.TransactionSuccessful,
+			"successful":                  r.TransactionSuccessful,
 			"in_successful_contract_call": r.InSuccessfulContractCall,
 			"topics_json":                 r.TopicsJSON,
 			"topics_decoded":              r.TopicsDecoded,

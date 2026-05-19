@@ -21,6 +21,8 @@ func NewContractStatsProjector(network string, sourcePool, targetPool *pgxpool.P
 func (p *ContractStatsProjector) Name() string { return "contract_stats" }
 
 func (p *ContractStatsProjector) RunOnce(ctx context.Context) (RunStats, error) {
+	dataTime := resolveDataTime(ctx, p.sourcePool, "contract_invocations_raw", "closed_at")
+
 	tx, err := p.targetPool.Begin(ctx)
 	if err != nil {
 		return RunStats{}, fmt.Errorf("begin contract stats tx: %w", err)
@@ -40,13 +42,13 @@ func (p *ContractStatsProjector) RunOnce(ctx context.Context) (RunStats, error) 
 		WITH agg AS (
 			SELECT
 				contract_id,
-				COUNT(*) FILTER (WHERE closed_at >= NOW() - INTERVAL '24 hours') as total_calls_24h,
-				COUNT(*) FILTER (WHERE closed_at >= NOW() - INTERVAL '7 days') as total_calls_7d,
-				COUNT(*) FILTER (WHERE closed_at >= NOW() - INTERVAL '30 days') as total_calls_30d,
-				COUNT(DISTINCT source_account) FILTER (WHERE closed_at >= NOW() - INTERVAL '24 hours') as unique_callers_24h,
-				COUNT(DISTINCT source_account) FILTER (WHERE closed_at >= NOW() - INTERVAL '7 days') as unique_callers_7d,
-				COUNT(*) FILTER (WHERE closed_at >= NOW() - INTERVAL '24 hours' AND successful) as success_count_24h,
-				COUNT(*) FILTER (WHERE closed_at >= NOW() - INTERVAL '24 hours' AND NOT successful) as failure_count_24h,
+				COUNT(*) FILTER (WHERE closed_at >= $1::timestamp - INTERVAL '24 hours') as total_calls_24h,
+				COUNT(*) FILTER (WHERE closed_at >= $1::timestamp - INTERVAL '7 days') as total_calls_7d,
+				COUNT(*) FILTER (WHERE closed_at >= $1::timestamp - INTERVAL '30 days') as total_calls_30d,
+				COUNT(DISTINCT source_account) FILTER (WHERE closed_at >= $1::timestamp - INTERVAL '24 hours') as unique_callers_24h,
+				COUNT(DISTINCT source_account) FILTER (WHERE closed_at >= $1::timestamp - INTERVAL '7 days') as unique_callers_7d,
+				COUNT(*) FILTER (WHERE closed_at >= $1::timestamp - INTERVAL '24 hours' AND successful) as success_count_24h,
+				COUNT(*) FILTER (WHERE closed_at >= $1::timestamp - INTERVAL '24 hours' AND NOT successful) as failure_count_24h,
 				MAX(closed_at) as last_activity_at,
 				MIN(closed_at) as first_seen_at
 			FROM contract_invocations_raw
@@ -55,7 +57,7 @@ func (p *ContractStatsProjector) RunOnce(ctx context.Context) (RunStats, error) 
 			SELECT DISTINCT ON (contract_id)
 				contract_id,
 				function_name,
-				COUNT(*) FILTER (WHERE closed_at >= NOW() - INTERVAL '24 hours') as cnt_24h
+				COUNT(*) FILTER (WHERE closed_at >= $1::timestamp - INTERVAL '24 hours') as cnt_24h
 			FROM contract_invocations_raw
 			WHERE function_name <> ''
 			GROUP BY contract_id, function_name
@@ -85,7 +87,7 @@ func (p *ContractStatsProjector) RunOnce(ctx context.Context) (RunStats, error) 
 			now()
 		FROM agg a
 		LEFT JOIN top_fn t USING (contract_id)
-	`)
+	`, dataTime)
 	if err != nil {
 		return RunStats{}, fmt.Errorf("populate contract stats: %w", err)
 	}
@@ -98,17 +100,17 @@ func (p *ContractStatsProjector) RunOnce(ctx context.Context) (RunStats, error) 
 		SELECT
 			contract_id,
 			function_name,
-			COUNT(*) FILTER (WHERE closed_at >= NOW() - INTERVAL '24 hours') as calls_24h,
-			COUNT(*) FILTER (WHERE closed_at >= NOW() - INTERVAL '7 days') as calls_7d,
-			COUNT(*) FILTER (WHERE closed_at >= NOW() - INTERVAL '30 days') as calls_30d,
-			COUNT(*) FILTER (WHERE closed_at >= NOW() - INTERVAL '24 hours' AND successful) as success_count_24h,
-			COUNT(*) FILTER (WHERE closed_at >= NOW() - INTERVAL '24 hours' AND NOT successful) as failure_count_24h,
+			COUNT(*) FILTER (WHERE closed_at >= $1::timestamp - INTERVAL '24 hours') as calls_24h,
+			COUNT(*) FILTER (WHERE closed_at >= $1::timestamp - INTERVAL '7 days') as calls_7d,
+			COUNT(*) FILTER (WHERE closed_at >= $1::timestamp - INTERVAL '30 days') as calls_30d,
+			COUNT(*) FILTER (WHERE closed_at >= $1::timestamp - INTERVAL '24 hours' AND successful) as success_count_24h,
+			COUNT(*) FILTER (WHERE closed_at >= $1::timestamp - INTERVAL '24 hours' AND NOT successful) as failure_count_24h,
 			MAX(closed_at) as last_called_at,
 			now()
 		FROM contract_invocations_raw
 		WHERE function_name <> ''
 		GROUP BY contract_id, function_name
-	`)
+	`, dataTime)
 	if err != nil {
 		return RunStats{}, fmt.Errorf("populate contract function stats: %w", err)
 	}

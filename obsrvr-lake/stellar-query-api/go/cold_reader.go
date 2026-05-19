@@ -827,7 +827,7 @@ func (c *ColdReader) GetExplorerEvents(ctx context.Context, filters ExplorerEven
 
 	query := fmt.Sprintf(`
 		SELECT event_id, contract_id, ledger_sequence, transaction_hash, closed_at,
-		       in_successful_contract_call, topic0_decoded, topic1_decoded, topic2_decoded, topic3_decoded,
+		       successful, in_successful_contract_call, topic0_decoded, topic1_decoded, topic2_decoded, topic3_decoded,
 		       topics_decoded, data_decoded, event_index, operation_index
 		FROM %s.%s.contract_events_stream_v1
 		%s
@@ -850,13 +850,13 @@ func (c *ColdReader) GetExplorerEvents(ctx context.Context, filters ExplorerEven
 	}
 	for rows.Next() {
 		var e ExplorerEvent
-		var successful sql.NullBool
+		var transactionSuccessful, inSuccessfulContractCall sql.NullBool
 		if err := rows.Scan(&e.EventID, &e.ContractID, &e.LedgerSequence, &e.TxHash, &e.ClosedAt,
-			&successful, &e.Topic0, &e.Topic1, &e.Topic2, &e.Topic3,
+			&transactionSuccessful, &inSuccessfulContractCall, &e.Topic0, &e.Topic1, &e.Topic2, &e.Topic3,
 			&e.TopicsDecoded, &e.DataDecoded, &e.EventIndex, &e.OpIndex); err != nil {
 			return nil, nil, "", false, fmt.Errorf("GetExplorerEvents scan: %w", err)
 		}
-		e.Successful = true
+		applyExplorerEventSuccess(&e, transactionSuccessful, inSuccessfulContractCall)
 		e.Data = e.DataDecoded
 		if e.ContractID != nil {
 			if strKeyID, err := hexToStrKey(*e.ContractID); err == nil {

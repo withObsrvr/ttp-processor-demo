@@ -103,8 +103,6 @@ duckdb -c "SELECT count(*) FROM read_parquet('/data/output/bronze/**/*.parquet')
 
 **Cycle 2 remaining:**
 - Hot buffer tail population (PostgreSQL COPY for recent ledgers)
-- SAC detection in contract data extractor (currently simplified)
-- Call graph integration for operations
 - Checkpoint/resume per shard
 
 **Future:**

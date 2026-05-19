@@ -2671,10 +2671,20 @@ func (h *SilverHandlers) HandleTrades(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse and validate order parameter (default: asc for backward compatibility - trades historically sorted ASC)
+	// Parse and validate order parameter.
+	// Default order depends on whether a time range is given: with a time
+	// range, ASC walks forward through it (matches old behavior). Without a
+	// time range, DESC returns the most recent trades — which is what
+	// /silver/trades?limit=N callers actually want and what every comparable
+	// blockchain API (Horizon, etc.) returns by default.
 	order := strings.ToLower(r.URL.Query().Get("order"))
 	if order == "" {
-		order = "asc"
+		hasTimeFilter := r.URL.Query().Get("start_time") != "" || r.URL.Query().Get("end_time") != ""
+		if hasTimeFilter {
+			order = "asc"
+		} else {
+			order = "desc"
+		}
 	}
 	if order != "asc" && order != "desc" {
 		respondError(w, "order must be 'asc' or 'desc'", http.StatusBadRequest)
@@ -2713,7 +2723,17 @@ func (h *SilverHandlers) HandleTrades(w http.ResponseWriter, r *http.Request) {
 	var nextCursor string
 	var hasMore bool
 
-	if h.unifiedReader != nil {
+	// Fast path: when no specific time range is requested, trades only ever
+	// live in hot (silver retains all recent trades), so route to silver-hot
+	// PG directly and skip the DuckDB UNION across hot+cold via ATTACH POSTGRES.
+	// The federation layer pulls the entire trades table over the wire and
+	// filters locally, taking 10-15s on mainnet — this drops it to milliseconds.
+	useHotFast := filters.StartTime.IsZero() && filters.EndTime.IsZero() &&
+		h.legacyReader != nil && h.legacyReader.hot != nil
+
+	if useHotFast {
+		trades, nextCursor, hasMore, err = h.legacyReader.hot.GetTrades(r.Context(), filters)
+	} else if h.unifiedReader != nil {
 		trades, nextCursor, hasMore, err = h.unifiedReader.GetTrades(r.Context(), filters)
 	} else {
 		respondError(w, "trades endpoint requires unified reader", http.StatusInternalServerError)
@@ -4329,7 +4349,8 @@ func (h *SilverHandlers) queryTopAssetPairs(ctx context.Context, ref assetRef, l
 	if h.legacyReader == nil || h.legacyReader.hot == nil {
 		return nil, nil
 	}
-	query := `
+	tradesRef := resolveDataTime(ctx, h.legacyReader.hot.db, "SELECT trade_timestamp FROM trades ORDER BY trade_timestamp DESC LIMIT 1").Format("2006-01-02 15:04:05")
+	query := fmt.Sprintf(`
 		WITH matched AS (
 			SELECT buying_asset_code AS counter_code,
 			       buying_asset_issuer AS counter_issuer,
@@ -4338,7 +4359,7 @@ func (h *SilverHandlers) queryTopAssetPairs(ctx context.Context, ref assetRef, l
 			       price::text AS last_price,
 			       trade_timestamp
 			FROM trades
-			WHERE trade_timestamp >= NOW() - INTERVAL '24 hours'
+			WHERE trade_timestamp >= TIMESTAMP '%s' - INTERVAL '24 hours'
 			  AND (( $1 = 'XLM' AND (selling_asset_code IS NULL OR selling_asset_code = ''))
 			       OR (selling_asset_code = $1 AND COALESCE(selling_asset_issuer, '') = $2))
 			UNION ALL
@@ -4349,7 +4370,7 @@ func (h *SilverHandlers) queryTopAssetPairs(ctx context.Context, ref assetRef, l
 			       CASE WHEN price IS NULL OR price = 0 THEN NULL ELSE (1 / price)::text END AS last_price,
 			       trade_timestamp
 			FROM trades
-			WHERE trade_timestamp >= NOW() - INTERVAL '24 hours'
+			WHERE trade_timestamp >= TIMESTAMP '%s' - INTERVAL '24 hours'
 			  AND (( $1 = 'XLM' AND (buying_asset_code IS NULL OR buying_asset_code = ''))
 			       OR (buying_asset_code = $1 AND COALESCE(buying_asset_issuer, '') = $2))
 		)
@@ -4363,7 +4384,7 @@ func (h *SilverHandlers) queryTopAssetPairs(ctx context.Context, ref assetRef, l
 		GROUP BY counter_code, counter_issuer
 		ORDER BY trade_count_24h DESC, counter_code ASC
 		LIMIT $3
-	`
+	`, tradesRef, tradesRef)
 	rows, err := h.legacyReader.hot.db.QueryContext(ctx, query, ref.AssetCode, ref.AssetIssuer, limit)
 	if err != nil {
 		return nil, err

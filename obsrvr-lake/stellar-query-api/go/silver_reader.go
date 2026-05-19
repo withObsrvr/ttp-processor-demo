@@ -948,26 +948,28 @@ type GenericEventFilters struct {
 
 // ExplorerEvent represents an enriched contract event for the Prism explorer
 type ExplorerEvent struct {
-	EventID          string  `json:"event_id"`
-	Type             string  `json:"type"`               // transfer, swap, mint, burn, approve, contract_call
-	Protocol         *string `json:"protocol,omitempty"` // soroswap, aquarius, sep41, etc.
-	ContractID       *string `json:"contract_id,omitempty"`
-	ContractName     *string `json:"contract_name,omitempty"`
-	ContractSymbol   *string `json:"contract_symbol,omitempty"`
-	ContractCategory *string `json:"contract_category,omitempty"` // token, dex, oracle, bridge, etc.
-	LedgerSequence   int64   `json:"ledger_sequence"`
-	TxHash           string  `json:"transaction_hash"`
-	ClosedAt         string  `json:"closed_at"`
-	Successful       bool    `json:"successful"`
-	Topic0           *string `json:"topic0,omitempty"`
-	Topic1           *string `json:"topic1,omitempty"`
-	Topic2           *string `json:"topic2,omitempty"`
-	Topic3           *string `json:"topic3,omitempty"`
-	TopicsDecoded    *string `json:"topics_decoded,omitempty"`
-	Data             *string `json:"data,omitempty"`
-	DataDecoded      *string `json:"data_decoded,omitempty"`
-	EventIndex       int     `json:"event_index"`
-	OpIndex          int     `json:"operation_index"`
+	EventID                  string  `json:"event_id"`
+	Type                     string  `json:"type"`               // transfer, swap, mint, burn, approve, contract_call
+	Protocol                 *string `json:"protocol,omitempty"` // soroswap, aquarius, sep41, etc.
+	ContractID               *string `json:"contract_id,omitempty"`
+	ContractName             *string `json:"contract_name,omitempty"`
+	ContractSymbol           *string `json:"contract_symbol,omitempty"`
+	ContractCategory         *string `json:"contract_category,omitempty"` // token, dex, oracle, bridge, etc.
+	LedgerSequence           int64   `json:"ledger_sequence"`
+	TxHash                   string  `json:"transaction_hash"`
+	ClosedAt                 string  `json:"closed_at"`
+	Successful               bool    `json:"successful"` // Deprecated compatibility alias for transaction_successful.
+	TransactionSuccessful    *bool   `json:"transaction_successful,omitempty"`
+	InSuccessfulContractCall *bool   `json:"in_successful_contract_call,omitempty"`
+	Topic0                   *string `json:"topic0,omitempty"`
+	Topic1                   *string `json:"topic1,omitempty"`
+	Topic2                   *string `json:"topic2,omitempty"`
+	Topic3                   *string `json:"topic3,omitempty"`
+	TopicsDecoded            *string `json:"topics_decoded,omitempty"`
+	Data                     *string `json:"data,omitempty"`
+	DataDecoded              *string `json:"data_decoded,omitempty"`
+	EventIndex               int     `json:"event_index"`
+	OpIndex                  int     `json:"operation_index"`
 }
 
 // ExplorerEventMeta contains aggregate stats for the current filter set
@@ -1086,12 +1088,13 @@ func (r *SilverColdReader) GetTotalAccountCount(ctx context.Context) (int64, err
 
 // GetOperationStats24h returns 24h operation counts grouped by type from cold storage
 func (r *SilverColdReader) GetOperationStats24h(ctx context.Context) (map[int32]int64, error) {
+	opsRef := resolveDataTime(ctx, r.db, fmt.Sprintf("SELECT ledger_closed_at FROM %s.%s.enriched_history_operations ORDER BY ledger_sequence DESC LIMIT 1", r.catalogName, r.schemaName)).Format("2006-01-02 15:04:05")
 	query := fmt.Sprintf(`
 		SELECT type, COUNT(*) as count
 		FROM %s.%s.enriched_history_operations
-		WHERE ledger_closed_at > NOW() - INTERVAL '24 hours'
+		WHERE ledger_closed_at > TIMESTAMP '%s' - INTERVAL '24 hours'
 		GROUP BY type
-	`, r.catalogName, r.schemaName)
+	`, r.catalogName, r.schemaName, opsRef)
 
 	rows, err := r.db.QueryContext(ctx, query)
 	if err != nil {
@@ -1113,11 +1116,12 @@ func (r *SilverColdReader) GetOperationStats24h(ctx context.Context) (map[int32]
 
 // GetActiveAccounts24h returns count of accounts with activity in last 24h from cold storage
 func (r *SilverColdReader) GetActiveAccounts24h(ctx context.Context) (int64, error) {
+	opsRef := resolveDataTime(ctx, r.db, fmt.Sprintf("SELECT ledger_closed_at FROM %s.%s.enriched_history_operations ORDER BY ledger_sequence DESC LIMIT 1", r.catalogName, r.schemaName)).Format("2006-01-02 15:04:05")
 	query := fmt.Sprintf(`
 		SELECT COUNT(DISTINCT source_account)
 		FROM %s.%s.enriched_history_operations
-		WHERE ledger_closed_at > NOW() - INTERVAL '24 hours'
-	`, r.catalogName, r.schemaName)
+		WHERE ledger_closed_at > TIMESTAMP '%s' - INTERVAL '24 hours'
+	`, r.catalogName, r.schemaName, opsRef)
 
 	var count int64
 	err := r.db.QueryRowContext(ctx, query).Scan(&count)

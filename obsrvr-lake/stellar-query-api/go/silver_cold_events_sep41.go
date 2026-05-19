@@ -436,6 +436,7 @@ func (r *SilverColdReader) GetSEP41Transfers(ctx context.Context, contractID str
 }
 
 func (r *SilverColdReader) GetSEP41TokenStats(ctx context.Context, contractID string) (*SEP41TokenStats, error) {
+	transfersRef := resolveDataTime(ctx, r.db, fmt.Sprintf("SELECT timestamp FROM %s.%s.token_transfers_raw ORDER BY ledger_sequence DESC LIMIT 1", r.catalogName, r.schemaName)).Format("2006-01-02 15:04:05")
 	query := fmt.Sprintf(`
 		WITH transfers AS (
 			SELECT from_account, to_account, amount, timestamp, asset_code
@@ -454,11 +455,11 @@ func (r *SilverColdReader) GetSEP41TokenStats(ctx context.Context, contractID st
 		)
 		SELECT (SELECT COUNT(*) FROM holders) as holder_count,
 		       CAST(COALESCE((SELECT SUM(net_balance) FROM holders), 0) AS BIGINT) as total_supply,
-		       (SELECT COUNT(*) FROM transfers WHERE timestamp > NOW() - INTERVAL '24 hours') as transfers_24h,
-		       CAST(COALESCE((SELECT SUM(amount) FROM transfers WHERE timestamp > NOW() - INTERVAL '24 hours'), 0) AS BIGINT) as volume_24h,
+		       (SELECT COUNT(*) FROM transfers WHERE timestamp > TIMESTAMP '%s' - INTERVAL '24 hours') as transfers_24h,
+		       CAST(COALESCE((SELECT SUM(amount) FROM transfers WHERE timestamp > TIMESTAMP '%s' - INTERVAL '24 hours'), 0) AS BIGINT) as volume_24h,
 		       (SELECT MAX(asset_code) FROM transfers) as asset_code
 		FROM (SELECT 1) dummy
-	`, r.catalogName, r.schemaName)
+	`, r.catalogName, r.schemaName, transfersRef, transfersRef)
 
 	var stats SEP41TokenStats
 	stats.ContractID = contractID

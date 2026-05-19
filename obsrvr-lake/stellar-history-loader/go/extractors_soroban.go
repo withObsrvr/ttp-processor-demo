@@ -56,10 +56,11 @@ func extractContractEvents(lcm xdr.LedgerCloseMeta, networkPassphrase string, le
 			events = append(events, eventData)
 		}
 
-		// Extract operation-level contract events
+		// Extract operation-level contract events.
+		// Operation events only appear for successful operations, so in_successful_contract_call is true.
 		for opIdx, opEvents := range txEvents.OperationEvents {
 			for eventIdx, contractEvent := range opEvents {
-				eventData := extractContractEvent(contractEvent, txHash, ledgerSeq, closedAt, ledgerRange, uint32(opIdx), uint32(eventIdx), false)
+				eventData := extractContractEvent(contractEvent, txHash, ledgerSeq, closedAt, ledgerRange, uint32(opIdx), uint32(eventIdx), true)
 				events = append(events, eventData)
 			}
 		}
@@ -262,12 +263,81 @@ func flattenTopicValue(decoded interface{}) *string {
 }
 
 // ===========================================================================
-// Contract Data (simplified -- no SAC detection)
+// Contract Data
 // ===========================================================================
 
+// balanceMetadataSym is the ScSymbol key used for SAC/SEP-41 Balance entries.
+// Matches the SDK's internal constant.
+var balanceMetadataSym = xdr.ScSymbol("Balance")
+
+// contractStorageBalanceFromData inlines the logic of sac.ContractBalanceFromContractData
+// but includes native-XLM SAC balances, which the SDK helper intentionally omits.
+func contractStorageBalanceFromData(ledgerEntry xdr.LedgerEntry, _ string) ([32]byte, *big.Int, bool) {
+	contractData, ok := ledgerEntry.Data.GetContractData()
+	if !ok {
+		return [32]byte{}, nil, false
+	}
+	if contractData.Durability != xdr.ContractDataDurabilityPersistent {
+		return [32]byte{}, nil, false
+	}
+	if contractData.Contract.ContractId == nil {
+		return [32]byte{}, nil, false
+	}
+
+	keyEnumVecPtr, ok := contractData.Key.GetVec()
+	if !ok || keyEnumVecPtr == nil {
+		return [32]byte{}, nil, false
+	}
+	keyEnumVec := *keyEnumVecPtr
+	if len(keyEnumVec) != 2 || !keyEnumVec[0].Equals(
+		xdr.ScVal{
+			Type: xdr.ScValTypeScvSymbol,
+			Sym:  &balanceMetadataSym,
+		},
+	) {
+		return [32]byte{}, nil, false
+	}
+
+	scAddress, ok := keyEnumVec[1].GetAddress()
+	if !ok {
+		return [32]byte{}, nil, false
+	}
+	holder, ok := scAddress.GetContractId()
+	if !ok {
+		return [32]byte{}, nil, false
+	}
+
+	balanceMapPtr, ok := contractData.Val.GetMap()
+	if !ok || balanceMapPtr == nil {
+		return [32]byte{}, nil, false
+	}
+	balanceMap := *balanceMapPtr
+	if len(balanceMap) != 3 {
+		return [32]byte{}, nil, false
+	}
+	if keySym, ok := balanceMap[0].Key.GetSym(); !ok || keySym != "amount" {
+		return [32]byte{}, nil, false
+	}
+	if keySym, ok := balanceMap[1].Key.GetSym(); !ok || keySym != "authorized" || !balanceMap[1].Val.IsBool() {
+		return [32]byte{}, nil, false
+	}
+	if keySym, ok := balanceMap[2].Key.GetSym(); !ok || keySym != "clawback" || !balanceMap[2].Val.IsBool() {
+		return [32]byte{}, nil, false
+	}
+	amount, ok := balanceMap[0].Val.GetI128()
+	if !ok {
+		return [32]byte{}, nil, false
+	}
+	if int64(amount.Hi) < 0 {
+		return [32]byte{}, nil, false
+	}
+	amt := new(big.Int).Lsh(new(big.Int).SetInt64(int64(amount.Hi)), 64)
+	amt.Add(amt, new(big.Int).SetUint64(uint64(amount.Lo)))
+	return holder, amt, true
+}
+
 // extractContractData extracts contract data state from a ledger.
-// This is a simplified version that skips SAC detection and token metadata.
-// Uses LedgerChangeReader directly instead of per-transaction reader.
+// Uses LedgerChangeReader directly and includes SAC asset/balance detection plus token metadata.
 func extractContractData(lcm xdr.LedgerCloseMeta, networkPassphrase string, ledgerSeq uint32, closedAt time.Time, ledgerRange uint32) ([]ContractDataData, error) {
 	var contractDataList []ContractDataData
 
@@ -379,8 +449,9 @@ func extractContractData(lcm xdr.LedgerCloseMeta, networkPassphrase string, ledg
 			_ = canonical
 		}
 
-		// SAC balance detection
-		if holder, amt, ok := sac.ContractBalanceFromContractData(*entry, networkPassphrase); ok {
+		// SAC balance detection. Use the local decoder so native-XLM SAC balances
+		// are included (the SDK helper intentionally excludes native lumens).
+		if holder, amt, ok := contractStorageBalanceFromData(*entry, networkPassphrase); ok {
 			holderStr, err := strkey.Encode(strkey.VersionByteContract, holder[:])
 			if err == nil {
 				balanceHolder = &holderStr

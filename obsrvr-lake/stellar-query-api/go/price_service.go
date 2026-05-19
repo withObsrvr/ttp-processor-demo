@@ -70,7 +70,8 @@ func (h *SilverHotReader) GetOHLCCandles(ctx context.Context, baseCode, baseIssu
 }
 
 func (h *SilverHotReader) GetLatestPrice(ctx context.Context, baseCode, baseIssuer, counterCode, counterIssuer string) (*LatestPrice, error) {
-	query := `
+	tradesRef := resolveDataTime(ctx, h.db, "SELECT trade_timestamp FROM trades ORDER BY trade_timestamp DESC LIMIT 1").Format("2006-01-02 15:04:05")
+	query := fmt.Sprintf(`
 		WITH latest AS (
 			SELECT price::double precision as price, trade_timestamp
 			FROM trades
@@ -88,11 +89,11 @@ func (h *SilverHotReader) GetLatestPrice(ctx context.Context, baseCode, baseIssu
 			  AND (($2 = 'XLM' AND (buying_asset_code IS NULL OR buying_asset_code = '')) OR buying_asset_code = $2)
 			  AND ($3::text IS NULL OR $3 = '' OR selling_asset_issuer = $3)
 			  AND ($4::text IS NULL OR $4 = '' OR buying_asset_issuer = $4)
-			  AND trade_timestamp >= NOW() - INTERVAL '24 hours'
+			  AND trade_timestamp >= TIMESTAMP '%s' - INTERVAL '24 hours'
 		)
 		SELECT l.price, l.trade_timestamp, COALESCE(s.vol, 0), COALESCE(s.cnt, 0)
 		FROM latest l, stats_24h s
-	`
+	`, tradesRef)
 
 	var lp LatestPrice
 	var ts time.Time

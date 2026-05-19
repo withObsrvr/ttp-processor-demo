@@ -54,9 +54,10 @@ type S3Config struct {
 
 // IndexingConfig contains indexing behavior configuration
 type IndexingConfig struct {
-	PollInterval   string `yaml:"poll_interval"`   // e.g., "30s"
-	BatchSize      int64  `yaml:"batch_size"`      // Max ledgers per batch
+	PollInterval    string `yaml:"poll_interval"`    // e.g., "30s"
+	BatchSize       int64  `yaml:"batch_size"`       // Max ledgers per batch
 	CheckpointTable string `yaml:"checkpoint_table"` // PostgreSQL checkpoint table
+	CatalogName     string `yaml:"catalog_name"`     // DuckLake ATTACH alias (e.g., testnet_catalog, mainnet_catalog)
 }
 
 // MaintenanceConfig contains DuckLake maintenance settings
@@ -107,6 +108,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.Indexing.CheckpointTable == "" {
 		config.Indexing.CheckpointTable = "index.contract_event_transformer_checkpoint"
+	}
+	if config.Indexing.CatalogName == "" {
+		config.Indexing.CatalogName = "testnet_catalog"
 	}
 	if config.Maintenance.EveryNWrites == 0 {
 		config.Maintenance.EveryNWrites = 100

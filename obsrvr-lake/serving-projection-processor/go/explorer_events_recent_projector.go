@@ -35,6 +35,13 @@ func NewExplorerEventsRecentProjector(network string, batchSize int, sourcePool,
 
 func (p *ExplorerEventsRecentProjector) Name() string { return "explorer_events_recent" }
 
+func explorerEventSuccessFields(transactionSuccessful, inSuccessfulContractCall *bool) (*bool, *bool) {
+	_ = inSuccessfulContractCall // raw evidence is projected separately, not used for public status.
+	// Compatibility `successful` must be an alias for transaction-level success,
+	// never for `in_successful_contract_call`. Preserve nil as unknown.
+	return transactionSuccessful, transactionSuccessful
+}
+
 func (p *ExplorerEventsRecentProjector) RunOnce(ctx context.Context) (RunStats, error) {
 	checkpoint, err := p.checkpoints.Load(ctx, p.Name(), p.network)
 	if err != nil {
@@ -44,6 +51,8 @@ func (p *ExplorerEventsRecentProjector) RunOnce(ctx context.Context) (RunStats, 
 	if startLedger > 0 {
 		startLedger--
 	}
+
+	dataTime := resolveDataTime(ctx, p.sourcePool, "public.contract_events_stream_v1", "closed_at")
 
 	rows, err := p.sourcePool.Query(ctx, `
 		SELECT
@@ -73,16 +82,17 @@ func (p *ExplorerEventsRecentProjector) RunOnce(ctx context.Context) (RunStats, 
 				WHEN topics_json IS NOT NULL AND topics_json <> '' THEN topics_json::jsonb ->> 3
 				ELSE NULL
 			END as topic3,
+			successful,
 			in_successful_contract_call,
 			topics_decoded,
 			data_decoded,
 			operation_index
 		FROM public.contract_events_stream_v1
 		WHERE ledger_sequence >= $1
-		  AND COALESCE(closed_at, created_at, now()) >= NOW() - INTERVAL '30 days'
+		  AND COALESCE(closed_at, created_at, now()) >= $3::timestamp - INTERVAL '30 days'
 		ORDER BY ledger_sequence ASC, transaction_hash ASC, event_index ASC
 		LIMIT $2
-	`, startLedger, p.batchSize)
+	`, startLedger, p.batchSize, dataTime)
 	if err != nil {
 		return RunStats{}, fmt.Errorf("query explorer source events: %w", err)
 	}
@@ -92,7 +102,7 @@ func (p *ExplorerEventsRecentProjector) RunOnce(ctx context.Context) (RunStats, 
 	contractIDs := map[string]struct{}{}
 	for rows.Next() {
 		var r bronzeEventRow
-		if err := rows.Scan(&r.EventID, &r.TxHash, &r.LedgerSequence, &r.CreatedAt, &r.EventIndex, &r.ContractID, &r.Topic0, &r.Topic1, &r.Topic2, &r.Topic3, &r.InSuccessfulContractCall, &r.TopicsDecoded, &r.DataDecoded, &r.OperationIndex); err != nil {
+		if err := rows.Scan(&r.EventID, &r.TxHash, &r.LedgerSequence, &r.CreatedAt, &r.EventIndex, &r.ContractID, &r.Topic0, &r.Topic1, &r.Topic2, &r.Topic3, &r.TransactionSuccessful, &r.InSuccessfulContractCall, &r.TopicsDecoded, &r.DataDecoded, &r.OperationIndex); err != nil {
 			return RunStats{}, fmt.Errorf("scan explorer source event: %w", err)
 		}
 		batch = append(batch, r)
@@ -110,7 +120,7 @@ func (p *ExplorerEventsRecentProjector) RunOnce(ctx context.Context) (RunStats, 
 	}
 	defer tx.Rollback(ctx)
 
-	retainedRows, err := applyRecentRetention(ctx, tx, "serving.sv_explorer_events_recent", "created_at", "30 days")
+	retainedRows, err := applyRecentRetentionWithReference(ctx, tx, "serving.sv_explorer_events_recent", "created_at", "30 days", dataTime)
 	if err != nil {
 		return RunStats{}, err
 	}
@@ -149,19 +159,19 @@ func (p *ExplorerEventsRecentProjector) RunOnce(ctx context.Context) (RunStats, 
 				contractCategory = info.category
 			}
 		}
-		successful := true
-		if r.InSuccessfulContractCall != nil {
-			successful = *r.InSuccessfulContractCall
-		}
+		// Public explorer success is transaction-scoped. Keep `successful` as a
+		// deprecated compatibility alias for `transaction_successful`; preserve
+		// Soroban call-context evidence separately in `in_successful_contract_call`.
+		transactionSuccessful, successful := explorerEventSuccessFields(r.TransactionSuccessful, r.InSuccessfulContractCall)
 
 		_, err = tx.Exec(ctx, `
 			INSERT INTO serving.sv_explorer_events_recent (
 				event_id, tx_hash, ledger_sequence, created_at, event_index, operation_index,
 				contract_id, contract_address, topic0, topic1, topic2, topic3,
-				topics_decoded, data_decoded, successful, explorer_type, protocol,
-				contract_name, contract_symbol, contract_category
+				topics_decoded, data_decoded, transaction_successful, in_successful_contract_call,
+				successful, explorer_type, protocol, contract_name, contract_symbol, contract_category
 			) VALUES (
-				$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20
+				$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22
 			)
 			ON CONFLICT (event_id) DO UPDATE SET
 				tx_hash = EXCLUDED.tx_hash,
@@ -177,6 +187,8 @@ func (p *ExplorerEventsRecentProjector) RunOnce(ctx context.Context) (RunStats, 
 				topic3 = EXCLUDED.topic3,
 				topics_decoded = EXCLUDED.topics_decoded,
 				data_decoded = EXCLUDED.data_decoded,
+				transaction_successful = EXCLUDED.transaction_successful,
+				in_successful_contract_call = EXCLUDED.in_successful_contract_call,
 				successful = EXCLUDED.successful,
 				explorer_type = EXCLUDED.explorer_type,
 				protocol = EXCLUDED.protocol,
@@ -185,7 +197,8 @@ func (p *ExplorerEventsRecentProjector) RunOnce(ctx context.Context) (RunStats, 
 				contract_category = EXCLUDED.contract_category
 		`, r.EventID, r.TxHash, r.LedgerSequence, r.CreatedAt, r.EventIndex, r.OperationIndex,
 			r.ContractID, contractAddress, r.Topic0, r.Topic1, r.Topic2, r.Topic3,
-			r.TopicsDecoded, r.DataDecoded, successful, classification.EventType, classification.Protocol,
+			r.TopicsDecoded, r.DataDecoded, transactionSuccessful, r.InSuccessfulContractCall,
+			successful, classification.EventType, classification.Protocol,
 			contractName, contractSymbol, contractCategory)
 		if err != nil {
 			return RunStats{}, fmt.Errorf("upsert serving explorer event %s: %w", r.EventID, err)

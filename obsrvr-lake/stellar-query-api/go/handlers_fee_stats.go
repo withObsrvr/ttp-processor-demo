@@ -74,6 +74,7 @@ func (h *FeeStatsHandler) HandleFeeStats(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	bronzeRef := resolveDataTime(ctx, h.reader.db, dataTimeQueryBronzeTransactions).Format("2006-01-02 15:04:05")
 	for _, schema := range schemas {
 		query := fmt.Sprintf(`
 			SELECT
@@ -84,8 +85,8 @@ func (h *FeeStatsHandler) HandleFeeStats(w http.ResponseWriter, r *http.Request)
 				MIN(fee_charged), MAX(fee_charged),
 				SUM(fee_charged), COUNT(*)
 			FROM %s.transactions_row_v2
-			WHERE created_at > NOW() - INTERVAL '%s' AND successful = true
-		`, schema, interval)
+			WHERE created_at > TIMESTAMP '%s' - INTERVAL '%s' AND successful = true
+		`, schema, bronzeRef, interval)
 
 		var median, p75, p90, p99 sql.NullFloat64
 		var minFee, maxFee, totalFees, txCount sql.NullInt64
@@ -333,13 +334,14 @@ func (h *SorobanStatsHandler) HandleSorobanStats(w http.ResponseWriter, r *http.
 
 	// Contract stats from silver contract_invocations_raw
 	if h.silverDB != nil {
-		contractQuery := `
+		invRef := resolveDataTime(ctx, h.silverDB.db, dataTimeQueryContractInvocations).Format("2006-01-02 15:04:05")
+		contractQuery := fmt.Sprintf(`
 			SELECT
 				COUNT(DISTINCT contract_id) as total_deployed,
-				COUNT(DISTINCT contract_id) FILTER (WHERE closed_at > NOW() - INTERVAL '24 hours') as active_24h,
-				COUNT(DISTINCT contract_id) FILTER (WHERE closed_at > NOW() - INTERVAL '7 days') as active_7d
+				COUNT(DISTINCT contract_id) FILTER (WHERE closed_at > TIMESTAMP '%s' - INTERVAL '24 hours') as active_24h,
+				COUNT(DISTINCT contract_id) FILTER (WHERE closed_at > TIMESTAMP '%s' - INTERVAL '7 days') as active_7d
 			FROM contract_invocations_raw
-		`
+		`, invRef, invRef)
 		_ = h.silverDB.db.QueryRowContext(ctx, contractQuery).Scan(
 			&resp.Contracts.TotalDeployed,
 			&resp.Contracts.Active24h,
@@ -347,11 +349,11 @@ func (h *SorobanStatsHandler) HandleSorobanStats(w http.ResponseWriter, r *http.
 		)
 
 		// Invocation count
-		invocQuery := `
+		invocQuery := fmt.Sprintf(`
 			SELECT COUNT(*)
 			FROM contract_invocations_raw
-			WHERE closed_at > NOW() - INTERVAL '24 hours'
-		`
+			WHERE closed_at > TIMESTAMP '%s' - INTERVAL '24 hours'
+		`, invRef)
 		_ = h.silverDB.db.QueryRowContext(ctx, invocQuery).Scan(&resp.Execution.TotalInvocations24h)
 	}
 
@@ -364,6 +366,7 @@ func (h *SorobanStatsHandler) HandleSorobanStats(w http.ResponseWriter, r *http.
 		if h.reader.bronzeColdSchema != "" {
 			schemas = append(schemas, h.reader.bronzeColdSchema)
 		}
+		bronzeRef := resolveDataTime(ctx, h.reader.db, dataTimeQueryBronzeTransactions).Format("2006-01-02 15:04:05")
 		for _, schema := range schemas {
 			query := fmt.Sprintf(`
 				SELECT
@@ -372,8 +375,8 @@ func (h *SorobanStatsHandler) HandleSorobanStats(w http.ResponseWriter, r *http.
 					COALESCE(SUM(rent_fee_charged), 0) as rent_burned
 				FROM %s.transactions_row_v2
 				WHERE soroban_resources_instructions IS NOT NULL
-				AND created_at > NOW() - INTERVAL '24 hours'
-			`, schema)
+				AND created_at > TIMESTAMP '%s' - INTERVAL '24 hours'
+			`, schema, bronzeRef)
 			var avgCPU, totalCPU sql.NullFloat64
 			var rentBurned sql.NullInt64
 			err := h.reader.db.QueryRowContext(ctx, query).Scan(&avgCPU, &totalCPU, &rentBurned)

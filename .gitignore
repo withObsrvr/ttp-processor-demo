@@ -317,3 +317,5 @@ tmp-smart-wallets/smart_wallets_clean.tsv
 obsrvr-lake/stellar-query-api/docs/refactoring-plan.md
 obsrvr-lake/stellar-query-api/docs/deploying-stellar-query-api.md
 docs/ECOSYSTEM_REPORT_IMPLEMENTATION_PLAN.md
+__pycache__/scan_pubnet_gaps.cpython-313.pyc
+scan_pubnet_gaps.py

@@ -810,7 +810,8 @@ func (h *SilverHotReader) GetServingExplorerEvents(ctx context.Context, filters 
 	whereClause := strings.Join(conditions, " AND ")
 	query := fmt.Sprintf(`
 		SELECT event_id, contract_id, ledger_sequence, tx_hash, created_at,
-		       COALESCE((raw_event_json->>'in_successful_contract_call')::boolean, true),
+		       (raw_event_json->>'successful')::boolean,
+		       (raw_event_json->>'in_successful_contract_call')::boolean,
 		       topic0, topic1, topic2, topic3,
 		       raw_event_json->>'topics_decoded', raw_event_json->>'data_decoded',
 		       COALESCE(event_index, 0), COALESCE((raw_event_json->>'operation_index')::int, 0)
@@ -838,12 +839,12 @@ func (h *SilverHotReader) GetServingExplorerEvents(ctx context.Context, filters 
 	for rows.Next() {
 		var e ExplorerEvent
 		var createdAt time.Time
-		var successful bool
-		if err := rows.Scan(&e.EventID, &e.ContractID, &e.LedgerSequence, &e.TxHash, &createdAt, &successful, &e.Topic0, &e.Topic1, &e.Topic2, &e.Topic3, &e.TopicsDecoded, &e.DataDecoded, &e.EventIndex, &e.OpIndex); err != nil {
+		var transactionSuccessful, inSuccessfulContractCall sql.NullBool
+		if err := rows.Scan(&e.EventID, &e.ContractID, &e.LedgerSequence, &e.TxHash, &createdAt, &transactionSuccessful, &inSuccessfulContractCall, &e.Topic0, &e.Topic1, &e.Topic2, &e.Topic3, &e.TopicsDecoded, &e.DataDecoded, &e.EventIndex, &e.OpIndex); err != nil {
 			return nil, nil, "", false, err
 		}
 		e.ClosedAt = createdAt.UTC().Format(time.RFC3339)
-		e.Successful = successful
+		applyExplorerEventSuccess(&e, transactionSuccessful, inSuccessfulContractCall)
 		e.Data = e.DataDecoded
 		if e.ContractID != nil {
 			if strKeyID, err := hexToStrKey(*e.ContractID); err == nil {
@@ -994,7 +995,8 @@ func (h *SilverHotReader) getProjectedServingExplorerEvents(ctx context.Context,
 	}
 	where := strings.Join(conditions, " AND ")
 	query := fmt.Sprintf(`
-		SELECT event_id, contract_address, ledger_sequence, tx_hash, created_at, successful,
+		SELECT event_id, contract_address, ledger_sequence, tx_hash, created_at,
+		       transaction_successful, in_successful_contract_call,
 		       topic0, topic1, topic2, topic3, topics_decoded, data_decoded,
 		       COALESCE(event_index,0), COALESCE(operation_index,0), explorer_type, protocol,
 		       contract_name, contract_symbol, contract_category
@@ -1013,10 +1015,12 @@ func (h *SilverHotReader) getProjectedServingExplorerEvents(ctx context.Context,
 	for rows.Next() {
 		var e ExplorerEvent
 		var createdAt time.Time
-		if err := rows.Scan(&e.EventID, &e.ContractID, &e.LedgerSequence, &e.TxHash, &createdAt, &e.Successful, &e.Topic0, &e.Topic1, &e.Topic2, &e.Topic3, &e.TopicsDecoded, &e.DataDecoded, &e.EventIndex, &e.OpIndex, &e.Type, &e.Protocol, &e.ContractName, &e.ContractSymbol, &e.ContractCategory); err != nil {
+		var transactionSuccessful, inSuccessfulContractCall sql.NullBool
+		if err := rows.Scan(&e.EventID, &e.ContractID, &e.LedgerSequence, &e.TxHash, &createdAt, &transactionSuccessful, &inSuccessfulContractCall, &e.Topic0, &e.Topic1, &e.Topic2, &e.Topic3, &e.TopicsDecoded, &e.DataDecoded, &e.EventIndex, &e.OpIndex, &e.Type, &e.Protocol, &e.ContractName, &e.ContractSymbol, &e.ContractCategory); err != nil {
 			return nil, nil, "", false, err
 		}
 		e.ClosedAt = createdAt.UTC().Format(time.RFC3339)
+		applyExplorerEventSuccess(&e, transactionSuccessful, inSuccessfulContractCall)
 		e.Data = e.DataDecoded
 		events = append(events, e)
 	}
@@ -2743,16 +2747,29 @@ func (h *SilverHotReader) GetTrades(ctx context.Context, filters TradeFilters) (
 	var args []interface{}
 	argNum := 1
 
-	// Time range filter (default to last 24 hours)
-	if filters.StartTime.IsZero() {
-		filters.StartTime = time.Now().Add(-24 * time.Hour)
+	// Time range filter — only applied when explicitly requested. The original
+	// default of NOW() - 24h forced a full-table seq scan during backfill (no
+	// rows match since data is years behind wallclock) and a MAX(trade_timestamp)
+	// fallback also seq-scans because there's no index on trade_timestamp. When
+	// no time range is given we instead sort by ledger_sequence DESC and let
+	// LIMIT handle bounding — this uses the trades_pkey index and returns the
+	// most recent trades in milliseconds regardless of how far back the data
+	// goes.
+	if !filters.StartTime.IsZero() || !filters.EndTime.IsZero() {
+		// Caller supplied at least one bound. Fill missing bound with a wide
+		// fallback (epoch / now) and apply the predicate.
+		startTime := filters.StartTime
+		endTime := filters.EndTime
+		if startTime.IsZero() {
+			startTime = time.Unix(0, 0)
+		}
+		if endTime.IsZero() {
+			endTime = time.Now()
+		}
+		conditions = append(conditions, fmt.Sprintf("trade_timestamp >= $%d AND trade_timestamp <= $%d", argNum, argNum+1))
+		args = append(args, startTime, endTime)
+		argNum += 2
 	}
-	if filters.EndTime.IsZero() {
-		filters.EndTime = time.Now()
-	}
-	conditions = append(conditions, fmt.Sprintf("trade_timestamp >= $%d AND trade_timestamp <= $%d", argNum, argNum+1))
-	args = append(args, filters.StartTime, filters.EndTime)
-	argNum += 2
 
 	// Account filters
 	if filters.AccountID != "" {
@@ -2801,17 +2818,29 @@ func (h *SilverHotReader) GetTrades(ctx context.Context, filters TradeFilters) (
 		}
 	}
 
-	// Cursor pagination
+	// Determine order direction (default ASC for backward compat with cursors;
+	// DESC asks for most-recent-first).
+	orderDir := "ASC"
+	cursorOp := ">"
+	if filters.Order == "desc" {
+		orderDir = "DESC"
+		cursorOp = "<"
+	}
+
+	// Cursor pagination — direction matches the order direction.
 	if filters.Cursor != nil {
 		conditions = append(conditions, fmt.Sprintf(`
-			(ledger_sequence, transaction_hash, operation_index, trade_index) > ($%d, $%d, $%d, $%d)
-		`, argNum, argNum+1, argNum+2, argNum+3))
+			(ledger_sequence, transaction_hash, operation_index, trade_index) %s ($%d, $%d, $%d, $%d)
+		`, cursorOp, argNum, argNum+1, argNum+2, argNum+3))
 		args = append(args, filters.Cursor.LedgerSequence, filters.Cursor.TransactionHash,
 			filters.Cursor.OperationIndex, filters.Cursor.TradeIndex)
 		argNum += 4
 	}
 
-	whereClause := "WHERE " + strings.Join(conditions, " AND ")
+	whereClause := ""
+	if len(conditions) > 0 {
+		whereClause = "WHERE " + strings.Join(conditions, " AND ")
+	}
 
 	limit := filters.Limit
 	if limit <= 0 {
@@ -2826,9 +2855,9 @@ func (h *SilverHotReader) GetTrades(ctx context.Context, filters TradeFilters) (
 			   price
 		FROM trades
 		%s
-		ORDER BY ledger_sequence ASC, transaction_hash ASC, operation_index ASC, trade_index ASC
+		ORDER BY ledger_sequence %s, transaction_hash %s, operation_index %s, trade_index %s
 		LIMIT $%d
-	`, whereClause, argNum)
+	`, whereClause, orderDir, orderDir, orderDir, orderDir, argNum)
 	args = append(args, limit+1)
 
 	rows, err := h.db.QueryContext(ctx, query, args...)

@@ -140,12 +140,17 @@ func (h *SilverHotReader) GetNetworkStats(ctx context.Context) (*NetworkStats, e
 		return nil, fmt.Errorf("failed to get current ledger: %w", err)
 	}
 
+	// Anchor recency filters to the data's own clock so backfilled networks
+	// (where wall-clock NOW is years ahead of any indexed ledger) still return
+	// meaningful 24h windows instead of forcing full-table scans.
+	opsRef := resolveDataTime(ctx, h.db, dataTimeQueryEnrichedHistoryOps).Format("2006-01-02 15:04:05")
+
 	// Query 3: Active accounts in 24h (accounts that had operations)
-	activeQuery := `
+	activeQuery := fmt.Sprintf(`
 		SELECT COUNT(DISTINCT source_account)
 		FROM enriched_history_operations
-		WHERE ledger_closed_at > NOW() - INTERVAL '24 hours'
-	`
+		WHERE ledger_closed_at > TIMESTAMP '%s' - INTERVAL '24 hours'
+	`, opsRef)
 	err = h.db.QueryRowContext(ctx, activeQuery).Scan(&stats.Accounts.Active24h)
 	if err != nil && err != sql.ErrNoRows {
 		// Non-fatal - some deployments may not have this data
@@ -153,14 +158,14 @@ func (h *SilverHotReader) GetNetworkStats(ctx context.Context) (*NetworkStats, e
 	}
 
 	// Query 4: 24h operations breakdown by type (using integer type column)
-	opsQuery := `
+	opsQuery := fmt.Sprintf(`
 		SELECT
 			type,
 			COUNT(*) as count
 		FROM enriched_history_operations
-		WHERE ledger_closed_at > NOW() - INTERVAL '24 hours'
+		WHERE ledger_closed_at > TIMESTAMP '%s' - INTERVAL '24 hours'
 		GROUP BY type
-	`
+	`, opsRef)
 	rows, err := h.db.QueryContext(ctx, opsQuery)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get operations breakdown: %w", err)
@@ -204,14 +209,14 @@ func (h *SilverHotReader) GetNetworkStats(ctx context.Context) (*NetworkStats, e
 	stats.Ledger.AvgCloseTimeSeconds = 5.0 // Default Stellar target
 
 	// Query 6: Previous 24h operations (48h-24h window) for trend comparison
-	prevOpsQuery := `
+	prevOpsQuery := fmt.Sprintf(`
 		SELECT
 			type,
 			COUNT(*) as count
 		FROM enriched_history_operations
-		WHERE ledger_closed_at BETWEEN NOW() - INTERVAL '48 hours' AND NOW() - INTERVAL '24 hours'
+		WHERE ledger_closed_at BETWEEN TIMESTAMP '%s' - INTERVAL '48 hours' AND TIMESTAMP '%s' - INTERVAL '24 hours'
 		GROUP BY type
-	`
+	`, opsRef, opsRef)
 	prevRows, err := h.db.QueryContext(ctx, prevOpsQuery)
 	if err == nil {
 		defer prevRows.Close()
@@ -230,13 +235,13 @@ func (h *SilverHotReader) GetNetworkStats(ctx context.Context) (*NetworkStats, e
 
 	// Query 7: Transaction stats (total, failed)
 	txStats := &TransactionStats24h{}
-	txStatsQuery := `
+	txStatsQuery := fmt.Sprintf(`
 		SELECT
 			COUNT(DISTINCT transaction_hash) as total,
 			COUNT(DISTINCT transaction_hash) FILTER (WHERE NOT tx_successful) as failed
 		FROM enriched_history_operations
-		WHERE ledger_closed_at > NOW() - INTERVAL '24 hours'
-	`
+		WHERE ledger_closed_at > TIMESTAMP '%s' - INTERVAL '24 hours'
+	`, opsRef)
 	err = h.db.QueryRowContext(ctx, txStatsQuery).Scan(&txStats.Total, &txStats.Failed)
 	if err == nil && txStats.Total > 0 {
 		txStats.FailureRate = float64(txStats.Failed) / float64(txStats.Total)
@@ -245,11 +250,12 @@ func (h *SilverHotReader) GetNetworkStats(ctx context.Context) (*NetworkStats, e
 
 	// Query 8: Active contracts in 24h
 	sorobanStats := &SorobanNetStats{}
-	activeContractsQuery := `
+	invRef := resolveDataTime(ctx, h.db, dataTimeQueryContractInvocations).Format("2006-01-02 15:04:05")
+	activeContractsQuery := fmt.Sprintf(`
 		SELECT COUNT(DISTINCT contract_id)
 		FROM contract_invocations_raw
-		WHERE closed_at > NOW() - INTERVAL '24 hours'
-	`
+		WHERE closed_at > TIMESTAMP '%s' - INTERVAL '24 hours'
+	`, invRef)
 	err = h.db.QueryRowContext(ctx, activeContractsQuery).Scan(&sorobanStats.ActiveContracts24h)
 	if err == nil && sorobanStats.ActiveContracts24h > 0 {
 		stats.Soroban = sorobanStats
@@ -329,6 +335,17 @@ func (h *NetworkStatsHandler) SetUnifiedReader(reader *UnifiedDuckDBReader) {
 // bypassing it drops the total endpoint latency from ~5-7s to well under 1s.
 func (h *NetworkStatsHandler) SetBronzeHotPG(db *sql.DB) {
 	h.bronzeHotPG = db
+}
+
+// bronzeRefTime returns the latest indexed transaction time in bronze hot.
+// Used to anchor "last 24h" filters to bronze's own clock during backfill so
+// queries don't fan out into full-table / full-cold scans looking for rows
+// whose closed_at is years ahead of any indexed data.
+func (h *NetworkStatsHandler) bronzeRefTime(ctx context.Context) time.Time {
+	if h.bronzeHotPG != nil {
+		return resolveDataTime(ctx, h.bronzeHotPG, dataTimeQueryBronzeTransactions)
+	}
+	return time.Now().UTC()
 }
 
 // HandleNetworkStats returns headline network statistics
@@ -490,6 +507,9 @@ func (h *NetworkStatsHandler) fetchFeeStats(ctx context.Context) *FeeStats24h {
 		schemas = append(schemas, h.unifiedReader.bronzeColdSchema)
 	}
 
+	// Anchor "last 24h" to the data's own clock so backfill networks return
+	// meaningful percentiles instead of an empty window forcing a full scan.
+	bronzeRef := h.bronzeRefTime(ctx).Format("2006-01-02 15:04:05")
 	for _, schema := range schemas {
 		query := fmt.Sprintf(`
 			SELECT
@@ -497,8 +517,8 @@ func (h *NetworkStatsHandler) fetchFeeStats(ctx context.Context) *FeeStats24h {
 				PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY fee_charged) as p99,
 				SUM(fee_charged) as total
 			FROM %s.transactions_row_v2
-			WHERE created_at > NOW() - INTERVAL '24 hours' AND successful = true
-		`, schema)
+			WHERE created_at > TIMESTAMP '%s' - INTERVAL '24 hours' AND successful = true
+		`, schema, bronzeRef)
 
 		var median, p99 sql.NullFloat64
 		var total sql.NullInt64
@@ -583,6 +603,24 @@ func (h *NetworkStatsHandler) fetchBronzeStatsFast(ctx context.Context, wantFees
 		SELECT last_flushed_watermark FROM cold_flusher_checkpoint WHERE id = 1
 	`).Scan(&watermark)
 
+	// Anchor recency filters to bronze's own clock; wall-clock NOW makes the
+	// cold-side scan unbounded during backfill (fans out across all B2 parquet
+	// partitions only to confirm zero matches).
+	bronzeRef := h.bronzeRefTime(ctx).Format("2006-01-02 15:04:05")
+
+	// Cold parquet is partitioned by ledger_range (100k ledgers/file). The
+	// closed_at predicate alone can't prune partitions — DuckDB has to read
+	// every parquet file's footer to confirm whether any rows match. Since
+	// ledger_sequence and closed_at are monotonically correlated, derive a
+	// ledger_sequence floor from the bronze tip ~30d back; this prunes ~99%
+	// of partitions (~0.5M of ~30M ledgers).
+	var bronzeMaxLedger int64
+	_ = h.bronzeHotPG.QueryRowContext(ctx, `SELECT MAX(ledger_sequence) FROM transactions_row_v2`).Scan(&bronzeMaxLedger)
+	coldFloor := bronzeMaxLedger - 600000 // ~35 days at 17280 ledgers/day
+	if coldFloor < 0 {
+		coldFloor = 0
+	}
+
 	type txAgg struct {
 		total, successful, fees, soroban int64
 	}
@@ -621,11 +659,11 @@ func (h *NetworkStatsHandler) fetchBronzeStatsFast(ctx context.Context, wantFees
 			       SUM(fee_charged),
 			       COUNT(*) FILTER (WHERE soroban_resources_instructions IS NOT NULL)
 			FROM %s.%s.transactions_row_v2
-			WHERE ledger_sequence <= $1
-			  AND created_at > NOW() - INTERVAL '24 hours'
-		`, catalog, schema)
+			WHERE ledger_sequence > $2 AND ledger_sequence <= $1
+			  AND created_at > TIMESTAMP '%s' - INTERVAL '24 hours'
+		`, catalog, schema, bronzeRef)
 		var total, successful, fees, soroban sql.NullInt64
-		if err := coldDB.QueryRowContext(ctx, txSQL, watermark).Scan(&total, &successful, &fees, &soroban); err != nil {
+		if err := coldDB.QueryRowContext(ctx, txSQL, watermark, coldFloor).Scan(&total, &successful, &fees, &soroban); err != nil {
 			log.Printf("fetchBronzeStatsFast cold tx: %v", err)
 		} else {
 			coldTx = txAgg{total.Int64, successful.Int64, fees.Int64, soroban.Int64}
@@ -635,11 +673,11 @@ func (h *NetworkStatsHandler) fetchBronzeStatsFast(ctx context.Context, wantFees
 		opSQL := fmt.Sprintf(`
 			SELECT SUM(operation_count), SUM(soroban_op_count)
 			FROM %s.%s.ledgers_row_v2
-			WHERE sequence <= $1
-			  AND closed_at > NOW() - INTERVAL '24 hours'
-		`, catalog, schema)
+			WHERE sequence > $2 AND sequence <= $1
+			  AND closed_at > TIMESTAMP '%s' - INTERVAL '24 hours'
+		`, catalog, schema, bronzeRef)
 		var opsTotal, opsSoroban sql.NullInt64
-		if err := coldDB.QueryRowContext(ctx, opSQL, watermark).Scan(&opsTotal, &opsSoroban); err != nil {
+		if err := coldDB.QueryRowContext(ctx, opSQL, watermark, coldFloor).Scan(&opsTotal, &opsSoroban); err != nil {
 			log.Printf("fetchBronzeStatsFast cold op: %v", err)
 		} else {
 			coldOp = opAgg{opsTotal.Int64, opsSoroban.Int64}
@@ -652,13 +690,13 @@ func (h *NetworkStatsHandler) fetchBronzeStatsFast(ctx context.Context, wantFees
 				       PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY fee_charged),
 				       SUM(fee_charged)
 				FROM %s.%s.transactions_row_v2
-				WHERE ledger_sequence <= $1
-				  AND created_at > NOW() - INTERVAL '24 hours'
+				WHERE ledger_sequence > $2 AND ledger_sequence <= $1
+				  AND created_at > TIMESTAMP '%s' - INTERVAL '24 hours'
 				  AND successful = true
-			`, catalog, schema)
+			`, catalog, schema, bronzeRef)
 			var median, p99 sql.NullFloat64
 			var sum sql.NullInt64
-			if err := coldDB.QueryRowContext(ctx, feeSQL, watermark).Scan(&median, &p99, &sum); err != nil {
+			if err := coldDB.QueryRowContext(ctx, feeSQL, watermark, coldFloor).Scan(&median, &p99, &sum); err != nil {
 				log.Printf("fetchBronzeStatsFast cold fee: %v", err)
 			} else {
 				if median.Valid {
@@ -679,13 +717,13 @@ func (h *NetworkStatsHandler) fetchBronzeStatsFast(ctx context.Context, wantFees
 				SELECT AVG(soroban_resources_instructions),
 				       COALESCE(SUM(rent_fee_charged), 0)
 				FROM %s.%s.transactions_row_v2
-				WHERE ledger_sequence <= $1
+				WHERE ledger_sequence > $2 AND ledger_sequence <= $1
 				  AND soroban_resources_instructions IS NOT NULL
-				  AND created_at > NOW() - INTERVAL '24 hours'
-			`, catalog, schema)
+				  AND created_at > TIMESTAMP '%s' - INTERVAL '24 hours'
+			`, catalog, schema, bronzeRef)
 			var avg sql.NullFloat64
 			var rent sql.NullInt64
-			if err := coldDB.QueryRowContext(ctx, sbSQL, watermark).Scan(&avg, &rent); err != nil {
+			if err := coldDB.QueryRowContext(ctx, sbSQL, watermark, coldFloor).Scan(&avg, &rent); err != nil {
 				log.Printf("fetchBronzeStatsFast cold soroban: %v", err)
 			} else {
 				if avg.Valid {
@@ -739,40 +777,40 @@ func (h *NetworkStatsHandler) fetchBronzeStatsFast(ctx context.Context, wantFees
 
 	// Query 3: hot-tail 24h tx stats (> watermark)
 	var hTotal, hSuccessful, hFees, hSoroban sql.NullInt64
-	_ = h.bronzeHotPG.QueryRowContext(ctx, `
+	_ = h.bronzeHotPG.QueryRowContext(ctx, fmt.Sprintf(`
 		SELECT COUNT(*),
 		       SUM(CASE WHEN successful THEN 1 ELSE 0 END),
 		       SUM(fee_charged),
 		       COUNT(*) FILTER (WHERE soroban_resources_instructions IS NOT NULL)
 		FROM transactions_row_v2
 		WHERE ledger_sequence > $1
-		  AND created_at > NOW() - INTERVAL '24 hours'
-	`, watermark).Scan(&hTotal, &hSuccessful, &hFees, &hSoroban)
+		  AND created_at > TIMESTAMP '%s' - INTERVAL '24 hours'
+	`, bronzeRef), watermark).Scan(&hTotal, &hSuccessful, &hFees, &hSoroban)
 	hotTx = txAgg{hTotal.Int64, hSuccessful.Int64, hFees.Int64, hSoroban.Int64}
 
 	// Query 4: hot-tail 24h op stats (> watermark)
 	var hOpsTotal, hOpsSoroban sql.NullInt64
-	_ = h.bronzeHotPG.QueryRowContext(ctx, `
+	_ = h.bronzeHotPG.QueryRowContext(ctx, fmt.Sprintf(`
 		SELECT SUM(operation_count), SUM(soroban_op_count)
 		FROM ledgers_row_v2
 		WHERE sequence > $1
-		  AND closed_at > NOW() - INTERVAL '24 hours'
-	`, watermark).Scan(&hOpsTotal, &hOpsSoroban)
+		  AND closed_at > TIMESTAMP '%s' - INTERVAL '24 hours'
+	`, bronzeRef), watermark).Scan(&hOpsTotal, &hOpsSoroban)
 	hotOp = opAgg{hOpsTotal.Int64, hOpsSoroban.Int64}
 
 	// Query 5: hot-tail fee percentiles (optional)
 	if wantFees {
 		var median, p99 sql.NullFloat64
 		var sum sql.NullInt64
-		_ = h.bronzeHotPG.QueryRowContext(ctx, `
+		_ = h.bronzeHotPG.QueryRowContext(ctx, fmt.Sprintf(`
 			SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY fee_charged),
 			       PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY fee_charged),
 			       SUM(fee_charged)
 			FROM transactions_row_v2
 			WHERE ledger_sequence > $1
-			  AND created_at > NOW() - INTERVAL '24 hours'
+			  AND created_at > TIMESTAMP '%s' - INTERVAL '24 hours'
 			  AND successful = true
-		`, watermark).Scan(&median, &p99, &sum)
+		`, bronzeRef), watermark).Scan(&median, &p99, &sum)
 		if median.Valid {
 			hotFee.median = int64(median.Float64)
 		}
@@ -788,14 +826,14 @@ func (h *NetworkStatsHandler) fetchBronzeStatsFast(ctx context.Context, wantFees
 	if wantSoroban {
 		var avg sql.NullFloat64
 		var rent sql.NullInt64
-		_ = h.bronzeHotPG.QueryRowContext(ctx, `
+		_ = h.bronzeHotPG.QueryRowContext(ctx, fmt.Sprintf(`
 			SELECT AVG(soroban_resources_instructions),
 			       COALESCE(SUM(rent_fee_charged), 0)
 			FROM transactions_row_v2
 			WHERE ledger_sequence > $1
 			  AND soroban_resources_instructions IS NOT NULL
-			  AND created_at > NOW() - INTERVAL '24 hours'
-		`, watermark).Scan(&avg, &rent)
+			  AND created_at > TIMESTAMP '%s' - INTERVAL '24 hours'
+		`, bronzeRef), watermark).Scan(&avg, &rent)
 		if avg.Valid {
 			hotSoroban.avgCPU = int64(avg.Float64)
 		}
@@ -916,6 +954,10 @@ func (h *NetworkStatsHandler) HandleBronzeNetworkStats(w http.ResponseWriter, r 
 			SELECT last_flushed_watermark FROM cold_flusher_checkpoint WHERE id = 1
 		`).Scan(&watermark)
 
+		// Anchor recency to bronze's clock — see fetchBronzeStatsFast for
+		// rationale.
+		bronzeRef := h.bronzeRefTime(ctx).Format("2006-01-02 15:04:05")
+
 		// Kick off cold and hot queries in parallel.
 		type txAgg struct {
 			total, successful, fees, soroban int64
@@ -948,8 +990,8 @@ func (h *NetworkStatsHandler) HandleBronzeNetworkStats(w http.ResponseWriter, r 
 				       COUNT(*) FILTER (WHERE soroban_resources_instructions IS NOT NULL)
 				FROM %s.%s.transactions_row_v2
 				WHERE ledger_sequence <= $1
-				  AND created_at > NOW() - INTERVAL '24 hours'
-			`, catalog, schema)
+				  AND created_at > TIMESTAMP '%s' - INTERVAL '24 hours'
+			`, catalog, schema, bronzeRef)
 			var total, successful, fees, soroban sql.NullInt64
 			if err := h.bronzeReader.DB().QueryRowContext(ctx, txSQL, watermark).Scan(&total, &successful, &fees, &soroban); err != nil {
 				coldErr = err
@@ -965,8 +1007,8 @@ func (h *NetworkStatsHandler) HandleBronzeNetworkStats(w http.ResponseWriter, r 
 				SELECT SUM(operation_count), SUM(soroban_op_count)
 				FROM %s.%s.ledgers_row_v2
 				WHERE sequence <= $1
-				  AND closed_at > NOW() - INTERVAL '24 hours'
-			`, catalog, schema)
+				  AND closed_at > TIMESTAMP '%s' - INTERVAL '24 hours'
+			`, catalog, schema, bronzeRef)
 			var opsTotal, opsSoroban sql.NullInt64
 			if err := h.bronzeReader.DB().QueryRowContext(ctx, opSQL, watermark).Scan(&opsTotal, &opsSoroban); err != nil {
 				coldErr = err
@@ -1022,15 +1064,15 @@ func (h *NetworkStatsHandler) HandleBronzeNetworkStats(w http.ResponseWriter, r 
 		// flusher watermark. Uses idx_transactions_row_v2_created_at
 		// combined with the ledger_sequence filter.
 		var hTotal, hSuccessful, hFees, hSoroban sql.NullInt64
-		_ = h.bronzeHotPG.QueryRowContext(ctx, `
+		_ = h.bronzeHotPG.QueryRowContext(ctx, fmt.Sprintf(`
 			SELECT COUNT(*),
 			       SUM(CASE WHEN successful THEN 1 ELSE 0 END),
 			       SUM(fee_charged),
 			       COUNT(*) FILTER (WHERE soroban_resources_instructions IS NOT NULL)
 			FROM transactions_row_v2
 			WHERE ledger_sequence > $1
-			  AND created_at > NOW() - INTERVAL '24 hours'
-		`, watermark).Scan(&hTotal, &hSuccessful, &hFees, &hSoroban)
+			  AND created_at > TIMESTAMP '%s' - INTERVAL '24 hours'
+		`, bronzeRef), watermark).Scan(&hTotal, &hSuccessful, &hFees, &hSoroban)
 		hotTx.total = hTotal.Int64
 		hotTx.successful = hSuccessful.Int64
 		hotTx.fees = hFees.Int64
@@ -1039,12 +1081,12 @@ func (h *NetworkStatsHandler) HandleBronzeNetworkStats(w http.ResponseWriter, r 
 		// Query 4 (hot tail): 24h operation stats strictly above the
 		// flusher watermark.
 		var hOpsTotal, hOpsSoroban sql.NullInt64
-		_ = h.bronzeHotPG.QueryRowContext(ctx, `
+		_ = h.bronzeHotPG.QueryRowContext(ctx, fmt.Sprintf(`
 			SELECT SUM(operation_count), SUM(soroban_op_count)
 			FROM ledgers_row_v2
 			WHERE sequence > $1
-			  AND closed_at > NOW() - INTERVAL '24 hours'
-		`, watermark).Scan(&hOpsTotal, &hOpsSoroban)
+			  AND closed_at > TIMESTAMP '%s' - INTERVAL '24 hours'
+		`, bronzeRef), watermark).Scan(&hOpsTotal, &hOpsSoroban)
 		hotOp.ops = hOpsTotal.Int64
 		hotOp.sorobanOps = hOpsSoroban.Int64
 
@@ -1165,6 +1207,7 @@ func (h *NetworkStatsHandler) HandleBronzeNetworkStats(w http.ResponseWriter, r 
 
 // fetchBronzeTxStats24h gets 24h transaction stats, deduplicating across hot+cold by transaction_hash
 func (h *NetworkStatsHandler) fetchBronzeTxStats24h(ctx context.Context, schemas []string) *BronzeTxStats24h {
+	bronzeRef := h.bronzeRefTime(ctx).Format("2006-01-02 15:04:05")
 	// UNION ALL with dedup via DISTINCT ON to avoid double-counting during flush overlap
 	if len(schemas) == 2 {
 		query := fmt.Sprintf(`
@@ -1176,13 +1219,13 @@ func (h *NetworkStatsHandler) fetchBronzeTxStats24h(ctx context.Context, schemas
 				SELECT DISTINCT ON (transaction_hash) successful, fee_charged, soroban_resources_instructions
 				FROM (
 					SELECT transaction_hash, successful, fee_charged, soroban_resources_instructions
-					FROM %s.transactions_row_v2 WHERE created_at > NOW() - INTERVAL '24 hours'
+					FROM %s.transactions_row_v2 WHERE created_at > TIMESTAMP '%s' - INTERVAL '24 hours'
 					UNION ALL
 					SELECT transaction_hash, successful, fee_charged, soroban_resources_instructions
-					FROM %s.transactions_row_v2 WHERE created_at > NOW() - INTERVAL '24 hours'
+					FROM %s.transactions_row_v2 WHERE created_at > TIMESTAMP '%s' - INTERVAL '24 hours'
 				) raw
 			) deduped
-		`, schemas[0], schemas[1])
+		`, schemas[0], bronzeRef, schemas[1], bronzeRef)
 		var total, successful, fees, soroban sql.NullInt64
 		err := h.unifiedReader.db.QueryRowContext(ctx, query).Scan(&total, &successful, &fees, &soroban)
 		if err == nil && total.Valid && total.Int64 > 0 {
@@ -1204,8 +1247,8 @@ func (h *NetworkStatsHandler) fetchBronzeTxStats24h(ctx context.Context, schemas
 			       SUM(fee_charged),
 			       COUNT(*) FILTER (WHERE soroban_resources_instructions IS NOT NULL)
 			FROM %s.transactions_row_v2
-			WHERE created_at > NOW() - INTERVAL '24 hours'
-		`, schema)
+			WHERE created_at > TIMESTAMP '%s' - INTERVAL '24 hours'
+		`, schema, bronzeRef)
 		var total, successful, fees, soroban sql.NullInt64
 		err := h.unifiedReader.db.QueryRowContext(ctx, query).Scan(&total, &successful, &fees, &soroban)
 		if err != nil {
@@ -1226,6 +1269,7 @@ func (h *NetworkStatsHandler) fetchBronzeTxStats24h(ctx context.Context, schemas
 
 // fetchBronzeOpStats24h gets 24h operation stats, deduplicating across hot+cold by ledger sequence
 func (h *NetworkStatsHandler) fetchBronzeOpStats24h(ctx context.Context, schemas []string) *BronzeOpStats24h {
+	bronzeRef := h.bronzeRefTime(ctx).Format("2006-01-02 15:04:05")
 	// UNION ALL with dedup via DISTINCT ON(sequence) to avoid double-counting during flush overlap
 	if len(schemas) == 2 {
 		query := fmt.Sprintf(`
@@ -1233,12 +1277,12 @@ func (h *NetworkStatsHandler) fetchBronzeOpStats24h(ctx context.Context, schemas
 			FROM (
 				SELECT DISTINCT ON (sequence) operation_count, soroban_op_count
 				FROM (
-					SELECT sequence, operation_count, soroban_op_count FROM %s.ledgers_row_v2 WHERE closed_at > NOW() - INTERVAL '24 hours'
+					SELECT sequence, operation_count, soroban_op_count FROM %s.ledgers_row_v2 WHERE closed_at > TIMESTAMP '%s' - INTERVAL '24 hours'
 					UNION ALL
-					SELECT sequence, operation_count, soroban_op_count FROM %s.ledgers_row_v2 WHERE closed_at > NOW() - INTERVAL '24 hours'
+					SELECT sequence, operation_count, soroban_op_count FROM %s.ledgers_row_v2 WHERE closed_at > TIMESTAMP '%s' - INTERVAL '24 hours'
 				) raw
 			) deduped
-		`, schemas[0], schemas[1])
+		`, schemas[0], bronzeRef, schemas[1], bronzeRef)
 		var total, soroban sql.NullInt64
 		err := h.unifiedReader.db.QueryRowContext(ctx, query).Scan(&total, &soroban)
 		if err == nil && total.Valid && total.Int64 > 0 {
@@ -1254,8 +1298,8 @@ func (h *NetworkStatsHandler) fetchBronzeOpStats24h(ctx context.Context, schemas
 		query := fmt.Sprintf(`
 			SELECT SUM(operation_count), SUM(soroban_op_count)
 			FROM %s.ledgers_row_v2
-			WHERE closed_at > NOW() - INTERVAL '24 hours'
-		`, schema)
+			WHERE closed_at > TIMESTAMP '%s' - INTERVAL '24 hours'
+		`, schema, bronzeRef)
 		var total, soroban sql.NullInt64
 		err := h.unifiedReader.db.QueryRowContext(ctx, query).Scan(&total, &soroban)
 		if err != nil {
@@ -1285,14 +1329,15 @@ func (h *NetworkStatsHandler) fetchBronzeSorobanStats(ctx context.Context) (avgC
 		schemas = append(schemas, h.unifiedReader.bronzeColdSchema)
 	}
 
+	bronzeRef := h.bronzeRefTime(ctx).Format("2006-01-02 15:04:05")
 	for _, schema := range schemas {
 		query := fmt.Sprintf(`
 			SELECT AVG(soroban_resources_instructions),
 			       COALESCE(SUM(rent_fee_charged), 0)
 			FROM %s.transactions_row_v2
 			WHERE soroban_resources_instructions IS NOT NULL
-			AND created_at > NOW() - INTERVAL '24 hours'
-		`, schema)
+			AND created_at > TIMESTAMP '%s' - INTERVAL '24 hours'
+		`, schema, bronzeRef)
 
 		var avgCPUVal sql.NullFloat64
 		var rentVal sql.NullInt64

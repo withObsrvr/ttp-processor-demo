@@ -90,8 +90,9 @@ func (iw *IndexWriter) initialize() error {
 	dataPath := iw.config.DataPath()
 
 	// Use 'index' schema for both data and metadata
-	attachSQL := fmt.Sprintf(`ATTACH '%s' AS testnet_catalog (DATA_PATH '%s', METADATA_SCHEMA 'index', DATA_INLINING_ROW_LIMIT 10000, AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE)`,
-		catalogPath, dataPath)
+	catalogName := iw.config.Indexing.CatalogName
+	attachSQL := fmt.Sprintf(`ATTACH '%s' AS %s (DATA_PATH '%s', METADATA_SCHEMA 'index', DATA_INLINING_ROW_LIMIT 10000, AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE)`,
+		catalogPath, catalogName, dataPath)
 
 	if _, err := iw.db.Exec(attachSQL); err != nil {
 		return fmt.Errorf("failed to attach DuckLake catalog: %w", err)
@@ -113,17 +114,18 @@ func (iw *IndexWriter) initialize() error {
 func (iw *IndexWriter) createIndexTable() error {
 	log.Println("Creating contract_events_index table in DuckLake catalog...")
 
+	catalogName := iw.config.Indexing.CatalogName
 	// Create schema first if it doesn't exist
-	createSchemaSQL := "CREATE SCHEMA IF NOT EXISTS testnet_catalog.index"
+	createSchemaSQL := fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s.index", catalogName)
 
 	if _, err := iw.db.Exec(createSchemaSQL); err != nil {
 		return fmt.Errorf("failed to create schema in DuckLake: %w", err)
 	}
 
-	log.Println("✅ Schema created: testnet_catalog.index")
+	log.Printf("✅ Schema created: %s.index", catalogName)
 
 	// Create table in DuckLake catalog - DuckLake will manage Parquet storage automatically
-	fullTableName := "testnet_catalog.index.contract_events_index"
+	fullTableName := fmt.Sprintf("%s.index.contract_events_index", catalogName)
 
 	createTableSQL := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s (
@@ -163,7 +165,7 @@ func (iw *IndexWriter) WriteBatch(ctx context.Context, rows []ContractEventIndex
 	}
 
 	// DuckLake table reference
-	fullTableName := "testnet_catalog.index.contract_events_index"
+	fullTableName := fmt.Sprintf("%s.index.contract_events_index", iw.config.Indexing.CatalogName)
 
 	// Create temp table for bulk insert
 	createTempSQL := `
@@ -238,7 +240,7 @@ func (iw *IndexWriter) WriteBatch(ctx context.Context, rows []ContractEventIndex
 func (iw *IndexWriter) FlushInlinedData() (int64, error) {
 	var schema, table string
 	var rowsFlushed int64
-	query := "CALL ducklake_flush_inlined_data('testnet_catalog', schema_name => 'index', table_name => 'contract_events_index')"
+	query := fmt.Sprintf("CALL ducklake_flush_inlined_data('%s', schema_name => 'index', table_name => 'contract_events_index')", iw.config.Indexing.CatalogName)
 	err := iw.db.QueryRow(query).Scan(&schema, &table, &rowsFlushed)
 	if err != nil {
 		return 0, fmt.Errorf("flush inlined data failed: %w", err)
@@ -252,7 +254,7 @@ func (iw *IndexWriter) FlushInlinedData() (int64, error) {
 // GetIndexStats returns statistics about the index.
 // Accepts a context for cancellation/timeout support.
 func (iw *IndexWriter) GetIndexStats(ctx context.Context) (map[string]interface{}, error) {
-	fullTableName := "testnet_catalog.index.contract_events_index"
+	fullTableName := fmt.Sprintf("%s.index.contract_events_index", iw.config.Indexing.CatalogName)
 
 	query := fmt.Sprintf(`
 		SELECT
@@ -325,8 +327,8 @@ func (iw *IndexWriter) RunCheckpoint(ctx context.Context, maxCompactedFiles int)
 	log.Println("🔧 Running DuckLake merge maintenance (merge only, no expire/cleanup)...")
 
 	mergeSQL := fmt.Sprintf(
-		`CALL ducklake_merge_adjacent_files('testnet_catalog', 'contract_events_index', schema => 'contract_index', max_compacted_files => %d)`,
-		maxCompactedFiles)
+		`CALL ducklake_merge_adjacent_files('%s', 'contract_events_index', schema => 'contract_index', max_compacted_files => %d)`,
+		iw.config.Indexing.CatalogName, maxCompactedFiles)
 	if _, err := iw.db.ExecContext(ctx, mergeSQL); err != nil {
 		return fmt.Errorf("merge failed: %w", err)
 	}
@@ -347,7 +349,7 @@ func (iw *IndexWriter) Close() error {
 func (iw *IndexWriter) MergeAdjacentFiles(maxFiles int) error {
 	log.Printf("🔧 Starting file merge (max_compacted_files=%d)...", maxFiles)
 
-	mergeSQL := fmt.Sprintf(`CALL ducklake_merge_adjacent_files('testnet_catalog', 'contract_events_index', schema => 'index', max_compacted_files => %d)`, maxFiles)
+	mergeSQL := fmt.Sprintf(`CALL ducklake_merge_adjacent_files('%s', 'contract_events_index', schema => 'index', max_compacted_files => %d)`, iw.config.Indexing.CatalogName, maxFiles)
 
 	if _, err := iw.db.Exec(mergeSQL); err != nil {
 		return fmt.Errorf("failed to merge adjacent files: %w", err)
@@ -366,7 +368,7 @@ func (iw *IndexWriter) ExpireSnapshots(retainSnapshots int) error {
 
 	// TODO: DuckLake's ducklake_expire_snapshots doesn't currently accept a retain parameter.
 	// When DuckLake adds support for this, update the SQL to include the parameter.
-	expireSQL := `CALL ducklake_expire_snapshots('testnet_catalog')`
+	expireSQL := fmt.Sprintf(`CALL ducklake_expire_snapshots('%s')`, iw.config.Indexing.CatalogName)
 
 	if _, err := iw.db.Exec(expireSQL); err != nil {
 		return fmt.Errorf("failed to expire snapshots: %w", err)
@@ -380,7 +382,7 @@ func (iw *IndexWriter) ExpireSnapshots(retainSnapshots int) error {
 func (iw *IndexWriter) CleanupOrphanedFiles() error {
 	log.Println("🧹 Cleaning up orphaned files...")
 
-	cleanupSQL := `CALL ducklake_cleanup_old_files('testnet_catalog')`
+	cleanupSQL := fmt.Sprintf(`CALL ducklake_cleanup_old_files('%s')`, iw.config.Indexing.CatalogName)
 
 	if _, err := iw.db.Exec(cleanupSQL); err != nil {
 		return fmt.Errorf("failed to cleanup orphaned files: %w", err)
@@ -412,17 +414,17 @@ func (iw *IndexWriter) PerformMaintenanceFullCycle(maxFiles, retainSnapshots int
 
 // GetFileCount returns the number of Parquet files for this table
 func (iw *IndexWriter) GetFileCount() (int64, error) {
-	query := `
+	query := fmt.Sprintf(`
 		SELECT COUNT(*)
-		FROM __ducklake_metadata_testnet_catalog.index.ducklake_data_file df
+		FROM __ducklake_metadata_%[1]s.index.ducklake_data_file df
 		WHERE df.table_id = (
 			SELECT table_id
-			FROM __ducklake_metadata_testnet_catalog.index.ducklake_table
+			FROM __ducklake_metadata_%[1]s.index.ducklake_table
 			WHERE table_name = 'contract_events_index'
 			ORDER BY table_id DESC
 			LIMIT 1
 		)
-	`
+	`, iw.config.Indexing.CatalogName)
 
 	var count int64
 	err := iw.db.QueryRow(query).Scan(&count)
