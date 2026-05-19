@@ -216,7 +216,7 @@ type Worker struct {
 	config     OrchestratorConfig
 	progress   *ProgressTracker
 	writer     *ParquetWriter
-	source     LedgerSource // shared across workers for XDR mode, per-worker for FS/GCS
+	source     LedgerSource       // shared across workers for XDR mode, per-worker for FS/GCS
 	checkpoint *CheckpointManager // optional, for resume support
 	lineage    *LineageWriter     // optional, for lineage tracking
 }
@@ -370,27 +370,27 @@ func (w *Worker) recordLineage(batch *BatchData, startSeq, endSeq uint32, durati
 		return
 	}
 	tables := map[string]int{
-		"transactions":              len(batch.Transactions),
-		"operations":                len(batch.Operations),
-		"effects":                   len(batch.Effects),
-		"trades":                    len(batch.Trades),
-		"accounts_snapshot":         len(batch.Accounts),
-		"offers_snapshot":           len(batch.Offers),
-		"trustlines_snapshot":       len(batch.Trustlines),
-		"account_signers_snapshot":  len(batch.AccountSigners),
+		"transactions":                len(batch.Transactions),
+		"operations":                  len(batch.Operations),
+		"effects":                     len(batch.Effects),
+		"trades":                      len(batch.Trades),
+		"accounts_snapshot":           len(batch.Accounts),
+		"offers_snapshot":             len(batch.Offers),
+		"trustlines_snapshot":         len(batch.Trustlines),
+		"account_signers_snapshot":    len(batch.AccountSigners),
 		"claimable_balances_snapshot": len(batch.ClaimableBalances),
-		"liquidity_pools_snapshot":   len(batch.LiquidityPools),
-		"config_settings":            len(batch.ConfigSettings),
-		"ttl_snapshot":              len(batch.TTLEntries),
-		"evicted_keys":              len(batch.EvictedKeys),
-		"contract_events":           len(batch.ContractEvents),
-		"contract_data_snapshot":    len(batch.ContractData),
-		"contract_code_snapshot":    len(batch.ContractCode),
-		"native_balances":           len(batch.NativeBalances),
-		"restored_keys":             len(batch.RestoredKeys),
-		"contract_creations":        len(batch.ContractCreations),
-		"ledgers":                   len(batch.Ledgers),
-		"token_transfers":           len(batch.TokenTransfers),
+		"liquidity_pools_snapshot":    len(batch.LiquidityPools),
+		"config_settings":             len(batch.ConfigSettings),
+		"ttl_snapshot":                len(batch.TTLEntries),
+		"evicted_keys":                len(batch.EvictedKeys),
+		"contract_events":             len(batch.ContractEvents),
+		"contract_data_snapshot":      len(batch.ContractData),
+		"contract_code_snapshot":      len(batch.ContractCode),
+		"native_balances":             len(batch.NativeBalances),
+		"restored_keys":               len(batch.RestoredKeys),
+		"contract_creations":          len(batch.ContractCreations),
+		"ledgers":                     len(batch.Ledgers),
+		"token_transfers":             len(batch.TokenTransfers),
 	}
 	for table, count := range tables {
 		if count > 0 {
@@ -512,13 +512,9 @@ func (w *Worker) extractLedger(meta LedgerMeta) (*LedgerData, error) {
 		return &LedgerData{Transactions: rows}, nil
 	})
 	launch("operations", func() (*LedgerData, error) {
-		libRows, err := extract.ExtractOperations(libInput)
+		rows, err := extractOperations(meta.LCM, w.config.NetworkPassphrase, meta.LedgerSequence, meta.ClosedAt, meta.LedgerRange)
 		if err != nil {
 			return nil, err
-		}
-		rows := make([]OperationData, len(libRows))
-		for i, r := range libRows {
-			rows[i] = OperationData(r)
 		}
 		return &LedgerData{Operations: rows}, nil
 	})
@@ -864,12 +860,12 @@ func NewParquetWriter(outputDir string, workerID int, pipelineVersion string) (*
 }
 
 // ===========================================================================
-// STUB EXTRACTORS
+// LOCAL EXTRACTORS
 //
 // Each extractor takes the pre-decoded LedgerCloseMeta and returns typed data.
-// These are stubs that return empty slices. They will be replaced with full
-// implementations that mirror the existing stellar-postgres-ingester logic
-// but output structs instead of SQL rows.
+// Most hot-path extraction now uses the shared stellar-extract library; local
+// extractors remain for history-loader-specific tables or fields that are not
+// yet surfaced by the shared library.
 // ===========================================================================
 
 // extractTransactions — see extractors_core.go

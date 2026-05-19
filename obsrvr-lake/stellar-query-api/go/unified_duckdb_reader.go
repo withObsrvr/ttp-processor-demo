@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/duckdb/duckdb-go/v2"
@@ -30,6 +31,16 @@ type UnifiedDuckDBReader struct {
 	bronzeHotSchema  string // e.g., "bronze_hot_db.public" (bronze hot PostgreSQL)
 	bronzeColdSchema string // e.g., "bronze_cold_db.bronze" (DuckLake bronze cold)
 	config           UnifiedReaderConfig
+
+	// availableLedgersCache caches the MIN/MAX ledger range so the per-request
+	// _meta.available_ledgers field doesn't trigger a full hot+cold DuckDB scan
+	// of enriched_history_operations on every call. The bounds change at most
+	// once every few seconds (as bronze ingest advances), so a short TTL is
+	// safe. Without this cache, every endpoint that builds _meta pays a
+	// 5-15s tax on cold storage during backfill.
+	availableLedgersMu     sync.Mutex
+	availableLedgersCached *LedgerRange
+	availableLedgersAt     time.Time
 }
 
 // NewUnifiedDuckDBReader creates a new unified reader that ATTACHes both
@@ -170,6 +181,34 @@ func (r *UnifiedDuckDBReader) Close() error {
 	return nil
 }
 
+// dataTimeRef returns the latest data-time from a hot-side source table as a
+// SQL-formatted timestamp ('YYYY-MM-DD HH:MM:SS'). Used to anchor "last 24h"
+// filters to the data's clock during backfill so DuckDB doesn't fan out across
+// the entire cold parquet store looking for rows that don't exist.
+//
+// The query parameter must select a single timestamp (e.g. one of the
+// dataTimeQuery* constants in data_time_ref.go) and is run against r.db, which
+// has the hot schema attached for direct PG access.
+func (r *UnifiedDuckDBReader) dataTimeRef(ctx context.Context, query string) string {
+	hotQualified := strings.Replace(query, "FROM ", fmt.Sprintf("FROM %s.", r.hotSchema), 1)
+	t := resolveDataTime(ctx, r.db, hotQualified)
+	return t.Format("2006-01-02 15:04:05")
+}
+
+// dataTimeRefSchemaTrades returns the latest trade timestamp using the trades
+// table in the supplied schema. trades has its own timestamp column
+// (trade_timestamp) and lives only in hot in most deployments.
+func (r *UnifiedDuckDBReader) dataTimeRefSchemaTrades(ctx context.Context, schema string) string {
+	return r.dataTimeRefSchemaTradesTime(ctx, schema).Format("2006-01-02 15:04:05")
+}
+
+// dataTimeRefSchemaTradesTime is the time.Time variant of
+// dataTimeRefSchemaTrades for callers that need to do arithmetic in Go.
+func (r *UnifiedDuckDBReader) dataTimeRefSchemaTradesTime(ctx context.Context, schema string) time.Time {
+	q := fmt.Sprintf("SELECT trade_timestamp FROM %s.trades ORDER BY trade_timestamp DESC LIMIT 1", schema)
+	return resolveDataTime(ctx, r.db, q)
+}
+
 // HealthCheck verifies both hot and cold databases are accessible
 func (r *UnifiedDuckDBReader) HealthCheck(ctx context.Context) (*UnifiedHealthStatus, error) {
 	status := &UnifiedHealthStatus{
@@ -209,6 +248,19 @@ func (r *UnifiedDuckDBReader) HealthCheck(ctx context.Context) (*UnifiedHealthSt
 // GetAvailableLedgers returns the range of ledgers available across hot and cold storage
 // This is used for RPC v2-style data boundary indicators
 func (r *UnifiedDuckDBReader) GetAvailableLedgers(ctx context.Context) (*LedgerRange, error) {
+	// Cache hit — min/max ledger advances at ~30 ledgers/sec on a live network
+	// (much slower during backfill); a 30s TTL is well within tolerance for
+	// _meta.available_ledgers and saves a 5-15s federated MIN/MAX scan on every
+	// request that builds _meta.
+	const cacheTTL = 30 * time.Second
+	r.availableLedgersMu.Lock()
+	if r.availableLedgersCached != nil && time.Since(r.availableLedgersAt) < cacheTTL {
+		cached := *r.availableLedgersCached
+		r.availableLedgersMu.Unlock()
+		return &cached, nil
+	}
+	r.availableLedgersMu.Unlock()
+
 	// Query min/max ledger sequence from both hot and cold enriched_history_operations tables
 	// Note: Using enriched_history_operations which exists in Silver layer
 	query := fmt.Sprintf(`
@@ -230,10 +282,17 @@ func (r *UnifiedDuckDBReader) GetAvailableLedgers(ctx context.Context) (*LedgerR
 		return nil, nil
 	}
 
-	return &LedgerRange{
+	result := &LedgerRange{
 		Oldest: oldest.Int64,
 		Latest: latest.Int64,
-	}, nil
+	}
+
+	r.availableLedgersMu.Lock()
+	r.availableLedgersCached = result
+	r.availableLedgersAt = time.Now()
+	r.availableLedgersMu.Unlock()
+
+	return result, nil
 }
 
 // UnifiedHealthStatus represents the health of both attached databases
@@ -1173,12 +1232,13 @@ func (r *UnifiedDuckDBReader) GetTotalAccountCount(ctx context.Context) (int64, 
 
 // GetOperationStats24h returns 24h operation counts grouped by type
 func (r *UnifiedDuckDBReader) GetOperationStats24h(ctx context.Context) (map[int32]int64, error) {
+	ref := r.dataTimeRef(ctx, dataTimeQueryEnrichedHistoryOps)
 	query := fmt.Sprintf(`
 		SELECT type, COUNT(*) as count
 		FROM %s.enriched_history_operations
-		WHERE ledger_closed_at > NOW() - INTERVAL '24 hours'
+		WHERE ledger_closed_at > TIMESTAMP '%s' - INTERVAL '24 hours'
 		GROUP BY type
-	`, r.coldSchema)
+	`, r.coldSchema, ref)
 
 	rows, err := r.db.QueryContext(ctx, query)
 	if err != nil {
@@ -1200,11 +1260,12 @@ func (r *UnifiedDuckDBReader) GetOperationStats24h(ctx context.Context) (map[int
 
 // GetActiveAccounts24h returns count of accounts with activity in last 24h
 func (r *UnifiedDuckDBReader) GetActiveAccounts24h(ctx context.Context) (int64, error) {
+	ref := r.dataTimeRef(ctx, dataTimeQueryEnrichedHistoryOps)
 	query := fmt.Sprintf(`
 		SELECT COUNT(DISTINCT source_account)
 		FROM %s.enriched_history_operations
-		WHERE ledger_closed_at > NOW() - INTERVAL '24 hours'
-	`, r.coldSchema)
+		WHERE ledger_closed_at > TIMESTAMP '%s' - INTERVAL '24 hours'
+	`, r.coldSchema, ref)
 
 	var count int64
 	err := r.db.QueryRowContext(ctx, query).Scan(&count)
@@ -1611,13 +1672,14 @@ func (r *UnifiedDuckDBReader) GetTokenStats(ctx context.Context, assetCode, asse
 	// Get 24h transfer stats from enriched_history_operations
 	// This works for both XLM and other assets
 	// Note: amount is stored in stroops, so we divide by 10^7 to get human-readable values
+	opsRef := r.dataTimeRef(ctx, dataTimeQueryEnrichedHistoryOps)
 	transferQuery := fmt.Sprintf(`
 		WITH combined AS (
 			SELECT source_account, destination, amount, created_at, 1 as source
 			FROM %s.enriched_history_operations
 			WHERE is_payment_op = true
 				AND transaction_successful = true
-				AND created_at > NOW() - INTERVAL '24 hours'
+				AND created_at > TIMESTAMP '%s' - INTERVAL '24 hours'
 				AND (
 					($1 = 'XLM' AND (asset_type = 'native' OR asset_code = 'XLM' OR (asset_code IS NULL AND is_soroban_op = false)))
 					OR ($1 != 'XLM' AND asset_code = $1 AND ($2 = '' OR asset_issuer = $2))
@@ -1627,7 +1689,7 @@ func (r *UnifiedDuckDBReader) GetTokenStats(ctx context.Context, assetCode, asse
 			FROM %s.enriched_history_operations
 			WHERE is_payment_op = true
 				AND transaction_successful = true
-				AND created_at > NOW() - INTERVAL '24 hours'
+				AND created_at > TIMESTAMP '%s' - INTERVAL '24 hours'
 				AND (
 					($1 = 'XLM' AND (asset_type = 'native' OR asset_code = 'XLM' OR (asset_code IS NULL AND is_soroban_op = false)))
 					OR ($1 != 'XLM' AND asset_code = $1 AND ($2 = '' OR asset_issuer = $2))
@@ -1638,7 +1700,7 @@ func (r *UnifiedDuckDBReader) GetTokenStats(ctx context.Context, assetCode, asse
 			COALESCE(SUM(CAST(amount AS DOUBLE)) / 10000000.0, 0) as total_volume,
 			COUNT(DISTINCT source_account) + COUNT(DISTINCT destination) as unique_accounts
 		FROM combined
-	`, r.hotSchema, r.coldSchema)
+	`, r.hotSchema, opsRef, r.coldSchema, opsRef)
 
 	var volume24h float64
 	err := r.db.QueryRowContext(ctx, transferQuery, assetCode, assetIssuer).Scan(
@@ -2358,12 +2420,14 @@ func (r *UnifiedDuckDBReader) GetTrades(ctx context.Context, filters TradeFilter
 	var args []interface{}
 	argNum := 1
 
-	// Time range filter (default to last 24 hours)
-	if filters.StartTime.IsZero() {
-		filters.StartTime = time.Now().Add(-24 * time.Hour)
-	}
+	// Time range filter (default to last 24 hours of indexed data, not wallclock).
+	// Wallclock NOW() returns no rows during backfill (data is years behind real
+	// time) and forces a full table scan to confirm zero matches.
 	if filters.EndTime.IsZero() {
-		filters.EndTime = time.Now()
+		filters.EndTime = r.dataTimeRefSchemaTradesTime(ctx, r.hotSchema)
+	}
+	if filters.StartTime.IsZero() {
+		filters.StartTime = filters.EndTime.Add(-24 * time.Hour)
 	}
 	conditions = append(conditions, fmt.Sprintf("trade_timestamp >= $%d AND trade_timestamp <= $%d", argNum, argNum+1))
 	args = append(args, filters.StartTime, filters.EndTime)
@@ -3731,6 +3795,7 @@ func (r *UnifiedDuckDBReader) GetAssetList(ctx context.Context, filters AssetLis
 	// Step 2: Deduplicate by (account_id, asset_code, asset_issuer)
 	// Step 3: Aggregate by asset to get holder counts and supply
 	// Step 4: Join with transfer stats (hot only - recent data)
+	transfersRef := r.dataTimeRef(ctx, dataTimeQueryTokenTransfers)
 	query := fmt.Sprintf(`
 		WITH combined_trustlines AS (
 			SELECT account_id, asset_code, asset_issuer, asset_type,
@@ -3771,7 +3836,7 @@ func (r *UnifiedDuckDBReader) GetAssetList(ctx context.Context, filters AssetLis
 				COUNT(*) as transfers_24h,
 				COALESCE(SUM(amount), 0) as volume_24h
 			FROM %s.token_transfers_raw
-			WHERE timestamp >= NOW() - INTERVAL '24 hours'
+			WHERE timestamp >= TIMESTAMP '%s' - INTERVAL '24 hours'
 			  AND transaction_successful = true
 			GROUP BY asset_code, asset_issuer
 		)
@@ -3790,7 +3855,7 @@ func (r *UnifiedDuckDBReader) GetAssetList(ctx context.Context, filters AssetLis
 			ON a.asset_code = t.asset_code
 			AND COALESCE(a.asset_issuer, '') = COALESCE(t.asset_issuer, '')
 		WHERE a.holder_count > 0
-	`, r.hotSchema, r.coldSchema, r.hotSchema)
+	`, r.hotSchema, r.coldSchema, r.hotSchema, transfersRef)
 
 	args := []interface{}{}
 	argIndex := 1
@@ -3967,6 +4032,7 @@ func (r *UnifiedDuckDBReader) GetAssetList(ctx context.Context, filters AssetLis
 
 // GetAssetCount returns the total count of assets matching the given filters (ignoring pagination)
 func (r *UnifiedDuckDBReader) GetAssetCount(ctx context.Context, filters AssetListFilters) (int, error) {
+	transfersRef := r.dataTimeRef(ctx, dataTimeQueryTokenTransfers)
 	// Build count query with same filters as main query, but no pagination/sorting
 	query := fmt.Sprintf(`
 		WITH combined_trustlines AS (
@@ -4001,7 +4067,7 @@ func (r *UnifiedDuckDBReader) GetAssetCount(ctx context.Context, filters AssetLi
 				asset_issuer,
 				COALESCE(SUM(amount), 0) as volume_24h
 			FROM %s.token_transfers_raw
-			WHERE timestamp >= NOW() - INTERVAL '24 hours'
+			WHERE timestamp >= TIMESTAMP '%s' - INTERVAL '24 hours'
 			  AND transaction_successful = true
 			GROUP BY asset_code, asset_issuer
 		)
@@ -4011,7 +4077,7 @@ func (r *UnifiedDuckDBReader) GetAssetCount(ctx context.Context, filters AssetLi
 			ON a.asset_code = t.asset_code
 			AND COALESCE(a.asset_issuer, '') = COALESCE(t.asset_issuer, '')
 		WHERE a.holder_count > 0
-	`, r.hotSchema, r.coldSchema, r.hotSchema)
+	`, r.hotSchema, r.coldSchema, r.hotSchema, transfersRef)
 
 	args := []interface{}{}
 	argIndex := 1
@@ -4739,6 +4805,7 @@ func (r *UnifiedDuckDBReader) GetSEP41Transfers(ctx context.Context, contractID 
 
 // GetSEP41TokenStats returns aggregate statistics for a token contract
 func (r *UnifiedDuckDBReader) GetSEP41TokenStats(ctx context.Context, contractID string) (*SEP41TokenStats, error) {
+	transfersRef := r.dataTimeRef(ctx, dataTimeQueryTokenTransfers)
 	query := fmt.Sprintf(`
 		WITH raw_transfers AS (
 			SELECT from_account, to_account, amount, timestamp, asset_code, transaction_hash, ledger_sequence, COALESCE(event_index, -1) as evt_idx
@@ -4767,11 +4834,11 @@ func (r *UnifiedDuckDBReader) GetSEP41TokenStats(ctx context.Context, contractID
 		SELECT
 			(SELECT COUNT(*) FROM holders) as holder_count,
 			COALESCE((SELECT SUM(net_balance) FROM holders), 0) as total_supply,
-			(SELECT COUNT(*) FROM transfers WHERE timestamp > NOW() - INTERVAL '24 hours') as transfers_24h,
-			COALESCE((SELECT SUM(amount) FROM transfers WHERE timestamp > NOW() - INTERVAL '24 hours'), 0) as volume_24h,
+			(SELECT COUNT(*) FROM transfers WHERE timestamp > TIMESTAMP '%s' - INTERVAL '24 hours') as transfers_24h,
+			COALESCE((SELECT SUM(amount) FROM transfers WHERE timestamp > TIMESTAMP '%s' - INTERVAL '24 hours'), 0) as volume_24h,
 			(SELECT MAX(asset_code) FROM transfers) as asset_code
 		FROM (SELECT 1) dummy
-	`, r.hotSchema, r.coldSchema)
+	`, r.hotSchema, r.coldSchema, transfersRef, transfersRef)
 
 	var stats SEP41TokenStats
 	stats.ContractID = contractID
@@ -6050,6 +6117,7 @@ func (r *UnifiedDuckDBReader) GetOHLCCandles(ctx context.Context, baseCode, base
 // GetLatestPrice returns the most recent price for a trading pair
 func (r *UnifiedDuckDBReader) GetLatestPrice(ctx context.Context, baseCode, baseIssuer, counterCode, counterIssuer string) (*LatestPrice, error) {
 	// Hot-only query (cold may not have trades table)
+	tradesRef := r.dataTimeRefSchemaTrades(ctx, r.hotSchema)
 	query := fmt.Sprintf(`
 		WITH latest AS (
 			SELECT CAST(price AS DOUBLE) as price, trade_timestamp
@@ -6068,11 +6136,11 @@ func (r *UnifiedDuckDBReader) GetLatestPrice(ctx context.Context, baseCode, base
 			  AND (($2 = 'XLM' AND (buying_asset_code IS NULL OR buying_asset_code = '')) OR buying_asset_code = $2)
 			  AND ($3::text IS NULL OR $3 = '' OR selling_asset_issuer = $3)
 			  AND ($4::text IS NULL OR $4 = '' OR buying_asset_issuer = $4)
-			  AND trade_timestamp >= NOW() - INTERVAL '24 hours'
+			  AND trade_timestamp >= TIMESTAMP '%s' - INTERVAL '24 hours'
 		)
 		SELECT l.price, l.trade_timestamp, COALESCE(s.vol, 0), COALESCE(s.cnt, 0)
 		FROM latest l, stats_24h s
-	`, r.hotSchema, r.hotSchema)
+	`, r.hotSchema, r.hotSchema, tradesRef)
 
 	var lp LatestPrice
 	var ts time.Time
@@ -6405,7 +6473,7 @@ func (r *UnifiedDuckDBReader) buildExplorerEventConditions(ctx context.Context, 
 
 func (r *UnifiedDuckDBReader) queryExplorerEvents(ctx context.Context, whereClause string, args []any, argIdx int, order string, requestLimit, limit int, classifier *EventClassifier, typeFilter []string) ([]ExplorerEvent, string, bool, error) {
 	selectCols := `event_id, contract_id, ledger_sequence, transaction_hash, closed_at,
-		in_successful_contract_call, topic0_decoded, topic1_decoded, topic2_decoded, topic3_decoded,
+		transaction_successful, in_successful_contract_call, topic0_decoded, topic1_decoded, topic2_decoded, topic3_decoded,
 		topics_decoded, data_decoded, event_index, operation_index`
 
 	// Build type filter set for post-classification filtering
@@ -6416,18 +6484,34 @@ func (r *UnifiedDuckDBReader) queryExplorerEvents(ctx context.Context, whereClau
 
 	var innerParts []string
 	if r.bronzeHotSchema != "" {
-		innerParts = append(innerParts, fmt.Sprintf("SELECT %s FROM %s.contract_events_stream_v1 %s",
-			selectCols, r.bronzeHotSchema, whereClause))
+		innerParts = append(innerParts, fmt.Sprintf(`
+			SELECT %s
+			FROM (
+				SELECT ce.*, COALESCE(tx.successful, ce.successful) AS transaction_successful
+				FROM %s.contract_events_stream_v1 ce
+				LEFT JOIN %s.transactions_row_v2 tx
+				  ON tx.transaction_hash = ce.transaction_hash
+				 AND tx.ledger_sequence = ce.ledger_sequence
+			) events_with_tx_success
+			%s`, selectCols, r.bronzeHotSchema, r.bronzeHotSchema, whereClause))
 	}
 	if r.bronzeColdSchema != "" {
-		innerParts = append(innerParts, fmt.Sprintf("SELECT %s FROM %s.contract_events_stream_v1 %s",
-			selectCols, r.bronzeColdSchema, whereClause))
+		innerParts = append(innerParts, fmt.Sprintf(`
+			SELECT %s
+			FROM (
+				SELECT ce.*, COALESCE(tx.successful, ce.successful) AS transaction_successful
+				FROM %s.contract_events_stream_v1 ce
+				LEFT JOIN %s.transactions_row_v2 tx
+				  ON tx.transaction_hash = ce.transaction_hash
+				 AND tx.ledger_sequence = ce.ledger_sequence
+			) events_with_tx_success
+			%s`, selectCols, r.bronzeColdSchema, r.bronzeColdSchema, whereClause))
 	}
 	innerQuery := strings.Join(innerParts, " UNION ALL ")
 
 	query := fmt.Sprintf(`
 		SELECT event_id, contract_id, ledger_sequence, transaction_hash, closed_at,
-		       in_successful_contract_call, topic0_decoded, topic1_decoded, topic2_decoded, topic3_decoded,
+		       transaction_successful, in_successful_contract_call, topic0_decoded, topic1_decoded, topic2_decoded, topic3_decoded,
 		       topics_decoded, data_decoded, event_index, operation_index
 		FROM (%s) combined
 		ORDER BY ledger_sequence %s, event_index %s
@@ -6447,17 +6531,13 @@ func (r *UnifiedDuckDBReader) queryExplorerEvents(ctx context.Context, whereClau
 
 	for rows.Next() {
 		var e ExplorerEvent
-		var successful sql.NullBool
+		var transactionSuccessful, inSuccessfulContractCall sql.NullBool
 		if err := rows.Scan(&e.EventID, &e.ContractID, &e.LedgerSequence, &e.TxHash, &e.ClosedAt,
-			&successful, &e.Topic0, &e.Topic1, &e.Topic2, &e.Topic3,
+			&transactionSuccessful, &inSuccessfulContractCall, &e.Topic0, &e.Topic1, &e.Topic2, &e.Topic3,
 			&e.TopicsDecoded, &e.DataDecoded, &e.EventIndex, &e.OpIndex); err != nil {
 			return nil, "", false, fmt.Errorf("GetExplorerEvents scan: %w", err)
 		}
-		// Explorer events come from operation-level contract events which only
-		// appear for successful operations. The bronze table has this field
-		// incorrectly set to false for historical data (fixed in ingester).
-		// Default to true for explorer display.
-		e.Successful = true
+		applyExplorerEventSuccess(&e, transactionSuccessful, inSuccessfulContractCall)
 		e.Data = e.DataDecoded
 
 		// Convert hex contract_id to C... StrKey format before classification

@@ -56,6 +56,8 @@ func (p *OperationsRecentProjector) RunOnce(ctx context.Context) (RunStats, erro
 		return RunStats{}, err
 	}
 
+	dataTime := resolveDataTime(ctx, p.sourcePool, "enriched_history_operations", "ledger_closed_at")
+
 	rows, err := p.sourcePool.Query(ctx, `
 		SELECT
 			transaction_hash || ':' || operation_index::text as operation_id,
@@ -93,10 +95,10 @@ func (p *OperationsRecentProjector) RunOnce(ctx context.Context) (RunStats, erro
 			END as summary_text
 		FROM enriched_history_operations
 		WHERE ledger_sequence > $1
-		  AND COALESCE(ledger_closed_at, created_at, now()) >= NOW() - INTERVAL '30 days'
+		  AND COALESCE(ledger_closed_at, created_at, now()) >= $3::timestamp - INTERVAL '30 days'
 		ORDER BY ledger_sequence ASC, operation_index ASC
 		LIMIT $2
-	`, checkpoint, p.batchSize)
+	`, checkpoint, p.batchSize, dataTime)
 	if err != nil {
 		return RunStats{}, fmt.Errorf("query operations recent: %w", err)
 	}
@@ -138,7 +140,7 @@ func (p *OperationsRecentProjector) RunOnce(ctx context.Context) (RunStats, erro
 	}
 	defer tx.Rollback(ctx)
 
-	retainedRows, err := applyRecentRetention(ctx, tx, "serving.sv_operations_recent", "created_at", "30 days")
+	retainedRows, err := applyRecentRetentionWithReference(ctx, tx, "serving.sv_operations_recent", "created_at", "30 days", dataTime)
 	if err != nil {
 		return RunStats{}, err
 	}

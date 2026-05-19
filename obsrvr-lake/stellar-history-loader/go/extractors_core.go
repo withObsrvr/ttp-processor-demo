@@ -486,7 +486,7 @@ func extractOperations(lcm xdr.LedgerCloseMeta, networkPassphrase string, ledger
 				opData.SorobanFunction = functionName
 				opData.SorobanArgumentsJSON = argsJSON
 
-				// Call graph extraction (stubbed out to avoid call_graph.go dependency)
+				// Call graph and Soroban auth credential extraction
 				if err := integrateCallGraph(tx, i, op, &opData); err != nil {
 					log.Printf("Warning: Failed to integrate call graph for op %s:%d: %v", txHash, i, err)
 				}
@@ -831,10 +831,4 @@ func extractContractInvocationDetails(op xdr.Operation) (*string, *string, *stri
 	}
 
 	return contractID, functionName, argsStr, nil
-}
-
-// integrateCallGraph is a no-op stub to avoid pulling in the full call_graph.go dependency.
-// Cross-contract call graph extraction can be added later if needed.
-func integrateCallGraph(_ ingest.LedgerTransaction, _ int, _ xdr.Operation, _ *OperationData) error {
-	return nil
 }

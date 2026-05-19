@@ -134,11 +134,23 @@ func ConvertScValToJSON(val xdr.ScVal) (interface{}, error) {
 		if val.Bytes == nil {
 			return nil, fmt.Errorf("ScvBytes has nil value")
 		}
+		raw := *val.Bytes
+		// Try to decode as nested XDR ScVal (some contracts like Redstone oracles
+		// wrap structured data inside ScvBytes)
+		if len(raw) >= 4 {
+			var nested xdr.ScVal
+			if err := nested.UnmarshalBinary(raw); err == nil {
+				decoded, decodeErr := ConvertScValToJSON(nested)
+				if decodeErr == nil {
+					return decoded, nil
+				}
+			}
+		}
 		return map[string]interface{}{
 			"type":   "bytes",
-			"hex":    hex.EncodeToString(*val.Bytes),
-			"base64": base64.StdEncoding.EncodeToString(*val.Bytes),
-			"length": len(*val.Bytes),
+			"hex":    hex.EncodeToString(raw),
+			"base64": base64.StdEncoding.EncodeToString(raw),
+			"length": len(raw),
 		}, nil
 
 	case xdr.ScValTypeScvAddress:
@@ -230,6 +242,7 @@ func ConvertScValToJSON(val xdr.ScVal) (interface{}, error) {
 		}, nil
 
 	case xdr.ScValTypeScvError:
+		// Error type for contract errors
 		if val.Error == nil {
 			return nil, fmt.Errorf("ScvError has nil value")
 		}
@@ -276,11 +289,16 @@ func convertScAddress(addr xdr.ScAddress) (interface{}, error) {
 		}, nil
 
 	case xdr.ScAddressTypeScAddressTypeMuxedAccount:
+		// Muxed accounts are not allowed in storage keys per CAP-67
+		// but may appear in other contexts
 		if addr.MuxedAccount == nil {
 			return nil, fmt.Errorf("ScAddressTypeMuxedAccount has nil MuxedAccount")
 		}
+		// For muxed accounts, we need to encode both the Ed25519 key and the ID
+		// The MuxedEd25519Account has Ed25519 (32 bytes) + Id (uint64)
 		muxedData := make([]byte, 40) // 32 bytes for Ed25519 + 8 bytes for ID
 		copy(muxedData[:32], addr.MuxedAccount.Ed25519[:])
+		// Encode the ID as big-endian uint64
 		for i := 0; i < 8; i++ {
 			muxedData[32+i] = byte(addr.MuxedAccount.Id >> (56 - 8*i))
 		}
@@ -295,9 +313,11 @@ func convertScAddress(addr xdr.ScAddress) (interface{}, error) {
 		}, nil
 
 	case xdr.ScAddressTypeScAddressTypeClaimableBalance:
+		// Per CAP-67: disallowed by host, conversions will fail
 		if addr.ClaimableBalanceId == nil {
 			return nil, fmt.Errorf("ScAddressTypeClaimableBalance has nil ClaimableBalanceId")
 		}
+		// ClaimableBalanceId is a union, currently only V0 is supported
 		var claimableBalanceHash [32]byte
 		switch addr.ClaimableBalanceId.Type {
 		case xdr.ClaimableBalanceIdTypeClaimableBalanceIdTypeV0:
@@ -315,6 +335,7 @@ func convertScAddress(addr xdr.ScAddress) (interface{}, error) {
 		}, nil
 
 	case xdr.ScAddressTypeScAddressTypeLiquidityPool:
+		// Per CAP-67: disallowed by host, conversions will fail
 		if addr.LiquidityPoolId == nil {
 			return nil, fmt.Errorf("ScAddressTypeLiquidityPool has nil LiquidityPoolId")
 		}
@@ -344,10 +365,13 @@ func uint128ToString(val xdr.UInt128Parts) string {
 }
 
 func int128ToString(val xdr.Int128Parts) string {
+	// For signed integers, we need to handle the sign bit
 	hi := big.NewInt(0).SetUint64(uint64(val.Hi))
 	lo := big.NewInt(0).SetUint64(uint64(val.Lo))
 
+	// Check if negative (high bit set)
 	if uint64(val.Hi)&(uint64(1)<<63) != 0 {
+		// Two's complement for negative numbers
 		hi.Sub(hi, big.NewInt(1).Lsh(big.NewInt(1), 64))
 	}
 
@@ -385,7 +409,9 @@ func int256ToString(val xdr.Int256Parts) string {
 	loHi := big.NewInt(0).SetUint64(uint64(val.LoHi))
 	loLo := big.NewInt(0).SetUint64(uint64(val.LoLo))
 
+	// Check if negative (high bit set in HiHi)
 	if uint64(val.HiHi)&(uint64(1)<<63) != 0 {
+		// Two's complement for negative numbers
 		hiHi.Sub(hiHi, big.NewInt(1).Lsh(big.NewInt(1), 64))
 	}
 
@@ -404,4 +430,43 @@ func int256ToString(val xdr.Int256Parts) string {
 
 func int256ToHex(val xdr.Int256Parts) string {
 	return fmt.Sprintf("%016x%016x%016x%016x", val.HiHi, val.HiLo, val.LoHi, val.LoLo)
+}
+
+// GetFunctionNameFromScVal extracts a function name from various ScVal types
+func GetFunctionNameFromScVal(val xdr.ScVal) string {
+	switch val.Type {
+	case xdr.ScValTypeScvSymbol:
+		if val.Sym != nil {
+			return string(*val.Sym)
+		}
+	case xdr.ScValTypeScvString:
+		if val.Str != nil {
+			return string(*val.Str)
+		}
+	case xdr.ScValTypeScvBytes:
+		if val.Bytes != nil {
+			// Only convert to string if bytes are printable ASCII
+			// Otherwise, these are likely hashes or binary data
+			bytes := *val.Bytes
+			if isPrintableASCII(bytes) {
+				return string(bytes)
+			}
+		}
+	}
+	return ""
+}
+
+// isPrintableASCII checks if all bytes are printable ASCII characters
+func isPrintableASCII(b []byte) bool {
+	if len(b) == 0 {
+		return false
+	}
+	for _, c := range b {
+		// Printable ASCII is 0x20 (space) to 0x7E (~)
+		// Also allow common Soroban symbol characters
+		if c < 0x20 || c > 0x7E {
+			return false
+		}
+	}
+	return true
 }

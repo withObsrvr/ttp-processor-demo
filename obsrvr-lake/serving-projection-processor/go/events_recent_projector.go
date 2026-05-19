@@ -31,6 +31,7 @@ type bronzeEventRow struct {
 	Topic2                   *string
 	Topic3                   *string
 	EventType                *string
+	TransactionSuccessful    *bool
 	InSuccessfulContractCall *bool
 	TopicsJSON               *string
 	TopicsDecoded            *string
@@ -64,49 +65,55 @@ func (p *EventsRecentProjector) RunOnce(ctx context.Context) (RunStats, error) {
 		startLedger-- // small replay overlap for idempotent upsert safety near ledger boundaries
 	}
 
+	dataTime := resolveDataTime(ctx, p.sourcePool, "public.contract_events_stream_v1", "closed_at")
+
 	rows, err := p.sourcePool.Query(ctx, `
 		SELECT
-			COALESCE(NULLIF(event_id, ''), ledger_sequence::text || ':' || transaction_hash || ':' || COALESCE(event_index::text, '0')) as event_id,
-			transaction_hash,
-			ledger_sequence,
-			COALESCE(closed_at, created_at, now()) as created_at,
-			event_index,
-			contract_id,
+			COALESCE(NULLIF(ce.event_id, ''), ce.ledger_sequence::text || ':' || ce.transaction_hash || ':' || COALESCE(ce.event_index::text, '0')) as event_id,
+			ce.transaction_hash,
+			ce.ledger_sequence,
+			COALESCE(ce.closed_at, ce.created_at, now()) as created_at,
+			ce.event_index,
+			ce.contract_id,
 			CASE
-				WHEN topics_decoded IS NOT NULL AND topics_decoded <> '' THEN topics_decoded::jsonb ->> 0
-				WHEN topics_json IS NOT NULL AND topics_json <> '' THEN topics_json::jsonb ->> 0
+				WHEN ce.topics_decoded IS NOT NULL AND ce.topics_decoded <> '' THEN ce.topics_decoded::jsonb ->> 0
+				WHEN ce.topics_json IS NOT NULL AND ce.topics_json <> '' THEN ce.topics_json::jsonb ->> 0
 				ELSE NULL
 			END as topic0,
 			CASE
-				WHEN topics_decoded IS NOT NULL AND topics_decoded <> '' THEN topics_decoded::jsonb ->> 1
-				WHEN topics_json IS NOT NULL AND topics_json <> '' THEN topics_json::jsonb ->> 1
+				WHEN ce.topics_decoded IS NOT NULL AND ce.topics_decoded <> '' THEN ce.topics_decoded::jsonb ->> 1
+				WHEN ce.topics_json IS NOT NULL AND ce.topics_json <> '' THEN ce.topics_json::jsonb ->> 1
 				ELSE NULL
 			END as topic1,
 			CASE
-				WHEN topics_decoded IS NOT NULL AND topics_decoded <> '' THEN topics_decoded::jsonb ->> 2
-				WHEN topics_json IS NOT NULL AND topics_json <> '' THEN topics_json::jsonb ->> 2
+				WHEN ce.topics_decoded IS NOT NULL AND ce.topics_decoded <> '' THEN ce.topics_decoded::jsonb ->> 2
+				WHEN ce.topics_json IS NOT NULL AND ce.topics_json <> '' THEN ce.topics_json::jsonb ->> 2
 				ELSE NULL
 			END as topic2,
 			CASE
-				WHEN topics_decoded IS NOT NULL AND topics_decoded <> '' THEN topics_decoded::jsonb ->> 3
-				WHEN topics_json IS NOT NULL AND topics_json <> '' THEN topics_json::jsonb ->> 3
+				WHEN ce.topics_decoded IS NOT NULL AND ce.topics_decoded <> '' THEN ce.topics_decoded::jsonb ->> 3
+				WHEN ce.topics_json IS NOT NULL AND ce.topics_json <> '' THEN ce.topics_json::jsonb ->> 3
 				ELSE NULL
 			END as topic3,
-			event_type,
-			in_successful_contract_call,
-			topics_json,
-			topics_decoded,
-			data_xdr,
-			data_decoded,
-			topic_count,
-			operation_index,
-			COALESCE(NULLIF(data_decoded, ''), NULLIF(topics_decoded, ''), event_type) as decoded_summary
-		FROM public.contract_events_stream_v1
-		WHERE ledger_sequence >= $1
-		  AND COALESCE(closed_at, created_at, now()) >= NOW() - INTERVAL '30 days'
-		ORDER BY ledger_sequence ASC, transaction_hash ASC, event_index ASC
+			ce.event_type,
+			COALESCE(tx.successful, ce.successful),
+			ce.in_successful_contract_call,
+			ce.topics_json,
+			ce.topics_decoded,
+			ce.data_xdr,
+			ce.data_decoded,
+			ce.topic_count,
+			ce.operation_index,
+			COALESCE(NULLIF(ce.data_decoded, ''), NULLIF(ce.topics_decoded, ''), ce.event_type) as decoded_summary
+		FROM public.contract_events_stream_v1 ce
+		LEFT JOIN public.transactions_row_v2 tx
+		  ON tx.transaction_hash = ce.transaction_hash
+		 AND tx.ledger_sequence = ce.ledger_sequence
+		WHERE ce.ledger_sequence >= $1
+		  AND COALESCE(ce.closed_at, ce.created_at, now()) >= $3::timestamp - INTERVAL '30 days'
+		ORDER BY ce.ledger_sequence ASC, ce.transaction_hash ASC, ce.event_index ASC
 		LIMIT $2
-	`, startLedger, p.batchSize)
+	`, startLedger, p.batchSize, dataTime)
 	if err != nil {
 		return RunStats{}, fmt.Errorf("query source events recent: %w", err)
 	}
@@ -127,6 +134,7 @@ func (p *EventsRecentProjector) RunOnce(ctx context.Context) (RunStats, error) {
 			&r.Topic2,
 			&r.Topic3,
 			&r.EventType,
+			&r.TransactionSuccessful,
 			&r.InSuccessfulContractCall,
 			&r.TopicsJSON,
 			&r.TopicsDecoded,
@@ -150,7 +158,7 @@ func (p *EventsRecentProjector) RunOnce(ctx context.Context) (RunStats, error) {
 	}
 	defer tx.Rollback(ctx)
 
-	retainedRows, err := applyRecentRetention(ctx, tx, "serving.sv_events_recent", "created_at", "30 days")
+	retainedRows, err := applyRecentRetentionWithReference(ctx, tx, "serving.sv_events_recent", "created_at", "30 days", dataTime)
 	if err != nil {
 		return RunStats{}, err
 	}
@@ -176,6 +184,8 @@ func (p *EventsRecentProjector) RunOnce(ctx context.Context) (RunStats, error) {
 			"transaction_hash":            r.TxHash,
 			"closed_at":                   r.CreatedAt,
 			"event_type":                  r.EventType,
+			"transaction_successful":      r.TransactionSuccessful,
+			"successful":                  r.TransactionSuccessful,
 			"in_successful_contract_call": r.InSuccessfulContractCall,
 			"topics_json":                 r.TopicsJSON,
 			"topics_decoded":              r.TopicsDecoded,

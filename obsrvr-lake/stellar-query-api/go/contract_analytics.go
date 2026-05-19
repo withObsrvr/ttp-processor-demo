@@ -157,14 +157,16 @@ func (h *SilverHotReader) GetContractAnalyticsSummary(ctx context.Context, contr
 	}
 
 	// Query 3: Daily call counts for last 7 days
-	dailyQuery := `
+	callsRef := resolveDataTime(ctx, h.db, dataTimeQueryContractInvocationCalls).Format("2006-01-02 15:04:05")
+	invRef := resolveDataTime(ctx, h.db, dataTimeQueryContractInvocations).Format("2006-01-02 15:04:05")
+	dailyQuery := fmt.Sprintf(`
 		SELECT DATE(closed_at) as day, COUNT(*) as call_count
 		FROM contract_invocation_calls
 		WHERE (from_contract = $1 OR to_contract = $1)
-		  AND closed_at >= NOW() - INTERVAL '7 days'
+		  AND closed_at >= TIMESTAMP '%s' - INTERVAL '7 days'
 		GROUP BY DATE(closed_at)
 		ORDER BY day DESC
-	`
+	`, callsRef)
 
 	rows, err = h.db.QueryContext(ctx, dailyQuery, contractID)
 	if err != nil {
@@ -184,15 +186,15 @@ func (h *SilverHotReader) GetContractAnalyticsSummary(ctx context.Context, contr
 	}
 
 	// Query 4: Success rate and time-windowed counts from contract_invocations_raw
-	enhancedQuery := `
+	enhancedQuery := fmt.Sprintf(`
 		SELECT
 			COUNT(*) FILTER (WHERE successful) as success_count,
 			COUNT(*) as total_count,
-			COUNT(*) FILTER (WHERE closed_at >= NOW() - INTERVAL '7 days') as calls_7d,
-			COUNT(*) FILTER (WHERE closed_at >= NOW() - INTERVAL '30 days') as calls_30d
+			COUNT(*) FILTER (WHERE closed_at >= TIMESTAMP '%s' - INTERVAL '7 days') as calls_7d,
+			COUNT(*) FILTER (WHERE closed_at >= TIMESTAMP '%s' - INTERVAL '30 days') as calls_30d
 		FROM contract_invocations_raw
 		WHERE contract_id = $1
-	`
+	`, invRef, invRef)
 	var successCount, totalCount sql.NullInt64
 	err = h.db.QueryRowContext(ctx, enhancedQuery, contractID).Scan(
 		&successCount, &totalCount,
@@ -203,13 +205,13 @@ func (h *SilverHotReader) GetContractAnalyticsSummary(ctx context.Context, contr
 	}
 
 	// Query 5: Enhanced top functions with 7d/30d counts and success rates
-	enhancedFunctionsQuery := `
+	enhancedFunctionsQuery := fmt.Sprintf(`
 		SELECT
 			function_name,
 			COUNT(*) as total_count,
-			COUNT(*) FILTER (WHERE closed_at >= NOW() - INTERVAL '24 hours') as calls_24h,
-			COUNT(*) FILTER (WHERE closed_at >= NOW() - INTERVAL '7 days') as calls_7d,
-			COUNT(*) FILTER (WHERE closed_at >= NOW() - INTERVAL '30 days') as calls_30d,
+			COUNT(*) FILTER (WHERE closed_at >= TIMESTAMP '%s' - INTERVAL '24 hours') as calls_24h,
+			COUNT(*) FILTER (WHERE closed_at >= TIMESTAMP '%s' - INTERVAL '7 days') as calls_7d,
+			COUNT(*) FILTER (WHERE closed_at >= TIMESTAMP '%s' - INTERVAL '30 days') as calls_30d,
 			COUNT(*) FILTER (WHERE successful)::float / NULLIF(COUNT(*), 0) as success_rate,
 			MAX(closed_at) as last_called
 		FROM contract_invocations_raw
@@ -217,7 +219,7 @@ func (h *SilverHotReader) GetContractAnalyticsSummary(ctx context.Context, contr
 		GROUP BY function_name
 		ORDER BY total_count DESC
 		LIMIT 10
-	`
+	`, invRef, invRef, invRef)
 	funcRows, err := h.db.QueryContext(ctx, enhancedFunctionsQuery, contractID)
 	if err == nil {
 		defer funcRows.Close()
@@ -243,14 +245,14 @@ func (h *SilverHotReader) GetContractAnalyticsSummary(ctx context.Context, contr
 	}
 
 	// Query 6: Daily calls for last 30 days
-	daily30dQuery := `
+	daily30dQuery := fmt.Sprintf(`
 		SELECT DATE(closed_at) as day, COUNT(*) as call_count
 		FROM contract_invocations_raw
 		WHERE contract_id = $1
-		  AND closed_at >= NOW() - INTERVAL '30 days'
+		  AND closed_at >= TIMESTAMP '%s' - INTERVAL '30 days'
 		GROUP BY DATE(closed_at)
 		ORDER BY day DESC
-	`
+	`, invRef)
 	daily30dRows, err := h.db.QueryContext(ctx, daily30dQuery, contractID)
 	if err == nil {
 		defer daily30dRows.Close()
@@ -333,6 +335,7 @@ func (h *SilverHotReader) GetTopContracts(ctx context.Context, period string, li
 			interval = "1 day" // default to 24h
 		}
 
+		callsRef := resolveDataTime(ctx, h.db, dataTimeQueryContractInvocationCalls).Format("2006-01-02 15:04:05")
 		query = fmt.Sprintf(`
 			WITH contract_calls AS (
 				SELECT
@@ -343,14 +346,14 @@ func (h *SilverHotReader) GetTopContracts(ctx context.Context, period string, li
 				FROM (
 					SELECT to_contract as contract_id, from_contract as caller, closed_at
 					FROM contract_invocation_calls
-					WHERE closed_at >= NOW() - INTERVAL '%s'
+					WHERE closed_at >= TIMESTAMP '%s' - INTERVAL '%s'
 				) sub
 				GROUP BY contract_id
 			),
 			unknown_counts AS (
 				SELECT to_contract as contract_id, COUNT(*) as unknown_calls
 				FROM contract_invocation_calls
-				WHERE closed_at >= NOW() - INTERVAL '%s'
+				WHERE closed_at >= TIMESTAMP '%s' - INTERVAL '%s'
 				  AND function_name = 'unknown'
 				GROUP BY to_contract
 			),
@@ -361,7 +364,7 @@ func (h *SilverHotReader) GetTopContracts(ctx context.Context, period string, li
 				FROM (
 					SELECT to_contract, function_name, COUNT(*) as cnt
 					FROM contract_invocation_calls
-					WHERE closed_at >= NOW() - INTERVAL '%s'
+					WHERE closed_at >= TIMESTAMP '%s' - INTERVAL '%s'
 					  AND function_name IS NOT NULL AND function_name != '' AND function_name != 'unknown'
 					GROUP BY to_contract, function_name
 					ORDER BY to_contract, cnt DESC
@@ -379,7 +382,7 @@ func (h *SilverHotReader) GetTopContracts(ctx context.Context, period string, li
 			LEFT JOIN unknown_counts uc ON cc.contract_id = uc.contract_id
 			ORDER BY cc.total_calls DESC
 			LIMIT $1
-		`, interval, interval, interval)
+		`, callsRef, interval, callsRef, interval, callsRef, interval)
 	}
 
 	rows, err := h.db.QueryContext(ctx, query, limit)

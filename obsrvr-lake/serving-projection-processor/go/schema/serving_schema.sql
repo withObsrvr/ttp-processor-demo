@@ -298,6 +298,8 @@ create table if not exists serving.sv_explorer_events_recent (
     topic3                    text,
     topics_decoded            text,
     data_decoded              text,
+    transaction_successful    boolean,
+    in_successful_contract_call boolean,
     successful                boolean,
     explorer_type             text not null,
     protocol                  text,
@@ -326,6 +328,13 @@ create index if not exists sv_explorer_events_recent_contract_name_trgm_idx
 create index if not exists sv_explorer_events_recent_topics_trgm_idx
     on serving.sv_explorer_events_recent using gin (topics_decoded gin_trgm_ops);
 
+alter table serving.sv_explorer_events_recent
+    add column if not exists transaction_successful boolean;
+alter table serving.sv_explorer_events_recent
+    add column if not exists in_successful_contract_call boolean;
+comment on column serving.sv_explorer_events_recent.transaction_successful is 'Containing transaction succeeded on-chain; source of public explorer event status.';
+comment on column serving.sv_explorer_events_recent.in_successful_contract_call is 'Raw Soroban call-context flag; not equivalent to transaction success.';
+comment on column serving.sv_explorer_events_recent.successful is 'Deprecated compatibility alias for transaction_successful on explorer event APIs.';
 
 create table if not exists serving.sv_trades_recent (
     trade_id                   text primary key,

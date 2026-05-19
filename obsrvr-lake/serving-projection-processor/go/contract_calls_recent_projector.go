@@ -48,6 +48,8 @@ func (p *ContractCallsRecentProjector) RunOnce(ctx context.Context) (RunStats, e
 		return RunStats{}, err
 	}
 
+	dataTime := resolveDataTime(ctx, p.sourcePool, "contract_invocations_raw", "closed_at")
+
 	rows, err := p.sourcePool.Query(ctx, `
 		SELECT
 			ledger_sequence::text || ':' || transaction_index::text || ':' || operation_index::text as call_id,
@@ -64,10 +66,10 @@ func (p *ContractCallsRecentProjector) RunOnce(ctx context.Context) (RunStats, e
 			END as summary_text
 		FROM contract_invocations_raw
 		WHERE ledger_sequence > $1
-		  AND closed_at >= NOW() - INTERVAL '30 days'
+		  AND closed_at >= $3::timestamp - INTERVAL '30 days'
 		ORDER BY ledger_sequence ASC, transaction_index ASC, operation_index ASC
 		LIMIT $2
-	`, checkpoint, p.batchSize)
+	`, checkpoint, p.batchSize, dataTime)
 	if err != nil {
 		return RunStats{}, fmt.Errorf("query contract calls recent: %w", err)
 	}
@@ -91,7 +93,7 @@ func (p *ContractCallsRecentProjector) RunOnce(ctx context.Context) (RunStats, e
 	}
 	defer tx.Rollback(ctx)
 
-	retainedRows, err := applyRecentRetention(ctx, tx, "serving.sv_contract_calls_recent", "created_at", "30 days")
+	retainedRows, err := applyRecentRetentionWithReference(ctx, tx, "serving.sv_contract_calls_recent", "created_at", "30 days", dataTime)
 	if err != nil {
 		return RunStats{}, err
 	}

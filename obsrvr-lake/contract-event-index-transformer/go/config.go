@@ -54,15 +54,16 @@ type S3Config struct {
 
 // IndexingConfig contains indexing behavior configuration
 type IndexingConfig struct {
-	PollInterval   string `yaml:"poll_interval"`   // e.g., "30s"
-	BatchSize      int64  `yaml:"batch_size"`      // Max ledgers per batch
+	PollInterval    string `yaml:"poll_interval"`    // e.g., "30s"
+	BatchSize       int64  `yaml:"batch_size"`       // Max ledgers per batch
 	CheckpointTable string `yaml:"checkpoint_table"` // PostgreSQL checkpoint table
+	CatalogName     string `yaml:"catalog_name"`     // DuckLake ATTACH alias (e.g., testnet_catalog, mainnet_catalog)
 }
 
 // MaintenanceConfig contains DuckLake maintenance settings
 type MaintenanceConfig struct {
-	Enabled          bool `yaml:"enabled"`
-	EveryNWrites     int  `yaml:"every_n_writes"`
+	Enabled           bool `yaml:"enabled"`
+	EveryNWrites      int  `yaml:"every_n_writes"`
 	MaxCompactedFiles int  `yaml:"max_compacted_files"`
 }
 
@@ -108,6 +109,12 @@ func LoadConfig(path string) (*Config, error) {
 	if config.Indexing.CheckpointTable == "" {
 		config.Indexing.CheckpointTable = "index.contract_event_transformer_checkpoint"
 	}
+	if config.Indexing.CatalogName == "" {
+		config.Indexing.CatalogName = "testnet_catalog"
+	}
+	if !isSQLIdentifier(config.Indexing.CatalogName) {
+		return nil, fmt.Errorf("indexing.catalog_name must be a valid SQL identifier matching [A-Za-z_][A-Za-z0-9_]*: %q", config.Indexing.CatalogName)
+	}
 	if config.Maintenance.EveryNWrites == 0 {
 		config.Maintenance.EveryNWrites = 100
 	}
@@ -124,6 +131,25 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	return &config, nil
+}
+
+func isSQLIdentifier(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		if i == 0 {
+			if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || r == '_' {
+				continue
+			}
+			return false
+		}
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // GetPollInterval returns the poll interval as a duration

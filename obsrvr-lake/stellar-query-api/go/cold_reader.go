@@ -827,13 +827,19 @@ func (c *ColdReader) GetExplorerEvents(ctx context.Context, filters ExplorerEven
 
 	query := fmt.Sprintf(`
 		SELECT event_id, contract_id, ledger_sequence, transaction_hash, closed_at,
-		       in_successful_contract_call, topic0_decoded, topic1_decoded, topic2_decoded, topic3_decoded,
+		       transaction_successful, in_successful_contract_call, topic0_decoded, topic1_decoded, topic2_decoded, topic3_decoded,
 		       topics_decoded, data_decoded, event_index, operation_index
-		FROM %s.%s.contract_events_stream_v1
+		FROM (
+			SELECT ce.*, COALESCE(tx.successful, ce.successful) AS transaction_successful
+			FROM %s.%s.contract_events_stream_v1 ce
+			LEFT JOIN %s.%s.transactions_row_v2 tx
+			  ON tx.transaction_hash = ce.transaction_hash
+			 AND tx.ledger_sequence = ce.ledger_sequence
+		) events_with_tx_success
 		%s
 		ORDER BY ledger_sequence %s, event_index %s
 		LIMIT $%d
-	`, c.config.CatalogName, c.config.SchemaName, whereClause, order, order, argIdx)
+	`, c.config.CatalogName, c.config.SchemaName, c.config.CatalogName, c.config.SchemaName, whereClause, order, order, argIdx)
 	queryArgs := append(append([]any{}, args...), requestLimit)
 	rows, err := c.db.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
@@ -850,13 +856,13 @@ func (c *ColdReader) GetExplorerEvents(ctx context.Context, filters ExplorerEven
 	}
 	for rows.Next() {
 		var e ExplorerEvent
-		var successful sql.NullBool
+		var transactionSuccessful, inSuccessfulContractCall sql.NullBool
 		if err := rows.Scan(&e.EventID, &e.ContractID, &e.LedgerSequence, &e.TxHash, &e.ClosedAt,
-			&successful, &e.Topic0, &e.Topic1, &e.Topic2, &e.Topic3,
+			&transactionSuccessful, &inSuccessfulContractCall, &e.Topic0, &e.Topic1, &e.Topic2, &e.Topic3,
 			&e.TopicsDecoded, &e.DataDecoded, &e.EventIndex, &e.OpIndex); err != nil {
 			return nil, nil, "", false, fmt.Errorf("GetExplorerEvents scan: %w", err)
 		}
-		e.Successful = true
+		applyExplorerEventSuccess(&e, transactionSuccessful, inSuccessfulContractCall)
 		e.Data = e.DataDecoded
 		if e.ContractID != nil {
 			if strKeyID, err := hexToStrKey(*e.ContractID); err == nil {

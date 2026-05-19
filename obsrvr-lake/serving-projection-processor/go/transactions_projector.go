@@ -69,6 +69,8 @@ func (p *TransactionsRecentProjector) RunOnce(ctx context.Context) (RunStats, er
 		return RunStats{}, err
 	}
 
+	dataTime := resolveDataTime(ctx, p.sourcePool, "transactions_row_v2", "created_at")
+
 	rows, err := p.sourcePool.Query(ctx, `
 		SELECT
 			ledger_sequence,
@@ -88,9 +90,10 @@ func (p *TransactionsRecentProjector) RunOnce(ctx context.Context) (RunStats, er
 			soroban_contract_id
 		FROM transactions_row_v2
 		WHERE ledger_sequence > $1
+		  AND created_at >= $3::timestamp - INTERVAL '30 days'
 		ORDER BY ledger_sequence ASC, transaction_hash ASC
 		LIMIT $2
-	`, checkpoint, p.batchSize)
+	`, checkpoint, p.batchSize, dataTime)
 	if err != nil {
 		return RunStats{}, fmt.Errorf("query bronze transactions: %w", err)
 	}
@@ -252,6 +255,11 @@ func (p *TransactionsRecentProjector) RunOnce(ctx context.Context) (RunStats, er
 		}
 	}
 
+	retainedRows, err := applyRecentRetentionWithReference(ctx, tx, "serving.sv_transactions_recent", "created_at", "30 days", dataTime)
+	if err != nil {
+		return RunStats{}, err
+	}
+
 	if err := p.checkpoints.Save(ctx, tx, p.Name(), p.network, maxLedger, lastCreatedAt); err != nil {
 		return RunStats{}, err
 	}
@@ -259,8 +267,8 @@ func (p *TransactionsRecentProjector) RunOnce(ctx context.Context) (RunStats, er
 		return RunStats{}, fmt.Errorf("commit target tx: %w", err)
 	}
 
-	log.Printf("projector=%s network=%s applied=%d checkpoint=%d", p.Name(), p.network, len(batch), maxLedger)
-	return RunStats{RowsApplied: int64(len(batch)), Checkpoint: maxLedger}, nil
+	log.Printf("projector=%s network=%s applied=%d retention_deleted=%d checkpoint=%d", p.Name(), p.network, len(batch), retainedRows, maxLedger)
+	return RunStats{RowsApplied: int64(len(batch)), RowsDeleted: retainedRows, Checkpoint: maxLedger}, nil
 }
 
 func classifyTransactionType(isSoroban bool, operationCount *int32) string {

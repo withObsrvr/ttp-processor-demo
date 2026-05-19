@@ -77,7 +77,8 @@ func (r *SilverHotReader) GetAssetListWithCursor(ctx context.Context, filters As
 	// Build the main query
 	// This aggregates trustlines to get unique assets with holder counts and supply
 	// Then joins with token_transfers_raw for 24h volume/transfer stats
-	query := `
+	transfersRef := resolveDataTime(ctx, r.db, dataTimeQueryTokenTransfers).Format("2006-01-02 15:04:05")
+	query := fmt.Sprintf(`
 		WITH asset_stats AS (
 			SELECT
 				asset_code,
@@ -98,7 +99,7 @@ func (r *SilverHotReader) GetAssetListWithCursor(ctx context.Context, filters As
 				COUNT(*) as transfers_24h,
 				COALESCE(SUM(amount), 0) as volume_24h
 			FROM token_transfers_raw
-			WHERE timestamp >= NOW() - INTERVAL '24 hours'
+			WHERE timestamp >= TIMESTAMP '%s' - INTERVAL '24 hours'
 			  AND transaction_successful = true
 			GROUP BY asset_code, asset_issuer
 		)
@@ -117,7 +118,7 @@ func (r *SilverHotReader) GetAssetListWithCursor(ctx context.Context, filters As
 			ON a.asset_code = t.asset_code
 			AND COALESCE(a.asset_issuer, '') = COALESCE(t.asset_issuer, '')
 		WHERE a.holder_count > 0
-	`
+	`, transfersRef)
 
 	args := []interface{}{}
 	argIndex := 1
@@ -384,7 +385,8 @@ func (r *SilverHotReader) GetAssetCount(ctx context.Context, filters AssetListFi
 	// Slow path: volume filter is set, we need the transfer_stats CTE to
 	// evaluate it. This is the historical behavior, preserved here so the
 	// filter semantics don't change when it's used.
-	query := `
+	transfersRef := resolveDataTime(ctx, r.db, dataTimeQueryTokenTransfers).Format("2006-01-02 15:04:05")
+	query := fmt.Sprintf(`
 		WITH asset_stats AS (
 			SELECT
 				asset_code,
@@ -401,7 +403,7 @@ func (r *SilverHotReader) GetAssetCount(ctx context.Context, filters AssetListFi
 				asset_issuer,
 				COALESCE(SUM(amount), 0) as volume_24h
 			FROM token_transfers_raw
-			WHERE timestamp >= NOW() - INTERVAL '24 hours'
+			WHERE timestamp >= TIMESTAMP '%s' - INTERVAL '24 hours'
 			  AND transaction_successful = true
 			GROUP BY asset_code, asset_issuer
 		)
@@ -411,7 +413,7 @@ func (r *SilverHotReader) GetAssetCount(ctx context.Context, filters AssetListFi
 			ON a.asset_code = t.asset_code
 			AND COALESCE(a.asset_issuer, '') = COALESCE(t.asset_issuer, '')
 		WHERE a.holder_count > 0
-	`
+	`, transfersRef)
 
 	args := []interface{}{}
 	argIndex := 1

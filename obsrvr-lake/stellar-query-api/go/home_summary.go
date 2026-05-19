@@ -393,10 +393,37 @@ func (h *ExplorerHomeSummaryHandler) loadUtilization(ctx context.Context, ledger
 }
 
 func (h *ExplorerHomeSummaryHandler) loadActivityMix(ctx context.Context) (int64, int64, string) {
+	// Fast path: query silver-hot PG directly. The previous implementation
+	// went through DuckDB ATTACH POSTGRES (h.unified.db), which doesn't push
+	// the time predicate down — DuckDB pulls the entire enriched_history_operations
+	// table over the wire and filters locally, taking 10-20s on mainnet.
+	// "Last 24h" only ever needs hot, so the cold UNION is dropped: silver-hot
+	// retains operations far longer than 24h.
+	if h.hot != nil && h.hot.DB() != nil {
+		ref := h.dataTimeRef(ctx)
+		query := fmt.Sprintf(`
+			SELECT
+				COUNT(DISTINCT transaction_hash) FILTER (
+					WHERE type IN (2, 3, 4, 12, 13, 22, 23)
+				) AS swap_tx_24h,
+				COUNT(DISTINCT transaction_hash) FILTER (
+					WHERE COALESCE(is_soroban_op, false)
+				) AS contract_call_tx_24h
+			FROM enriched_history_operations
+			WHERE ledger_closed_at > TIMESTAMP '%s' - INTERVAL '24 hours'
+		`, ref)
+		var swapTx24h, contractCallTx24h sql.NullInt64
+		if err := h.hot.DB().QueryRowContext(ctx, query).Scan(&swapTx24h, &contractCallTx24h); err == nil {
+			return swapTx24h.Int64, contractCallTx24h.Int64, ""
+		}
+	}
+	// Slow fallback: original DuckDB-mediated UNION path. Only reached if the
+	// silver-hot direct handle is unavailable; kept so deployments without it
+	// still get an answer (just slowly).
 	if h.unified == nil || h.unified.db == nil {
 		return 0, 0, "activity mix unavailable without unified reader"
 	}
-	query := h.unifiedEnriched24hQuery(`
+	query := h.unifiedEnriched24hQuery(ctx, `
 		SELECT
 			COUNT(DISTINCT transaction_hash) FILTER (
 				WHERE type IN (2, 3, 4, 12, 13, 22, 23)
@@ -718,26 +745,42 @@ func (h *ExplorerHomeSummaryHandler) lookupContractIdentities(ctx context.Contex
 	return out
 }
 
-func (h *ExplorerHomeSummaryHandler) unifiedEnriched24hQuery(selectBody string) string {
+func (h *ExplorerHomeSummaryHandler) unifiedEnriched24hQuery(ctx context.Context, selectBody string) string {
+	// Anchor the recency window to the data's own clock so the query is correct
+	// during backfill. Using NOW() here forces a full hot+cold scan when the
+	// pipeline is years behind real time, which on this codepath also fans out
+	// across B2 parquet via DuckDB ATTACH POSTGRES — taking minutes per request.
+	ref := h.dataTimeRef(ctx)
 	combined := fmt.Sprintf(`
 		WITH combined AS (
 			SELECT *
 			FROM %s.enriched_history_operations
-			WHERE ledger_closed_at > NOW() - INTERVAL '24 hours'
-	`, h.unified.hotSchema)
+			WHERE ledger_closed_at > TIMESTAMP '%s' - INTERVAL '24 hours'
+	`, h.unified.hotSchema, ref)
 	if h.unified.coldSchema != "" {
 		combined += fmt.Sprintf(`
 			UNION ALL
 			SELECT *
 			FROM %s.enriched_history_operations
-			WHERE ledger_closed_at > NOW() - INTERVAL '24 hours'
-		`, h.unified.coldSchema)
+			WHERE ledger_closed_at > TIMESTAMP '%s' - INTERVAL '24 hours'
+		`, h.unified.coldSchema, ref)
 	}
 	combined += fmt.Sprintf(`
 		)
 		%s
 	`, selectBody)
 	return combined
+}
+
+// dataTimeRef returns the latest ledger_closed_at in the enriched operations
+// table as a SQL-formatted timestamp, falling back to wall-clock NOW() if the
+// source is unavailable. Used to anchor "last 24h" filters to the data's clock.
+func (h *ExplorerHomeSummaryHandler) dataTimeRef(ctx context.Context) string {
+	if h.hot != nil && h.hot.DB() != nil {
+		t := resolveDataTime(ctx, h.hot.DB(), dataTimeQueryEnrichedHistoryOps)
+		return t.Format("2006-01-02 15:04:05")
+	}
+	return time.Now().UTC().Format("2006-01-02 15:04:05")
 }
 
 func (h *ExplorerHomeSummaryHandler) loadActiveContracts24h(ctx context.Context) (int64, string) {
@@ -752,11 +795,12 @@ func (h *ExplorerHomeSummaryHandler) loadActiveContracts24h(ctx context.Context)
 	`).Scan(&count); err == nil && count.Int64 > 0 {
 		return count.Int64, ""
 	}
-	if err := h.hot.DB().QueryRowContext(ctx, `
+	ref := resolveDataTime(ctx, h.hot.DB(), dataTimeQueryContractInvocations).Format("2006-01-02 15:04:05")
+	if err := h.hot.DB().QueryRowContext(ctx, fmt.Sprintf(`
 		SELECT COUNT(DISTINCT contract_id)
 		FROM contract_invocations_raw
-		WHERE closed_at > NOW() - INTERVAL '24 hours'
-	`).Scan(&count); err != nil {
+		WHERE closed_at > TIMESTAMP '%s' - INTERVAL '24 hours'
+	`, ref)).Scan(&count); err != nil {
 		return 0, "failed to query active contracts in 24h"
 	}
 	return count.Int64, ""

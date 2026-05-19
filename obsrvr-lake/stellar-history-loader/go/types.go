@@ -95,17 +95,17 @@ type OperationData struct {
 	Asset       *string
 	Destination *string
 	// Decomposed asset fields
-	AssetType *string
-	AssetCode *string
+	AssetType   *string
+	AssetCode   *string
 	AssetIssuer *string
 	// Source asset (path payments)
-	SourceAsset     *string
-	SourceAssetType *string
-	SourceAssetCode *string
+	SourceAsset       *string
+	SourceAssetType   *string
+	SourceAssetCode   *string
 	SourceAssetIssuer *string
-	SourceAmount    *int64
-	DestinationMin  *int64
-	StartingBalance *int64
+	SourceAmount      *int64
+	DestinationMin    *int64
+	StartingBalance   *int64
 	// Trustline
 	TrustlineLimit *int64
 	// Offer fields
@@ -113,10 +113,10 @@ type OperationData struct {
 	Price   *string
 	PriceR  *string
 	// Buying/Selling assets (offers)
-	BuyingAsset       *string
-	BuyingAssetType   *string
-	BuyingAssetCode   *string
-	BuyingAssetIssuer *string
+	BuyingAsset        *string
+	BuyingAssetType    *string
+	BuyingAssetCode    *string
+	BuyingAssetIssuer  *string
 	SellingAsset       *string
 	SellingAssetType   *string
 	SellingAssetCode   *string
@@ -126,7 +126,7 @@ type OperationData struct {
 	ClearFlags      *int
 	HomeDomain      *string
 	MasterWeight    *int
-	LowThreshold   *int
+	LowThreshold    *int
 	MediumThreshold *int
 	HighThreshold   *int
 	// Manage data
@@ -149,6 +149,11 @@ type OperationData struct {
 	ContractCallsJSON *string  // JSON array of {from, to, function, depth, order}
 	ContractsInvolved []string // All contracts in the call chain
 	MaxCallDepth      *int     // Maximum depth of nested calls
+	// Soroban authorization fields (SorobanAuthorizationEntry.Credentials).
+	// Parallel arrays; same length; one entry per auth entry on the op.
+	// nil on non-Soroban ops and InvokeHostFunction ops with zero auth entries.
+	SorobanAuthCredentialsTypes []string // "SOURCE_ACCOUNT" | "ADDRESS"
+	SorobanAuthAddresses        []string // strkey address; "" for SOURCE_ACCOUNT
 	// TOID
 	TransactionID int64
 	OperationID   int64
@@ -685,20 +690,20 @@ type RestoredKeyData struct {
 
 // LedgerRowData represents a single ledger row (ledgers_row_v2)
 type LedgerRowData struct {
-	Sequence            uint32
-	LedgerHash          string
-	PreviousLedgerHash  string
-	ClosedAt            time.Time
-	ProtocolVersion     uint32
-	TotalCoins          int64
-	FeePool             int64
-	BaseFee             uint32
-	BaseReserve         uint32
-	MaxTxSetSize        uint32
-	TransactionCount    int
-	OperationCount      int
-	SuccessfulTxCount   int
-	FailedTxCount       int
+	Sequence             uint32
+	LedgerHash           string
+	PreviousLedgerHash   string
+	ClosedAt             time.Time
+	ProtocolVersion      uint32
+	TotalCoins           int64
+	FeePool              int64
+	BaseFee              uint32
+	BaseReserve          uint32
+	MaxTxSetSize         uint32
+	TransactionCount     int
+	OperationCount       int
+	SuccessfulTxCount    int
+	FailedTxCount        int
 	TxSetOperationCount  int
 	SorobanFeeWrite1kb   *int64
 	NodeID               *string
@@ -711,9 +716,9 @@ type LedgerRowData struct {
 	TotalFeeCharged      *int64
 	ContractEventsCount  *int32
 	IngestionTimestamp   time.Time
-	LedgerRange         uint32
-	PipelineVersion     string
-	EraID               *string
+	LedgerRange          uint32
+	PipelineVersion      string
+	EraID                *string
 }
 
 // ContractCreationData represents a contract creation event

@@ -14,7 +14,14 @@ type CatchupProjector interface {
 	SourceHighWatermark(context.Context) (int64, error)
 }
 
-const maxCatchupRunsPerProjector = 10000
+// maxCatchupRunsPerProjector caps how many consecutive RunOnce iterations a
+// single CatchupProjector can do per tick before yielding to the next projector
+// in the order. Without this, a slow source-bound projector (e.g. tx_receipts)
+// can monopolize the tick and starve later projectors (events_recent,
+// explorer_events_recent, etc.) — they only get a turn when the catchup loop
+// yields. Cap is intentionally small to keep ordering fair; over time, repeated
+// ticks still drive every catchup projector to its target.
+const maxCatchupRunsPerProjector = 200
 
 func RunProjectors(ctx context.Context, healthServer *HealthServer, projectors []ProjectorRunner, targetLedger int64) error {
 	for _, p := range projectors {
