@@ -300,12 +300,17 @@ func extractCallsFromAuthInvocation(
 	}
 
 	// First, capture this invocation's function call (the root or current node)
-	// This was previously missing - we only captured sub-invocations
+	// This was previously missing - we only captured sub-invocations.
+	// Some historical auth payloads can contain a CONTRACT_FN arm whose
+	// ContractAddress is not a contract SCAddress (or whose union arm pointer is
+	// nil). Use the generated union getter instead of dereferencing
+	// ContractAddress.ContractId directly so malformed/unexpected auth entries do
+	// not panic the whole historical backfill.
 	if invocation.Function.Type == xdr.SorobanAuthorizedFunctionTypeSorobanAuthorizedFunctionTypeContractFn {
 		contractFn := invocation.Function.ContractFn
 		if contractFn != nil {
-			toContractID, err := strkey.Encode(strkey.VersionByteContract, contractFn.ContractAddress.ContractId[:])
-			if err == nil && toContractID != fromContract {
+			toContractID, ok := scAddressContractStrKey(contractFn.ContractAddress)
+			if ok && toContractID != fromContract {
 				// Only record if it's a cross-contract call (different from/to)
 				functionName := string(contractFn.FunctionName)
 				call := ContractCall{
@@ -338,6 +343,18 @@ func extractCallsFromAuthInvocation(
 	}
 
 	return calls
+}
+
+func scAddressContractStrKey(address xdr.ScAddress) (string, bool) {
+	contractID, ok := address.GetContractId()
+	if !ok {
+		return "", false
+	}
+	encoded, err := strkey.Encode(strkey.VersionByteContract, contractID[:])
+	if err != nil {
+		return "", false
+	}
+	return encoded, true
 }
 
 // extractFirstTopic extracts the first topic from a contract event as a string

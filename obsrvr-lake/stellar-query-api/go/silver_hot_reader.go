@@ -1252,73 +1252,75 @@ func (h *SilverHotReader) GetServingGenericEvents(ctx context.Context, filters G
 			event_id,
 			contract_id,
 			ledger_sequence,
-			tx_hash,
-			created_at,
-			event_type,
-			COALESCE((raw_event_json->>'in_successful_contract_call')::boolean, true),
-			raw_event_json->>'topics_json',
-			raw_event_json->>'topics_decoded',
-			raw_event_json->>'data_decoded',
-			COALESCE((raw_event_json->>'topic_count')::int,
-				CASE WHEN topic3 IS NOT NULL THEN 4 WHEN topic2 IS NOT NULL THEN 3 WHEN topic1 IS NOT NULL THEN 2 WHEN topic0 IS NOT NULL THEN 1 ELSE 0 END),
-			COALESCE((raw_event_json->>'operation_index')::int, 0),
-			COALESCE(event_index, 0),
-			topic0,
-			topic1,
-			topic2,
-			topic3
-		FROM serving.sv_events_recent
+			e.tx_hash,
+			e.created_at,
+			e.event_type,
+			COALESCE((e.raw_event_json->>'successful')::boolean, tx.successful),
+			COALESCE((e.raw_event_json->>'in_successful_contract_call')::boolean, true),
+			e.raw_event_json->>'topics_json',
+			e.raw_event_json->>'topics_decoded',
+			e.raw_event_json->>'data_decoded',
+			COALESCE((e.raw_event_json->>'topic_count')::int,
+				CASE WHEN e.topic3 IS NOT NULL THEN 4 WHEN e.topic2 IS NOT NULL THEN 3 WHEN e.topic1 IS NOT NULL THEN 2 WHEN e.topic0 IS NOT NULL THEN 1 ELSE 0 END),
+			COALESCE((e.raw_event_json->>'operation_index')::int, 0),
+			COALESCE(e.event_index, 0),
+			e.topic0,
+			e.topic1,
+			e.topic2,
+			e.topic3
+		FROM serving.sv_events_recent e
+		LEFT JOIN serving.sv_transactions_recent tx ON tx.tx_hash = e.tx_hash
 		WHERE 1=1
 	`
 	args := []any{}
 	argPos := 1
 	if filters.ContractID != nil && *filters.ContractID != "" {
-		query += fmt.Sprintf(" AND contract_id = $%d", argPos)
+		query += fmt.Sprintf(" AND e.contract_id = $%d", argPos)
 		args = append(args, *filters.ContractID)
 		argPos++
 	}
 	if filters.TxHash != nil && *filters.TxHash != "" {
-		query += fmt.Sprintf(" AND tx_hash = $%d", argPos)
+		query += fmt.Sprintf(" AND e.tx_hash = $%d", argPos)
 		args = append(args, *filters.TxHash)
 		argPos++
 	}
 	if filters.EventType != nil && *filters.EventType != "" {
-		query += fmt.Sprintf(" AND event_type = $%d", argPos)
+		query += fmt.Sprintf(" AND e.event_type = $%d", argPos)
 		args = append(args, *filters.EventType)
 		argPos++
 	}
 	if filters.TopicMatch != nil && *filters.TopicMatch != "" {
-		query += fmt.Sprintf(" AND COALESCE(raw_event_json->>'topics_decoded','') ILIKE '%%' || $%d || '%%'", argPos)
+		query += fmt.Sprintf(" AND COALESCE(e.raw_event_json->>'topics_decoded','') ILIKE '%%' || $%d || '%%'", argPos)
 		args = append(args, *filters.TopicMatch)
 		argPos++
 	}
 	if filters.Topic0 != nil && *filters.Topic0 != "" {
-		query += fmt.Sprintf(" AND topic0 = $%d", argPos)
+		query += fmt.Sprintf(" AND e.topic0 = $%d", argPos)
 		args = append(args, *filters.Topic0)
 		argPos++
 	}
 	if filters.Topic1 != nil && *filters.Topic1 != "" {
-		query += fmt.Sprintf(" AND topic1 = $%d", argPos)
+		query += fmt.Sprintf(" AND e.topic1 = $%d", argPos)
 		args = append(args, *filters.Topic1)
 		argPos++
 	}
 	if filters.Topic2 != nil && *filters.Topic2 != "" {
-		query += fmt.Sprintf(" AND topic2 = $%d", argPos)
+		query += fmt.Sprintf(" AND e.topic2 = $%d", argPos)
 		args = append(args, *filters.Topic2)
 		argPos++
 	}
 	if filters.Topic3 != nil && *filters.Topic3 != "" {
-		query += fmt.Sprintf(" AND topic3 = $%d", argPos)
+		query += fmt.Sprintf(" AND e.topic3 = $%d", argPos)
 		args = append(args, *filters.Topic3)
 		argPos++
 	}
 	if filters.StartLedger != nil {
-		query += fmt.Sprintf(" AND ledger_sequence >= $%d", argPos)
+		query += fmt.Sprintf(" AND e.ledger_sequence >= $%d", argPos)
 		args = append(args, *filters.StartLedger)
 		argPos++
 	}
 	if filters.EndLedger != nil {
-		query += fmt.Sprintf(" AND ledger_sequence <= $%d", argPos)
+		query += fmt.Sprintf(" AND e.ledger_sequence <= $%d", argPos)
 		args = append(args, *filters.EndLedger)
 		argPos++
 	}
@@ -1333,12 +1335,12 @@ func (h *SilverHotReader) GetServingGenericEvents(ctx context.Context, filters G
 			if err != nil {
 				return nil, "", false, fmt.Errorf("invalid cursor event_index value %q: %w", parts[1], err)
 			}
-			query += fmt.Sprintf(" AND (ledger_sequence %s $%d OR (ledger_sequence = $%d AND COALESCE(event_index,0) %s $%d))", cursorOp, argPos, argPos, cursorOp, argPos+1)
+			query += fmt.Sprintf(" AND (e.ledger_sequence %s $%d OR (e.ledger_sequence = $%d AND COALESCE(e.event_index,0) %s $%d))", cursorOp, argPos, argPos, cursorOp, argPos+1)
 			args = append(args, cursorLedger, cursorEvent)
 			argPos += 2
 		}
 	}
-	query += fmt.Sprintf(" ORDER BY ledger_sequence %s, event_index %s LIMIT $%d", orderDir, orderDir, argPos)
+	query += fmt.Sprintf(" ORDER BY e.ledger_sequence %s, e.event_index %s LIMIT $%d", orderDir, orderDir, argPos)
 	args = append(args, requestLimit)
 
 	rows, err := h.db.QueryContext(ctx, query, args...)
@@ -1352,9 +1354,11 @@ func (h *SilverHotReader) GetServingGenericEvents(ctx context.Context, filters G
 		var e GenericEvent
 		var contractID sql.NullString
 		var createdAt sql.NullTime
-		if err := rows.Scan(&e.EventID, &contractID, &e.LedgerSeq, &e.TxHash, &createdAt, &e.EventType, &e.Successful, &e.TopicsJSON, &e.TopicsDecoded, &e.DataDecoded, &e.TopicCount, &e.OpIndex, &e.EventIndex, &e.Topic0Decoded, &e.Topic1Decoded, &e.Topic2Decoded, &e.Topic3Decoded); err != nil {
+		var transactionSuccessful sql.NullBool
+		if err := rows.Scan(&e.EventID, &contractID, &e.LedgerSeq, &e.TxHash, &createdAt, &e.EventType, &transactionSuccessful, &e.Successful, &e.TopicsJSON, &e.TopicsDecoded, &e.DataDecoded, &e.TopicCount, &e.OpIndex, &e.EventIndex, &e.Topic0Decoded, &e.Topic1Decoded, &e.Topic2Decoded, &e.Topic3Decoded); err != nil {
 			return nil, "", false, err
 		}
+		applyGenericEventSuccess(&e, transactionSuccessful)
 		if contractID.Valid {
 			e.ContractID = &contractID.String
 		}

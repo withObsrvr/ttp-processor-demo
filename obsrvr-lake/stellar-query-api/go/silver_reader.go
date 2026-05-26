@@ -906,18 +906,20 @@ type SEP41TokenStats struct {
 
 // GenericEvent represents a raw contract event from bronze layer
 type GenericEvent struct {
-	EventID       string  `json:"event_id"`
-	ContractID    *string `json:"contract_id,omitempty"`
-	LedgerSeq     int64   `json:"ledger_sequence"`
-	TxHash        string  `json:"transaction_hash"`
-	ClosedAt      string  `json:"closed_at"`
-	EventType     string  `json:"event_type"`
-	TopicsJSON    *string `json:"topics_json,omitempty"`
-	TopicsDecoded *string `json:"topics_decoded,omitempty"`
-	DataDecoded   *string `json:"data_decoded,omitempty"`
-	TopicCount    int     `json:"topic_count"`
-	OpIndex       int     `json:"operation_index"`
-	EventIndex    int     `json:"event_index"`
+	EventID               string  `json:"event_id"`
+	ContractID            *string `json:"contract_id,omitempty"`
+	LedgerSeq             int64   `json:"ledger_sequence"`
+	TxHash                string  `json:"transaction_hash"`
+	ClosedAt              string  `json:"closed_at"`
+	EventType             string  `json:"event_type"`
+	TopicsJSON            *string `json:"topics_json,omitempty"`
+	TopicsDecoded         *string `json:"topics_decoded,omitempty"`
+	DataDecoded           *string `json:"data_decoded,omitempty"`
+	TopicCount            int     `json:"topic_count"`
+	OpIndex               int     `json:"operation_index"`
+	EventIndex            int     `json:"event_index"`
+	TransactionSuccessful *bool   `json:"transaction_successful,omitempty"`
+	// Successful is raw Soroban call-context metadata exposed as in_successful_contract_call.
 	Successful    bool    `json:"in_successful_contract_call"`
 	Topic0Decoded *string `json:"topic0_decoded,omitempty"`
 	Topic1Decoded *string `json:"topic1_decoded,omitempty"`
