@@ -1255,7 +1255,7 @@ func (h *SilverHotReader) GetServingGenericEvents(ctx context.Context, filters G
 			e.tx_hash,
 			e.created_at,
 			e.event_type,
-			COALESCE((e.raw_event_json->>'successful')::boolean, tx.successful),
+			COALESCE(tx.successful, (e.raw_event_json->>'successful')::boolean),
 			COALESCE((e.raw_event_json->>'in_successful_contract_call')::boolean, true),
 			e.raw_event_json->>'topics_json',
 			e.raw_event_json->>'topics_decoded',

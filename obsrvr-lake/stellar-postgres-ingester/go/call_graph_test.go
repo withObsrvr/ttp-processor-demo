@@ -66,3 +66,41 @@ func TestExtractCallsFromAuthInvocationContractAddress(t *testing.T) {
 		t.Fatalf("expected execution order 1, got %d", executionOrder)
 	}
 }
+
+func TestDeduplicateCalls(t *testing.T) {
+	calls := []ContractCall{
+		{FromContract: "CA", ToContract: "CB", FunctionName: "swap", CallDepth: 1, ExecutionOrder: 1},
+		{FromContract: "CA", ToContract: "CB", FunctionName: "swap", CallDepth: 1, ExecutionOrder: 2},
+		{FromContract: "CA", ToContract: "CC", FunctionName: "swap", CallDepth: 1, ExecutionOrder: 3},
+	}
+
+	unique := deduplicateCalls(calls)
+	if len(unique) != 2 {
+		t.Fatalf("expected 2 unique calls, got %d", len(unique))
+	}
+	if unique[0].ExecutionOrder != 1 {
+		t.Fatalf("expected first duplicate to be retained, got execution order %d", unique[0].ExecutionOrder)
+	}
+}
+
+func TestCallGraphToJSON(t *testing.T) {
+	result := &CallGraphResult{
+		Calls:             []ContractCall{{FromContract: "CA", ToContract: "CB", FunctionName: "swap", CallDepth: 1, ExecutionOrder: 1, Successful: true}},
+		ContractsInvolved: []string{"CA", "CB"},
+		MaxDepth:          1,
+	}
+
+	callsJSON, contracts, maxDepth, err := callGraphToJSON(result)
+	if err != nil {
+		t.Fatalf("callGraphToJSON failed: %v", err)
+	}
+	if callsJSON == nil || *callsJSON == "" {
+		t.Fatal("expected calls JSON")
+	}
+	if len(contracts) != 2 || contracts[0] != "CA" || contracts[1] != "CB" {
+		t.Fatalf("unexpected contracts: %#v", contracts)
+	}
+	if maxDepth == nil || *maxDepth != 1 {
+		t.Fatalf("unexpected max depth: %v", maxDepth)
+	}
+}

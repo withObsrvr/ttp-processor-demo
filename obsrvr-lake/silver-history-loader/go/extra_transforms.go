@@ -49,18 +49,23 @@ func selectContractInvocations(l *Loader, start, end int64) string {
 }
 
 func selectContractMetadata(l *Loader, start, end int64) string {
-	return fmt.Sprintf(`SELECT %s AS network, soroban_contract_id AS contract_id, min(source_account) AS creator_address,
-		NULL::VARCHAR AS wasm_hash, min(ledger_sequence) AS created_ledger, min(created_at) AS created_at,
-		min(era_id) AS era_id, min(version_label) AS version_label, min(created_at) AS ledger_closed_at, %s
+	return fmt.Sprintf(`SELECT %s AS network, contract_id, creator_address,
+		wasm_hash, created_ledger, created_at,
+		era_id, version_label, created_at AS ledger_closed_at, %s
 		FROM %s
-		WHERE ledger_sequence BETWEEN %d AND %d AND type = 24 AND soroban_contract_id IS NOT NULL
-		GROUP BY soroban_contract_id`, q(l.cfg.Network), metaSelect(l, start, end), l.bronze("operations_row_v2"), start, end)
+		WHERE created_ledger BETWEEN %d AND %d AND contract_id IS NOT NULL`, q(l.cfg.Network), metaSelect(l, start, end), l.bronze("contract_creations_v1"), start, end)
 }
 
 func selectTrades(l *Loader, start, end int64) string {
 	return fmt.Sprintf(`SELECT %s AS network, ledger_sequence, transaction_hash, operation_index, trade_index,
-		trade_type, trade_timestamp, seller_account, selling_asset_code, selling_asset_issuer, selling_amount,
-		buyer_account, buying_asset_code, buying_asset_issuer, buying_amount, price, created_at, ledger_range,
+		trade_type, trade_timestamp, seller_account, selling_asset_code, selling_asset_issuer, TRY_CAST(selling_amount AS BIGINT) AS selling_amount,
+		buyer_account, buying_asset_code, buying_asset_issuer, TRY_CAST(buying_amount AS BIGINT) AS buying_amount,
+		TRY_CAST(CASE
+			WHEN price IS NULL THEN NULL
+			WHEN contains(CAST(price AS VARCHAR), '/') THEN TRY_CAST(split_part(CAST(price AS VARCHAR), '/', 1) AS DOUBLE) / NULLIF(TRY_CAST(split_part(CAST(price AS VARCHAR), '/', 2) AS DOUBLE), 0)
+			ELSE TRY_CAST(price AS DOUBLE)
+		END AS DECIMAL(20, 7)) AS price,
+		created_at, ledger_range,
 		trade_timestamp AS ledger_closed_at, %s
 		FROM %s WHERE ledger_sequence BETWEEN %d AND %d`, q(l.cfg.Network), metaSelect(l, start, end), l.bronze("trades_row_v1"), start, end)
 }

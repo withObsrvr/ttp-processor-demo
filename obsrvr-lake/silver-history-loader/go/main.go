@@ -174,7 +174,10 @@ func (l *Loader) attach(ctx context.Context, alias, catalog, data, meta string, 
 	_ = readOnly
 	stmt := fmt.Sprintf("ATTACH %s AS %s (DATA_PATH %s, METADATA_SCHEMA %s, AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE)", q(catalog), ident(alias), q(data), q(meta))
 	if _, err := l.db.ExecContext(ctx, stmt); err != nil {
-		return fmt.Errorf("attach %s: %w", alias, err)
+		fallback := fmt.Sprintf("ATTACH %s AS %s (TYPE ducklake, DATA_PATH %s, METADATA_SCHEMA %s, AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE)", q(catalog), ident(alias), q(data), q(meta))
+		if _, fallbackErr := l.db.ExecContext(ctx, fallback); fallbackErr != nil {
+			return fmt.Errorf("attach %s: %w (fallback with TYPE ducklake also failed: %v)", alias, err, fallbackErr)
+		}
 	}
 	return nil
 }
@@ -218,24 +221,25 @@ func (l *Loader) processChunk(ctx context.Context, start, end int64) error {
 			_ = l.markManifest(ctx, start, end, t.Table, "failed", err.Error(), 0, "")
 			return err
 		}
-		if _, err := l.db.ExecContext(ctx, "BEGIN TRANSACTION"); err != nil {
+		tx, err := l.db.BeginTx(ctx, nil)
+		if err != nil {
 			_ = l.markManifest(ctx, start, end, t.Table, "failed", err.Error(), 0, "")
 			return fmt.Errorf("begin %s %d..%d: %w", t.Table, start, end, err)
 		}
 		deleteSQL := fmt.Sprintf("DELETE FROM %s WHERE network = %s AND %s BETWEEN %d AND %d", l.table(t.Table), q(l.cfg.Network), ident(t.RangeCol), start, end)
 		insertSQL := fmt.Sprintf("INSERT INTO %s %s", l.table(t.Table), t.SelectSQL(l, start, end))
-		if _, err := l.db.ExecContext(ctx, deleteSQL); err != nil {
-			_, _ = l.db.ExecContext(ctx, "ROLLBACK")
+		if _, err := tx.ExecContext(ctx, deleteSQL); err != nil {
+			_ = tx.Rollback()
 			_ = l.markManifest(ctx, start, end, t.Table, "failed", err.Error(), 0, "")
 			return fmt.Errorf("delete %s %d..%d: %w", t.Table, start, end, err)
 		}
-		if _, err := l.db.ExecContext(ctx, insertSQL); err != nil {
-			_, _ = l.db.ExecContext(ctx, "ROLLBACK")
+		if _, err := tx.ExecContext(ctx, insertSQL); err != nil {
+			_ = tx.Rollback()
 			_ = l.markManifest(ctx, start, end, t.Table, "failed", err.Error(), 0, "")
 			return fmt.Errorf("insert %s %d..%d: %w", t.Table, start, end, err)
 		}
-		if _, err := l.db.ExecContext(ctx, "COMMIT"); err != nil {
-			_, _ = l.db.ExecContext(ctx, "ROLLBACK")
+		if err := tx.Commit(); err != nil {
+			_ = tx.Rollback()
 			_ = l.markManifest(ctx, start, end, t.Table, "failed", err.Error(), 0, "")
 			return fmt.Errorf("commit %s %d..%d: %w", t.Table, start, end, err)
 		}
@@ -292,12 +296,12 @@ func (l *Loader) Verify(ctx context.Context) error {
 		}
 	}
 	var min, max, cnt int64
-	if err := l.db.QueryRowContext(ctx, fmt.Sprintf("SELECT COALESCE(MIN(ledger_sequence),0), COALESCE(MAX(ledger_sequence),0), COUNT(*) FROM %s", l.table("enriched_ledgers"))).Scan(&min, &max, &cnt); err != nil {
+	if err := l.db.QueryRowContext(ctx, fmt.Sprintf("SELECT COALESCE(MIN(ledger_sequence),0), COALESCE(MAX(ledger_sequence),0), COUNT(*) FROM %s WHERE network = %s AND ledger_sequence BETWEEN %d AND %d", l.table("enriched_ledgers"), q(l.cfg.Network), l.cfg.Start, l.cfg.End)).Scan(&min, &max, &cnt); err != nil {
 		return fmt.Errorf("read enriched_ledgers: %w", err)
 	}
-	log.Printf("enriched_ledgers: min=%d max=%d count=%d", min, max, cnt)
+	log.Printf("enriched_ledgers: network=%s min=%d max=%d count=%d", l.cfg.Network, min, max, cnt)
 	var gaps int64
-	gapSQL := fmt.Sprintf(`WITH ordered AS (SELECT ledger_sequence, lag(ledger_sequence) OVER (ORDER BY ledger_sequence) prev FROM %s WHERE ledger_sequence BETWEEN %d AND %d) SELECT COUNT(*) FROM ordered WHERE prev IS NOT NULL AND ledger_sequence <> prev + 1`, l.table("enriched_ledgers"), l.cfg.Start, l.cfg.End)
+	gapSQL := fmt.Sprintf(`WITH ordered AS (SELECT ledger_sequence, lag(ledger_sequence) OVER (ORDER BY ledger_sequence) prev FROM %s WHERE network = %s AND ledger_sequence BETWEEN %d AND %d) SELECT COUNT(*) FROM ordered WHERE prev IS NOT NULL AND ledger_sequence <> prev + 1`, l.table("enriched_ledgers"), q(l.cfg.Network), l.cfg.Start, l.cfg.End)
 	if err := l.db.QueryRowContext(ctx, gapSQL).Scan(&gaps); err != nil {
 		return err
 	}
