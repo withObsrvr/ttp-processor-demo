@@ -235,7 +235,13 @@ func (r *BronzeColdReader) QueryEnrichedOperations(ctx context.Context, startLed
 			-- Price fields (price_r is JSON {"n":..,"d":..})
 			CASE WHEN o.price_r IS NOT NULL THEN CAST(json_extract_string(o.price_r, '$.n') AS INTEGER) ELSE NULL END AS price_n,
 			CASE WHEN o.price_r IS NOT NULL THEN CAST(json_extract_string(o.price_r, '$.d') AS INTEGER) ELSE NULL END AS price_d,
-			o.price,
+			CASE
+				WHEN o.price IS NULL THEN NULL
+				WHEN contains(CAST(o.price AS VARCHAR), '/') THEN
+					TRY_CAST(split_part(CAST(o.price AS VARCHAR), '/', 1) AS DOUBLE)
+					/ NULLIF(TRY_CAST(split_part(CAST(o.price AS VARCHAR), '/', 2) AS DOUBLE), 0)
+				ELSE TRY_CAST(o.price AS DOUBLE)
+			END AS price,
 
 			-- Account creation
 			o.starting_balance,

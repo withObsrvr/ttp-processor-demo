@@ -36,7 +36,7 @@ func extractLedgers(lcm xdr.LedgerCloseMeta, networkPassphrase string, ledgerSeq
 		BaseFee:            uint32(header.Header.BaseFee),
 		BaseReserve:        uint32(header.Header.BaseReserve),
 		MaxTxSetSize:       uint32(header.Header.MaxTxSetSize),
-		IngestionTimestamp:  time.Now().UTC(),
+		IngestionTimestamp: time.Now().UTC(),
 		LedgerRange:        ledgerRange,
 		PipelineVersion:    Version,
 	}

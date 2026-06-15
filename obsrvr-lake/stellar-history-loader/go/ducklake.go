@@ -35,12 +35,20 @@ type DuckLakeConfig struct {
 	S3Endpoint      string
 	S3Region        string
 	BronzeSchemaSQL string // Path to v3_bronze_schema.sql (optional, embedded fallback)
+	StartLedger     uint32 // Requested push start; used for idempotent full-chunk deletes
+	EndLedger       uint32 // Requested push end; used for idempotent full-chunk deletes
 }
 
 // DuckLakePusher pushes local Parquet files into DuckLake.
 type DuckLakePusher struct {
 	db     *sql.DB
 	config DuckLakeConfig
+}
+
+// DuckLakePushResult describes rows written during a DuckLake push.
+type DuckLakePushResult struct {
+	TotalRows int64
+	RowCounts map[string]int64
 }
 
 func NewDuckLakePusher(config DuckLakeConfig) (*DuckLakePusher, error) {
@@ -67,14 +75,15 @@ func (p *DuckLakePusher) Close() error {
 }
 
 // Push reads local Parquet files and inserts them into DuckLake.
-func (p *DuckLakePusher) Push(ctx context.Context, outputDir string) error {
+func (p *DuckLakePusher) Push(ctx context.Context, outputDir string) (*DuckLakePushResult, error) {
+	pushResult := &DuckLakePushResult{RowCounts: map[string]int64{}}
 	// Step 1: Load extensions
 	log.Println("[DuckLake] Loading extensions...")
 	if _, err := p.db.ExecContext(ctx, "INSTALL ducklake FROM core_nightly; LOAD ducklake;"); err != nil {
-		return fmt.Errorf("load extension ducklake: %w", err)
+		return nil, fmt.Errorf("load extension ducklake: %w", err)
 	}
 	if _, err := p.db.ExecContext(ctx, "INSTALL httpfs; LOAD httpfs;"); err != nil {
-		return fmt.Errorf("load extension httpfs: %w", err)
+		return nil, fmt.Errorf("load extension httpfs: %w", err)
 	}
 
 	// Step 2: Configure S3 credentials
@@ -96,7 +105,7 @@ func (p *DuckLakePusher) Push(ctx context.Context, outputDir string) error {
 	`, p.config.S3KeyID, p.config.S3KeySecret, p.config.S3Region, endpoint)
 
 	if _, err := p.db.ExecContext(ctx, createSecretSQL); err != nil {
-		return fmt.Errorf("create S3 secret: %w", err)
+		return nil, fmt.Errorf("create S3 secret: %w", err)
 	}
 
 	// Step 3: Attach DuckLake catalog
@@ -113,7 +122,7 @@ func (p *DuckLakePusher) Push(ctx context.Context, outputDir string) error {
 			"ATTACH '%s' AS %s (TYPE ducklake, DATA_PATH '%s', METADATA_SCHEMA '%s', AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE);",
 			catalogPath, p.config.CatalogName, p.config.DataPath, p.config.MetadataSchema)
 		if _, err := p.db.ExecContext(ctx, createAttachSQL); err != nil {
-			return fmt.Errorf("attach catalog: %w", err)
+			return nil, fmt.Errorf("attach catalog: %w", err)
 		}
 		log.Println("[DuckLake] Created new catalog")
 	}
@@ -121,19 +130,19 @@ func (p *DuckLakePusher) Push(ctx context.Context, outputDir string) error {
 	// Step 4: Create schema
 	createSchemaSQL := fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s.%s", p.config.CatalogName, p.config.SchemaName)
 	if _, err := p.db.ExecContext(ctx, createSchemaSQL); err != nil {
-		return fmt.Errorf("create schema: %w", err)
+		return nil, fmt.Errorf("create schema: %w", err)
 	}
 
 	// Step 5: Create tables
 	if err := p.createTables(ctx); err != nil {
-		return fmt.Errorf("create tables: %w", err)
+		return nil, fmt.Errorf("create tables: %w", err)
 	}
 
 	// Step 6: Push each bronze table
 	bronzeDir := filepath.Join(outputDir, "bronze")
 	entries, err := os.ReadDir(bronzeDir)
 	if err != nil {
-		return fmt.Errorf("read bronze dir: %w", err)
+		return nil, fmt.Errorf("read bronze dir: %w", err)
 	}
 
 	totalRows := int64(0)
@@ -206,40 +215,79 @@ func (p *DuckLakePusher) Push(ctx context.Context, outputDir string) error {
 			insertSQL = fmt.Sprintf("INSERT INTO %s SELECT * FROM read_parquet('%s')", fullTableName, parquetGlob)
 		}
 
-		// Delete-before-insert for idempotent multi-push: remove any existing rows
-		// in the same ledger range before inserting, so re-pushing the same range
-		// doesn't create duplicates.
+		// Delete-before-insert for idempotent multi-push. Keep delete and insert
+		// in one transaction and fail hard on any table error; otherwise a failed
+		// insert after a successful delete can create/expand Bronze gaps while the
+		// Nomad allocation still reports success.
+		tx, err := p.db.BeginTx(ctx, nil)
+		if err != nil {
+			return nil, fmt.Errorf("begin DuckLake transaction for %s: %w", duckTableName, err)
+		}
+		committed := false
+		defer func() {
+			if !committed {
+				_ = tx.Rollback()
+			}
+		}()
+
 		seqCol := ledgerSequenceColumn(duckTableName)
 		if seqCol != "" {
-			rangeSQL := fmt.Sprintf("SELECT MIN(%s), MAX(%s) FROM read_parquet('%s')", seqCol, seqCol, parquetGlob)
-			var minSeq, maxSeq sql.NullInt64
-			if err := p.db.QueryRowContext(ctx, rangeSQL).Scan(&minSeq, &maxSeq); err == nil && minSeq.Valid && maxSeq.Valid {
+			var minSeq, maxSeq int64
+			if p.config.StartLedger > 0 && p.config.EndLedger >= p.config.StartLedger {
+				// For chunked repairs, delete the whole requested chunk, not the
+				// per-table Parquet min/max. Previous partial pushes can leave stale
+				// table tails outside the new Parquet row range, causing false Bronze
+				// consistency where operations/effects exist beyond transactions.
+				minSeq = int64(p.config.StartLedger)
+				maxSeq = int64(p.config.EndLedger)
+			} else {
+				rangeSQL := fmt.Sprintf("SELECT MIN(%s), MAX(%s) FROM read_parquet('%s')", seqCol, seqCol, parquetGlob)
+				var parquetMinSeq, parquetMaxSeq sql.NullInt64
+				if err := tx.QueryRowContext(ctx, rangeSQL).Scan(&parquetMinSeq, &parquetMaxSeq); err != nil {
+					return nil, fmt.Errorf("read ledger range for %s: %w", duckTableName, err)
+				} else if !parquetMinSeq.Valid || !parquetMaxSeq.Valid {
+					minSeq = 0
+					maxSeq = -1
+				} else {
+					minSeq = parquetMinSeq.Int64
+					maxSeq = parquetMaxSeq.Int64
+				}
+			}
+			if minSeq <= maxSeq {
 				deleteSQL := fmt.Sprintf("DELETE FROM %s WHERE %s BETWEEN %d AND %d",
-					fullTableName, seqCol, minSeq.Int64, maxSeq.Int64)
-				if delResult, err := p.db.ExecContext(ctx, deleteSQL); err == nil {
-					deleted, _ := delResult.RowsAffected()
-					if deleted > 0 {
-						log.Printf("[DuckLake] %s: deleted %d existing rows in range %d-%d (idempotent push)",
-							duckTableName, deleted, minSeq.Int64, maxSeq.Int64)
-					}
+					fullTableName, seqCol, minSeq, maxSeq)
+				delResult, err := tx.ExecContext(ctx, deleteSQL)
+				if err != nil {
+					return nil, fmt.Errorf("delete existing %s rows in range %d-%d: %w", duckTableName, minSeq, maxSeq, err)
+				}
+				deleted, _ := delResult.RowsAffected()
+				if deleted > 0 {
+					log.Printf("[DuckLake] %s: deleted %d existing rows in range %d-%d (idempotent push)",
+						duckTableName, deleted, minSeq, maxSeq)
 				}
 			}
 		}
 
 		log.Printf("[DuckLake] Pushing %s...", duckTableName)
-		result, err := p.db.ExecContext(ctx, insertSQL)
+		result, err := tx.ExecContext(ctx, insertSQL)
 		if err != nil {
-			log.Printf("[DuckLake] FAILED %s: %v", duckTableName, err)
-			continue
+			return nil, fmt.Errorf("insert %s into DuckLake: %w", duckTableName, err)
 		}
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("commit DuckLake transaction for %s: %w", duckTableName, err)
+		}
+		committed = true
 
 		rows, _ := result.RowsAffected()
 		totalRows += rows
+		pushResult.RowCounts[duckTableName] = rows
 		log.Printf("[DuckLake] %s: %d rows", duckTableName, rows)
 	}
 
+	pushResult.TotalRows = totalRows
+	pushResult.RowCounts["total"] = totalRows
 	log.Printf("[DuckLake] Push complete: %d total rows", totalRows)
-	return nil
+	return pushResult, nil
 }
 
 // createTables creates DuckLake tables from the bronze schema SQL.
@@ -280,26 +328,26 @@ func (p *DuckLakePusher) createTables(ctx context.Context) error {
 func mapToDuckLakeTable(dirName string) string {
 	mapping := map[string]string{
 		"ledgers":                     "ledgers_row_v2",
-		"transactions":               "transactions_row_v2",
-		"operations":                 "operations_row_v2",
-		"effects":                    "effects_row_v1",
-		"trades":                     "trades_row_v1",
-		"accounts_snapshot":          "accounts_snapshot_v1",
-		"offers_snapshot":            "offers_snapshot_v1",
-		"trustlines_snapshot":        "trustlines_snapshot_v1",
-		"account_signers_snapshot":   "account_signers_snapshot_v1",
+		"transactions":                "transactions_row_v2",
+		"operations":                  "operations_row_v2",
+		"effects":                     "effects_row_v1",
+		"trades":                      "trades_row_v1",
+		"accounts_snapshot":           "accounts_snapshot_v1",
+		"offers_snapshot":             "offers_snapshot_v1",
+		"trustlines_snapshot":         "trustlines_snapshot_v1",
+		"account_signers_snapshot":    "account_signers_snapshot_v1",
 		"claimable_balances_snapshot": "claimable_balances_snapshot_v1",
-		"liquidity_pools_snapshot":   "liquidity_pools_snapshot_v1",
-		"config_settings":           "config_settings_snapshot_v1",
-		"ttl_snapshot":              "ttl_snapshot_v1",
-		"evicted_keys":              "evicted_keys_state_v1",
-		"contract_events":           "contract_events_stream_v1",
-		"contract_data_snapshot":    "contract_data_snapshot_v1",
-		"contract_code_snapshot":    "contract_code_snapshot_v1",
-		"native_balances":           "native_balances_snapshot_v1",
-		"restored_keys":             "restored_keys_state_v1",
-		"contract_creations":        "contract_creations_v1",
-		"token_transfers":           "token_transfers_stream_v1",
+		"liquidity_pools_snapshot":    "liquidity_pools_snapshot_v1",
+		"config_settings":             "config_settings_snapshot_v1",
+		"ttl_snapshot":                "ttl_snapshot_v1",
+		"evicted_keys":                "evicted_keys_state_v1",
+		"contract_events":             "contract_events_stream_v1",
+		"contract_data_snapshot":      "contract_data_snapshot_v1",
+		"contract_code_snapshot":      "contract_code_snapshot_v1",
+		"native_balances":             "native_balances_snapshot_v1",
+		"restored_keys":               "restored_keys_state_v1",
+		"contract_creations":          "contract_creations_v1",
+		"token_transfers":             "token_transfers_stream_v1",
 	}
 	return mapping[dirName]
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/lib/pq"
@@ -657,7 +658,7 @@ type ConfigSettingsCurrentRow struct {
 // Values returns the ordered column values for batch insertion into enriched_history_operations
 // (also used for enriched_history_operations_soroban since columns are identical).
 func (row *EnrichedOperationRow) Values() []interface{} {
-	return []interface{}{
+	values := []interface{}{
 		row.TransactionHash, row.OperationIndex, row.LedgerSequence, row.SourceAccount,
 		row.Type, row.TypeString, row.CreatedAt, row.TransactionSuccessful,
 		row.OperationResultCode, row.OperationTraceCode, row.LedgerRange,
@@ -687,6 +688,25 @@ func (row *EnrichedOperationRow) Values() []interface{} {
 		row.LedgerTransactionCount, row.LedgerOperationCount,
 		row.LedgerSuccessfulTxCount, row.LedgerFailedTxCount,
 		row.IsPaymentOp, row.IsSorobanOp,
+	}
+	for i, v := range values {
+		values[i] = sanitizePostgresText(v)
+	}
+	return values
+}
+
+func sanitizePostgresText(v interface{}) interface{} {
+	switch x := v.(type) {
+	case *string:
+		if x == nil || !strings.Contains(*x, "\x00") {
+			return x
+		}
+		cleaned := strings.ReplaceAll(*x, "\x00", "")
+		return &cleaned
+	case string:
+		return strings.ReplaceAll(x, "\x00", "")
+	default:
+		return v
 	}
 }
 
