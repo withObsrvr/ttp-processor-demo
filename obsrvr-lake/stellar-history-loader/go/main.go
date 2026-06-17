@@ -173,6 +173,9 @@ func main() {
 		fmt.Printf("Total ledgers processed: %d\n", totalLedgers)
 		fmt.Printf("Elapsed time:           %s\n", elapsed.Round(time.Millisecond))
 		fmt.Printf("Throughput:             %.1f ledgers/sec\n", throughput)
+		if skipped := CallGraphSkippedEdges(); skipped > 0 {
+			fmt.Printf("Call-graph edges skipped (non-contract/unencodable address): %d\n", skipped)
+		}
 	} else {
 		fmt.Println("Skipping extraction (no --bucket specified, using existing output)")
 	}
@@ -292,12 +295,17 @@ func main() {
 func classifyFlowctlFailure(err error) flowctlpb.FailureClass {
 	msg := strings.ToLower(err.Error())
 	switch {
-	case strings.Contains(msg, "timeout"), strings.Contains(msg, "connection"), strings.Contains(msg, "temporar"), strings.Contains(msg, "503"), strings.Contains(msg, "catalog"), strings.Contains(msg, "postgres"), strings.Contains(msg, "b2"), strings.Contains(msg, "s3"):
-		return flowctlpb.FailureClass_FAILURE_CLASS_RETRYABLE_INFRASTRUCTURE
+	// Check non-retryable data/schema buckets first. Infrastructure substrings
+	// like "catalog"/"postgres" routinely appear inside DuckLake schema/data error
+	// messages; if the broad infrastructure case were evaluated first, a genuinely
+	// non-retryable poison chunk would be classed retryable and an orchestrator
+	// would retry it forever instead of surfacing it to a human.
 	case strings.Contains(msg, "schema"), strings.Contains(msg, "column"), strings.Contains(msg, "type"), strings.Contains(msg, "parquet"):
 		return flowctlpb.FailureClass_FAILURE_CLASS_NON_RETRYABLE_SCHEMA
 	case strings.Contains(msg, "utf"), strings.Contains(msg, "encoding"), strings.Contains(msg, "xdr"):
 		return flowctlpb.FailureClass_FAILURE_CLASS_NON_RETRYABLE_DATA
+	case strings.Contains(msg, "timeout"), strings.Contains(msg, "connection"), strings.Contains(msg, "temporar"), strings.Contains(msg, "503"), strings.Contains(msg, "catalog"), strings.Contains(msg, "postgres"), strings.Contains(msg, "b2"), strings.Contains(msg, "s3"):
+		return flowctlpb.FailureClass_FAILURE_CLASS_RETRYABLE_INFRASTRUCTURE
 	default:
 		return flowctlpb.FailureClass_FAILURE_CLASS_UNKNOWN
 	}

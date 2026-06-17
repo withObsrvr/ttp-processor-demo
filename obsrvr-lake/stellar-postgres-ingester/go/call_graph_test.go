@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stellar/go-stellar-sdk/strkey"
@@ -102,5 +103,68 @@ func TestCallGraphToJSON(t *testing.T) {
 	}
 	if maxDepth == nil || *maxDepth != 1 {
 		t.Fatalf("unexpected max depth: %v", maxDepth)
+	}
+}
+
+// TestDeduplicateCallsBoundaries pins the dedup-key semantics: calls are the
+// same only when from/to/function/depth all match. Different depth or function
+// must be treated as distinct edges.
+func TestDeduplicateCallsBoundaries(t *testing.T) {
+	if got := deduplicateCalls(nil); len(got) != 0 {
+		t.Fatalf("empty input: expected 0, got %d", len(got))
+	}
+
+	differentDepth := []ContractCall{
+		{FromContract: "CA", ToContract: "CB", FunctionName: "swap", CallDepth: 1, ExecutionOrder: 1},
+		{FromContract: "CA", ToContract: "CB", FunctionName: "swap", CallDepth: 2, ExecutionOrder: 2},
+	}
+	if got := deduplicateCalls(differentDepth); len(got) != 2 {
+		t.Fatalf("different depth should be distinct: expected 2, got %d", len(got))
+	}
+
+	differentFunction := []ContractCall{
+		{FromContract: "CA", ToContract: "CB", FunctionName: "swap", CallDepth: 1, ExecutionOrder: 1},
+		{FromContract: "CA", ToContract: "CB", FunctionName: "deposit", CallDepth: 1, ExecutionOrder: 2},
+	}
+	if got := deduplicateCalls(differentFunction); len(got) != 2 {
+		t.Fatalf("different function should be distinct: expected 2, got %d", len(got))
+	}
+}
+
+// TestContractCallJSONMarshaling guards the on-wire JSON field names, which are
+// a serialization contract consumed downstream. A struct-tag rename must fail here.
+func TestContractCallJSONMarshaling(t *testing.T) {
+	call := ContractCall{
+		FromContract:   "CSWAP123456789",
+		ToContract:     "CTOKEN987654321",
+		FunctionName:   "transfer",
+		CallDepth:      2,
+		ExecutionOrder: 5,
+		Successful:     true,
+	}
+
+	data, err := json.Marshal(call)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	for _, field := range []string{"from_contract", "to_contract", "function", "call_depth", "execution_order", "successful"} {
+		if _, ok := parsed[field]; !ok {
+			t.Errorf("JSON missing expected field %q", field)
+		}
+	}
+	if parsed["from_contract"] != "CSWAP123456789" {
+		t.Errorf("from_contract = %v, want CSWAP123456789", parsed["from_contract"])
+	}
+	if parsed["function"] != "transfer" {
+		t.Errorf("function = %v, want transfer", parsed["function"])
+	}
+	if int(parsed["call_depth"].(float64)) != 2 {
+		t.Errorf("call_depth = %v, want 2", parsed["call_depth"])
 	}
 }

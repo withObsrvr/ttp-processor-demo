@@ -28,6 +28,24 @@ func TestClassifyFlowctlFailure(t *testing.T) {
 			err:  errors.New("invalid utf8 encoding in memo"),
 			want: flowctlpb.FailureClass_FAILURE_CLASS_NON_RETRYABLE_DATA,
 		},
+		{
+			// Precedence guard: DuckLake schema errors routinely mention the
+			// catalog/postgres. A non-retryable schema failure must win over the
+			// infrastructure bucket so it is never retried forever as a poison chunk.
+			name: "catalog schema error is non retryable schema, not infrastructure",
+			err:  errors.New("ducklake catalog: column type schema mismatch in postgres metadata"),
+			want: flowctlpb.FailureClass_FAILURE_CLASS_NON_RETRYABLE_SCHEMA,
+		},
+		{
+			name: "xdr decode error mentioning s3 is non retryable data, not infrastructure",
+			err:  errors.New("xdr decode failed reading object from s3"),
+			want: flowctlpb.FailureClass_FAILURE_CLASS_NON_RETRYABLE_DATA,
+		},
+		{
+			name: "unclassified error is unknown",
+			err:  errors.New("something unexpected happened"),
+			want: flowctlpb.FailureClass_FAILURE_CLASS_UNKNOWN,
+		},
 	}
 
 	for _, tt := range tests {

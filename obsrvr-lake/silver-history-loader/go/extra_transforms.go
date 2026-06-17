@@ -99,7 +99,7 @@ func selectSemanticActivities(l *Loader, start, end int64) string {
 		o.soroban_contract_id AS contract_id,
 		CASE WHEN o.asset IS NULL OR o.asset = 'native' THEN 'XLM' ELSE split_part(o.asset, ':', 1) END AS asset_code,
 		CASE WHEN o.asset IS NULL OR o.asset = 'native' THEN NULL ELSE split_part(o.asset, ':', 2) END AS asset_issuer,
-		TRY_CAST(o.amount AS DOUBLE) AS amount, o.type = 24 AS is_soroban, o.soroban_function AS soroban_function_name,
+		TRY_CAST(o.amount AS DECIMAL(38,0)) AS amount, o.type = 24 AS is_soroban, o.soroban_function AS soroban_function_name,
 		o.transaction_hash, o.operation_index, COALESCE(t.successful, o.transaction_successful) AS successful, t.fee_charged, current_timestamp AS created_at,
 		l.closed_at AS ledger_closed_at, %s
 		FROM %s o LEFT JOIN %s t ON o.transaction_hash=t.transaction_hash AND o.ledger_sequence=t.ledger_sequence JOIN %s l ON o.ledger_sequence=l.sequence
@@ -114,7 +114,7 @@ func selectSemanticFlowsValue(l *Loader, start, end int64) string {
 		CASE WHEN o.asset IS NULL OR o.asset = 'native' THEN 'XLM' ELSE split_part(o.asset, ':', 1) END AS asset_code,
 		CASE WHEN o.asset IS NULL OR o.asset = 'native' THEN NULL ELSE split_part(o.asset, ':', 2) END AS asset_issuer,
 		CASE WHEN o.asset IS NULL OR o.asset = 'native' THEN 'native' ELSE 'credit_alphanum' END AS asset_type,
-		TRY_CAST(o.amount AS DOUBLE) AS amount, o.transaction_hash, o.type AS operation_type, COALESCE(t.successful, o.transaction_successful) AS successful,
+		TRY_CAST(o.amount AS DECIMAL(38,0)) AS amount, o.transaction_hash, o.type AS operation_type, COALESCE(t.successful, o.transaction_successful) AS successful,
 		current_timestamp AS created_at, l.closed_at AS ledger_closed_at, %s
 		FROM %s o LEFT JOIN %s t ON o.transaction_hash=t.transaction_hash AND o.ledger_sequence=t.ledger_sequence JOIN %s l ON o.ledger_sequence=l.sequence
 		WHERE o.ledger_sequence BETWEEN %d AND %d AND o.type IN (1,2,13) AND COALESCE(t.successful, o.transaction_successful, true) = true AND o.amount IS NOT NULL`, q(l.cfg.Network), metaSelect(l, start, end), l.bronze("operations_row_v2"), l.bronze("transactions_row_v2"), l.bronze("ledgers_row_v2"), start, end)

@@ -266,14 +266,63 @@ func (l *Loader) ensureTable(ctx context.Context, t Transform, start, end int64)
 }
 
 func (l *Loader) verifyBronzeCoverage(ctx context.Context, start, end int64) error {
-	var count int64
-	query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE sequence BETWEEN %d AND %d", l.bronze("ledgers_row_v2"), start, end)
-	if err := l.db.QueryRowContext(ctx, query).Scan(&count); err != nil {
+	// One pass over the ledger headers: the ledger spine count plus the expected
+	// totals for the operation/transaction fact tables (and how many headers are
+	// missing those totals, so we don't false-fail on Bronze that predates the
+	// columns).
+	var ledgerCount, expectedOps, nullOpHeaders, expectedTxs, nullTxHeaders sql.NullInt64
+	summarySQL := fmt.Sprintf(`SELECT
+		COUNT(*),
+		SUM(tx_set_operation_count),
+		COUNT(*) FILTER (WHERE tx_set_operation_count IS NULL),
+		SUM(transaction_count),
+		COUNT(*) FILTER (WHERE transaction_count IS NULL)
+		FROM %s WHERE sequence BETWEEN %d AND %d`, l.bronze("ledgers_row_v2"), start, end)
+	if err := l.db.QueryRowContext(ctx, summarySQL).Scan(&ledgerCount, &expectedOps, &nullOpHeaders, &expectedTxs, &nullTxHeaders); err != nil {
 		return fmt.Errorf("bronze coverage query: %w", err)
 	}
+
 	expected := end - start + 1
-	if count != expected {
-		return fmt.Errorf("bronze coverage incomplete for %d..%d: got %d ledgers, expected %d", start, end, count, expected)
+	if !ledgerCount.Valid || ledgerCount.Int64 != expected {
+		got := int64(0)
+		if ledgerCount.Valid {
+			got = ledgerCount.Int64
+		}
+		return fmt.Errorf("bronze coverage incomplete for %d..%d: got %d ledgers, expected %d", start, end, got, expected)
+	}
+
+	// Cross-check the fact tables against the ledger headers so a partially
+	// flushed/pushed Bronze cannot silently yield incomplete Silver. operations_row_v2
+	// holds one row per operation across ALL transactions (successful and failed),
+	// which equals SUM(tx_set_operation_count); transactions_row_v2 holds one row per
+	// transaction, which equals SUM(transaction_count).
+	if err := l.verifyBronzeFactCount(ctx, start, end, "operations_row_v2", expectedOps, nullOpHeaders, "tx_set_operation_count"); err != nil {
+		return err
+	}
+	if err := l.verifyBronzeFactCount(ctx, start, end, "transactions_row_v2", expectedTxs, nullTxHeaders, "transaction_count"); err != nil {
+		return err
+	}
+	return nil
+}
+
+// verifyBronzeFactCount fails if the row count of a Bronze fact table does not
+// match the expected total derived from the ledger headers. If any header in the
+// range is missing the expected-count column (NULL), the check is skipped with a
+// warning rather than producing a false negative, since the total cannot be
+// trusted for that range.
+func (l *Loader) verifyBronzeFactCount(ctx context.Context, start, end int64, table string, expected, nullHeaders sql.NullInt64, expectedCol string) error {
+	if !expected.Valid || nullHeaders.Int64 > 0 {
+		log.Printf("WARNING: skipping %s completeness check for %d..%d: %d ledger headers have NULL %s", table, start, end, nullHeaders.Int64, expectedCol)
+		return nil
+	}
+	var actual int64
+	query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE ledger_sequence BETWEEN %d AND %d", l.bronze(table), start, end)
+	if err := l.db.QueryRowContext(ctx, query).Scan(&actual); err != nil {
+		return fmt.Errorf("count %s for %d..%d: %w", table, start, end, err)
+	}
+	if actual != expected.Int64 {
+		return fmt.Errorf("bronze %s incomplete for %d..%d: got %d rows, expected %d (SUM(%s)); Bronze appears partially flushed",
+			table, start, end, actual, expected.Int64, expectedCol)
 	}
 	return nil
 }
@@ -396,7 +445,7 @@ func selectEnrichedOperations(l *Loader, start, end int64) string {
 		o.selling_asset_issuer, o.buying_asset, o.buying_asset_type, o.buying_asset_code, o.buying_asset_issuer,
 		CASE WHEN o.price_r IS NOT NULL THEN TRY_CAST(json_extract_string(o.price_r, '$.n') AS INTEGER) ELSE NULL END AS price_n,
 		CASE WHEN o.price_r IS NOT NULL THEN TRY_CAST(json_extract_string(o.price_r, '$.d') AS INTEGER) ELSE NULL END AS price_d,
-		CASE WHEN o.price IS NULL THEN NULL WHEN contains(CAST(o.price AS VARCHAR), '/') THEN TRY_CAST(split_part(CAST(o.price AS VARCHAR), '/', 1) AS DOUBLE) / NULLIF(TRY_CAST(split_part(CAST(o.price AS VARCHAR), '/', 2) AS DOUBLE), 0) ELSE TRY_CAST(o.price AS DOUBLE) END AS price,
+		TRY_CAST(CASE WHEN o.price IS NULL THEN NULL WHEN contains(CAST(o.price AS VARCHAR), '/') THEN TRY_CAST(split_part(CAST(o.price AS VARCHAR), '/', 1) AS DOUBLE) / NULLIF(TRY_CAST(split_part(CAST(o.price AS VARCHAR), '/', 2) AS DOUBLE), 0) ELSE TRY_CAST(o.price AS DOUBLE) END AS DECIMAL(20,7)) AS price,
 		o.starting_balance, o.home_domain, NULL AS inflation_dest, o.set_flags, NULL AS set_flags_s, o.clear_flags, NULL AS clear_flags_s,
 		o.master_weight AS master_key_weight, o.low_threshold, o.medium_threshold AS med_threshold, o.high_threshold,
 		NULL AS signer_account_id, NULL AS signer_key, NULL AS signer_weight, o.data_name, o.data_value,

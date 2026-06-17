@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -161,59 +162,50 @@ func (p *DuckLakePusher) Push(ctx context.Context, outputDir string) (*DuckLakeP
 		parquetGlob := filepath.Join(bronzeDir, tableName, "**", "*.parquet")
 		fullTableName := fmt.Sprintf("%s.%s.%s", p.config.CatalogName, p.config.SchemaName, duckTableName)
 
-		// Get Parquet columns
+		// Get Parquet columns. A failed DESCRIBE here previously fell through to a
+		// positional INSERT ... SELECT *, which can silently write misaligned or
+		// partial columns into Bronze while still reporting success. Treat any
+		// column-discovery failure as fatal so a backfill never reports success on
+		// a wrong-shaped insert.
 		parquetColSQL := fmt.Sprintf("SELECT column_name FROM (DESCRIBE SELECT * FROM read_parquet('%s'))", parquetGlob)
-		parquetColRows, err := p.db.QueryContext(ctx, parquetColSQL)
-		var parquetCols []string
-		if err == nil {
-			for parquetColRows.Next() {
-				var col string
-				if parquetColRows.Scan(&col) == nil {
-					parquetCols = append(parquetCols, col)
-				}
-			}
-			parquetColRows.Close()
+		parquetCols, err := describeColumns(ctx, p.db, parquetColSQL)
+		if err != nil {
+			return nil, fmt.Errorf("describe parquet columns for %s: %w", duckTableName, err)
+		}
+		if len(parquetCols) == 0 {
+			return nil, fmt.Errorf("no parquet columns found for %s (glob %s)", duckTableName, parquetGlob)
 		}
 
 		// Get DuckLake table columns to find the intersection
-		// (Parquet may have extra columns the table doesn't, e.g. list types)
+		// (Parquet may have extra columns the table doesn't, e.g. list types).
 		tableColSQL := fmt.Sprintf("SELECT column_name FROM (DESCRIBE %s)", fullTableName)
-		tableColRows, err := p.db.QueryContext(ctx, tableColSQL)
-		tableColSet := map[string]bool{}
-		if err == nil {
-			for tableColRows.Next() {
-				var col string
-				if tableColRows.Scan(&col) == nil {
-					tableColSet[col] = true
-				}
-			}
-			tableColRows.Close()
+		tableCols, err := describeColumns(ctx, p.db, tableColSQL)
+		if err != nil {
+			return nil, fmt.Errorf("describe table columns for %s: %w", duckTableName, err)
+		}
+		tableColSet := make(map[string]bool, len(tableCols))
+		for _, col := range tableCols {
+			tableColSet[col] = true
 		}
 
-		// Use only columns that exist in BOTH Parquet and DuckLake table
+		// Use only columns that exist in BOTH Parquet and DuckLake table.
 		var cols []string
-		if len(tableColSet) > 0 {
-			for _, col := range parquetCols {
-				if tableColSet[col] {
-					cols = append(cols, col)
-				}
+		for _, col := range parquetCols {
+			if tableColSet[col] {
+				cols = append(cols, col)
 			}
-		} else {
-			cols = parquetCols
+		}
+		if len(cols) == 0 {
+			return nil, fmt.Errorf("no shared columns between parquet and table %s; refusing positional insert", duckTableName)
 		}
 
-		var insertSQL string
-		if len(cols) > 0 {
-			// Quote every column name to handle reserved words like "from", "to".
-			quoted := make([]string, len(cols))
-			for i, c := range cols {
-				quoted[i] = fmt.Sprintf(`"%s"`, c)
-			}
-			colList := strings.Join(quoted, ", ")
-			insertSQL = fmt.Sprintf("INSERT INTO %s (%s) SELECT %s FROM read_parquet('%s')", fullTableName, colList, colList, parquetGlob)
-		} else {
-			insertSQL = fmt.Sprintf("INSERT INTO %s SELECT * FROM read_parquet('%s')", fullTableName, parquetGlob)
+		// Quote every column name to handle reserved words like "from", "to".
+		quoted := make([]string, len(cols))
+		for i, c := range cols {
+			quoted[i] = fmt.Sprintf(`"%s"`, c)
 		}
+		colList := strings.Join(quoted, ", ")
+		insertSQL := fmt.Sprintf("INSERT INTO %s (%s) SELECT %s FROM read_parquet('%s')", fullTableName, colList, colList, parquetGlob)
 
 		// Delete-before-insert for idempotent multi-push. Keep delete and insert
 		// in one transaction and fail hard on any table error; otherwise a failed
@@ -226,7 +218,9 @@ func (p *DuckLakePusher) Push(ctx context.Context, outputDir string) (*DuckLakeP
 		committed := false
 		defer func() {
 			if !committed {
-				_ = tx.Rollback()
+				if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+					log.Printf("[DuckLake] rollback failed for %s: %v", duckTableName, rbErr)
+				}
 			}
 		}()
 
@@ -285,9 +279,29 @@ func (p *DuckLakePusher) Push(ctx context.Context, outputDir string) (*DuckLakeP
 	}
 
 	pushResult.TotalRows = totalRows
-	pushResult.RowCounts["total"] = totalRows
 	log.Printf("[DuckLake] Push complete: %d total rows", totalRows)
 	return pushResult, nil
+}
+
+// describeColumns runs a DESCRIBE-style query and returns the column names. It
+// fails hard on query or scan errors instead of silently returning an empty set,
+// because an empty set would let callers fall back to a positional INSERT that
+// can write misaligned columns while reporting success.
+func describeColumns(ctx context.Context, db *sql.DB, query string) ([]string, error) {
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var cols []string
+	for rows.Next() {
+		var col string
+		if err := rows.Scan(&col); err != nil {
+			return nil, err
+		}
+		cols = append(cols, col)
+	}
+	return cols, rows.Err()
 }
 
 // createTables creates DuckLake tables from the bronze schema SQL.

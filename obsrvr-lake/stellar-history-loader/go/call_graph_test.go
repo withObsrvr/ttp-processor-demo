@@ -31,6 +31,28 @@ func TestExtractCallsFromAuthInvocationSkipsNonContractAddress(t *testing.T) {
 	}
 }
 
+func TestScAddressContractStrKeyCountsSkips(t *testing.T) {
+	// Non-contract arm: skipped and counted, so the silent drop is observable.
+	before := CallGraphSkippedEdges()
+	if _, ok := scAddressContractStrKey(xdr.ScAddress{Type: xdr.ScAddressTypeScAddressTypeAccount}); ok {
+		t.Fatal("expected non-contract address to return ok=false")
+	}
+	if got := CallGraphSkippedEdges(); got != before+1 {
+		t.Fatalf("expected skip counter to increment by 1, got %d (was %d)", got, before)
+	}
+
+	// Valid contract arm: encodes successfully and does not increment the counter.
+	var contractID xdr.ContractId
+	contractID[0] = 1
+	before = CallGraphSkippedEdges()
+	if _, ok := scAddressContractStrKey(xdr.ScAddress{Type: xdr.ScAddressTypeScAddressTypeContract, ContractId: &contractID}); !ok {
+		t.Fatal("expected valid contract address to return ok=true")
+	}
+	if got := CallGraphSkippedEdges(); got != before {
+		t.Fatalf("expected skip counter unchanged for valid address, got %d (was %d)", got, before)
+	}
+}
+
 func TestExtractCallsFromAuthInvocationContractAddress(t *testing.T) {
 	var contractID xdr.ContractId
 	contractID[0] = 1

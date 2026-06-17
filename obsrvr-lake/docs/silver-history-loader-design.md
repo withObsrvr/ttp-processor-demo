@@ -2,6 +2,26 @@
 
 Date: 2026-06-08
 
+> **Status note (as-built differs from this design).** This document is the
+> original design proposal. The shipped `silver-history-loader` diverges from
+> several specifics below — for current, authoritative behavior see
+> `obsrvr-lake/silver-history-loader/README.md` and the code in
+> `silver-history-loader/go/`. Known differences:
+> - **Flags:** the loader uses `--bronze-ducklake-catalog` / `--bronze-data-path`
+>   and `--silver-ducklake-catalog` / `--silver-data-path` (catalog + data-path
+>   pairs), not the `--bronze-ducklake-uri` / `--silver-output-uri` single-URI
+>   flags described here.
+> - **Commit protocol:** publication is an in-place transactional
+>   delete-by-(network, range)-then-insert per table (one DuckDB transaction),
+>   not a write-to-staging / validate / atomic-swap protocol.
+> - **Manifest:** `silver_load_manifest` has no primary key; idempotency comes
+>   from an explicit delete-before-insert in `markManifest`.
+> - **Output layout:** physical Parquet layout is delegated to DuckLake; there is
+>   no `ledger_bucket` column or Hive-style partition path produced by the loader.
+> - **Checksums:** the manifest "checksum" is a synthetic `rows=N;range=A-B;schema=...`
+>   descriptor, not a file hash; verification queries the attached DuckLake table,
+>   not raw Parquet globs.
+
 ## Purpose
 
 Build a historical Silver backfill loader for Obsrvr Lake mainnet that creates a complete, durable Silver cold archive directly from Bronze cold data.

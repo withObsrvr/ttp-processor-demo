@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync/atomic"
 
 	"github.com/stellar/go-stellar-sdk/ingest"
 	"github.com/stellar/go-stellar-sdk/strkey"
@@ -299,13 +300,13 @@ func extractCallsFromAuthInvocation(
 		return calls
 	}
 
-	// First, capture this invocation's function call (the root or current node)
+	// First, capture this invocation's function call (the root or current node).
 	// This was previously missing - we only captured sub-invocations.
-	// Some historical auth payloads can contain a CONTRACT_FN arm whose
-	// ContractAddress is not a contract SCAddress (or whose union arm pointer is
-	// nil). Use the generated union getter instead of dereferencing
-	// ContractAddress.ContractId directly so malformed/unexpected auth entries do
-	// not panic the whole historical backfill.
+	// Some historical auth payloads carry a CONTRACT_FN arm whose ContractAddress
+	// is not a contract ScAddress (e.g. an account/muxed arm). The generated union
+	// getter returns ok=false for non-contract arms, so we skip those cleanly
+	// instead of dereferencing ContractAddress.ContractId directly and panicking
+	// the whole historical backfill.
 	if invocation.Function.Type == xdr.SorobanAuthorizedFunctionTypeSorobanAuthorizedFunctionTypeContractFn {
 		contractFn := invocation.Function.ContractFn
 		if contractFn != nil {
@@ -348,14 +349,30 @@ func extractCallsFromAuthInvocation(
 func scAddressContractStrKey(address xdr.ScAddress) (string, bool) {
 	contractID, ok := address.GetContractId()
 	if !ok {
+		// Non-contract arm (e.g. account/muxed address). Counted but not logged
+		// per-occurrence; the aggregate is surfaced at end of run so silent
+		// call-graph under-counting stays observable without log spam.
+		callGraphSkippedEdges.Add(1)
 		return "", false
 	}
 	encoded, err := strkey.Encode(strkey.VersionByteContract, contractID[:])
 	if err != nil {
+		// A contract-arm address that fails strkey encoding is genuinely
+		// unexpected; count it and log per-occurrence.
+		callGraphSkippedEdges.Add(1)
+		log.Printf("[call_graph] failed to strkey-encode contract address: %v", err)
 		return "", false
 	}
 	return encoded, true
 }
+
+// callGraphSkippedEdges counts CONTRACT_FN auth entries skipped because their
+// address was not an encodable contract address.
+var callGraphSkippedEdges atomic.Int64
+
+// CallGraphSkippedEdges returns the running skip count so callers can surface it
+// at end of run and detect silent call-graph under-counting.
+func CallGraphSkippedEdges() int64 { return callGraphSkippedEdges.Load() }
 
 // extractFirstTopic extracts the first topic from a contract event as a string
 func extractFirstTopic(event xdr.ContractEvent) string {

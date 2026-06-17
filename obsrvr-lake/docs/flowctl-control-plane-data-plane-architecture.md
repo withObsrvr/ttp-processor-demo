@@ -2,6 +2,16 @@
 
 Date: 2026-06-12
 
+> **Status note (forward-looking design, not as-built).** This document describes
+> a target control-plane/data-plane architecture, not the current implementation.
+> In particular, the pipeline range/storage inputs shown in `env:` blocks
+> (`START_LEDGER`, `END_LEDGER`, `CHUNK_START`, `CHUNK_END`, `STORAGE_TYPE`,
+> `BUCKET`, `DUCKLAKE_DATA_PATH`, `DUCKLAKE_METADATA_SCHEMA`) are a *proposed*
+> interface — the `stellar-history-loader` binary currently reads these as CLI
+> flags, and only `ENABLE_FLOWCTL` / `FLOWCTL_*` are environment-driven. The
+> referenced `verify-bronze-silver-readiness-direct-go.sh` lives in the infra
+> repo, not this one.
+
 ## Purpose
 
 The June 2026 mainnet Bronze gap repair exposed that too much pipeline orchestration lives in shell scripts. The scripts worked as emergency tooling, but they also became an ad-hoc control plane: chunk planning, Nomad dispatch, retry decisions, resume points, health checks, verification, and operator state were inferred from logs and PID files.

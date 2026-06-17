@@ -22,7 +22,8 @@ This implementation processes deterministic ledger chunks and writes directly in
 - `restored_keys`
 - `contract_data_changes`
 - `balance_changes`
-- `silver_load_manifest`
+
+In addition to the data tables above, the loader maintains `silver_load_manifest`, a bookkeeping/control table that tracks per-chunk, per-table load status (it is not a materialized data output).
 
 `contract_data_changes` and `balance_changes` are append/history tables intended to rebuild current-state projections such as `contract_data_current`, `address_balances_current`, `native_balances_current`, and `trustlines_current`.
 
@@ -64,4 +65,4 @@ A chunk is skipped only when every implemented table has a `completed` entry in 
 ./bin/silver-history-loader ... --verify
 ```
 
-Verification checks Bronze ledger coverage, completed manifest entries, readable `enriched_ledgers`, and positive ledger gaps in `enriched_ledgers`.
+Verification checks Bronze ledger coverage, completed manifest entries, readability of `enriched_ledgers`, and that `enriched_ledgers` has no positive ledger-sequence gaps within the requested range (any gap fails verification).
