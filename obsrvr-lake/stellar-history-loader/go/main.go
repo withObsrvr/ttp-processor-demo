@@ -7,7 +7,11 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"strings"
 	"time"
+
+	flowcomponent "github.com/withobsrvr/flowctl/pkg/component"
+	flowctlpb "github.com/withobsrvr/flowctl/proto"
 )
 
 // Version is set at build time via -ldflags "-X main.Version=..."
@@ -86,6 +90,33 @@ func main() {
 		log.Fatalf("Failed to create output directory %q: %v", *output, err)
 	}
 
+	ctx := context.Background()
+	reporter, err := flowcomponent.NewReporter(ctx, flowcomponent.ConfigFromEnv())
+	if err != nil {
+		log.Fatalf("Flowctl setup failed: %v", err)
+	}
+	defer reporter.Close()
+	if err := reporter.Register(ctx, flowctlpb.ServiceType_SERVICE_TYPE_SOURCE, map[string]string{
+		"component":    "stellar-history-loader",
+		"version":      Version,
+		"network":      *networkPassphrase,
+		"storage_type": *storageType,
+		"range_start":  fmt.Sprintf("%d", startLedger),
+		"range_end":    fmt.Sprintf("%d", endLedger),
+	}); err != nil {
+		log.Fatalf("Flowctl registration failed: %v", err)
+	}
+	heartbeatCtx, stopHeartbeat := context.WithCancel(ctx)
+	defer stopHeartbeat()
+	go reporter.StartHeartbeatLoop(heartbeatCtx, nil, nil)
+
+	fatalChunk := func(phase string, err error, action string) {
+		if err != nil {
+			_ = reporter.ReportChunkFailed(ctx, int64(startLedger), int64(endLedger), phase, classifyFlowctlFailure(err), err.Error(), action)
+			log.Fatalf("%s failed: %v", phase, err)
+		}
+	}
+
 	totalLedgers := endLedger - startLedger + 1
 
 	fmt.Println("=== Stellar History Loader ===")
@@ -118,8 +149,20 @@ func main() {
 
 		startTime := time.Now()
 
+		if err := reporter.ReportChunkProgress(ctx, int64(startLedger), int64(endLedger), "extract", nil, map[string]string{
+			"output_dir": *output,
+		}); err != nil {
+			log.Printf("Flowctl progress report failed: %v", err)
+		}
+
 		if err := orchestrator.Run(); err != nil {
-			log.Fatalf("Orchestrator failed: %v", err)
+			fatalChunk("extract", err, "rerun_chunk")
+		}
+
+		if err := reporter.ReportChunkProgress(ctx, int64(startLedger), int64(endLedger), "extract_complete", map[string]int64{
+			"ledgers": int64(totalLedgers),
+		}, nil); err != nil {
+			log.Printf("Flowctl progress report failed: %v", err)
 		}
 
 		elapsed := time.Since(startTime)
@@ -130,6 +173,9 @@ func main() {
 		fmt.Printf("Total ledgers processed: %d\n", totalLedgers)
 		fmt.Printf("Elapsed time:           %s\n", elapsed.Round(time.Millisecond))
 		fmt.Printf("Throughput:             %.1f ledgers/sec\n", throughput)
+		if skipped := CallGraphSkippedEdges(); skipped > 0 {
+			fmt.Printf("Call-graph edges skipped (non-contract/unencodable address): %d\n", skipped)
+		}
 	} else {
 		fmt.Println("Skipping extraction (no --bucket specified, using existing output)")
 	}
@@ -142,8 +188,12 @@ func main() {
 			log.Printf("Validation setup failed: %v", err)
 		} else {
 			defer validator.Close()
-			if err := validator.RunAll(context.Background()); err != nil {
-				log.Printf("Validation: %v", err)
+			if err := reporter.ReportChunkProgress(ctx, int64(startLedger), int64(endLedger), "validation", nil, nil); err != nil {
+				log.Printf("Flowctl progress report failed: %v", err)
+			}
+			if err := validator.RunAll(ctx); err != nil {
+				_ = reporter.ReportChunkFailed(ctx, int64(startLedger), int64(endLedger), "validation", flowctlpb.FailureClass_FAILURE_CLASS_VERIFICATION, err.Error(), "inspect_output")
+				log.Fatalf("Validation failed: %v", err)
 			}
 		}
 	}
@@ -158,6 +208,13 @@ func main() {
 		fmt.Println("=== DuckLake Push ===")
 		dlStart := time.Now()
 
+		if err := reporter.ReportChunkProgress(ctx, int64(startLedger), int64(endLedger), "ducklake_setup", nil, map[string]string{
+			"ducklake_metadata_schema": *dlMetaSchema,
+			"ducklake_data_path":       *dlDataPath,
+		}); err != nil {
+			log.Printf("Flowctl progress report failed: %v", err)
+		}
+
 		pusher, err := NewDuckLakePusher(DuckLakeConfig{
 			CatalogDSN:      *dlCatalog,
 			DataPath:        *dlDataPath,
@@ -167,17 +224,29 @@ func main() {
 			S3Endpoint:      *b2Endpoint,
 			S3Region:        *b2Region,
 			BronzeSchemaSQL: *dlSchemaSQL,
+			StartLedger:     startLedger,
+			EndLedger:       endLedger,
 		})
 		if err != nil {
-			log.Fatalf("DuckLake setup failed: %v", err)
+			fatalChunk("ducklake_setup", err, "retry_chunk")
 		}
 		defer pusher.Close()
 
-		if err := pusher.Push(context.Background(), *output); err != nil {
-			log.Fatalf("DuckLake push failed: %v", err)
+		if err := reporter.ReportChunkProgress(ctx, int64(startLedger), int64(endLedger), "ducklake_push", nil, nil); err != nil {
+			log.Printf("Flowctl progress report failed: %v", err)
+		}
+		pushResult, err := pusher.Push(ctx, *output)
+		if err != nil {
+			fatalChunk("ducklake_push", err, "retry_chunk")
 		}
 
 		fmt.Printf("DuckLake push completed in %s\n", time.Since(dlStart).Round(time.Millisecond))
+		if err := reporter.ReportChunkCompleted(ctx, int64(startLedger), int64(endLedger), true, pushResult.RowCounts, map[string]string{
+			"gate":   "ducklake-push",
+			"passed": "true",
+		}); err != nil {
+			log.Printf("Flowctl completion report failed: %v", err)
+		}
 	}
 
 	// Load hot buffer if PostgreSQL is configured
@@ -209,5 +278,35 @@ func main() {
 	fmt.Println()
 	if err := GenerateCatalogReport(*output); err != nil {
 		log.Printf("Warning: catalog report failed: %v", err)
+	}
+
+	if !*runDuckLake {
+		if err := reporter.ReportChunkCompleted(ctx, int64(startLedger), int64(endLedger), false, map[string]int64{
+			"ledgers": int64(totalLedgers),
+		}, map[string]string{
+			"gate":   "extract-only",
+			"passed": "true",
+		}); err != nil {
+			log.Printf("Flowctl completion report failed: %v", err)
+		}
+	}
+}
+
+func classifyFlowctlFailure(err error) flowctlpb.FailureClass {
+	msg := strings.ToLower(err.Error())
+	switch {
+	// Check non-retryable data/schema buckets first. Infrastructure substrings
+	// like "catalog"/"postgres" routinely appear inside DuckLake schema/data error
+	// messages; if the broad infrastructure case were evaluated first, a genuinely
+	// non-retryable poison chunk would be classed retryable and an orchestrator
+	// would retry it forever instead of surfacing it to a human.
+	case strings.Contains(msg, "schema"), strings.Contains(msg, "column"), strings.Contains(msg, "type"), strings.Contains(msg, "parquet"):
+		return flowctlpb.FailureClass_FAILURE_CLASS_NON_RETRYABLE_SCHEMA
+	case strings.Contains(msg, "utf"), strings.Contains(msg, "encoding"), strings.Contains(msg, "xdr"):
+		return flowctlpb.FailureClass_FAILURE_CLASS_NON_RETRYABLE_DATA
+	case strings.Contains(msg, "timeout"), strings.Contains(msg, "connection"), strings.Contains(msg, "temporar"), strings.Contains(msg, "503"), strings.Contains(msg, "catalog"), strings.Contains(msg, "postgres"), strings.Contains(msg, "b2"), strings.Contains(msg, "s3"):
+		return flowctlpb.FailureClass_FAILURE_CLASS_RETRYABLE_INFRASTRUCTURE
+	default:
+		return flowctlpb.FailureClass_FAILURE_CLASS_UNKNOWN
 	}
 }

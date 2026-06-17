@@ -93,10 +93,14 @@ func extractTransactions(lcm xdr.LedgerCloseMeta, networkPassphrase string, ledg
 			memoType := "none"
 			txData.MemoType = &memoType
 		case xdr.MemoTypeMemoText:
-			memoType := "text"
+			// Stellar MemoText is opaque bytes, not guaranteed UTF-8. DuckDB rejects
+			// invalid UTF8-annotated Parquet strings, so encode all text memos as
+			// base64 for Bronze history-loader output.
+			memoType := "text_base64"
 			txData.MemoType = &memoType
 			if text, ok := memo.GetText(); ok {
-				txData.Memo = &text
+				memoText := base64.StdEncoding.EncodeToString([]byte(text))
+				txData.Memo = &memoText
 			}
 		case xdr.MemoTypeMemoId:
 			memoType := "id"

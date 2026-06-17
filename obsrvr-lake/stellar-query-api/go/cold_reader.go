@@ -539,14 +539,20 @@ func (c *ColdReader) GetGenericEvents(ctx context.Context, filters GenericEventF
 
 	query := fmt.Sprintf(`
 		SELECT event_id, contract_id, ledger_sequence, transaction_hash, closed_at,
-		       event_type, in_successful_contract_call, topics_json, topics_decoded, data_decoded,
+		       event_type, transaction_successful, in_successful_contract_call, topics_json, topics_decoded, data_decoded,
 		       topic_count, operation_index, event_index,
 		       topic0_decoded, topic1_decoded, topic2_decoded, topic3_decoded
-		FROM %s.%s.contract_events_stream_v1
+		FROM (
+			SELECT ce.*, COALESCE(tx.successful, ce.successful) AS transaction_successful
+			FROM %s.%s.contract_events_stream_v1 ce
+			LEFT JOIN %s.%s.transactions_row_v2 tx
+			  ON tx.transaction_hash = ce.transaction_hash
+			 AND tx.ledger_sequence = ce.ledger_sequence
+		) events_with_tx_success
 		%s
 		ORDER BY ledger_sequence %s, event_index %s
 		LIMIT $%d
-	`, c.config.CatalogName, c.config.SchemaName, whereClause, order, order, argIdx)
+	`, c.config.CatalogName, c.config.SchemaName, c.config.CatalogName, c.config.SchemaName, whereClause, order, order, argIdx)
 	args = append(args, requestLimit)
 
 	rows, err := c.db.QueryContext(ctx, query, args...)
@@ -558,12 +564,14 @@ func (c *ColdReader) GetGenericEvents(ctx context.Context, filters GenericEventF
 	var events []GenericEvent
 	for rows.Next() {
 		var e GenericEvent
+		var transactionSuccessful sql.NullBool
 		if err := rows.Scan(&e.EventID, &e.ContractID, &e.LedgerSeq, &e.TxHash, &e.ClosedAt,
-			&e.EventType, &e.Successful, &e.TopicsJSON, &e.TopicsDecoded, &e.DataDecoded,
+			&e.EventType, &transactionSuccessful, &e.Successful, &e.TopicsJSON, &e.TopicsDecoded, &e.DataDecoded,
 			&e.TopicCount, &e.OpIndex, &e.EventIndex,
 			&e.Topic0Decoded, &e.Topic1Decoded, &e.Topic2Decoded, &e.Topic3Decoded); err != nil {
 			return nil, "", false, err
 		}
+		applyGenericEventSuccess(&e, transactionSuccessful)
 		events = append(events, e)
 	}
 

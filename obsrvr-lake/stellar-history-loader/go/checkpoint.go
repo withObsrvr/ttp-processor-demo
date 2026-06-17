@@ -11,14 +11,14 @@ import (
 
 // CheckpointData tracks per-shard progress for resume capability.
 type CheckpointData struct {
-	StartLedger      uint32            `json:"start_ledger"`
-	EndLedger        uint32            `json:"end_ledger"`
-	Workers          int               `json:"workers"`
-	StorageType      string            `json:"storage_type"`
-	Bucket           string            `json:"bucket"`
-	Shards           map[int]ShardCheckpoint `json:"shards"`
-	StartedAt        time.Time         `json:"started_at"`
-	LastUpdated      time.Time         `json:"last_updated"`
+	StartLedger uint32                  `json:"start_ledger"`
+	EndLedger   uint32                  `json:"end_ledger"`
+	Workers     int                     `json:"workers"`
+	StorageType string                  `json:"storage_type"`
+	Bucket      string                  `json:"bucket"`
+	Shards      map[int]ShardCheckpoint `json:"shards"`
+	StartedAt   time.Time               `json:"started_at"`
+	LastUpdated time.Time               `json:"last_updated"`
 }
 
 // ShardCheckpoint tracks progress for a single shard.
@@ -33,9 +33,9 @@ type ShardCheckpoint struct {
 
 // CheckpointManager manages reading/writing checkpoint files.
 type CheckpointManager struct {
-	mu       sync.Mutex
-	path     string
-	data     CheckpointData
+	mu   sync.Mutex
+	path string
+	data CheckpointData
 }
 
 // NewCheckpointManager creates or loads a checkpoint for the given output directory.

@@ -12,17 +12,17 @@ import (
 
 // LineageRecord tracks one pipeline run's output for a specific table.
 type LineageRecord struct {
-	LineageID        string `parquet:"lineage_id"`
-	Dataset          string `parquet:"dataset"`
+	LineageID         string `parquet:"lineage_id"`
+	Dataset           string `parquet:"dataset"`
 	SourceLedgerStart uint32 `parquet:"source_ledger_start"`
 	SourceLedgerEnd   uint32 `parquet:"source_ledger_end"`
-	PipelineName     string `parquet:"pipeline_name"`
-	PipelineVersion  string `parquet:"pipeline_version"`
-	RecordsProcessed int64  `parquet:"records_processed"`
-	StartedAt        int64  `parquet:"started_at,timestamp(microsecond)"`
-	CompletedAt      int64  `parquet:"completed_at,timestamp(microsecond)"`
-	DurationMs       int64  `parquet:"duration_ms"`
-	WorkerID         int32  `parquet:"worker_id"`
+	PipelineName      string `parquet:"pipeline_name"`
+	PipelineVersion   string `parquet:"pipeline_version"`
+	RecordsProcessed  int64  `parquet:"records_processed"`
+	StartedAt         int64  `parquet:"started_at,timestamp(microsecond)"`
+	CompletedAt       int64  `parquet:"completed_at,timestamp(microsecond)"`
+	DurationMs        int64  `parquet:"duration_ms"`
+	WorkerID          int32  `parquet:"worker_id"`
 }
 
 // LineageWriter collects lineage records and writes them to Parquet.

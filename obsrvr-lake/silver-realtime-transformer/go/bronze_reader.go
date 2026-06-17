@@ -247,7 +247,13 @@ func (br *BronzeReader) QueryEnrichedOperations(ctx context.Context, startLedger
 			-- Price fields (price_r is JSONB with n/d, need to extract carefully)
 			CASE WHEN o.price_r IS NOT NULL THEN (o.price_r::JSONB->>'n')::INTEGER ELSE NULL END AS price_n,
 			CASE WHEN o.price_r IS NOT NULL THEN (o.price_r::JSONB->>'d')::INTEGER ELSE NULL END AS price_d,
-			o.price,
+			CASE
+				WHEN o.price IS NULL THEN NULL
+				WHEN POSITION('/' IN o.price) > 0 THEN
+					(split_part(o.price, '/', 1))::DOUBLE PRECISION
+					/ NULLIF((split_part(o.price, '/', 2))::DOUBLE PRECISION, 0)
+				ELSE o.price::DOUBLE PRECISION
+			END AS price,
 
 			-- Account creation
 			o.starting_balance,
