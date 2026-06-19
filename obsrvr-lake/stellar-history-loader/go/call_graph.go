@@ -276,6 +276,24 @@ func extractAuthCredentials(authEntries []xdr.SorobanAuthorizationEntry) ([]stri
 				}
 			}
 			addrs = append(addrs, addr)
+		case xdr.SorobanCredentialsTypeSorobanCredentialsAddressV2:
+			types = append(types, "ADDRESS_V2")
+			addr := ""
+			if ac, ok := entry.Credentials.GetAddressV2(); ok {
+				if s, err := ac.Address.String(); err == nil {
+					addr = s
+				}
+			}
+			addrs = append(addrs, addr)
+		case xdr.SorobanCredentialsTypeSorobanCredentialsAddressWithDelegates:
+			types = append(types, "ADDRESS_WITH_DELEGATES")
+			addr := ""
+			if ac, ok := entry.Credentials.GetAddressWithDelegates(); ok {
+				if s, err := ac.AddressCredentials.Address.String(); err == nil {
+					addr = s
+				}
+			}
+			addrs = append(addrs, addr)
 		default:
 			// Forward-compatibility: record the numeric discriminant as a
 			// string so we don't silently drop new credentials types if the

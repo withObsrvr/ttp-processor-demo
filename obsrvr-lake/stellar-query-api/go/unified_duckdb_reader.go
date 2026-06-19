@@ -14,8 +14,8 @@ import (
 	"time"
 
 	_ "github.com/duckdb/duckdb-go/v2"
-	"github.com/stellar/go/amount"
-	"github.com/stellar/go/strkey"
+	"github.com/stellar/go-stellar-sdk/amount"
+	"github.com/stellar/go-stellar-sdk/strkey"
 )
 
 // ErrTxNotFound is returned when a transaction hash is not found in any data source.

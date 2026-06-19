@@ -8,7 +8,7 @@ import (
 	"math/big"
 	"strings"
 
-	"github.com/stellar/go/xdr"
+	"github.com/stellar/go-stellar-sdk/xdr"
 )
 
 // decodeTxMetaXDR decodes a base64-encoded TransactionMeta XDR and extracts
@@ -51,7 +51,15 @@ func decodeTxMetaXDR(metaB64 string) ([]TxBalanceChange, []TxStateChange, error)
 		}
 	case 3:
 		if txMeta.V3 != nil {
+			changeSets = append(changeSets, combineLedgerEntryChanges(txMeta.V3.TxChangesBefore, txMeta.V3.TxChangesAfter))
 			for _, opMeta := range txMeta.V3.Operations {
+				changeSets = append(changeSets, opMeta.Changes)
+			}
+		}
+	case 4:
+		if txMeta.V4 != nil {
+			changeSets = append(changeSets, combineLedgerEntryChanges(txMeta.V4.TxChangesBefore, txMeta.V4.TxChangesAfter))
+			for _, opMeta := range txMeta.V4.Operations {
 				changeSets = append(changeSets, opMeta.Changes)
 			}
 		}
@@ -68,6 +76,13 @@ func decodeTxMetaXDR(metaB64 string) ([]TxBalanceChange, []TxStateChange, error)
 	balanceChanges = deduplicateBalanceChanges(balanceChanges)
 
 	return balanceChanges, stateChanges, nil
+}
+
+func combineLedgerEntryChanges(before, after xdr.LedgerEntryChanges) xdr.LedgerEntryChanges {
+	combined := make(xdr.LedgerEntryChanges, 0, len(before)+len(after))
+	combined = append(combined, before...)
+	combined = append(combined, after...)
+	return combined
 }
 
 func processLedgerEntryChanges(changes xdr.LedgerEntryChanges) ([]TxBalanceChange, []TxStateChange) {

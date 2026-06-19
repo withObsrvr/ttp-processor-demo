@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/stellar/go/strkey"
+	"github.com/stellar/go-stellar-sdk/strkey"
 )
 
 // ContractIndexHandlers contains HTTP handlers for Contract Event Index queries

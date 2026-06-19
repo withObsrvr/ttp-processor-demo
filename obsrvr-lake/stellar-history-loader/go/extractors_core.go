@@ -134,10 +134,17 @@ func extractTransactions(lcm xdr.LedgerCloseMeta, networkPassphrase string, ledg
 		}
 
 		// Extract Soroban rent fee charged (C13)
-		if tx.UnsafeMeta.V == 3 {
+		switch tx.UnsafeMeta.V {
+		case 3:
 			v3 := tx.UnsafeMeta.MustV3()
 			if v3.SorobanMeta != nil && v3.SorobanMeta.Ext.V == 1 && v3.SorobanMeta.Ext.V1 != nil {
 				rentFee := int64(v3.SorobanMeta.Ext.V1.RentFeeCharged)
+				txData.RentFeeCharged = &rentFee
+			}
+		case 4:
+			v4 := tx.UnsafeMeta.MustV4()
+			if v4.SorobanMeta != nil && v4.SorobanMeta.Ext.V == 1 && v4.SorobanMeta.Ext.V1 != nil {
+				rentFee := int64(v4.SorobanMeta.Ext.V1.RentFeeCharged)
 				txData.RentFeeCharged = &rentFee
 			}
 		}
