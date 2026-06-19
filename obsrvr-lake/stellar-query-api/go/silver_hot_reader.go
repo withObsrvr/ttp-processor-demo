@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/lib/pq"
-	"github.com/stellar/go/amount"
-	"github.com/stellar/go/xdr"
+	"github.com/stellar/go-stellar-sdk/amount"
+	"github.com/stellar/go-stellar-sdk/xdr"
 )
 
 // SilverHotReader queries PostgreSQL silver_hot for recent analytics data

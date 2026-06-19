@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/stellar/go/strkey"
-	"github.com/stellar/go/xdr"
+	"github.com/stellar/go-stellar-sdk/strkey"
+	"github.com/stellar/go-stellar-sdk/xdr"
 )
 
 // walletRPCFallback is initialized at startup when rpc_fallback config is present.

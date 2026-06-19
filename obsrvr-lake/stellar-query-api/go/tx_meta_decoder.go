@@ -8,7 +8,7 @@ import (
 	"math/big"
 	"strings"
 
-	"github.com/stellar/go/xdr"
+	"github.com/stellar/go-stellar-sdk/xdr"
 )
 
 // decodeTxMetaXDR decodes a base64-encoded TransactionMeta XDR and extracts

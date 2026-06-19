@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
-	"github.com/stellar/go/strkey"
+	"github.com/stellar/go-stellar-sdk/strkey"
 )
 
 type LedgerSummaryHandler struct {

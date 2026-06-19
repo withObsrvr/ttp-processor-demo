@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stellar/go/xdr"
+	"github.com/stellar/go-stellar-sdk/xdr"
 )
 
 func TestDecodeScValBase64SupportsCommonQueryEncodings(t *testing.T) {
@@ -20,9 +20,9 @@ func TestDecodeScValBase64SupportsCommonQueryEncodings(t *testing.T) {
 	url := base64.URLEncoding.EncodeToString(raw)
 
 	for name, input := range map[string]string{
-		"std":          std,
+		"std":            std,
 		"std_plus_space": strings.ReplaceAll(std, "+", " "),
-		"url":          url,
+		"url":            url,
 	} {
 		t.Run(name, func(t *testing.T) {
 			decoded, err := decodeScValBase64(input)

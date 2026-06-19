@@ -8,7 +8,7 @@ import (
 	"time"
 
 	_ "github.com/duckdb/duckdb-go/v2"
-	"github.com/stellar/go/amount"
+	"github.com/stellar/go-stellar-sdk/amount"
 )
 
 // SilverColdReader queries the analytics-ready Silver layer from DuckLake (cold storage)

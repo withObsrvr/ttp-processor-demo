@@ -5,6 +5,7 @@ go 1.26.1
 require (
 	github.com/jackc/pgx/v5 v5.7.6
 	github.com/stellar/go v0.0.0-20251210100531-aab2ea4aca88
+	github.com/stellar/go-stellar-sdk v0.6.0
 	github.com/withObsrvr/flow-proto v0.1.3
 	google.golang.org/grpc v1.71.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -18,8 +19,7 @@ require (
 	github.com/kr/text v0.2.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
-	github.com/stellar/go-stellar-sdk v0.5.0 // indirect
-	github.com/stellar/go-xdr v0.0.0-20260312225820-cc2b0611aabf // indirect
+	github.com/stellar/go-xdr v0.0.0-20260529210834-0bf8f4956364 // indirect
 	golang.org/x/crypto v0.45.0 // indirect
 	golang.org/x/net v0.47.0 // indirect
 	golang.org/x/sync v0.18.0 // indirect
