@@ -56,7 +56,7 @@ serving-cold-backfill \
 Path:
 
 ```text
-/home/tillman/Documents/ttp-processor-demo/obsrvr-lake/silver-history-loader
+obsrvr-lake/silver-history-loader
 ```
 
 Current cold Silver tables populated:
@@ -88,7 +88,7 @@ silver_load_manifest
 Path:
 
 ```text
-/home/tillman/Documents/ttp-processor-demo/obsrvr-lake/serving-projection-processor
+obsrvr-lake/serving-projection-processor
 ```
 
 Current serving outputs include:
@@ -142,7 +142,7 @@ Each program should:
 This design should align with:
 
 ```text
-/home/tillman/Documents/ttp-processor-demo/obsrvr-lake/docs/flowctl-control-plane-data-plane-architecture.md
+obsrvr-lake/docs/flowctl-control-plane-data-plane-architecture.md
 ```
 
 ## Proposed new processes

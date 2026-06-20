@@ -374,8 +374,8 @@ func requiredProjections(schema string) []Projection {
 		{Name: "sv_ledger_stats_recent", TargetTable: table("sv_ledger_stats_recent"), Source: "silver.enriched_ledgers", Mode: "recent_range_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_transactions_recent", TargetTable: table("sv_transactions_recent"), Source: "bronze.transactions_row_v2 + silver enriched data", Mode: "recent_range_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_operations_recent", TargetTable: table("sv_operations_recent"), Source: "silver.enriched_history_operations", Mode: "recent_range_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
-		{Name: "sv_events_recent", TargetTable: table("sv_events_recent"), Source: "bronze.contract_events_stream_v1 / silver effects", Mode: "recent_range_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
-		{Name: "sv_explorer_events_recent", TargetTable: table("sv_explorer_events_recent"), Source: "bronze.contract_events_stream_v1 + classifier rules", Mode: "recent_range_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
+		{Name: "sv_events_recent", TargetTable: table("sv_events_recent"), Source: "bronze.contract_events_stream_v1 / silver effects", Mode: "recent_range_replace", Checkpoint: false, Required: true, InitialClass: "blocked_source_mapping", Rationale: "required by the broader serving contract, but this binary does not enable the projection yet"},
+		{Name: "sv_explorer_events_recent", TargetTable: table("sv_explorer_events_recent"), Source: "bronze.contract_events_stream_v1 + classifier rules", Mode: "recent_range_replace", Checkpoint: false, Required: true, InitialClass: "blocked_source_mapping", Rationale: "required by the broader serving contract, but classifier/source mapping is not enabled yet"},
 		{Name: "sv_contract_calls_recent", TargetTable: table("sv_contract_calls_recent"), Source: "silver.contract_invocations_raw", Mode: "recent_range_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_tx_receipts", TargetTable: table("sv_tx_receipts"), Source: "bronze transactions/operations/effects + silver enriched rows", Mode: "recent_range_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_accounts_current", TargetTable: table("sv_accounts_current"), Source: "silver.accounts_current", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
@@ -726,6 +726,11 @@ func currentProjectionNames(current []CurrentProjection) []string {
 	return names
 }
 
+func (b *Backfiller) retentionPredicate(timeExpr string) string {
+	return fmt.Sprintf("%s >= COALESCE((SELECT MAX(ledger_closed_at) - INTERVAL %d DAY FROM %s WHERE network=%s AND ledger_sequence <= %d), %s)",
+		timeExpr, b.cfg.RetentionDays, b.silverTable("enriched_ledgers"), q(b.cfg.Network), b.cfg.End, timeExpr)
+}
+
 func selectLedgerStatsRecent(b *Backfiller, chunk Chunk) string {
 	return fmt.Sprintf(`SELECT ledger_sequence, ledger_closed_at AS closed_at, ledger_hash,
 		previous_ledger_hash AS prev_hash, ledger_version AS protocol_version,
@@ -736,8 +741,8 @@ func selectLedgerStatsRecent(b *Backfiller, chunk Chunk) string {
 		NULL::BIGINT AS total_read_bytes, NULL::BIGINT AS total_write_bytes,
 		NULL::BIGINT AS total_rent_stroops, NULL::DOUBLE AS close_time_seconds
 		FROM %s
-		WHERE network=%s AND ledger_sequence BETWEEN %d AND %d`,
-		b.silverTable("enriched_ledgers"), q(b.cfg.Network), chunk.Start, chunk.End)
+		WHERE network=%s AND ledger_sequence BETWEEN %d AND %d AND %s`,
+		b.silverTable("enriched_ledgers"), q(b.cfg.Network), chunk.Start, chunk.End, b.retentionPredicate("ledger_closed_at"))
 }
 
 func selectTransactionsRecent(b *Backfiller, chunk Chunk) string {
@@ -753,8 +758,8 @@ func selectTransactionsRecent(b *Backfiller, chunk Chunk) string {
 		soroban_resources_read_bytes AS read_bytes, soroban_resources_write_bytes AS write_bytes,
 		current_timestamp AS ingested_at
 		FROM %s
-		WHERE ledger_sequence BETWEEN %d AND %d`,
-		b.bronzeTable("transactions_row_v2"), chunk.Start, chunk.End)
+		WHERE ledger_sequence BETWEEN %d AND %d AND %s`,
+		b.bronzeTable("transactions_row_v2"), chunk.Start, chunk.End, b.retentionPredicate("created_at"))
 }
 
 func selectOperationsRecent(b *Backfiller, chunk Chunk) string {
@@ -765,8 +770,8 @@ func selectOperationsRecent(b *Backfiller, chunk Chunk) string {
 		TRY_CAST(amount AS BIGINT) AS amount_stroops, contract_id, function_name,
 		tx_successful AS successful, is_payment_op, is_soroban_op, type_string AS summary_text
 		FROM %s
-		WHERE network=%s AND ledger_sequence BETWEEN %d AND %d`,
-		b.silverTable("enriched_history_operations"), q(b.cfg.Network), chunk.Start, chunk.End)
+		WHERE network=%s AND ledger_sequence BETWEEN %d AND %d AND %s`,
+		b.silverTable("enriched_history_operations"), q(b.cfg.Network), chunk.Start, chunk.End, b.retentionPredicate("created_at"))
 }
 
 func selectContractCallsRecent(b *Backfiller, chunk Chunk) string {
@@ -777,32 +782,32 @@ func selectContractCallsRecent(b *Backfiller, chunk Chunk) string {
 		NULL::BIGINT AS read_bytes, NULL::BIGINT AS write_bytes,
 		concat('Call ', COALESCE(function_name, 'unknown')) AS summary_text
 		FROM %s
-		WHERE network=%s AND ledger_sequence BETWEEN %d AND %d`,
-		b.silverTable("contract_invocations_raw"), q(b.cfg.Network), chunk.Start, chunk.End)
+		WHERE network=%s AND ledger_sequence BETWEEN %d AND %d AND %s`,
+		b.silverTable("contract_invocations_raw"), q(b.cfg.Network), chunk.Start, chunk.End, b.retentionPredicate("closed_at"))
 }
 
 func selectTxReceipts(b *Backfiller, chunk Chunk) string {
 	return fmt.Sprintf(`WITH ops AS (
 			SELECT transaction_hash, COUNT(*) AS op_count,
-				string_agg(DISTINCT COALESCE(source_account, ''), ',') AS accounts,
-				string_agg(DISTINCT COALESCE(contract_id, ''), ',') AS contracts
+				list(DISTINCT source_account) FILTER (WHERE source_account IS NOT NULL AND source_account <> '') AS accounts,
+				list(DISTINCT contract_id) FILTER (WHERE contract_id IS NOT NULL AND contract_id <> '') AS contracts
 			FROM %s
-			WHERE network=%s AND ledger_sequence BETWEEN %d AND %d
+			WHERE network=%s AND ledger_sequence BETWEEN %d AND %d AND %s
 			GROUP BY transaction_hash
 		)
 		SELECT t.transaction_hash AS tx_hash, t.ledger_sequence, t.created_at, t.source_account,
 			t.successful, COALESCE(o.op_count, t.operation_count) AS operation_count,
 			'{}' AS full_json, '{}' AS semantic_json, '[]' AS effects_json,
 			'[]' AS diffs_json, '[]' AS events_json,
-			COALESCE(o.contracts, '') AS involved_contracts,
-			COALESCE(o.accounts, '') AS involved_accounts,
+			COALESCE(o.contracts, []::VARCHAR[]) AS involved_contracts,
+			COALESCE(o.accounts, []::VARCHAR[]) AS involved_accounts,
 			t.soroban_contract_id AS primary_contract_id,
 			CASE WHEN t.soroban_contract_id IS NOT NULL THEN 'contract_call' ELSE 'transaction' END AS tx_type,
 			current_timestamp AS materialized_at, 'v1' AS source_version
 		FROM %s t
 		LEFT JOIN ops o ON o.transaction_hash = t.transaction_hash
-		WHERE t.ledger_sequence BETWEEN %d AND %d`,
-		b.silverTable("enriched_history_operations"), q(b.cfg.Network), chunk.Start, chunk.End, b.bronzeTable("transactions_row_v2"), chunk.Start, chunk.End)
+		WHERE t.ledger_sequence BETWEEN %d AND %d AND %s`,
+		b.silverTable("enriched_history_operations"), q(b.cfg.Network), chunk.Start, chunk.End, b.retentionPredicate("created_at"), b.bronzeTable("transactions_row_v2"), chunk.Start, chunk.End, b.retentionPredicate("t.created_at"))
 }
 
 func selectAccountsCurrent(b *Backfiller) string {
@@ -833,17 +838,20 @@ func selectNetworkStatsCurrent(b *Backfiller) string {
 		), tx AS (
 			SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE NOT successful) AS failed,
 				COUNT(DISTINCT source_account) AS active_accounts
-			FROM %s
+			FROM %s, latest
+			WHERE created_at >= latest.closed_at - INTERVAL 1 DAY
 		), ops AS (
 			SELECT COUNT(*) AS total,
 				COUNT(*) FILTER (WHERE is_soroban_op) AS contract_ops,
 				COUNT(*) FILTER (WHERE is_payment_op) AS payment_ops
-			FROM %s
+			FROM %s, latest
+			WHERE created_at >= latest.closed_at - INTERVAL 1 DAY
 		), contracts AS (
 			SELECT COUNT(DISTINCT contract_id) AS active_contracts
-			FROM %s
+			FROM %s, latest
+			WHERE created_at >= latest.closed_at - INTERVAL 1 DAY
 		)
-		SELECT %s AS network, current_timestamp AS generated_at,
+		SELECT %s AS network, COALESCE((SELECT closed_at FROM latest), current_timestamp) AS generated_at,
 			COALESCE((SELECT ledger_sequence FROM latest), %d) AS latest_ledger,
 			(SELECT closed_at FROM latest) AS latest_ledger_closed_at,
 			NULL::DOUBLE AS avg_close_time_seconds,
@@ -1026,8 +1034,8 @@ func (m JSONLManifest) Completed(_ context.Context, runID, network string, start
 			completed[rec.ProjectionName] = true
 		}
 	}
-	for _, p := range requiredProjections("serving") {
-		if !completed[p.Name] {
+	for _, name := range append(feedProjectionNames(feedProjections()), currentProjectionNames(currentProjections())...) {
+		if !completed[name] {
 			return false, nil
 		}
 	}

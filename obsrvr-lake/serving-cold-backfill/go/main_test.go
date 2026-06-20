@@ -29,10 +29,20 @@ func TestRequiredProjectionContractIncludesCheckpointTargets(t *testing.T) {
 	if len(got) != 15 {
 		t.Fatalf("required projection count = %d, want 15", len(got))
 	}
+	checkpointed := 0
 	for _, p := range got {
-		if !p.Required || !p.Checkpoint {
-			t.Fatalf("%s required=%v checkpoint=%v, want true/true", p.Name, p.Required, p.Checkpoint)
+		if !p.Required {
+			t.Fatalf("%s required=%v, want true", p.Name, p.Required)
 		}
+		if p.Checkpoint {
+			checkpointed++
+		}
+		if (p.Name == "sv_events_recent" || p.Name == "sv_explorer_events_recent") && (p.Checkpoint || p.InitialClass != "blocked_source_mapping") {
+			t.Fatalf("%s checkpoint=%v class=%s, want false/blocked_source_mapping", p.Name, p.Checkpoint, p.InitialClass)
+		}
+	}
+	if checkpointed != 13 {
+		t.Fatalf("checkpointed projection count = %d, want 13", checkpointed)
 	}
 }
 
@@ -114,6 +124,7 @@ func TestFeedBackfillRerunResumeNoDuplicates(t *testing.T) {
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_projection_checkpoints WHERE last_ledger_sequence=6`, 13)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM (SELECT tx_hash, COUNT(*) n FROM serving.sv_transactions_recent GROUP BY tx_hash HAVING COUNT(*) > 1)`, 0)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM (SELECT operation_id, COUNT(*) n FROM serving.sv_operations_recent GROUP BY operation_id HAVING COUNT(*) > 1)`, 0)
+	assertBackfillString(t, db, `SELECT typeof(involved_accounts) FROM serving.sv_tx_receipts LIMIT 1`, "VARCHAR[]")
 
 	resumeCfg := cfg
 	resumeCfg.Resume = true
@@ -266,5 +277,16 @@ func assertBackfillCount(t *testing.T, db *sql.DB, query string, want int64) {
 	}
 	if got != want {
 		t.Fatalf("%s = %d, want %d", query, got, want)
+	}
+}
+
+func assertBackfillString(t *testing.T, db *sql.DB, query, want string) {
+	t.Helper()
+	var got string
+	if err := db.QueryRow(query).Scan(&got); err != nil {
+		t.Fatalf("%s: %v", query, err)
+	}
+	if got != want {
+		t.Fatalf("%s = %q, want %q", query, got, want)
 	}
 }

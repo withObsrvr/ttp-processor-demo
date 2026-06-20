@@ -435,7 +435,7 @@ func (p *Projector) ensureManifest(ctx context.Context) error {
 }
 
 func (p *Projector) markManifest(ctx context.Context, start, end int64, projection, status, message string, rows int64) error {
-	if _, err := p.db.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE run_id=%s AND network=%s AND start_ledger=%d AND end_ledger=%d AND projection_name=%s", p.table("silver_current_projector_manifest"), q(p.cfg.RunID()), q(p.cfg.Network), start, end, q(projection))); err != nil {
+	if _, err := p.db.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE run_id=%s AND component_id=%s AND network=%s AND start_ledger=%d AND end_ledger=%d AND projection_name=%s", p.table("silver_current_projector_manifest"), q(p.cfg.RunID()), q(p.cfg.Component()), q(p.cfg.Network), start, end, q(projection))); err != nil {
 		return err
 	}
 	completed := "NULL"
@@ -453,7 +453,7 @@ func (p *Projector) markManifest(ctx context.Context, start, end int64, projecti
 
 func (p *Projector) chunkComplete(ctx context.Context, start, end int64) (bool, error) {
 	var count int64
-	query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE run_id=%s AND network=%s AND start_ledger=%d AND end_ledger=%d AND status='completed'", p.table("silver_current_projector_manifest"), q(p.cfg.RunID()), q(p.cfg.Network), start, end)
+	query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE run_id=%s AND component_id=%s AND network=%s AND start_ledger=%d AND end_ledger=%d AND status='completed'", p.table("silver_current_projector_manifest"), q(p.cfg.RunID()), q(p.cfg.Component()), q(p.cfg.Network), start, end)
 	if err := p.db.QueryRowContext(ctx, query).Scan(&count); err != nil {
 		return false, err
 	}
@@ -587,7 +587,7 @@ func (c Config) PlannedChunks() []Chunk {
 	if c.ChunkStart != 0 {
 		return []Chunk{{Start: c.ChunkStart, End: c.ChunkEnd, Index: 0}}
 	}
-	return PlanChunks(c.Start, c.End, c.Chunk)
+	return []Chunk{{Start: c.Start, End: c.End, Index: 0}}
 }
 
 func (p *Projector) table(table string) string {
@@ -635,11 +635,11 @@ func (m JSONLManifest) Completed(_ context.Context, runID, network string, start
 			}
 			return false, fmt.Errorf("decode manifest: %w", err)
 		}
-		if rec.RunID == runID && rec.Network == network && rec.StartLedger == start && rec.EndLedger == end && rec.Status == "completed" {
+		if rec.RunID == runID && rec.ComponentID == componentID && rec.Network == network && rec.StartLedger == start && rec.EndLedger == end && rec.Status == "completed" {
 			completed[rec.ProjectionName] = true
 		}
 	}
-	for _, p := range silverCurrentProjections() {
+	for _, p := range executableCurrentProjections() {
 		if !completed[p.Name] {
 			return false, nil
 		}

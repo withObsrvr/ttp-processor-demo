@@ -39,6 +39,14 @@ func TestAssignedChunkOverridesChunkPlan(t *testing.T) {
 	}
 }
 
+func TestCurrentProjectorPlansSingleAsOfWorkUnit(t *testing.T) {
+	cfg := Config{Start: 3, End: 100, Chunk: 10}
+	got := cfg.PlannedChunks()
+	if len(got) != 1 || got[0].Start != 3 || got[0].End != 100 {
+		t.Fatalf("PlannedChunks() = %+v, want single as-of work unit 3..100", got)
+	}
+}
+
 func TestClassifyFailurePrecedence(t *testing.T) {
 	if got := classifyFailure(errors.New("catalog column schema mismatch")); got != FailureNonRetryableSchema {
 		t.Fatalf("classifyFailure schema = %s", got)
