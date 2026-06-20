@@ -553,9 +553,17 @@ func selectAddressBalancesCurrent(p *Projector) string {
 		WHEN asset_issuer IS NULL OR asset_issuer = '' THEN concat(COALESCE(asset_type, 'asset'), ':', COALESCE(asset_code, ''))
 		ELSE concat(COALESCE(asset_type, 'asset'), ':', COALESCE(asset_code, ''), ':', asset_issuer)
 	END`
+	balanceRaw := `CASE
+		WHEN asset_type = 'native' OR asset_code = 'XLM' THEN TRY_CAST(balance AS BIGINT)
+		ELSE TRY_CAST(ROUND(TRY_CAST(balance AS DOUBLE) * 10000000) AS BIGINT)
+	END`
+	balanceDisplay := `CASE
+		WHEN asset_type = 'native' OR asset_code = 'XLM' THEN TRY_CAST(balance AS DECIMAL(38,7)) / 10000000
+		ELSE TRY_CAST(balance AS DECIMAL(38,7))
+	END`
 	return fmt.Sprintf(`SELECT network, address AS owner_address, asset_key, asset_type,
 		NULL::VARCHAR AS token_contract_id, asset_code, asset_issuer, asset_code AS symbol, 7::INTEGER AS decimals,
-		CAST(balance AS VARCHAR) AS balance_raw, CAST(balance AS VARCHAR) AS balance_display,
+		CAST(%s AS VARCHAR) AS balance_raw, CAST(%s AS VARCHAR) AS balance_display,
 		'silver.balance_changes' AS balance_source, ledger_sequence AS last_updated_ledger,
 		ledger_closed_at AS last_updated_at, current_timestamp AS updated_at
 		FROM (
@@ -565,7 +573,7 @@ func selectAddressBalancesCurrent(p *Projector) string {
 			) AS rn
 			FROM %s
 			WHERE network = %s AND ledger_sequence <= %d
-		) WHERE rn = 1 AND COALESCE(deleted, false) = false`, assetKey, assetKey, p.table("balance_changes"), q(p.cfg.Network), p.cfg.End)
+		) WHERE rn = 1 AND COALESCE(deleted, false) = false`, balanceRaw, balanceDisplay, assetKey, assetKey, p.table("balance_changes"), q(p.cfg.Network), p.cfg.End)
 }
 
 func PlanChunks(start, end, size int64) []Chunk {

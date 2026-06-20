@@ -110,7 +110,7 @@ func TestFeedBackfillRerunResumeNoDuplicates(t *testing.T) {
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_ledger_stats_recent`, 4)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_transactions_recent`, 3)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_operations_recent`, 4)
-	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_contract_calls_recent`, 1)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_contract_calls_recent`, 2)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_tx_receipts`, 3)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_accounts_current`, 2)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_account_balances_current`, 3)
@@ -125,6 +125,10 @@ func TestFeedBackfillRerunResumeNoDuplicates(t *testing.T) {
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM (SELECT tx_hash, COUNT(*) n FROM serving.sv_transactions_recent GROUP BY tx_hash HAVING COUNT(*) > 1)`, 0)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM (SELECT operation_id, COUNT(*) n FROM serving.sv_operations_recent GROUP BY operation_id HAVING COUNT(*) > 1)`, 0)
 	assertBackfillString(t, db, `SELECT typeof(involved_accounts) FROM serving.sv_tx_receipts LIMIT 1`, "VARCHAR[]")
+	assertBackfillCount(t, db, `SELECT total_calls_24h FROM serving.sv_contract_stats_current WHERE contract_id='CC1'`, 1)
+	assertBackfillCount(t, db, `SELECT total_calls_7d FROM serving.sv_contract_stats_current WHERE contract_id='CC1'`, 2)
+	assertBackfillCount(t, db, `SELECT calls_24h FROM serving.sv_contract_function_stats_current WHERE contract_id='CC1' AND function_name='transfer'`, 1)
+	assertBackfillCount(t, db, `SELECT calls_7d FROM serving.sv_contract_function_stats_current WHERE contract_id='CC1' AND function_name='transfer'`, 2)
 
 	resumeCfg := cfg
 	resumeCfg.Resume = true
@@ -245,6 +249,7 @@ func loadBackfillFixture(t *testing.T, ctx context.Context, db *sql.DB) {
 			('mainnet','tx4',1,4,'2026-01-01 00:00:04',1,'payment','GA2','GB2','USD:ISSUER','50',NULL,NULL,true,true,false),
 			('mainnet','tx5',0,5,'2026-01-01 00:00:05',1,'payment','GA3','GB3','native','75',NULL,NULL,false,true,false)`,
 		`INSERT INTO silver.contract_invocations_raw VALUES
+			('mainnet','tx3',0,3,'2025-12-30 00:00:03','CC1','GA9','transfer',true),
 			('mainnet','tx4',0,4,'2026-01-01 00:00:04','CC1','GA2','transfer',true)`,
 		`INSERT INTO silver.accounts_current VALUES
 			('mainnet','GA1','1000',10,1,'2026-01-01 00:00:03',4,'2026-01-01 00:00:04',NULL,1,1,1,1,'[]',3),

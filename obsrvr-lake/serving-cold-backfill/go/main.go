@@ -928,32 +928,45 @@ func selectContractsCurrent(b *Backfiller) string {
 }
 
 func selectContractStatsCurrent(b *Backfiller) string {
-	return fmt.Sprintf(`SELECT contract_id,
-		COUNT(*) AS total_calls_24h, COUNT(*) AS total_calls_7d, COUNT(*) AS total_calls_30d,
-		COUNT(DISTINCT caller_account) AS unique_callers_24h,
-		COUNT(DISTINCT caller_account) AS unique_callers_7d,
-		COUNT(*) FILTER (WHERE successful) AS success_count_24h,
-		COUNT(*) FILTER (WHERE NOT successful) AS failure_count_24h,
-		CASE WHEN COUNT(*) = 0 THEN NULL ELSE COUNT(*) FILTER (WHERE successful)::DOUBLE / COUNT(*)::DOUBLE END AS success_rate_24h,
-		MAX(function_name) AS top_function,
+	return fmt.Sprintf(`WITH latest AS (
+			SELECT closed_at FROM %s ORDER BY ledger_sequence DESC LIMIT 1
+		)
+		SELECT contract_id,
+		COUNT(*) FILTER (WHERE created_at >= latest.closed_at - INTERVAL 1 DAY) AS total_calls_24h,
+		COUNT(*) FILTER (WHERE created_at >= latest.closed_at - INTERVAL 7 DAY) AS total_calls_7d,
+		COUNT(*) FILTER (WHERE created_at >= latest.closed_at - INTERVAL 30 DAY) AS total_calls_30d,
+		COUNT(DISTINCT caller_account) FILTER (WHERE created_at >= latest.closed_at - INTERVAL 1 DAY) AS unique_callers_24h,
+		COUNT(DISTINCT caller_account) FILTER (WHERE created_at >= latest.closed_at - INTERVAL 7 DAY) AS unique_callers_7d,
+		COUNT(*) FILTER (WHERE successful AND created_at >= latest.closed_at - INTERVAL 1 DAY) AS success_count_24h,
+		COUNT(*) FILTER (WHERE NOT successful AND created_at >= latest.closed_at - INTERVAL 1 DAY) AS failure_count_24h,
+		CASE
+			WHEN COUNT(*) FILTER (WHERE created_at >= latest.closed_at - INTERVAL 1 DAY) = 0 THEN NULL
+			ELSE COUNT(*) FILTER (WHERE successful AND created_at >= latest.closed_at - INTERVAL 1 DAY)::DOUBLE / COUNT(*) FILTER (WHERE created_at >= latest.closed_at - INTERVAL 1 DAY)::DOUBLE
+		END AS success_rate_24h,
+		MAX(function_name) FILTER (WHERE created_at >= latest.closed_at - INTERVAL 1 DAY) AS top_function,
 		MAX(created_at) AS last_activity_at,
-		AVG(cpu_insns)::BIGINT AS avg_cpu_insns_24h,
+		AVG(cpu_insns) FILTER (WHERE created_at >= latest.closed_at - INTERVAL 1 DAY)::BIGINT AS avg_cpu_insns_24h,
 		MIN(created_at) AS first_seen_at,
 		current_timestamp AS updated_at
-		FROM %s GROUP BY contract_id`,
-		b.servingTable("sv_contract_calls_recent"))
+		FROM %s, latest GROUP BY contract_id`,
+		b.servingTable("sv_ledger_stats_recent"), b.servingTable("sv_contract_calls_recent"))
 }
 
 func selectContractFunctionStatsCurrent(b *Backfiller) string {
-	return fmt.Sprintf(`SELECT contract_id, COALESCE(function_name, '') AS function_name,
-		COUNT(*) AS calls_24h, COUNT(*) AS calls_7d, COUNT(*) AS calls_30d,
-		COUNT(*) FILTER (WHERE successful) AS success_count_24h,
-		COUNT(*) FILTER (WHERE NOT successful) AS failure_count_24h,
-		AVG(cpu_insns)::BIGINT AS avg_cpu_insns_24h,
+	return fmt.Sprintf(`WITH latest AS (
+			SELECT closed_at FROM %s ORDER BY ledger_sequence DESC LIMIT 1
+		)
+		SELECT contract_id, COALESCE(function_name, '') AS function_name,
+		COUNT(*) FILTER (WHERE created_at >= latest.closed_at - INTERVAL 1 DAY) AS calls_24h,
+		COUNT(*) FILTER (WHERE created_at >= latest.closed_at - INTERVAL 7 DAY) AS calls_7d,
+		COUNT(*) FILTER (WHERE created_at >= latest.closed_at - INTERVAL 30 DAY) AS calls_30d,
+		COUNT(*) FILTER (WHERE successful AND created_at >= latest.closed_at - INTERVAL 1 DAY) AS success_count_24h,
+		COUNT(*) FILTER (WHERE NOT successful AND created_at >= latest.closed_at - INTERVAL 1 DAY) AS failure_count_24h,
+		AVG(cpu_insns) FILTER (WHERE created_at >= latest.closed_at - INTERVAL 1 DAY)::BIGINT AS avg_cpu_insns_24h,
 		MAX(created_at) AS last_called_at,
 		current_timestamp AS updated_at
-		FROM %s GROUP BY contract_id, COALESCE(function_name, '')`,
-		b.servingTable("sv_contract_calls_recent"))
+		FROM %s, latest GROUP BY contract_id, COALESCE(function_name, '')`,
+		b.servingTable("sv_ledger_stats_recent"), b.servingTable("sv_contract_calls_recent"))
 }
 
 func PlanChunks(start, end, size int64) []Chunk {

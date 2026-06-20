@@ -107,6 +107,13 @@ func TestProjectorDerivesCurrentTablesFromSilverFixture(t *testing.T) {
 	if trustlineBalance != 25000000 {
 		t.Fatalf("trustline stroops = %d, want 25000000", trustlineBalance)
 	}
+	var balanceRaw, balanceDisplay string
+	if err := db.QueryRow(`SELECT balance_raw, balance_display FROM silver.address_balances_current WHERE owner_address='GA1' AND asset_code='USD'`).Scan(&balanceRaw, &balanceDisplay); err != nil {
+		t.Fatal(err)
+	}
+	if balanceRaw != "25000000" || balanceDisplay != "2.5" {
+		t.Fatalf("address USD balance raw/display = %s/%s, want 25000000/2.5", balanceRaw, balanceDisplay)
+	}
 	var contractCount int64
 	if err := db.QueryRow(`SELECT COUNT(*) FROM silver.contract_data_current WHERE contract_id='CC1' AND key_hash='K2'`).Scan(&contractCount); err != nil {
 		t.Fatal(err)
