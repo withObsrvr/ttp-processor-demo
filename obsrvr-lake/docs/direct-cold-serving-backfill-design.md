@@ -112,6 +112,39 @@ serving.sv_projection_checkpoints
 
 Current processor reads mostly from `bronze_hot` and `silver_hot` PostgreSQL, not from cold DuckLake.
 
+## flowctl compatibility requirement
+
+Both `silver-current-state-projector` and `serving-cold-backfill` must be designed as flowctl-compatible data-plane components, not only one-off shell scripts.
+
+The near-term implementation may be launched by Nomad wrappers, but the program interfaces should be stable enough for `flowctl` to own orchestration later.
+
+Each program should:
+
+- accept bounded ledger ranges and deterministic chunk identifiers
+- be idempotent for the same network/range/chunk
+- support `--resume` against durable manifest/checkpoint state
+- emit structured logs/events for: run start, chunk start, projection/table start, projection/table complete, chunk complete, verification failure, retryable infrastructure failure, fatal data failure, and run complete
+- expose machine-readable status/health when running as a long-lived service, or produce machine-readable summaries when running as a batch job
+- write durable manifest/checkpoint rows that `flowctl` can read without scraping logs
+- distinguish retryable infrastructure failures from data validation failures, preferably through structured error codes/classes
+- avoid owning global orchestration beyond the assigned range/chunk
+- never require secrets to be passed through `flowctl` logs or operator-visible status messages
+
+`flowctl` should eventually own:
+
+- chunk planning
+- retry policy
+- resume state
+- failure classification
+- dependency ordering between Bronze verification, Silver history load, Silver current projection, serving backfill, checkpoint handoff, and live start
+- operator commands such as `plan`, `start`, `status`, `resume`, `retry-chunk`, `verify`, and `handoff-live`
+
+This design should align with:
+
+```text
+/home/tillman/Documents/ttp-processor-demo/obsrvr-lake/docs/flowctl-control-plane-data-plane-architecture.md
+```
+
 ## Proposed new processes
 
 Implement two bounded cold backfill jobs:
@@ -150,13 +183,15 @@ silver.native_balances_current
 silver.address_balances_current
 ```
 
-Additional outputs requiring separate source analysis:
+Required additional outputs that are not yet covered by `silver-history-loader` and need explicit implementation/source mapping:
 
 ```text
 silver.claimable_balances_current
 silver.ttl_current
 silver.token_registry
 ```
+
+These are not optional for parity with the existing Silver cold/flusher contract. If any cannot be implemented in the first pass, the developer must document the blocker, source-table gap, and API impact before the backfill is considered production-complete.
 
 ### Derivation rules
 
@@ -242,7 +277,9 @@ serving.sv_ledger_stats_recent
 serving.sv_transactions_recent
 serving.sv_operations_recent
 serving.sv_events_recent
+serving.sv_explorer_events_recent
 serving.sv_contract_calls_recent
+serving.sv_tx_receipts
 serving.sv_accounts_current
 serving.sv_account_balances_current
 serving.sv_network_stats_current
@@ -283,15 +320,12 @@ sv_ledger_stats_recent       <- silver.enriched_ledgers
 sv_transactions_recent       <- bronze.transactions_row_v2 + silver/enriched data as needed
 sv_operations_recent         <- silver.enriched_history_operations
 sv_events_recent             <- bronze.contract_events_stream_v1 / silver effects as needed
+sv_explorer_events_recent    <- bronze.contract_events_stream_v1 + event classifier/rules + contract labels as needed
 sv_contract_calls_recent     <- silver.contract_invocations_raw
+sv_tx_receipts               <- bronze transactions/operations/effects + silver enriched rows as needed
 ```
 
-Retention behavior must be explicit. Current live projectors apply recent retention, often 30 days. For cold backfill, choose one mode:
-
-1. `--full-history-serving-feeds=false` default: only materialize recent window as of `end_ledger`.
-2. `--full-history-serving-feeds=true`: materialize entire requested range if API requires it.
-
-Recommendation: default to recent-window semantics to preserve existing serving-table intent.
+Retention behavior is not an open design choice for parity with the current serving implementation: `*_recent` serving tables should materialize the latest 30-day window as of `end_ledger`, not full history. Full historical queries should use Silver DuckLake, not serving Postgres.
 
 ### Current-state projections
 
@@ -309,6 +343,28 @@ sv_network_stats_current     <- aggregate silver.enriched_ledgers + tx/op counts
 ```
 
 Current-state projections should run after `silver-current-state-projector`.
+
+Serving schema tables that exist but do not currently have active projector implementations must be explicitly classified by the developer as one of: backfilled now, seeded/registry-managed, live-only, or out-of-scope with rationale. These include at least:
+
+```text
+sv_offers_current
+sv_liquidity_pools_current
+sv_trades_recent
+sv_asset_holders_top
+sv_search_entities
+sv_asset_metadata
+sv_contract_labels
+sv_defi_protocols
+sv_defi_protocol_contracts
+sv_defi_markets_current
+sv_defi_positions_current
+sv_defi_position_components_current
+sv_defi_user_totals_current
+sv_defi_user_totals_history
+sv_defi_position_history
+sv_defi_prices_current
+sv_defi_protocol_status
+```
 
 ## Handoff checkpoints
 
@@ -444,11 +500,11 @@ scripts/16-verify-cold-to-serving-handoff.sh
 
 ## Open questions for developer
 
-1. Should recent serving tables store only 30 days as of `end_ledger`, or full requested range?
-2. Which Bronze/Silver source is authoritative for `sv_events_recent` and `explorer_events_recent`?
-3. Do `claimable_balances_current`, `ttl_current`, and `token_registry` need to be completed before serving backfill, or can they be separate follow-up projections?
-4. Should `serving-cold-backfill` write to `silver_hot.serving` or a separate serving PostgreSQL database/schema?
-5. Should live projectors be modified to support DuckLake sources directly, or should only bounded cold backfill read DuckLake while live projectors continue reading hot PostgreSQL?
+1. Which Bronze/Silver source is authoritative for `sv_events_recent` and `sv_explorer_events_recent`?
+2. What is the exact source mapping for `claimable_balances_current`, `ttl_current`, and `token_registry`?
+3. Should `serving-cold-backfill` write to `silver_hot.serving` or a separate serving PostgreSQL database/schema? Current production layout uses `silver_hot.serving`.
+4. Should live projectors be modified to support DuckLake sources directly, or should only bounded cold backfill read DuckLake while live projectors continue reading hot PostgreSQL?
+5. How should registry/bootstrap tables such as `sv_defi_protocols`, `sv_asset_metadata`, and `sv_contract_labels` be seeded in production?
 
 ## Required initial delivery
 
@@ -461,7 +517,9 @@ sv_ledger_stats_recent
 sv_transactions_recent
 sv_operations_recent
 sv_events_recent
+sv_explorer_events_recent
 sv_contract_calls_recent
+sv_tx_receipts
 sv_accounts_current
 sv_account_balances_current
 sv_network_stats_current

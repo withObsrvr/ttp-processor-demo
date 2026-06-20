@@ -30,13 +30,13 @@ all: build-server
 # Build the server
 build-server: gen-proto
 	set -e
-	cd $(GO_SRC_DIR) && GOWORK=off $(GOBUILD) -o ../$(BINARY_NAME) main.go
+	cd $(GO_SRC_DIR) && GOWORK=off CGO_ENABLED=0 $(GOBUILD) -o ../$(BINARY_NAME) main.go
 	echo "✓ Server build completed: $(BINARY_NAME)"
 
 # Build with vendored dependencies (offline mode)
 build-server-offline:
 	set -e
-	cd $(GO_SRC_DIR) && GOWORK=off GO111MODULE=on GOPROXY=off go build -mod=vendor -o ../$(BINARY_NAME) main.go
+	cd $(GO_SRC_DIR) && GOWORK=off GO111MODULE=on GOPROXY=off CGO_ENABLED=0 go build -mod=vendor -o ../$(BINARY_NAME) main.go
 	echo "✓ Server build completed in offline mode: $(BINARY_NAME)"
 
 # Clean build artifacts
