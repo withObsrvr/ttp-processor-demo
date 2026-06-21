@@ -2416,6 +2416,39 @@ func (rt *RealtimeTransformer) transformContractDataCurrent(ctx context.Context,
 		return count, fmt.Errorf("failed to flush remaining contract data: %w", err)
 	}
 
+	deletedRows, err := rt.sourceManager.QueryDeletedContractDataSnapshot(ctx, startLedger, endLedger)
+	if err != nil {
+		return count, err
+	}
+	defer deletedRows.Close()
+
+	deleteStmt, err := tx.PrepareContext(ctx, `DELETE FROM contract_data_current WHERE contract_id = $1 AND key_hash = $2`)
+	if err != nil {
+		return count, fmt.Errorf("failed to prepare contract data delete: %w", err)
+	}
+	defer deleteStmt.Close()
+
+	deletedCount := int64(0)
+	for deletedRows.Next() {
+		var contractID, keyHash string
+		if err := deletedRows.Scan(&contractID, &keyHash); err != nil {
+			return count, fmt.Errorf("failed to scan deleted contract data row: %w", err)
+		}
+		result, err := deleteStmt.ExecContext(ctx, contractID, keyHash)
+		if err != nil {
+			return count, fmt.Errorf("failed to delete contract data current row %s/%s: %w", contractID, keyHash, err)
+		}
+		if affected, err := result.RowsAffected(); err == nil {
+			deletedCount += affected
+		}
+	}
+	if err := deletedRows.Err(); err != nil {
+		return count, fmt.Errorf("error iterating deleted contract data: %w", err)
+	}
+	if deletedCount > 0 {
+		log.Printf("🗑️  Removed %d deleted contract_data_current rows", deletedCount)
+	}
+
 	return count, nil
 }
 

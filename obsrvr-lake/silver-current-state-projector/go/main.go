@@ -19,6 +19,7 @@ import (
 var Version = "dev"
 
 const componentID = "silver-current-state-projector"
+const progressInterval = 15 * time.Second
 
 type FailureClass string
 
@@ -38,6 +39,7 @@ type Config struct {
 	Chunk      int64
 	ChunkStart int64
 	ChunkEnd   int64
+	Partitions int
 	Resume     bool
 	Status     bool
 
@@ -48,6 +50,10 @@ type Config struct {
 	SilverMeta    string
 	ManifestPath  string
 	SummaryPath   string
+	S3KeyID       string
+	S3Secret      string
+	S3Region      string
+	S3Endpoint    string
 
 	FlowctlEnabled   bool
 	FlowctlEndpoint  string
@@ -121,12 +127,16 @@ type Projector struct {
 }
 
 type CurrentProjection struct {
-	Name         string
-	TargetTable  string
-	Source       string
-	MaxLedgerCol string
-	KeyExprs     []string
-	SelectSQL    func(*Projector) string
+	Name            string
+	TargetTable     string
+	Source          string
+	SourceLedgerCol string
+	SourceFilter    string
+	PartitionExpr   string
+	MaxLedgerCol    string
+	KeyExprs        []string
+	SelectSQL       func(*Projector, int64, int64) string
+	KeySQL          func(*Projector, int64, int64) string
 }
 
 func main() {
@@ -169,6 +179,10 @@ func parseConfig(args []string) (Config, error) {
 	fs.StringVar(&cfg.SilverMeta, "silver-metadata-schema", getenv("SILVER_DUCKLAKE_METADATA_SCHEMA", "silver_meta"), "Silver DuckLake metadata schema")
 	fs.StringVar(&cfg.ManifestPath, "manifest-path", getenv("MANIFEST_PATH", ""), "JSONL manifest path for batch-local durable status")
 	fs.StringVar(&cfg.SummaryPath, "summary-path", getenv("SUMMARY_PATH", ""), "optional JSON summary output path")
+	fs.StringVar(&cfg.S3KeyID, "s3-key-id", getenv("S3_KEY_ID", getenv("B2_KEY_ID", "")), "S3/B2 access key ID")
+	fs.StringVar(&cfg.S3Secret, "s3-secret", getenv("S3_SECRET", getenv("B2_KEY_SECRET", "")), "S3/B2 secret access key")
+	fs.StringVar(&cfg.S3Region, "s3-region", getenv("S3_REGION", getenv("B2_REGION", "us-west-004")), "S3/B2 region")
+	fs.StringVar(&cfg.S3Endpoint, "s3-endpoint", getenv("S3_ENDPOINT", getenv("B2_ENDPOINT", "")), "S3/B2 endpoint")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -240,6 +254,10 @@ func NewProjector(ctx context.Context, cfg Config) (*Projector, error) {
 			return nil, fmt.Errorf("%s: %w", stmt, err)
 		}
 	}
+	if err := p.configureS3(ctx); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if err := p.attachSilver(ctx); err != nil {
 		db.Close()
 		return nil, err
@@ -257,6 +275,21 @@ func NewProjector(ctx context.Context, cfg Config) (*Projector, error) {
 
 func NewProjectorWithDB(db *sql.DB, cfg Config) *Projector {
 	return &Projector{db: db, cfg: cfg, jsonl: JSONLManifest{path: cfg.ManifestPath}}
+}
+
+func (p *Projector) configureS3(ctx context.Context) error {
+	if p.cfg.S3KeyID == "" && p.cfg.S3Secret == "" {
+		return nil
+	}
+	if p.cfg.S3KeyID == "" || p.cfg.S3Secret == "" {
+		return errors.New("--s3-key-id and --s3-secret must be provided together")
+	}
+	endpoint := strings.TrimPrefix(strings.TrimPrefix(p.cfg.S3Endpoint, "https://"), "http://")
+	stmt := fmt.Sprintf("CREATE OR REPLACE SECRET (TYPE S3, KEY_ID %s, SECRET %s, REGION %s, ENDPOINT %s, URL_STYLE 'path')", q(p.cfg.S3KeyID), q(p.cfg.S3Secret), q(p.cfg.S3Region), q(endpoint))
+	if _, err := p.db.ExecContext(ctx, stmt); err != nil {
+		return fmt.Errorf("create s3 secret: %w", err)
+	}
+	return nil
 }
 
 func (p *Projector) Close() error {
@@ -277,7 +310,12 @@ func (p *Projector) attachSilver(ctx context.Context) error {
 func (p *Projector) Run(ctx context.Context, out io.Writer) error {
 	cfg := p.cfg
 	chunks := cfg.PlannedChunks()
-	emit(out, Event{EventType: "component.run_started", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, Status: "running", FlowctlEndpoint: safeEndpoint(cfg.FlowctlEndpoint), Metadata: map[string]interface{}{"version": Version, "range_start": cfg.Start, "range_end": cfg.End, "chunk_count": len(chunks), "capabilities": []string{"current-state-as-of", "deterministic-chunk-inputs", "idempotent-replace-contract", "resume-manifest", "typed-failures", "duplicate-key-verify", "max-ledger-verify"}}})
+	ledgerWindowStart, ledgerWindowEnd := cfg.Start, cfg.End
+	if len(chunks) > 0 {
+		ledgerWindowStart, ledgerWindowEnd = chunks[0].Start, chunks[0].End
+	}
+	ledgerWindows := PlanChunks(ledgerWindowStart, ledgerWindowEnd, cfg.Chunk)
+	emit(out, Event{EventType: "component.run_started", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, Status: "running", FlowctlEndpoint: safeEndpoint(cfg.FlowctlEndpoint), Metadata: map[string]interface{}{"version": Version, "range_start": ledgerWindowStart, "range_end": ledgerWindowEnd, "chunk_count": len(chunks), "ledger_window_count": len(ledgerWindows), "ledger_window_size": cfg.Chunk, "capabilities": []string{"current-state-as-of", "deterministic-chunk-inputs", "idempotent-replace-contract", "ledger-window-staging-merge", "resume-manifest", "typed-failures", "duplicate-key-verify", "max-ledger-verify"}}})
 
 	for _, chunk := range chunks {
 		if cfg.Resume {
@@ -293,13 +331,15 @@ func (p *Projector) Run(ctx context.Context, out io.Writer) error {
 		emit(out, Event{EventType: "component.chunk_started", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, Status: "running"})
 		for _, projection := range executableCurrentProjections() {
 			emit(out, Event{EventType: "component.projection_started", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "replace_current", Status: "running"})
-			rows, err := p.replaceProjection(ctx, chunk, projection)
+			stopProgress := startProgressHeartbeat(out, Event{ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "replace_current", Status: "running"}, map[string]interface{}{"source": projection.Source, "mode": "replace_as_of", "as_of_ledger": chunk.End})
+			rows, err := p.replaceProjection(ctx, out, chunk, projection)
+			stopProgress()
 			if err != nil {
 				_ = p.markManifest(ctx, chunk.Start, chunk.End, projection.Name, "failed", err.Error(), 0)
 				emit(out, Event{EventType: "component.failed", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "replace_current", Status: "failed", FailureClass: classifyFailure(err), Error: err.Error(), Recommended: recommendedAction(classifyFailure(err))})
 				return err
 			}
-			emit(out, Event{EventType: "component.projection_completed", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "replace_current", Status: "completed", Metadata: map[string]interface{}{"source": projection.Source, "mode": "replace_as_of", "row_count": rows, "as_of_ledger": cfg.End}})
+			emit(out, Event{EventType: "component.projection_completed", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "replace_current", Status: "completed", Metadata: map[string]interface{}{"source": projection.Source, "mode": "replace_as_of", "row_count": rows, "as_of_ledger": chunk.End}})
 		}
 		emit(out, Event{EventType: "component.chunk_completed", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, Status: "completed"})
 	}
@@ -322,21 +362,60 @@ func silverCurrentProjections() []Projection {
 }
 
 func executableCurrentProjections() []CurrentProjection {
+	assetKey := addressBalanceAssetKeyExpr()
 	return []CurrentProjection{
-		{Name: "accounts_current", TargetTable: "accounts_current", Source: "accounts_snapshot", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"account_id"}, SelectSQL: selectAccountsCurrent},
-		{Name: "trustlines_current", TargetTable: "trustlines_current", Source: "trustlines_snapshot", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"account_id", "asset_type", "asset_code", "asset_issuer", "liquidity_pool_id"}, SelectSQL: selectTrustlinesCurrent},
-		{Name: "offers_current", TargetTable: "offers_current", Source: "offers_snapshot", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"offer_id"}, SelectSQL: selectOffersCurrent},
-		{Name: "contract_data_current", TargetTable: "contract_data_current", Source: "contract_data_changes", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"contract_id", "key_hash"}, SelectSQL: selectContractDataCurrent},
-		{Name: "native_balances_current", TargetTable: "native_balances_current", Source: "balance_changes", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"account_id"}, SelectSQL: selectNativeBalancesCurrent},
-		{Name: "address_balances_current", TargetTable: "address_balances_current", Source: "balance_changes", MaxLedgerCol: "last_updated_ledger", KeyExprs: []string{"owner_address", "asset_key"}, SelectSQL: selectAddressBalancesCurrent},
+		{Name: "accounts_current", TargetTable: "accounts_current", Source: "accounts_snapshot", SourceLedgerCol: "ledger_sequence", PartitionExpr: "account_id", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"account_id"}, SelectSQL: selectAccountsCurrent, KeySQL: selectAccountsCurrentKeys},
+		{Name: "trustlines_current", TargetTable: "trustlines_current", Source: "trustlines_snapshot", SourceLedgerCol: "ledger_sequence", PartitionExpr: "concat(account_id, ':', COALESCE(asset_type, ''), ':', COALESCE(asset_code, ''), ':', COALESCE(asset_issuer, ''))", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"account_id", "asset_type", "asset_code", "asset_issuer", "liquidity_pool_id"}, SelectSQL: selectTrustlinesCurrent, KeySQL: selectTrustlinesCurrentKeys},
+		{Name: "offers_current", TargetTable: "offers_current", Source: "offers_snapshot", SourceLedgerCol: "ledger_sequence", PartitionExpr: "offer_id", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"offer_id"}, SelectSQL: selectOffersCurrent, KeySQL: selectOffersCurrentKeys},
+		{Name: "contract_data_current", TargetTable: "contract_data_current", Source: "contract_data_changes", SourceLedgerCol: "ledger_sequence", PartitionExpr: "concat(contract_id, ':', key_hash)", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"contract_id", "key_hash"}, SelectSQL: selectContractDataCurrent, KeySQL: selectContractDataCurrentKeys},
+		{Name: "native_balances_current", TargetTable: "native_balances_current", Source: "balance_changes", SourceLedgerCol: "ledger_sequence", SourceFilter: "(asset_type = 'native' OR asset_code = 'XLM')", PartitionExpr: "address", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"account_id"}, SelectSQL: selectNativeBalancesCurrent, KeySQL: selectNativeBalancesCurrentKeys},
+		{Name: "address_balances_current", TargetTable: "address_balances_current", Source: "balance_changes", SourceLedgerCol: "ledger_sequence", PartitionExpr: "concat(address, ':', " + assetKey + ")", MaxLedgerCol: "last_updated_ledger", KeyExprs: []string{"owner_address", "asset_key"}, SelectSQL: selectAddressBalancesCurrent, KeySQL: selectAddressBalancesCurrentKeys},
 	}
 }
 
-func (p *Projector) replaceProjection(ctx context.Context, chunk Chunk, projection CurrentProjection) (int64, error) {
+func (p *Projector) replaceProjection(ctx context.Context, out io.Writer, chunk Chunk, projection CurrentProjection) (int64, error) {
 	if err := p.markManifest(ctx, chunk.Start, chunk.End, projection.Name, "running", "", 0); err != nil {
 		return 0, err
 	}
 	if err := p.ensureTargetTable(ctx, projection); err != nil {
+		return 0, err
+	}
+
+	staging := p.stagingTable(projection)
+	if _, err := p.db.ExecContext(ctx, "DROP TABLE IF EXISTS "+staging); err != nil {
+		return 0, fmt.Errorf("drop staging %s: %w", projection.Name, err)
+	}
+	if _, err := p.db.ExecContext(ctx, fmt.Sprintf("CREATE TABLE %s AS SELECT * FROM (%s) seed WHERE false", staging, projection.SelectSQL(p, chunk.Start, chunk.Start-1))); err != nil {
+		return 0, fmt.Errorf("create staging %s: %w", projection.Name, err)
+	}
+	windows := PlanChunks(chunk.Start, chunk.End, p.cfg.Chunk)
+	for _, window := range windows {
+		keys := p.stagingTable(CurrentProjection{TargetTable: projection.TargetTable + "__keys"})
+		delta := p.stagingTable(CurrentProjection{TargetTable: projection.TargetTable + "__delta"})
+		emit(out, Event{EventType: "component.ledger_window_started", ComponentID: p.cfg.Component(), RunID: p.cfg.RunID(), Network: p.cfg.Network, ChunkStart: window.Start, ChunkEnd: window.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "staging_merge", Status: "running", Metadata: map[string]interface{}{"window_index": window.Index, "window_count": len(windows)}})
+		if _, err := p.db.ExecContext(ctx, "DROP TABLE IF EXISTS "+keys); err != nil {
+			return 0, fmt.Errorf("drop keys %s window %d: %w", projection.Name, window.Index, err)
+		}
+		if _, err := p.db.ExecContext(ctx, "DROP TABLE IF EXISTS "+delta); err != nil {
+			return 0, fmt.Errorf("drop delta %s window %d: %w", projection.Name, window.Index, err)
+		}
+		if _, err := p.db.ExecContext(ctx, fmt.Sprintf("CREATE TABLE %s AS %s", keys, projection.KeySQL(p, window.Start, window.End))); err != nil {
+			return 0, fmt.Errorf("create keys %s window %d: %w", projection.Name, window.Index, err)
+		}
+		if _, err := p.db.ExecContext(ctx, fmt.Sprintf("CREATE TABLE %s AS %s", delta, projection.SelectSQL(p, window.Start, window.End))); err != nil {
+			return 0, fmt.Errorf("create delta %s window %d: %w", projection.Name, window.Index, err)
+		}
+		if _, err := p.db.ExecContext(ctx, p.deleteSeenKeysSQL(staging, keys, projection)); err != nil {
+			return 0, fmt.Errorf("delete seen keys %s window %d: %w", projection.Name, window.Index, err)
+		}
+		if _, err := p.db.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s SELECT * FROM %s", staging, delta)); err != nil {
+			return 0, fmt.Errorf("insert staging %s window %d: %w", projection.Name, window.Index, err)
+		}
+		_, _ = p.db.ExecContext(ctx, "DROP TABLE IF EXISTS "+keys)
+		_, _ = p.db.ExecContext(ctx, "DROP TABLE IF EXISTS "+delta)
+		emit(out, Event{EventType: "component.ledger_window_completed", ComponentID: p.cfg.Component(), RunID: p.cfg.RunID(), Network: p.cfg.Network, ChunkStart: window.Start, ChunkEnd: window.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "staging_merge", Status: "completed", Metadata: map[string]interface{}{"window_index": window.Index, "window_count": len(windows)}})
+	}
+	if _, err := p.verifyProjectionTable(ctx, projection, staging); err != nil {
 		return 0, err
 	}
 	tx, err := p.db.BeginTx(ctx, nil)
@@ -347,7 +426,7 @@ func (p *Projector) replaceProjection(ctx context.Context, chunk Chunk, projecti
 		_ = tx.Rollback()
 		return 0, fmt.Errorf("delete %s: %w", projection.Name, err)
 	}
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s %s", p.table(projection.TargetTable), projection.SelectSQL(p))); err != nil {
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s SELECT * FROM %s", p.table(projection.TargetTable), staging)); err != nil {
 		_ = tx.Rollback()
 		return 0, fmt.Errorf("insert %s: %w", projection.Name, err)
 	}
@@ -362,11 +441,12 @@ func (p *Projector) replaceProjection(ctx context.Context, chunk Chunk, projecti
 	if err := p.markManifest(ctx, chunk.Start, chunk.End, projection.Name, "completed", "", rowCount); err != nil {
 		return 0, err
 	}
+	_, _ = p.db.ExecContext(ctx, "DROP TABLE IF EXISTS "+staging)
 	return rowCount, nil
 }
 
 func (p *Projector) ensureTargetTable(ctx context.Context, projection CurrentProjection) error {
-	stmt := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s AS SELECT * FROM (%s) seed WHERE false", p.table(projection.TargetTable), projection.SelectSQL(p))
+	stmt := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s AS SELECT * FROM (%s) seed WHERE false", p.table(projection.TargetTable), projection.SelectSQL(p, p.cfg.Start, p.cfg.Start-1))
 	if _, err := p.db.ExecContext(ctx, stmt); err != nil {
 		return fmt.Errorf("create %s: %w", projection.Name, err)
 	}
@@ -374,8 +454,12 @@ func (p *Projector) ensureTargetTable(ctx context.Context, projection CurrentPro
 }
 
 func (p *Projector) verifyProjection(ctx context.Context, projection CurrentProjection) (int64, error) {
+	return p.verifyProjectionTable(ctx, projection, p.table(projection.TargetTable))
+}
+
+func (p *Projector) verifyProjectionTable(ctx context.Context, projection CurrentProjection, table string) (int64, error) {
 	var rowCount int64
-	if err := p.db.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE network = %s", p.table(projection.TargetTable), q(p.cfg.Network))).Scan(&rowCount); err != nil {
+	if err := p.db.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE network = %s", table, q(p.cfg.Network))).Scan(&rowCount); err != nil {
 		return 0, fmt.Errorf("count %s: %w", projection.Name, err)
 	}
 	parts := make([]string, 0, len(projection.KeyExprs))
@@ -389,7 +473,7 @@ func (p *Projector) verifyProjection(ctx context.Context, projection CurrentProj
 		WHERE network = %s
 		GROUP BY %s
 		HAVING COUNT(*) > 1
-	) SELECT COUNT(*) FROM keyed`, strings.Join(parts, ", "), p.table(projection.TargetTable), q(p.cfg.Network), strings.Join(parts, ", "))
+	) SELECT COUNT(*) FROM keyed`, strings.Join(parts, ", "), table, q(p.cfg.Network), strings.Join(parts, ", "))
 	if err := p.db.QueryRowContext(ctx, dupSQL).Scan(&duplicates); err != nil {
 		return 0, fmt.Errorf("duplicate-key verification %s: %w", projection.Name, err)
 	}
@@ -397,7 +481,7 @@ func (p *Projector) verifyProjection(ctx context.Context, projection CurrentProj
 		return 0, fmt.Errorf("duplicate-key verification failed for %s: %d duplicate key groups", projection.Name, duplicates)
 	}
 	var maxLedger sql.NullInt64
-	maxSQL := fmt.Sprintf("SELECT MAX(%s) FROM %s WHERE network = %s", ident(projection.MaxLedgerCol), p.table(projection.TargetTable), q(p.cfg.Network))
+	maxSQL := fmt.Sprintf("SELECT MAX(%s) FROM %s WHERE network = %s", ident(projection.MaxLedgerCol), table, q(p.cfg.Network))
 	if err := p.db.QueryRowContext(ctx, maxSQL).Scan(&maxLedger); err != nil {
 		return 0, fmt.Errorf("max-ledger verification %s: %w", projection.Name, err)
 	}
@@ -405,6 +489,30 @@ func (p *Projector) verifyProjection(ctx context.Context, projection CurrentProj
 		return 0, fmt.Errorf("max-ledger verification failed for %s: max %d > end ledger %d", projection.Name, maxLedger.Int64, p.cfg.End)
 	}
 	return rowCount, nil
+}
+
+func (p *Projector) sourceFilter(projection CurrentProjection, _ int64, end int64) string {
+	parts := []string{
+		fmt.Sprintf("network = %s", q(p.cfg.Network)),
+		fmt.Sprintf("%s <= %d", ident(projection.SourceLedgerCol), end),
+	}
+	if projection.SourceFilter != "" {
+		parts = append(parts, fmt.Sprintf("(%s)", projection.SourceFilter))
+	}
+	return strings.Join(parts, " AND ")
+}
+
+func (p *Projector) deleteSeenKeysSQL(staging, keys string, projection CurrentProjection) string {
+	parts := make([]string, 0, len(projection.KeyExprs))
+	for _, key := range projection.KeyExprs {
+		col := ident(key)
+		parts = append(parts, fmt.Sprintf("COALESCE(CAST(s.%s AS VARCHAR), '') = COALESCE(CAST(k.%s AS VARCHAR), '')", col, col))
+	}
+	return fmt.Sprintf("DELETE FROM %s AS s WHERE EXISTS (SELECT 1 FROM %s AS k WHERE %s)", staging, keys, strings.Join(parts, " AND "))
+}
+
+func (p *Projector) stagingTable(projection CurrentProjection) string {
+	return p.table(projection.TargetTable + "__staging")
 }
 
 func (p *Projector) ensureSchema(ctx context.Context) error {
@@ -460,7 +568,7 @@ func (p *Projector) chunkComplete(ctx context.Context, start, end int64) (bool, 
 	return count == int64(len(executableCurrentProjections())), nil
 }
 
-func selectAccountsCurrent(p *Projector) string {
+func selectAccountsCurrent(p *Projector, start, end int64) string {
 	return fmt.Sprintf(`SELECT network, account_id, balance, sequence_number, num_subentries,
 		num_sponsoring, num_sponsored, home_domain, master_weight, low_threshold, med_threshold,
 		high_threshold, flags, auth_required, auth_revocable, auth_immutable, auth_clawback_enabled,
@@ -469,11 +577,19 @@ func selectAccountsCurrent(p *Projector) string {
 		FROM (
 			SELECT *, row_number() OVER (PARTITION BY account_id ORDER BY ledger_sequence DESC, COALESCE(updated_at, closed_at) DESC NULLS LAST) AS rn
 			FROM %s
-			WHERE network = %s AND ledger_sequence <= %d
-		) WHERE rn = 1`, p.table("accounts_snapshot"), q(p.cfg.Network), p.cfg.End)
+			WHERE %s
+		) WHERE rn = 1`, p.table("accounts_snapshot"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
 }
 
-func selectTrustlinesCurrent(p *Projector) string {
+func selectAccountsCurrentKeys(p *Projector, start, end int64) string {
+	return fmt.Sprintf(`SELECT account_id FROM (
+			SELECT account_id, row_number() OVER (PARTITION BY account_id ORDER BY ledger_sequence DESC, COALESCE(updated_at, closed_at) DESC NULLS LAST) AS rn
+			FROM %s
+			WHERE %s
+		) WHERE rn = 1`, p.table("accounts_snapshot"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
+}
+
+func selectTrustlinesCurrent(p *Projector, start, end int64) string {
 	return fmt.Sprintf(`SELECT network, account_id, asset_type, asset_issuer, asset_code,
 		NULL::VARCHAR AS liquidity_pool_id,
 		TRY_CAST(ROUND(TRY_CAST(balance AS DOUBLE) * 10000000) AS BIGINT) AS balance,
@@ -491,11 +607,22 @@ func selectTrustlinesCurrent(p *Projector) string {
 				ORDER BY ledger_sequence DESC, created_at DESC NULLS LAST
 			) AS rn
 			FROM %s
-			WHERE network = %s AND ledger_sequence <= %d
-		) WHERE rn = 1`, p.table("trustlines_snapshot"), q(p.cfg.Network), p.cfg.End)
+			WHERE %s
+		) WHERE rn = 1`, p.table("trustlines_snapshot"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
 }
 
-func selectOffersCurrent(p *Projector) string {
+func selectTrustlinesCurrentKeys(p *Projector, start, end int64) string {
+	return fmt.Sprintf(`SELECT account_id, asset_type, asset_code, asset_issuer, NULL::VARCHAR AS liquidity_pool_id FROM (
+			SELECT account_id, asset_type, asset_code, asset_issuer, row_number() OVER (
+				PARTITION BY account_id, asset_type, COALESCE(asset_code, ''), COALESCE(asset_issuer, '')
+				ORDER BY ledger_sequence DESC, created_at DESC NULLS LAST
+			) AS rn
+			FROM %s
+			WHERE %s
+		) WHERE rn = 1`, p.table("trustlines_snapshot"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
+}
+
+func selectOffersCurrent(p *Projector, start, end int64) string {
 	return fmt.Sprintf(`SELECT network, offer_id, seller_account AS seller_id,
 		selling_asset_type, selling_asset_code, selling_asset_issuer,
 		buying_asset_type, buying_asset_code, buying_asset_issuer,
@@ -512,11 +639,19 @@ func selectOffersCurrent(p *Projector) string {
 		FROM (
 			SELECT *, row_number() OVER (PARTITION BY offer_id ORDER BY ledger_sequence DESC, created_at DESC NULLS LAST) AS rn
 			FROM %s
-			WHERE network = %s AND ledger_sequence <= %d
-		) WHERE rn = 1`, p.table("offers_snapshot"), q(p.cfg.Network), p.cfg.End)
+			WHERE %s
+		) WHERE rn = 1`, p.table("offers_snapshot"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
 }
 
-func selectContractDataCurrent(p *Projector) string {
+func selectOffersCurrentKeys(p *Projector, start, end int64) string {
+	return fmt.Sprintf(`SELECT offer_id FROM (
+			SELECT offer_id, row_number() OVER (PARTITION BY offer_id ORDER BY ledger_sequence DESC, created_at DESC NULLS LAST) AS rn
+			FROM %s
+			WHERE %s
+		) WHERE rn = 1`, p.table("offers_snapshot"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
+}
+
+func selectContractDataCurrent(p *Projector, start, end int64) string {
 	return fmt.Sprintf(`SELECT network, contract_id, key_hash, contract_durability AS durability,
 		asset_type, asset_code, asset_issuer, data_value,
 		last_modified_ledger, ledger_sequence, closed_at, closed_at AS created_at, ledger_range,
@@ -527,11 +662,22 @@ func selectContractDataCurrent(p *Projector) string {
 				ORDER BY ledger_sequence DESC, last_modified_ledger DESC NULLS LAST, closed_at DESC NULLS LAST
 			) AS rn
 			FROM %s
-			WHERE network = %s AND ledger_sequence <= %d
-		) WHERE rn = 1 AND COALESCE(deleted, false) = false`, p.table("contract_data_changes"), q(p.cfg.Network), p.cfg.End)
+			WHERE %s
+		) WHERE rn = 1 AND COALESCE(deleted, false) = false`, p.table("contract_data_changes"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
 }
 
-func selectNativeBalancesCurrent(p *Projector) string {
+func selectContractDataCurrentKeys(p *Projector, start, end int64) string {
+	return fmt.Sprintf(`SELECT contract_id, key_hash FROM (
+			SELECT contract_id, key_hash, row_number() OVER (
+				PARTITION BY contract_id, key_hash
+				ORDER BY ledger_sequence DESC, last_modified_ledger DESC NULLS LAST, closed_at DESC NULLS LAST
+			) AS rn
+			FROM %s
+			WHERE %s
+		) WHERE rn = 1`, p.table("contract_data_changes"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
+}
+
+func selectNativeBalancesCurrent(p *Projector, start, end int64) string {
 	return fmt.Sprintf(`SELECT network, address AS account_id, TRY_CAST(balance AS BIGINT) AS balance,
 		0::BIGINT AS buying_liabilities, 0::BIGINT AS selling_liabilities,
 		NULL::INTEGER AS num_subentries, NULL::INTEGER AS num_sponsoring, NULL::INTEGER AS num_sponsored,
@@ -543,16 +689,31 @@ func selectNativeBalancesCurrent(p *Projector) string {
 				ORDER BY ledger_sequence DESC, ledger_closed_at DESC NULLS LAST
 			) AS rn
 			FROM %s
-			WHERE network = %s AND ledger_sequence <= %d AND (asset_type = 'native' OR asset_code = 'XLM')
-		) WHERE rn = 1 AND COALESCE(deleted, false) = false`, p.table("balance_changes"), q(p.cfg.Network), p.cfg.End)
+			WHERE %s
+		) WHERE rn = 1 AND COALESCE(deleted, false) = false`, p.table("balance_changes"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence", SourceFilter: "(asset_type = 'native' OR asset_code = 'XLM')"}, start, end))
 }
 
-func selectAddressBalancesCurrent(p *Projector) string {
-	assetKey := `CASE
+func selectNativeBalancesCurrentKeys(p *Projector, start, end int64) string {
+	return fmt.Sprintf(`SELECT address AS account_id FROM (
+			SELECT address, row_number() OVER (
+				PARTITION BY address
+				ORDER BY ledger_sequence DESC, ledger_closed_at DESC NULLS LAST
+			) AS rn
+			FROM %s
+			WHERE %s
+		) WHERE rn = 1`, p.table("balance_changes"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence", SourceFilter: "(asset_type = 'native' OR asset_code = 'XLM')"}, start, end))
+}
+
+func addressBalanceAssetKeyExpr() string {
+	return `CASE
 		WHEN asset_type = 'native' OR asset_code = 'XLM' THEN 'native:XLM'
 		WHEN asset_issuer IS NULL OR asset_issuer = '' THEN concat(COALESCE(asset_type, 'asset'), ':', COALESCE(asset_code, ''))
 		ELSE concat(COALESCE(asset_type, 'asset'), ':', COALESCE(asset_code, ''), ':', asset_issuer)
 	END`
+}
+
+func selectAddressBalancesCurrent(p *Projector, start, end int64) string {
+	assetKey := addressBalanceAssetKeyExpr()
 	balanceRaw := `CASE
 		WHEN asset_type = 'native' OR asset_code = 'XLM' THEN TRY_CAST(balance AS BIGINT)
 		ELSE TRY_CAST(ROUND(TRY_CAST(balance AS DOUBLE) * 10000000) AS BIGINT)
@@ -572,8 +733,20 @@ func selectAddressBalancesCurrent(p *Projector) string {
 				ORDER BY ledger_sequence DESC, ledger_closed_at DESC NULLS LAST
 			) AS rn
 			FROM %s
-			WHERE network = %s AND ledger_sequence <= %d
-		) WHERE rn = 1 AND COALESCE(deleted, false) = false`, balanceRaw, balanceDisplay, assetKey, assetKey, p.table("balance_changes"), q(p.cfg.Network), p.cfg.End)
+			WHERE %s
+		) WHERE rn = 1 AND COALESCE(deleted, false) = false`, balanceRaw, balanceDisplay, assetKey, assetKey, p.table("balance_changes"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
+}
+
+func selectAddressBalancesCurrentKeys(p *Projector, start, end int64) string {
+	assetKey := addressBalanceAssetKeyExpr()
+	return fmt.Sprintf(`SELECT address AS owner_address, asset_key FROM (
+			SELECT address, %s AS asset_key, row_number() OVER (
+				PARTITION BY address, %s
+				ORDER BY ledger_sequence DESC, ledger_closed_at DESC NULLS LAST
+			) AS rn
+			FROM %s
+			WHERE %s
+		) WHERE rn = 1`, assetKey, assetKey, p.table("balance_changes"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
 }
 
 func PlanChunks(start, end, size int64) []Chunk {
@@ -662,6 +835,38 @@ func emit(out io.Writer, ev Event) {
 	_ = json.NewEncoder(out).Encode(ev)
 }
 
+func startProgressHeartbeat(out io.Writer, base Event, metadata map[string]interface{}) func() {
+	started := time.Now()
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(progressInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				progressMetadata := map[string]interface{}{}
+				for k, v := range metadata {
+					progressMetadata[k] = v
+				}
+				progressMetadata["elapsed_seconds"] = int64(time.Since(started).Seconds())
+				progressMetadata["heartbeat_interval_seconds"] = int64(progressInterval.Seconds())
+				ev := base
+				ev.EventType = "component.projection_progress"
+				ev.Metadata = progressMetadata
+				emit(out, ev)
+			case <-done:
+				return
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-stopped
+	}
+}
+
 func writeStatus(out io.Writer, cfg Config) error {
 	return json.NewEncoder(out).Encode(map[string]interface{}{
 		"component_id": cfg.Component(),
@@ -742,6 +947,18 @@ func envInt64(k string, fallback int64) int64 {
 		return fallback
 	}
 	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return fallback
+	}
+	return n
+}
+
+func envInt(k string, fallback int) int {
+	v := os.Getenv(k)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
 	if err != nil {
 		return fallback
 	}

@@ -1504,6 +1504,7 @@ type ContractDataFilters struct {
 	ContractID string
 	KeyHash    string
 	Durability string // "persistent" or "temporary"
+	LiveOnly   bool   // exclude TTL-expired rows when true
 	Limit      int
 	Cursor     *ContractDataCursor
 }

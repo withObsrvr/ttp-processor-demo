@@ -1146,10 +1146,10 @@ func (r *BronzeColdReader) QueryContractDataSnapshot(ctx context.Context, startL
 				closed_at,
 				closed_at AS created_at,
 				ledger_range,
+				deleted,
 				ROW_NUMBER() OVER (PARTITION BY contract_id, ledger_key_hash ORDER BY ledger_sequence DESC) as rn
 			FROM %s
 			WHERE ledger_sequence BETWEEN $1 AND $2
-			  AND deleted = false
 		)
 		SELECT
 			contract_id,
@@ -1165,12 +1165,38 @@ func (r *BronzeColdReader) QueryContractDataSnapshot(ctx context.Context, startL
 			created_at,
 			ledger_range
 		FROM ranked
-		WHERE rn = 1
+		WHERE rn = 1 AND deleted = false
 	`, r.tableName("contract_data_snapshot_v1"))
 
 	rows, err := r.db.QueryContext(ctx, query, startLedger, endLedger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query contract data snapshot from cold: %w", err)
+	}
+
+	return rows, nil
+}
+
+// QueryDeletedContractDataSnapshot reads the latest contract-data keys whose current
+// row inside the ledger range is a deletion from the cold/backfill source.
+func (r *BronzeColdReader) QueryDeletedContractDataSnapshot(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
+	query := fmt.Sprintf(`
+		WITH ranked AS (
+			SELECT
+				contract_id,
+				ledger_key_hash AS key_hash,
+				deleted,
+				ROW_NUMBER() OVER (PARTITION BY contract_id, ledger_key_hash ORDER BY ledger_sequence DESC) as rn
+			FROM %s
+			WHERE ledger_sequence BETWEEN $1 AND $2
+		)
+		SELECT contract_id, key_hash
+		FROM ranked
+		WHERE rn = 1 AND deleted = true
+	`, r.tableName("contract_data_snapshot_v1"))
+
+	rows, err := r.db.QueryContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query deleted contract data snapshot from cold: %w", err)
 	}
 
 	return rows, nil
