@@ -237,6 +237,38 @@ definitions:
       website:
         type: string
     type: object
+  main.ContractTransactionEntry:
+    properties:
+      closed_at:
+        type: string
+      contract_id:
+        type: string
+      function_name:
+        type: string
+      ledger_sequence:
+        type: integer
+      operation_index:
+        type: integer
+      source_account:
+        type: string
+      successful:
+        type: boolean
+      transaction_hash:
+        type: string
+    type: object
+  main.ContractTransactionsResponse:
+    properties:
+      contract_id:
+        type: string
+      count:
+        type: integer
+      has_more:
+        type: boolean
+      transactions:
+        items:
+          $ref: '#/definitions/main.ContractTransactionEntry'
+        type: array
+    type: object
   main.DecodedOperation:
     properties:
       amount:
@@ -1391,6 +1423,203 @@ definitions:
       wallet_type:
         type: string
     type: object
+  main.SmartWalletAccountSection:
+    properties:
+      balances:
+        items:
+          $ref: '#/definitions/main.SmartWalletBalanceSummary'
+        type: array
+      created_at:
+        type: string
+      created_ledger:
+        type: integer
+      last_activity_at:
+        type: string
+      native_balance:
+        type: string
+      num_subentries:
+        type: integer
+      sequence_number:
+        type: string
+      source:
+        type: string
+    type: object
+  main.SmartWalletActivitySummary:
+    properties:
+      active_windows:
+        items:
+          type: string
+        type: array
+      approvals_30d:
+        type: integer
+      common_functions:
+        items:
+          $ref: '#/definitions/main.SmartWalletCommonFunction'
+        type: array
+      common_protocols:
+        items:
+          $ref: '#/definitions/main.SmartWalletCommonProtocol'
+        type: array
+      policy_updates_30d:
+        type: integer
+      protocol_interactions_30d:
+        type: integer
+      successful_transactions_7d:
+        type: integer
+      total_transactions_7d:
+        type: integer
+      unique_callers_30d:
+        type: integer
+    type: object
+  main.SmartWalletApprovalModel:
+    properties:
+      min_signers_estimate:
+        type: integer
+      summary:
+        type: string
+      type:
+        type: string
+    type: object
+  main.SmartWalletBalanceSummary:
+    properties:
+      asset_code:
+        type: string
+      asset_issuer:
+        type: string
+      asset_type:
+        type: string
+      balance:
+        type: string
+      balance_source:
+        type: string
+      decimals:
+        type: integer
+      symbol:
+        type: string
+      token_contract_id:
+        type: string
+      value_usd:
+        type: string
+    type: object
+  main.SmartWalletBalancesResponse:
+    properties:
+      balance_status:
+        type: string
+      balances:
+        items:
+          $ref: '#/definitions/main.SmartWalletBalanceSummary'
+        type: array
+      contract_id:
+        type: string
+      count:
+        type: integer
+      native_balance:
+        type: string
+      native_balance_source:
+        type: string
+      partial:
+        type: boolean
+    type: object
+  main.SmartWalletCommonFunction:
+    properties:
+      count:
+        type: integer
+      name:
+        type: string
+    type: object
+  main.SmartWalletCommonProtocol:
+    properties:
+      contract_id:
+        type: string
+      display_name:
+        type: string
+      interaction_count:
+        type: integer
+    type: object
+  main.SmartWalletContractSection:
+    properties:
+      deployer:
+        type: string
+      exported_functions:
+        items:
+          type: string
+        type: array
+      interface_type:
+        type: string
+      observed_functions:
+        items:
+          type: string
+        type: array
+      persistent_entries:
+        type: integer
+      state_size_bytes:
+        type: integer
+      storage_entries:
+        type: integer
+      temporary_entries:
+        type: integer
+      wasm_hash:
+        type: string
+    type: object
+  main.SmartWalletDetailMeta:
+    properties:
+      generated_at:
+        type: string
+      partial:
+        type: boolean
+      sources:
+        items:
+          type: string
+        type: array
+    type: object
+  main.SmartWalletDetailResponse:
+    properties:
+      account:
+        $ref: '#/definitions/main.SmartWalletAccountSection'
+      activity_summary:
+        $ref: '#/definitions/main.SmartWalletActivitySummary'
+      contract:
+        $ref: '#/definitions/main.SmartWalletContractSection'
+      contract_id:
+        type: string
+      display_name:
+        type: string
+      is_smart_wallet:
+        type: boolean
+      meta:
+        $ref: '#/definitions/main.SmartWalletDetailMeta'
+      policies:
+        $ref: '#/definitions/main.SmartWalletPoliciesSection'
+      rent:
+        $ref: '#/definitions/main.SmartWalletRentSection'
+      session_keys:
+        $ref: '#/definitions/main.SmartWalletSessionKeysSection'
+      signer_config:
+        $ref: '#/definitions/main.SmartWalletSignerConfigSection'
+      timeline:
+        items:
+          $ref: '#/definitions/main.SmartWalletTimelineItem'
+        type: array
+      wallet:
+        $ref: '#/definitions/main.SmartWalletIdentitySection'
+    type: object
+  main.SmartWalletIdentitySection:
+    properties:
+      classification_source:
+        type: string
+      confidence:
+        type: number
+      evidence:
+        items:
+          type: string
+        type: array
+      has_check_auth:
+        type: boolean
+      implementation:
+        type: string
+      wallet_type:
+        type: string
+    type: object
   main.SmartWalletInfo:
     properties:
       confidence:
@@ -1416,6 +1645,189 @@ definitions:
         type: array
       wallet_type:
         description: '"crossmint", "openzeppelin", "sep50_generic"'
+        type: string
+    type: object
+  main.SmartWalletListEntry:
+    properties:
+      admin_calls:
+        type: integer
+      confidence:
+        type: number
+      contract_id:
+        type: string
+      deployer_account:
+        type: string
+      first_admin_ledger:
+        type: integer
+      last_admin_ledger:
+        type: integer
+      observed_functions:
+        items:
+          type: string
+        type: array
+      source:
+        description: '"classified" | "heuristic"'
+        type: string
+      tier:
+        description: '"passkey" | "oz_or_generic" | "crossmint" | "openzeppelin" |
+          "sep50_generic"'
+        type: string
+      total_invocations:
+        type: integer
+      unique_callers:
+        type: integer
+      wallet_signers:
+        items:
+          type: integer
+        type: array
+      wallet_type:
+        type: string
+    type: object
+  main.SmartWalletListResponse:
+    properties:
+      classified_count:
+        type: integer
+      count:
+        type: integer
+      heuristic_count:
+        type: integer
+      wallets:
+        items:
+          $ref: '#/definitions/main.SmartWalletListEntry'
+        type: array
+    type: object
+  main.SmartWalletPoliciesSection:
+    properties:
+      decoded:
+        type: boolean
+      items:
+        items:
+          $ref: '#/definitions/main.SmartWalletPolicyDetailItem'
+        type: array
+    type: object
+  main.SmartWalletPolicyDetailItem:
+    properties:
+      config:
+        additionalProperties: {}
+        type: object
+      description:
+        type: string
+      name:
+        type: string
+      policy_type:
+        type: string
+      status:
+        type: string
+    type: object
+  main.SmartWalletRentSection:
+    properties:
+      estimated_monthly_rent_stroops:
+        type: integer
+      rent_status:
+        type: string
+      ttl_expires_at:
+        type: string
+      ttl_ledgers:
+        type: integer
+    type: object
+  main.SmartWalletSessionKeySummary:
+    properties:
+      expires_at:
+        type: string
+      key:
+        type: string
+      key_type:
+        type: string
+      scope:
+        type: string
+      spend_limit:
+        type: string
+      status:
+        type: string
+      used_amount:
+        type: string
+    type: object
+  main.SmartWalletSessionKeysSection:
+    properties:
+      count:
+        type: integer
+      items:
+        items:
+          $ref: '#/definitions/main.SmartWalletSessionKeySummary'
+        type: array
+      supported:
+        type: boolean
+    type: object
+  main.SmartWalletSignerConfigSection:
+    properties:
+      approval_model:
+        $ref: '#/definitions/main.SmartWalletApprovalModel'
+      decoded:
+        type: boolean
+      required_weight:
+        type: integer
+      signer_count:
+        type: integer
+      signers:
+        items:
+          $ref: '#/definitions/main.SmartWalletSignerDetail'
+        type: array
+      source:
+        type: string
+      thresholds:
+        $ref: '#/definitions/main.SmartWalletThresholds'
+      total_weight:
+        type: integer
+    type: object
+  main.SmartWalletSignerDetail:
+    properties:
+      added_at:
+        type: string
+      id:
+        type: string
+      key_type:
+        type: string
+      label:
+        type: string
+      role:
+        type: string
+      weight:
+        type: integer
+    type: object
+  main.SmartWalletThresholds:
+    properties:
+      high:
+        type: integer
+      low:
+        type: integer
+      medium:
+        type: integer
+    type: object
+  main.SmartWalletTimelineItem:
+    properties:
+      actors:
+        items:
+          type: string
+        type: array
+      description:
+        type: string
+      evidence:
+        items:
+          type: string
+        type: array
+      ledger_sequence:
+        type: integer
+      subtype:
+        type: string
+      successful:
+        type: boolean
+      timestamp:
+        type: string
+      title:
+        type: string
+      tx_hash:
+        type: string
+      type:
         type: string
     type: object
   main.SorobanContractStats:
@@ -3932,6 +4344,77 @@ paths:
       summary: List claimable balances
       tags:
       - State
+  /api/v1/silver/contracts/{contract_id}/transactions:
+    get:
+      description: Returns recent silver-hot contract invocation transactions for
+        a contract, with optional function, success, time, and ledger filters.
+      parameters:
+      - description: Contract ID (C...)
+        in: path
+        name: contract_id
+        required: true
+        type: string
+      - description: Exact function_name filter
+        in: query
+        name: function_name
+        type: string
+      - description: Comma-separated function names; any may match
+        in: query
+        name: function_any
+        type: string
+      - description: Filter by transaction success
+        in: query
+        name: successful
+        type: boolean
+      - description: RFC3339 lower bound on closed_at, inclusive
+        in: query
+        name: after
+        type: string
+      - description: RFC3339 upper bound on closed_at, exclusive
+        in: query
+        name: before
+        type: string
+      - description: Inclusive lower ledger bound
+        in: query
+        name: from_ledger
+        type: integer
+      - description: Exclusive upper ledger bound
+        in: query
+        name: to_ledger
+        type: integer
+      - description: Page size (default 100, max 500)
+        in: query
+        name: limit
+        type: integer
+      - description: 'Sort order: desc or asc (default desc)'
+        in: query
+        name: order
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/main.ContractTransactionsResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            additionalProperties: true
+            type: object
+      summary: List contract transactions
+      tags:
+      - Contracts
   /api/v1/silver/contracts/{id}/analytics:
     get:
       consumes:
@@ -5333,6 +5816,104 @@ paths:
             additionalProperties: true
             type: object
       summary: Detect SEP-50 smart wallet
+      tags:
+      - Smart Wallets
+  /api/v1/silver/smart-wallets:
+    get:
+      description: Returns smart-account candidates from classified contract metadata
+        and heuristic admin-function signals. Classified rows take precedence over
+        heuristic duplicates.
+      parameters:
+      - description: 'Filter by tier: passkey, oz_or_generic, crossmint, openzeppelin,
+          sep50_generic'
+        in: query
+        name: tier
+        type: string
+      - description: 'Filter by source: classified or heuristic'
+        in: query
+        name: source
+        type: string
+      - description: Page size (default 100, max 500)
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/main.SmartWalletListResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            additionalProperties: true
+            type: object
+      summary: List smart-wallet candidates
+      tags:
+      - Smart Wallets
+  /api/v1/silver/smart-wallets/{contract_id}:
+    get:
+      description: Returns identity, signer configuration, policies, balances, activity
+        summary, and timeline details for a smart-wallet contract.
+      parameters:
+      - description: Smart-wallet contract ID (C...)
+        in: path
+        name: contract_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/main.SmartWalletDetailResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get smart-wallet detail
+      tags:
+      - Smart Wallets
+  /api/v1/silver/smart-wallets/{contract_id}/balances:
+    get:
+      description: Returns native and token balances for a smart-wallet contract.
+      parameters:
+      - description: Smart-wallet contract ID (C...)
+        in: path
+        name: contract_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/main.SmartWalletBalancesResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get smart-wallet balances
       tags:
       - Smart Wallets
   /api/v1/silver/stats/fees:
