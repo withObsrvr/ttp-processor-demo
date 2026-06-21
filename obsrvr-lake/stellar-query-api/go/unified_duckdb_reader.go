@@ -3646,18 +3646,29 @@ func (r *UnifiedDuckDBReader) GetContractData(ctx context.Context, filters Contr
 		argNum += 2
 	}
 
-	if filters.LiveOnly {
-		conditions = append(conditions, "COALESCE(t.expired, false) = false")
-	}
-
-	whereClause := "1=1"
+	baseWhereClause := "1=1"
 	if len(conditions) > 0 {
-		whereClause = strings.Join(conditions, " AND ")
+		baseWhereClause = strings.Join(conditions, " AND ")
+	}
+	ttlWhereClause := baseWhereClause
+	if filters.LiveOnly {
+		ttlWhereClause += " AND COALESCE(t.expired, false) = false"
 	}
 
 	limit := filters.Limit
 	if limit <= 0 {
 		limit = 100
+	}
+
+	hotJoin := ""
+	hotWhere := baseWhereClause
+	coldJoin := ""
+	coldWhere := baseWhereClause
+	if filters.LiveOnly {
+		hotJoin = fmt.Sprintf("LEFT JOIN %s.ttl_current t ON cd.key_hash = t.key_hash", r.hotSchema)
+		hotWhere = ttlWhereClause
+		coldJoin = fmt.Sprintf("LEFT JOIN %s.ttl_current t ON cd.key_hash = t.key_hash", r.coldSchema)
+		coldWhere = ttlWhereClause
 	}
 
 	query := fmt.Sprintf(`
@@ -3667,23 +3678,46 @@ func (r *UnifiedDuckDBReader) GetContractData(ctx context.Context, filters Contr
 			SELECT cd.contract_id, cd.key_hash, cd.durability, cd.data_value,
 				   cd.asset_type, cd.asset_code, cd.asset_issuer, cd.last_modified_ledger
 			FROM %s.contract_data_current cd
-			LEFT JOIN %s.ttl_current t ON cd.key_hash = t.key_hash
+			%s
 			WHERE %s
 			UNION ALL
 			SELECT cd.contract_id, cd.key_hash, cd.durability, cd.data_value,
 				   cd.asset_type, cd.asset_code, cd.asset_issuer, cd.last_modified_ledger
 			FROM %s.contract_data_current cd
-			LEFT JOIN %s.ttl_current t ON cd.key_hash = t.key_hash
+			%s
 			WHERE %s
 		) combined
 		ORDER BY contract_id ASC, key_hash ASC
 		LIMIT $%d
-	`, r.hotSchema, r.hotSchema, whereClause, r.coldSchema, r.coldSchema, whereClause, argNum)
+	`, r.hotSchema, hotJoin, hotWhere, r.coldSchema, coldJoin, coldWhere, argNum)
 	args = append(args, limit+1)
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil && filters.LiveOnly && strings.Contains(err.Error(), "ttl_current") {
+		// Cold ttl_current can lag contract_data_current during current-state rollout.
+		// Keep cold contract data available, but only TTL-filter schemas that have TTL.
+		queryWithoutColdTTL := fmt.Sprintf(`
+			SELECT contract_id, key_hash, durability, data_value,
+				   asset_type, asset_code, asset_issuer, last_modified_ledger
+			FROM (
+				SELECT cd.contract_id, cd.key_hash, cd.durability, cd.data_value,
+					   cd.asset_type, cd.asset_code, cd.asset_issuer, cd.last_modified_ledger
+				FROM %s.contract_data_current cd
+				%s
+				WHERE %s
+				UNION ALL
+				SELECT cd.contract_id, cd.key_hash, cd.durability, cd.data_value,
+					   cd.asset_type, cd.asset_code, cd.asset_issuer, cd.last_modified_ledger
+				FROM %s.contract_data_current cd
+				WHERE %s
+			) combined
+			ORDER BY contract_id ASC, key_hash ASC
+			LIMIT $%d
+		`, r.hotSchema, hotJoin, hotWhere, r.coldSchema, baseWhereClause, argNum)
+		rows, err = r.db.QueryContext(ctx, queryWithoutColdTTL, args...)
+	}
 	if err != nil {
-		// Fall back to hot-only if cold table doesn't exist or has schema mismatch
+		// Fall back to hot-only if cold table doesn't exist or has schema mismatch.
 		errStr := err.Error()
 		if strings.Contains(errStr, "does not exist") ||
 			strings.Contains(errStr, "not found in FROM clause") ||
@@ -3693,11 +3727,11 @@ func (r *UnifiedDuckDBReader) GetContractData(ctx context.Context, filters Contr
 				SELECT cd.contract_id, cd.key_hash, cd.durability, cd.data_value,
 					   cd.asset_type, cd.asset_code, cd.asset_issuer, cd.last_modified_ledger
 				FROM %s.contract_data_current cd
-				LEFT JOIN %s.ttl_current t ON cd.key_hash = t.key_hash
+				%s
 				WHERE %s
 				ORDER BY cd.contract_id ASC, cd.key_hash ASC
 				LIMIT $%d
-			`, r.hotSchema, r.hotSchema, whereClause, argNum)
+			`, r.hotSchema, hotJoin, hotWhere, argNum)
 			rows, err = r.db.QueryContext(ctx, hotOnlyQuery, args...)
 			if err != nil {
 				return nil, "", false, fmt.Errorf("unified GetContractData (hot-only): %w", err)

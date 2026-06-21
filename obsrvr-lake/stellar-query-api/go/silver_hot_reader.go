@@ -3756,7 +3756,9 @@ func (h *SilverHotReader) GetContractData(ctx context.Context, filters ContractD
 		argNum += 2
 	}
 
+	joinClause := ""
 	if filters.LiveOnly {
+		joinClause = "LEFT JOIN ttl_current t ON cd.key_hash = t.key_hash"
 		conditions = append(conditions, "COALESCE(t.expired, false) = false")
 	}
 
@@ -3774,11 +3776,11 @@ func (h *SilverHotReader) GetContractData(ctx context.Context, filters ContractD
 		SELECT cd.contract_id, cd.key_hash, cd.durability, cd.data_value,
 			   cd.asset_type, cd.asset_code, cd.asset_issuer, cd.last_modified_ledger
 		FROM contract_data_current cd
-		LEFT JOIN ttl_current t ON cd.key_hash = t.key_hash
+		%s
 		WHERE %s
 		ORDER BY cd.contract_id ASC, cd.key_hash ASC
 		LIMIT $%d
-	`, whereClause, argNum)
+	`, joinClause, whereClause, argNum)
 	args = append(args, limit+1)
 
 	rows, err := h.db.QueryContext(ctx, query, args...)

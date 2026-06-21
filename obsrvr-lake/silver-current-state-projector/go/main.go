@@ -170,7 +170,6 @@ func parseConfig(args []string) (Config, error) {
 	fs.Int64Var(&cfg.Chunk, "chunk-size", envInt64("CHUNK_SIZE", 100000), "deterministic planning chunk size")
 	fs.Int64Var(&cfg.ChunkStart, "chunk-start", envInt64("CHUNK_START", 0), "optional assigned inclusive chunk start")
 	fs.Int64Var(&cfg.ChunkEnd, "chunk-end", envInt64("CHUNK_END", 0), "optional assigned inclusive chunk end")
-	fs.IntVar(&cfg.Partitions, "partition-count", envInt("PARTITION_COUNT", 1), "hash partitions per current-state projection")
 	fs.BoolVar(&cfg.Resume, "resume", getenv("RESUME", "") == "true", "skip completed manifest records")
 	fs.BoolVar(&cfg.Status, "status", false, "emit machine-readable component status and exit")
 	fs.StringVar(&cfg.SilverCatalog, "silver-ducklake-catalog", getenv("SILVER_DUCKLAKE_CATALOG", ""), "Silver DuckLake catalog DSN/path")
@@ -207,9 +206,6 @@ func (c Config) Validate() error {
 	}
 	if c.Chunk <= 0 {
 		return errors.New("--chunk-size must be > 0")
-	}
-	if c.Partitions <= 0 {
-		return errors.New("--partition-count must be > 0")
 	}
 	if (c.ChunkStart == 0) != (c.ChunkEnd == 0) {
 		return errors.New("--chunk-start and --chunk-end must be provided together")
@@ -312,13 +308,14 @@ func (p *Projector) attachSilver(ctx context.Context) error {
 }
 
 func (p *Projector) Run(ctx context.Context, out io.Writer) error {
-	if p.cfg.Partitions <= 0 {
-		p.cfg.Partitions = 1
-	}
 	cfg := p.cfg
 	chunks := cfg.PlannedChunks()
-	ledgerWindows := PlanChunks(cfg.Start, cfg.End, cfg.Chunk)
-	emit(out, Event{EventType: "component.run_started", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, Status: "running", FlowctlEndpoint: safeEndpoint(cfg.FlowctlEndpoint), Metadata: map[string]interface{}{"version": Version, "range_start": cfg.Start, "range_end": cfg.End, "chunk_count": len(chunks), "ledger_window_count": len(ledgerWindows), "ledger_window_size": cfg.Chunk, "partition_count_config": cfg.Partitions, "capabilities": []string{"current-state-as-of", "deterministic-chunk-inputs", "idempotent-replace-contract", "ledger-window-staging-merge", "resume-manifest", "typed-failures", "duplicate-key-verify", "max-ledger-verify"}}})
+	ledgerWindowStart, ledgerWindowEnd := cfg.Start, cfg.End
+	if len(chunks) > 0 {
+		ledgerWindowStart, ledgerWindowEnd = chunks[0].Start, chunks[0].End
+	}
+	ledgerWindows := PlanChunks(ledgerWindowStart, ledgerWindowEnd, cfg.Chunk)
+	emit(out, Event{EventType: "component.run_started", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, Status: "running", FlowctlEndpoint: safeEndpoint(cfg.FlowctlEndpoint), Metadata: map[string]interface{}{"version": Version, "range_start": ledgerWindowStart, "range_end": ledgerWindowEnd, "chunk_count": len(chunks), "ledger_window_count": len(ledgerWindows), "ledger_window_size": cfg.Chunk, "capabilities": []string{"current-state-as-of", "deterministic-chunk-inputs", "idempotent-replace-contract", "ledger-window-staging-merge", "resume-manifest", "typed-failures", "duplicate-key-verify", "max-ledger-verify"}}})
 
 	for _, chunk := range chunks {
 		if cfg.Resume {
@@ -334,7 +331,7 @@ func (p *Projector) Run(ctx context.Context, out io.Writer) error {
 		emit(out, Event{EventType: "component.chunk_started", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, Status: "running"})
 		for _, projection := range executableCurrentProjections() {
 			emit(out, Event{EventType: "component.projection_started", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "replace_current", Status: "running"})
-			stopProgress := startProgressHeartbeat(out, Event{ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "replace_current", Status: "running"}, map[string]interface{}{"source": projection.Source, "mode": "replace_as_of", "as_of_ledger": cfg.End})
+			stopProgress := startProgressHeartbeat(out, Event{ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "replace_current", Status: "running"}, map[string]interface{}{"source": projection.Source, "mode": "replace_as_of", "as_of_ledger": chunk.End})
 			rows, err := p.replaceProjection(ctx, out, chunk, projection)
 			stopProgress()
 			if err != nil {
@@ -342,7 +339,7 @@ func (p *Projector) Run(ctx context.Context, out io.Writer) error {
 				emit(out, Event{EventType: "component.failed", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "replace_current", Status: "failed", FailureClass: classifyFailure(err), Error: err.Error(), Recommended: recommendedAction(classifyFailure(err))})
 				return err
 			}
-			emit(out, Event{EventType: "component.projection_completed", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "replace_current", Status: "completed", Metadata: map[string]interface{}{"source": projection.Source, "mode": "replace_as_of", "row_count": rows, "as_of_ledger": cfg.End}})
+			emit(out, Event{EventType: "component.projection_completed", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "replace_current", Status: "completed", Metadata: map[string]interface{}{"source": projection.Source, "mode": "replace_as_of", "row_count": rows, "as_of_ledger": chunk.End}})
 		}
 		emit(out, Event{EventType: "component.chunk_completed", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, Status: "completed"})
 	}
@@ -388,10 +385,10 @@ func (p *Projector) replaceProjection(ctx context.Context, out io.Writer, chunk 
 	if _, err := p.db.ExecContext(ctx, "DROP TABLE IF EXISTS "+staging); err != nil {
 		return 0, fmt.Errorf("drop staging %s: %w", projection.Name, err)
 	}
-	if _, err := p.db.ExecContext(ctx, fmt.Sprintf("CREATE TABLE %s AS SELECT * FROM (%s) seed WHERE false", staging, projection.SelectSQL(p, p.cfg.Start, p.cfg.Start-1))); err != nil {
+	if _, err := p.db.ExecContext(ctx, fmt.Sprintf("CREATE TABLE %s AS SELECT * FROM (%s) seed WHERE false", staging, projection.SelectSQL(p, chunk.Start, chunk.Start-1))); err != nil {
 		return 0, fmt.Errorf("create staging %s: %w", projection.Name, err)
 	}
-	windows := PlanChunks(p.cfg.Start, p.cfg.End, p.cfg.Chunk)
+	windows := PlanChunks(chunk.Start, chunk.End, p.cfg.Chunk)
 	for _, window := range windows {
 		keys := p.stagingTable(CurrentProjection{TargetTable: projection.TargetTable + "__keys"})
 		delta := p.stagingTable(CurrentProjection{TargetTable: projection.TargetTable + "__delta"})
@@ -494,10 +491,10 @@ func (p *Projector) verifyProjectionTable(ctx context.Context, projection Curren
 	return rowCount, nil
 }
 
-func (p *Projector) sourceFilter(projection CurrentProjection, start, end int64) string {
+func (p *Projector) sourceFilter(projection CurrentProjection, _ int64, end int64) string {
 	parts := []string{
 		fmt.Sprintf("network = %s", q(p.cfg.Network)),
-		fmt.Sprintf("%s BETWEEN %d AND %d", ident(projection.SourceLedgerCol), start, end),
+		fmt.Sprintf("%s <= %d", ident(projection.SourceLedgerCol), end),
 	}
 	if projection.SourceFilter != "" {
 		parts = append(parts, fmt.Sprintf("(%s)", projection.SourceFilter))

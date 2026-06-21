@@ -4011,10 +4011,27 @@ func (h *SilverHandlers) HandleContractStorage(w http.ResponseWriter, r *http.Re
 		args = append(args, durability)
 		argIdx++
 	}
+	baseWhereClause := strings.Join(conditions, " AND ")
+	ttlWhereClause := baseWhereClause
 	if liveOnly {
-		conditions = append(conditions, "COALESCE(t.expired, false) = false")
+		ttlWhereClause += " AND COALESCE(t.expired, false) = false"
 	}
-	whereClause := strings.Join(conditions, " AND ")
+
+	ttlNullSelect := "CAST(NULL AS BIGINT) AS live_until_ledger_seq, CAST(NULL AS INTEGER) AS ttl_remaining, CAST(NULL AS BOOLEAN) AS expired"
+	hotJoin := ""
+	hotTTLSelect := ttlNullSelect
+	hotWhere := baseWhereClause
+	coldJoin := ""
+	coldTTLSelect := ttlNullSelect
+	coldWhere := baseWhereClause
+	if liveOnly {
+		hotJoin = fmt.Sprintf("LEFT JOIN %s.ttl_current t ON cd.key_hash = t.key_hash", h.unifiedReader.hotSchema)
+		hotTTLSelect = "t.live_until_ledger_seq, t.ttl_remaining, t.expired"
+		hotWhere = ttlWhereClause
+		coldJoin = fmt.Sprintf("LEFT JOIN %s.ttl_current t ON cd.key_hash = t.key_hash", h.unifiedReader.coldSchema)
+		coldTTLSelect = "t.live_until_ledger_seq, t.ttl_remaining, t.expired"
+		coldWhere = ttlWhereClause
+	}
 
 	query := fmt.Sprintf(`
 		SELECT contract_id, key_hash, durability, size_bytes, data_value,
@@ -4022,25 +4039,49 @@ func (h *SilverHandlers) HandleContractStorage(w http.ResponseWriter, r *http.Re
 		FROM (
 			SELECT cd.contract_id, cd.key_hash, cd.durability,
 			       LENGTH(cd.data_value) AS size_bytes, cd.data_value, cd.last_modified_ledger, cd.closed_at,
-			       t.live_until_ledger_seq, t.ttl_remaining, t.expired
+			       %s
 			FROM %s.contract_data_current cd
-			LEFT JOIN %s.ttl_current t ON cd.key_hash = t.key_hash
+			%s
 			WHERE %s
 			UNION ALL
 			SELECT cd.contract_id, cd.key_hash, cd.durability,
 			       LENGTH(cd.data_value) AS size_bytes, cd.data_value, cd.last_modified_ledger, cd.closed_at,
-			       t.live_until_ledger_seq, t.ttl_remaining, t.expired
+			       %s
 			FROM %s.contract_data_current cd
-			LEFT JOIN %s.ttl_current t ON cd.key_hash = t.key_hash
+			%s
 			WHERE %s
 		) combined
 		ORDER BY key_hash
 		LIMIT $%d OFFSET $%d
-	`, h.unifiedReader.hotSchema, h.unifiedReader.hotSchema, whereClause,
-		h.unifiedReader.coldSchema, h.unifiedReader.coldSchema, whereClause, argIdx, argIdx+1)
+	`, hotTTLSelect, h.unifiedReader.hotSchema, hotJoin, hotWhere,
+		coldTTLSelect, h.unifiedReader.coldSchema, coldJoin, coldWhere, argIdx, argIdx+1)
 	args = append(args, limit, offset)
 
 	rows, err := h.unifiedReader.db.QueryContext(ctx, query, args...)
+	if err != nil && liveOnly && strings.Contains(err.Error(), "ttl_current") {
+		queryWithoutColdTTL := fmt.Sprintf(`
+			SELECT contract_id, key_hash, durability, size_bytes, data_value,
+			       last_modified_ledger, closed_at, live_until_ledger_seq, ttl_remaining, expired
+			FROM (
+				SELECT cd.contract_id, cd.key_hash, cd.durability,
+				       LENGTH(cd.data_value) AS size_bytes, cd.data_value, cd.last_modified_ledger, cd.closed_at,
+				       %s
+				FROM %s.contract_data_current cd
+				%s
+				WHERE %s
+				UNION ALL
+				SELECT cd.contract_id, cd.key_hash, cd.durability,
+				       LENGTH(cd.data_value) AS size_bytes, cd.data_value, cd.last_modified_ledger, cd.closed_at,
+				       %s
+				FROM %s.contract_data_current cd
+				WHERE %s
+			) combined
+			ORDER BY key_hash
+			LIMIT $%d OFFSET $%d
+		`, hotTTLSelect, h.unifiedReader.hotSchema, hotJoin, hotWhere,
+			ttlNullSelect, h.unifiedReader.coldSchema, baseWhereClause, argIdx, argIdx+1)
+		rows, err = h.unifiedReader.db.QueryContext(ctx, queryWithoutColdTTL, args...)
+	}
 	if err != nil {
 		errStr := err.Error()
 		if strings.Contains(errStr, "does not exist") || strings.Contains(errStr, "not found") ||
@@ -4048,13 +4089,13 @@ func (h *SilverHandlers) HandleContractStorage(w http.ResponseWriter, r *http.Re
 			hotOnlyQuery := fmt.Sprintf(`
 				SELECT cd.contract_id, cd.key_hash, cd.durability,
 				       LENGTH(cd.data_value), cd.data_value, cd.last_modified_ledger, cd.closed_at,
-				       t.live_until_ledger_seq, t.ttl_remaining, t.expired
+				       %s
 				FROM %s.contract_data_current cd
-				LEFT JOIN %s.ttl_current t ON cd.key_hash = t.key_hash
+				%s
 				WHERE %s
 				ORDER BY cd.key_hash
 				LIMIT $%d OFFSET $%d
-			`, h.unifiedReader.hotSchema, h.unifiedReader.hotSchema, whereClause, argIdx, argIdx+1)
+			`, hotTTLSelect, h.unifiedReader.hotSchema, hotJoin, hotWhere, argIdx, argIdx+1)
 			rows, err = h.unifiedReader.db.QueryContext(ctx, hotOnlyQuery, args...)
 		}
 		if err != nil {

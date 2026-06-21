@@ -37,6 +37,30 @@ func TestUnifiedGetContractDataLiveOnlyFiltersExpiredAcrossHotAndCold(t *testing
 	}
 }
 
+func TestUnifiedGetContractDataKeepsColdRowsWhenColdTTLTableMissing(t *testing.T) {
+	db, err := sql.Open("duckdb", "")
+	if err != nil {
+		t.Fatalf("open duckdb: %v", err)
+	}
+	defer db.Close()
+	createContractDataCurrentTable(t, db, "hot", true)
+	createContractDataCurrentTable(t, db, "cold", false)
+	insertContractDataCurrent(t, db, "memory.hot", "C1", "hot-live", false)
+	insertContractDataCurrent(t, db, "memory.hot", "C1", "hot-expired", true)
+	insertContractDataCurrentWithoutTTL(t, db, "memory.cold", "C1", "cold-no-ttl")
+
+	reader := &UnifiedDuckDBReader{db: db, hotSchema: "memory.hot", coldSchema: "memory.cold"}
+	data, _, _, err := reader.GetContractData(t.Context(), ContractDataFilters{ContractID: "C1", LiveOnly: true, Limit: 10})
+	if err != nil {
+		t.Fatalf("GetContractData live_only without cold ttl: %v", err)
+	}
+	got := contractDataKeys(data)
+	want := []string{"cold-no-ttl", "hot-live"}
+	if !equalStringSlices(got, want) {
+		t.Fatalf("keys without cold ttl: got %#v want %#v", got, want)
+	}
+}
+
 func TestHandleContractStorageDefaultsToLiveOnly(t *testing.T) {
 	db := openContractDataDuckDB(t)
 	defer db.Close()
@@ -76,36 +100,44 @@ func openContractDataDuckDB(t *testing.T) *sql.DB {
 		t.Fatalf("open duckdb: %v", err)
 	}
 	for _, schema := range []string{"hot", "cold"} {
-		if _, err := db.Exec(`CREATE SCHEMA ` + schema); err != nil {
-			t.Fatalf("create schema %s: %v", schema, err)
-		}
-		if _, err := db.Exec(`CREATE TABLE memory.` + schema + `.contract_data_current (
-			contract_id VARCHAR,
-			key_hash VARCHAR,
-			durability VARCHAR,
-			data_value VARCHAR,
-			asset_type VARCHAR,
-			asset_code VARCHAR,
-			asset_issuer VARCHAR,
-			last_modified_ledger BIGINT,
-			closed_at VARCHAR
-		)`); err != nil {
-			t.Fatalf("create contract_data_current %s: %v", schema, err)
-		}
-		if _, err := db.Exec(`CREATE TABLE memory.` + schema + `.ttl_current (
-			key_hash VARCHAR,
-			live_until_ledger_seq BIGINT,
-			ttl_remaining INTEGER,
-			expired BOOLEAN
-		)`); err != nil {
-			t.Fatalf("create ttl_current %s: %v", schema, err)
-		}
+		createContractDataCurrentTable(t, db, schema, true)
 	}
 	insertContractDataCurrent(t, db, "memory.hot", "C1", "hot-live", false)
 	insertContractDataCurrent(t, db, "memory.hot", "C1", "hot-expired", true)
 	insertContractDataCurrent(t, db, "memory.cold", "C1", "cold-live", false)
 	insertContractDataCurrent(t, db, "memory.cold", "C1", "cold-expired", true)
 	return db
+}
+
+func createContractDataCurrentTable(t *testing.T, db *sql.DB, schema string, withTTL bool) {
+	t.Helper()
+	if _, err := db.Exec(`CREATE SCHEMA ` + schema); err != nil {
+		t.Fatalf("create schema %s: %v", schema, err)
+	}
+	if _, err := db.Exec(`CREATE TABLE memory.` + schema + `.contract_data_current (
+		contract_id VARCHAR,
+		key_hash VARCHAR,
+		durability VARCHAR,
+		data_value VARCHAR,
+		asset_type VARCHAR,
+		asset_code VARCHAR,
+		asset_issuer VARCHAR,
+		last_modified_ledger BIGINT,
+		closed_at VARCHAR
+	)`); err != nil {
+		t.Fatalf("create contract_data_current %s: %v", schema, err)
+	}
+	if !withTTL {
+		return
+	}
+	if _, err := db.Exec(`CREATE TABLE memory.` + schema + `.ttl_current (
+		key_hash VARCHAR,
+		live_until_ledger_seq BIGINT,
+		ttl_remaining INTEGER,
+		expired BOOLEAN
+	)`); err != nil {
+		t.Fatalf("create ttl_current %s: %v", schema, err)
+	}
 }
 
 func insertContractDataCurrent(t *testing.T, db *sql.DB, schema, contractID, keyHash string, expired bool) {
@@ -115,6 +147,13 @@ func insertContractDataCurrent(t *testing.T, db *sql.DB, schema, contractID, key
 	}
 	if _, err := db.Exec(`INSERT INTO `+schema+`.ttl_current VALUES (?, 200, 100, ?)`, keyHash, expired); err != nil {
 		t.Fatalf("insert ttl_current: %v", err)
+	}
+}
+
+func insertContractDataCurrentWithoutTTL(t *testing.T, db *sql.DB, schema, contractID, keyHash string) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO `+schema+`.contract_data_current VALUES (?, ?, 'persistent', 'xdr', NULL, NULL, NULL, 100, '2026-01-01T00:00:00Z')`, contractID, keyHash); err != nil {
+		t.Fatalf("insert contract_data_current without ttl: %v", err)
 	}
 }
 
