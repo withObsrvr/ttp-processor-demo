@@ -231,6 +231,13 @@ func (h *SilverHandlers) HandleRelationship(w http.ResponseWriter, r *http.Reque
 }
 
 func (r *UnifiedDuckDBReader) GetRelationshipEdges(ctx context.Context, filters RelationshipFilters) ([]RelationshipEdge, string, bool, error) {
+	// Refuse to run with no backend configured. Otherwise buildRelationshipQuery
+	// falls back to a `WHERE false` stub that returns an empty edge set, which a
+	// caller cannot distinguish from "these two addresses never interacted" — a
+	// false-empty on a paid endpoint is the most expensive failure mode.
+	if strings.TrimSpace(r.hotSchema) == "" && strings.TrimSpace(r.coldSchema) == "" {
+		return nil, "", false, fmt.Errorf("GetRelationshipEdges: no hot or cold schema configured")
+	}
 	requestLimit := filters.Limit + 1
 	orderDir := "DESC"
 	cursorOp := "<"
