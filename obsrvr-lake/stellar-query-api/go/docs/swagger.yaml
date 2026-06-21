@@ -128,52 +128,6 @@ definitions:
       volume_24h:
         type: string
     type: object
-  main.BronzeLedgerStats:
-    properties:
-      avg_close_time_seconds:
-        type: number
-      closed_at:
-        type: string
-      latest_hash:
-        type: string
-      latest_sequence:
-        type: integer
-      protocol_version:
-        type: integer
-    type: object
-  main.BronzeNetworkStats:
-    properties:
-      data_freshness:
-        type: string
-      generated_at:
-        type: string
-      ledger:
-        $ref: '#/definitions/main.BronzeLedgerStats'
-      operations_24h:
-        $ref: '#/definitions/main.BronzeOpStats24h'
-      transactions_24h:
-        $ref: '#/definitions/main.BronzeTxStats24h'
-    type: object
-  main.BronzeOpStats24h:
-    properties:
-      soroban_op_count:
-        type: integer
-      total:
-        type: integer
-    type: object
-  main.BronzeTxStats24h:
-    properties:
-      failed:
-        type: integer
-      soroban_count:
-        type: integer
-      successful:
-        type: integer
-      total:
-        type: integer
-      total_fees_charged:
-        type: integer
-    type: object
   main.Balance:
     properties:
       asset_code:
@@ -260,6 +214,29 @@ definitions:
       wasm_size_bytes:
         type: integer
     type: object
+  main.ContractRegistryEntry:
+    properties:
+      category:
+        type: string
+      contract_id:
+        type: string
+      created_at:
+        type: string
+      display_name:
+        type: string
+      icon_url:
+        type: string
+      project:
+        type: string
+      source:
+        type: string
+      updated_at:
+        type: string
+      verified:
+        type: boolean
+      website:
+        type: string
+    type: object
   main.DecodedOperation:
     properties:
       amount:
@@ -307,6 +284,8 @@ definitions:
         type: integer
       ledger_sequence:
         type: integer
+      max_fee:
+        type: integer
       operation_count:
         type: integer
       operations:
@@ -328,6 +307,432 @@ definitions:
         $ref: '#/definitions/main.TxSummary'
       tx_hash:
         type: string
+    type: object
+  main.DefiAsset:
+    properties:
+      asset_code:
+        type: string
+      asset_contract_id:
+        type: string
+      asset_issuer:
+        type: string
+      asset_type:
+        type: string
+      decimals:
+        type: integer
+      symbol:
+        type: string
+    type: object
+  main.DefiExposureByProtocol:
+    properties:
+      net_value:
+        type: string
+      position_count:
+        type: integer
+      protocol_id:
+        type: string
+      total_borrowed_value:
+        type: string
+      total_deposit_value:
+        type: string
+      total_value:
+        type: string
+    type: object
+  main.DefiExposureResponse:
+    properties:
+      address:
+        type: string
+      as_of_ledger:
+        type: integer
+      as_of_time:
+        type: string
+      by_protocol:
+        items:
+          $ref: '#/definitions/main.DefiExposureByProtocol'
+        type: array
+      data_status:
+        type: string
+      freshness_seconds:
+        type: integer
+      quote:
+        type: string
+      totals:
+        $ref: '#/definitions/main.DefiExposureSummary'
+    type: object
+  main.DefiExposureSummary:
+    properties:
+      lowest_health_factor:
+        type: string
+      net_value:
+        type: string
+      open_position_count:
+        type: integer
+      positions_at_risk:
+        type: integer
+      protocol_count:
+        type: integer
+      total_borrowed_value:
+        type: string
+      total_claimable_rewards_value:
+        type: string
+      total_deposit_value:
+        type: string
+      total_value:
+        type: string
+    type: object
+  main.DefiPosition:
+    properties:
+      account_address:
+        type: string
+      as_of_ledger:
+        type: integer
+      as_of_time:
+        type: string
+      borrow_amount:
+        type: string
+      borrowed_value:
+        type: string
+      claimable_reward_amount:
+        type: string
+      claimable_rewards_value:
+        type: string
+      collateral_ratio:
+        type: string
+      current_return_percent:
+        type: string
+      current_return_value:
+        type: string
+      current_value:
+        type: string
+      deposit_amount:
+        type: string
+      deposit_value:
+        type: string
+      health_factor:
+        type: string
+      last_updated_at:
+        type: string
+      last_updated_ledger:
+        type: integer
+      liquidation_threshold:
+        type: string
+      ltv:
+        type: string
+      market_address:
+        type: string
+      market_id:
+        type: string
+      net_value:
+        type: string
+      owner_address:
+        type: string
+      position_id:
+        type: string
+      position_key_hash:
+        type: string
+      position_type:
+        type: string
+      protocol_id:
+        type: string
+      protocol_state_json:
+        additionalProperties: {}
+        type: object
+      protocol_version:
+        type: string
+      quote_currency:
+        type: string
+      related_address:
+        type: string
+      risk_status:
+        type: string
+      share_amount:
+        type: string
+      source_json:
+        additionalProperties: {}
+        type: object
+      status:
+        type: string
+      underlying_asset:
+        $ref: '#/definitions/main.DefiAsset'
+      valuation_json:
+        additionalProperties: {}
+        type: object
+    type: object
+  main.DefiPositionsResponse:
+    properties:
+      address:
+        type: string
+      as_of_ledger:
+        type: integer
+      as_of_time:
+        type: string
+      data_status:
+        type: string
+      freshness_seconds:
+        type: integer
+      has_more:
+        type: boolean
+      next_cursor:
+        type: string
+      positions:
+        items:
+          $ref: '#/definitions/main.DefiPosition'
+        type: array
+      quote:
+        type: string
+      summary:
+        $ref: '#/definitions/main.DefiExposureSummary'
+    type: object
+  main.DefiStatusProtocol:
+    properties:
+      freshness_seconds:
+        type: integer
+      last_successful_ledger:
+        type: integer
+      last_successful_time:
+        type: string
+      protocol_id:
+        type: string
+      reason:
+        type: string
+      source_divergence:
+        type: boolean
+      status:
+        type: string
+    type: object
+  main.DefiStatusResponse:
+    properties:
+      as_of_ledger:
+        type: integer
+      freshness_seconds:
+        type: integer
+      protocols:
+        items:
+          $ref: '#/definitions/main.DefiStatusProtocol'
+        type: array
+      status:
+        type: string
+    type: object
+  main.ExplorerAttentionContract:
+    properties:
+      contract_id:
+        type: string
+      contract_name:
+        type: string
+      protocol_name:
+        type: string
+      remaining_hours:
+        type: integer
+      remaining_human:
+        type: string
+      remaining_ledgers:
+        type: integer
+      runway_pct:
+        type: number
+      severity:
+        type: string
+      status:
+        type: string
+    type: object
+  main.ExplorerHeroLedger:
+    properties:
+      closed_at:
+        type: string
+      operation_count:
+        type: integer
+      sequence:
+        type: integer
+      transaction_count:
+        type: integer
+    type: object
+  main.ExplorerHomeActivityMix:
+    properties:
+      agent_tx_24h:
+        type: integer
+      contract_call_tx_24h:
+        type: integer
+      swap_tx_24h:
+        type: integer
+    type: object
+  main.ExplorerHomeAlert:
+    properties:
+      affected_contract_count:
+        type: integer
+      severity:
+        type: string
+      top_contracts:
+        items:
+          type: string
+        type: array
+      type:
+        type: string
+      worst_remaining_hours:
+        type: integer
+    type: object
+  main.ExplorerHomeCadence:
+    properties:
+      avg_close_seconds:
+        type: number
+      ops_per_ledger_recent_avg:
+        type: integer
+      tx_per_ledger_recent_avg:
+        type: integer
+    type: object
+  main.ExplorerHomeContracts:
+    properties:
+      active_24h:
+        type: integer
+    type: object
+  main.ExplorerHomeHeader:
+    properties:
+      latest_ledger_closed_at:
+        type: string
+      latest_ledger_sequence:
+        type: integer
+    type: object
+  main.ExplorerHomeHealth:
+    properties:
+      activity_band:
+        type: string
+      load_band:
+        type: string
+      status:
+        type: string
+    type: object
+  main.ExplorerHomeHero:
+    properties:
+      activity_mix:
+        $ref: '#/definitions/main.ExplorerHomeActivityMix'
+      cadence:
+        $ref: '#/definitions/main.ExplorerHomeCadence'
+      contracts:
+        $ref: '#/definitions/main.ExplorerHomeContracts'
+      health:
+        $ref: '#/definitions/main.ExplorerHomeHealth'
+      latest_ledger:
+        $ref: '#/definitions/main.ExplorerHeroLedger'
+      soroban:
+        $ref: '#/definitions/main.ExplorerHomeSoroban'
+      trends:
+        $ref: '#/definitions/main.ExplorerHomeTrends'
+      ttl:
+        $ref: '#/definitions/main.ExplorerHomeTTL'
+    type: object
+  main.ExplorerHomeMeta:
+    properties:
+      latest_ledger_age_seconds:
+        type: integer
+    type: object
+  main.ExplorerHomeSoroban:
+    properties:
+      instruction_pct:
+        type: number
+      read_write_pct:
+        type: number
+    type: object
+  main.ExplorerHomeSummaryProvenance:
+    properties:
+      data_source:
+        type: string
+      generated_from:
+        items:
+          type: string
+        type: array
+      partial:
+        type: boolean
+      route:
+        type: string
+      warnings:
+        items:
+          type: string
+        type: array
+    type: object
+  main.ExplorerHomeSummaryResponse:
+    properties:
+      alert:
+        $ref: '#/definitions/main.ExplorerHomeAlert'
+      contracts_needing_attention:
+        items:
+          $ref: '#/definitions/main.ExplorerAttentionContract'
+        type: array
+      generated_at:
+        type: string
+      header:
+        $ref: '#/definitions/main.ExplorerHomeHeader'
+      hero:
+        $ref: '#/definitions/main.ExplorerHomeHero'
+      leaders:
+        items:
+          $ref: '#/definitions/main.ExplorerLeader'
+        type: array
+      meta:
+        $ref: '#/definitions/main.ExplorerHomeMeta'
+      network:
+        type: string
+      provenance:
+        $ref: '#/definitions/main.ExplorerHomeSummaryProvenance'
+      utilization:
+        $ref: '#/definitions/main.ExplorerHomeUtilization'
+    type: object
+  main.ExplorerHomeTTL:
+    properties:
+      expiring_contract_count:
+        type: integer
+      worst_remaining_hours:
+        type: integer
+      worst_remaining_ledgers:
+        type: integer
+    type: object
+  main.ExplorerHomeTrends:
+    properties:
+      agent_activity_wow_pct:
+        type: number
+      anomaly_detected:
+        type: boolean
+      tx_vs_24h_avg_pct:
+        type: number
+    type: object
+  main.ExplorerHomeUtilization:
+    properties:
+      avg_tx_size_bytes:
+        type: integer
+      instruction_limit:
+        type: integer
+      instruction_pct:
+        type: number
+      instruction_used:
+        type: integer
+      read_write_limit_bytes:
+        type: integer
+      read_write_pct:
+        type: number
+      read_write_used_bytes:
+        type: integer
+      source_ledger:
+        type: integer
+      tx_size_limit_bytes:
+        type: integer
+      tx_size_pct:
+        type: number
+    type: object
+  main.ExplorerLeader:
+    properties:
+      call_count_24h:
+        type: integer
+      contract_id:
+        type: string
+      contract_name:
+        type: string
+      dominant_actions:
+        items:
+          type: string
+        type: array
+      growth_pct:
+        type: number
+      protocol_name:
+        type: string
+      unique_callers_24h:
+        type: integer
     type: object
   main.FeeBucket:
     properties:
@@ -468,6 +873,220 @@ definitions:
       tx_count:
         type: integer
     type: object
+  main.LedgerRepresentativeActorRef:
+    properties:
+      id:
+        type: string
+      label:
+        type: string
+      type:
+        type: string
+    type: object
+  main.LedgerRepresentativeActors:
+    properties:
+      primary:
+        $ref: '#/definitions/main.LedgerRepresentativeActorRef'
+      secondary:
+        $ref: '#/definitions/main.LedgerRepresentativeActorRef'
+    type: object
+  main.LedgerRepresentativeClassification:
+    properties:
+      confidence:
+        type: string
+      subtype:
+        type: string
+      tx_type:
+        type: string
+    type: object
+  main.LedgerRepresentativeSummary:
+    properties:
+      amount:
+        type: string
+      amount_display:
+        type: string
+      asset:
+        type: string
+      bought_amount:
+        type: string
+      bought_asset:
+        type: string
+      description:
+        type: string
+      function_name:
+        type: string
+      protocol_contract_id:
+        type: string
+      protocol_label:
+        type: string
+      sold_amount:
+        type: string
+      sold_asset:
+        type: string
+    type: object
+  main.LedgerRepresentativeTx:
+    properties:
+      actors:
+        $ref: '#/definitions/main.LedgerRepresentativeActors'
+      category:
+        type: string
+      category_label:
+        type: string
+      classification:
+        $ref: '#/definitions/main.LedgerRepresentativeClassification'
+      coverage_count:
+        type: integer
+      summary:
+        $ref: '#/definitions/main.LedgerRepresentativeSummary'
+      tx_hash:
+        type: string
+    type: object
+  main.LedgerSorobanResponse:
+    properties:
+      generated_at:
+        type: string
+      ledger_sequence:
+        type: integer
+      soroban_tx_count:
+        type: integer
+      total_cpu_insns:
+        type: integer
+      total_read_bytes:
+        type: integer
+      total_rent_charged:
+        type: integer
+      total_write_bytes:
+        type: integer
+      unique_contracts:
+        type: integer
+    type: object
+  main.LedgerSummaryClassifications:
+    properties:
+      classic_tx_count:
+        type: integer
+      contract_call_tx_count:
+        type: integer
+      deployment_tx_count:
+        type: integer
+      payment_tx_count:
+        type: integer
+      soroban_tx_count:
+        type: integer
+      swap_tx_count:
+        type: integer
+      wallet_tx_count:
+        type: integer
+    type: object
+  main.LedgerSummaryComposition:
+    properties:
+      dominant_tx_type:
+        type: string
+      dominant_tx_type_count:
+        type: integer
+      failed_share_pct:
+        type: number
+      soroban_share_pct:
+        type: number
+    type: object
+  main.LedgerSummaryLedger:
+    properties:
+      close_time_seconds:
+        type: number
+      closed_at:
+        type: string
+      closed_by_node_id:
+        type: string
+      closed_by_validator:
+        type: string
+      hash:
+        type: string
+      previous_hash:
+        type: string
+      protocol_version:
+        type: integer
+      sequence:
+        type: integer
+    type: object
+  main.LedgerSummaryProvenance:
+    properties:
+      classification_source:
+        type: string
+      partial:
+        type: boolean
+      sampling_source:
+        type: string
+      utilization_source:
+        type: string
+    type: object
+  main.LedgerSummaryResponse:
+    properties:
+      classification_counts:
+        $ref: '#/definitions/main.LedgerSummaryClassifications'
+      composition:
+        $ref: '#/definitions/main.LedgerSummaryComposition'
+      ledger:
+        $ref: '#/definitions/main.LedgerSummaryLedger'
+      provenance:
+        $ref: '#/definitions/main.LedgerSummaryProvenance'
+      representative_transactions:
+        items:
+          $ref: '#/definitions/main.LedgerRepresentativeTx'
+        type: array
+      sampling:
+        $ref: '#/definitions/main.LedgerSummarySampling'
+      soroban_utilization:
+        $ref: '#/definitions/main.LedgerSummarySorobanUtilization'
+      totals:
+        $ref: '#/definitions/main.LedgerSummaryTotals'
+    type: object
+  main.LedgerSummarySampling:
+    properties:
+      represented_transaction_count:
+        type: integer
+      sample_count:
+        type: integer
+      strategy:
+        type: string
+      total_transaction_count:
+        type: integer
+    type: object
+  main.LedgerSummarySorobanUtilization:
+    properties:
+      instructions_limit:
+        type: integer
+      instructions_pct:
+        type: number
+      instructions_used:
+        type: integer
+      read_bytes_used:
+        type: integer
+      read_write_bytes_limit:
+        type: integer
+      read_write_bytes_used:
+        type: integer
+      read_write_pct:
+        type: number
+      rent_burned:
+        type: number
+      write_bytes_used:
+        type: integer
+    type: object
+  main.LedgerSummaryTotals:
+    properties:
+      contract_event_count:
+        type: integer
+      failed_tx_count:
+        type: integer
+      operation_count:
+        type: integer
+      soroban_op_count:
+        type: integer
+      successful_tx_count:
+        type: integer
+      total_fee_charged:
+        type: integer
+      transaction_count:
+        type: integer
+    type: object
   main.LineageResponse:
     properties:
       archives:
@@ -489,6 +1108,67 @@ definitions:
         type: string
       start_ledger:
         type: integer
+    type: object
+  main.RelationshipCoverage:
+    properties:
+      includes:
+        items:
+          type: string
+        type: array
+      limitations:
+        items:
+          type: string
+        type: array
+      version:
+        type: string
+    type: object
+  main.RelationshipEdge:
+    properties:
+      address_a:
+        type: string
+      address_b:
+        type: string
+      amount:
+        type: string
+      asset:
+        type: string
+      closed_at:
+        type: string
+      confidence:
+        type: string
+      contract_id:
+        type: string
+      direction:
+        type: string
+      function_name:
+        type: string
+      interaction_type:
+        type: string
+      ledger_sequence:
+        type: integer
+      source_table:
+        type: string
+      transaction_hash:
+        type: string
+    type: object
+  main.RelationshipResponse:
+    properties:
+      address_a:
+        type: string
+      address_b:
+        type: string
+      count:
+        type: integer
+      coverage:
+        $ref: '#/definitions/main.RelationshipCoverage'
+      cursor:
+        type: string
+      edges:
+        items:
+          $ref: '#/definitions/main.RelationshipEdge'
+        type: array
+      has_more:
+        type: boolean
     type: object
   main.SEP41TokenMetadata:
     properties:
@@ -565,107 +1245,178 @@ definitions:
           $ref: '#/definitions/main.SearchResult'
         type: array
     type: object
-  main.SmartWalletInfo:
+  main.SemanticActor:
     properties:
+      actor_id:
+        type: string
+      actor_type:
+        type: string
       contract_id:
         type: string
-      has_check_auth:
-        type: boolean
-      is_smart_wallet:
-        type: boolean
-      wallet_type:
-        description: 'crossmint, openzeppelin, sep50_generic'
+      label:
         type: string
-      implementation:
-        type: string
-      confidence:
-        type: number
-      signer_count:
-        type: integer
-      signers:
+      roles:
         items:
           type: string
         type: array
+      wallet:
+        $ref: '#/definitions/main.SemanticWalletContext'
     type: object
-  main.SmartWalletListEntry:
+  main.SemanticAssetContext:
     properties:
-      contract_id:
-        type: string
-      source:
-        description: '"classified" or "heuristic"'
-        type: string
-      tier:
-        description: '"passkey", "oz_or_generic", "crossmint", "openzeppelin", "sep50_generic"'
-        type: string
-      wallet_type:
-        description: Set when source=classified
-        type: string
-      confidence:
-        type: number
-      admin_calls:
-        type: integer
-      first_admin_ledger:
-        type: integer
-      last_admin_ledger:
-        type: integer
-      total_invocations:
-        type: integer
-      unique_callers:
-        type: integer
-      deployer_account:
-        type: string
-      wallet_signers:
-        description: JSONB signer array (when classified)
-        type: object
-      observed_functions:
+      movements:
+        items:
+          $ref: '#/definitions/main.SemanticAssetMovement'
+        type: array
+      path:
         items:
           type: string
         type: array
+      received:
+        $ref: '#/definitions/main.SemanticAssetMovement'
+      sent:
+        $ref: '#/definitions/main.SemanticAssetMovement'
     type: object
-  main.SmartWalletListResponse:
+  main.SemanticAssetMovement:
     properties:
-      wallets:
+      amount:
+        type: string
+      asset:
+        type: string
+      contract:
+        type: string
+      from:
+        type: string
+      kind:
+        type: string
+      to:
+        type: string
+    type: object
+  main.SemanticCallEdge:
+    properties:
+      depth:
+        type: integer
+      from:
+        type: string
+      function:
+        type: string
+      order:
+        type: integer
+      successful:
+        type: boolean
+      to:
+        type: string
+    type: object
+  main.SemanticTransactionClassification:
+    properties:
+      confidence:
+        type: string
+      effective_actor_type:
+        type: string
+      operation_types:
         items:
-          $ref: '#/definitions/main.SmartWalletListEntry'
+          type: string
         type: array
-      count:
-        type: integer
-      classified_count:
-        type: integer
-      heuristic_count:
-        type: integer
+      subtype:
+        type: string
+      tx_type:
+        type: string
+      wallet_involved:
+        type: boolean
     type: object
-  main.ContractTransactionEntry:
+  main.SemanticTransactionInfo:
     properties:
-      contract_id:
+      account_sequence:
+        type: integer
+      closed_at:
         type: string
-      transaction_hash:
-        type: string
+      fee:
+        type: integer
       ledger_sequence:
         type: integer
-      operation_index:
+      max_fee:
         type: integer
-      function_name:
-        type: string
+      operation_count:
+        type: integer
       source_account:
         type: string
       successful:
         type: boolean
-      closed_at:
+      tx_hash:
         type: string
     type: object
-  main.ContractTransactionsResponse:
+  main.SemanticTransactionResponse:
     properties:
+      actors:
+        items:
+          $ref: '#/definitions/main.SemanticActor'
+        type: array
+      assets:
+        $ref: '#/definitions/main.SemanticAssetContext'
+      call_graph:
+        items:
+          $ref: '#/definitions/main.SemanticCallEdge'
+        type: array
+      classification:
+        $ref: '#/definitions/main.SemanticTransactionClassification'
+      diffs:
+        $ref: '#/definitions/main.TxDiffs'
+      events:
+        items:
+          $ref: '#/definitions/main.UnifiedEvent'
+        type: array
+      legacy_summary:
+        $ref: '#/definitions/main.TxSummary'
+      operations:
+        items:
+          $ref: '#/definitions/main.DecodedOperation'
+        type: array
+      transaction:
+        $ref: '#/definitions/main.SemanticTransactionInfo'
+    type: object
+  main.SemanticWalletContext:
+    properties:
+      confidence:
+        type: number
+      has_check_auth:
+        type: boolean
+      implementation:
+        type: string
+      signer_count:
+        type: integer
+      signers:
+        items:
+          $ref: '#/definitions/main.WalletSignerInfo'
+        type: array
+      wallet_type:
+        type: string
+    type: object
+  main.SmartWalletInfo:
+    properties:
+      confidence:
+        type: number
       contract_id:
         type: string
-      transactions:
-        items:
-          $ref: '#/definitions/main.ContractTransactionEntry'
-        type: array
-      count:
-        type: integer
-      has_more:
+      has_check_auth:
         type: boolean
+      implementation:
+        description: human-readable detector name
+        type: string
+      is_smart_wallet:
+        type: boolean
+      policies:
+        items:
+          type: string
+        type: array
+      signer_count:
+        type: integer
+      signers:
+        items:
+          $ref: '#/definitions/main.WalletSignerInfo'
+        type: array
+      wallet_type:
+        description: '"crossmint", "openzeppelin", "sep50_generic"'
+        type: string
     type: object
   main.SorobanContractStats:
     properties:
@@ -869,7 +1620,8 @@ definitions:
       transfer:
         $ref: '#/definitions/main.TransferDetail'
       type:
-        description: transfer, mint, burn, swap, contract_call, classic
+        description: transfer, mint, burn, swap, contract_call, create_account, payment,
+          etc.
         type: string
     type: object
   main.UnifiedEvent:
@@ -902,149 +1654,28 @@ definitions:
         type: string
       to:
         type: string
-      tx_hash:
-        type: string
-    type: object
-  main.SemanticActivity:
-    properties:
-      id:
-        type: string
-      ledger_sequence:
+      token_decimals:
         type: integer
-      timestamp:
-        type: string
-      activity_type:
-        description: 'payment, contract_call, account_created, path_payment, manage_offer,
-          inflation'
-        type: string
-      description:
-        type: string
-      source_account:
-        type: string
-      destination_account:
-        type: string
-      contract_id:
-        type: string
-      asset_code:
-        type: string
-      asset_issuer:
-        type: string
-      amount:
-        type: string
-      is_soroban:
-        type: boolean
-      soroban_function_name:
-        type: string
-      transaction_hash:
-        type: string
-      operation_index:
-        type: integer
-      successful:
-        type: boolean
-      fee_charged:
-        type: integer
-    type: object
-  main.SemanticActivitiesResponse:
-    properties:
-      activities:
-        items:
-          $ref: '#/definitions/main.SemanticActivity'
-        type: array
-      count:
-        type: integer
-      has_more:
-        type: boolean
-    type: object
-  main.SemanticContract:
-    properties:
-      contract_id:
-        type: string
-      contract_type:
-        description: 'sep41_token, smart_wallet, custom_soroban, sac, unknown'
-        type: string
       token_name:
         type: string
       token_symbol:
         type: string
-      token_decimals:
-        type: integer
-      deployer_account:
+      token_type:
         type: string
-      deployed_at:
-        type: string
-      deployed_ledger:
-        type: integer
-      total_invocations:
-        type: integer
-      last_activity:
-        type: string
-      unique_callers:
-        type: integer
-      observed_functions:
-        items:
-          type: string
-        type: array
-      wallet_type:
-        description: 'Smart wallet implementation type: crossmint, openzeppelin, sep50_generic.
-          Only set when the contract is classified as a smart wallet.'
+      tx_hash:
         type: string
     type: object
-  main.SemanticContractsResponse:
-    properties:
-      contracts:
-        items:
-          $ref: '#/definitions/main.SemanticContract'
-        type: array
-      count:
-        type: integer
-      has_more:
-        type: boolean
-    type: object
-  main.SemanticFlow:
+  main.WalletSignerInfo:
     properties:
       id:
         type: string
-      ledger_sequence:
+      key_type:
+        description: '"ed25519", "secp256k1", "webauthn", "unknown"'
+        type: string
+      raw_value:
+        type: string
+      weight:
         type: integer
-      timestamp:
-        type: string
-      flow_type:
-        description: 'transfer, mint, burn'
-        type: string
-      from_account:
-        type: string
-      to_account:
-        type: string
-      contract_id:
-        type: string
-      asset_code:
-        type: string
-      asset_issuer:
-        type: string
-      asset_type:
-        description: 'native, credit_alphanum4, credit_alphanum12, soroban_token'
-        type: string
-      amount:
-        type: string
-      transaction_hash:
-        type: string
-      operation_type:
-        description: 'Stellar operation type code (1=payment, 2=path_payment, 13=path_payment_strict_send,
-          24=invoke_host_function)'
-        type: integer
-      successful:
-        type: boolean
-    type: object
-  main.SemanticFlowsResponse:
-    properties:
-      flows:
-        items:
-          $ref: '#/definitions/main.SemanticFlow'
-        type: array
-      count:
-        type: integer
-      has_more:
-        type: boolean
     type: object
 host: gateway.withobsrvr.com
 info:
@@ -1053,12 +1684,11 @@ info:
     name: OBSRVR Team
     url: https://obsrvr.com
   description: |-
-    API for querying Stellar blockchain data across Bronze, Silver, Semantic, and Gold data layers.
+    API for querying Stellar blockchain data across Bronze, Silver, and Gold data layers.
 
     ## Data Layers
     - **Bronze**: Raw blockchain data (ledgers, transactions, operations, effects)
     - **Silver**: Enriched and processed data (accounts, assets, transfers, trades)
-    - **Semantic**: Meaning-oriented views (activities, contracts, value flows)
     - **Gold**: Analytical views (snapshots, compliance reports)
     - **Index Plane**: Fast lookup services (transaction hash, contract events)
 
@@ -1439,29 +2069,271 @@ paths:
       summary: Get raw trustlines
       tags:
       - Bronze
-  /api/v1/bronze/stats/network:
+  /api/v1/explorer/contracts:
     get:
+      parameters:
+      - description: Filter by category (token, dex, oracle, etc.)
+        in: query
+        name: category
+        type: string
+      - description: Filter by project (soroswap, redstone, etc.)
+        in: query
+        name: project
+        type: string
+      - description: Filter by source (manual, token_registry, etc.)
+        in: query
+        name: source
+        type: string
+      - description: 'Max results (default: 50, max: 500)'
+        in: query
+        name: limit
+        type: integer
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: List contract registry entries
+      tags:
+      - Contract Registry
+    post:
       consumes:
       - application/json
-      description: Returns headline network statistics directly from the bronze layer
-        with no polling delay. Includes latest ledger info, 24h transaction and operation
-        counts.
       produces:
       - application/json
       responses:
         "200":
-          description: Bronze network statistics
-          schema:
-            $ref: '#/definitions/main.BronzeNetworkStats'
-        "503":
-          description: Bronze layer not configured
+          description: OK
           schema:
             additionalProperties: true
             type: object
-      summary: Get bronze network statistics
+      summary: Add/update contract registry entry
       tags:
-      - Bronze
-      - Statistics
+      - Contract Registry
+  /api/v1/explorer/contracts/{id}:
+    delete:
+      parameters:
+      - description: Contract ID
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Delete contract registry entry
+      tags:
+      - Contract Registry
+    get:
+      parameters:
+      - description: Contract ID (C... address)
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/main.ContractRegistryEntry'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get contract registry entry
+      tags:
+      - Contract Registry
+  /api/v1/explorer/contracts/search:
+    get:
+      parameters:
+      - description: Search query (matches display_name)
+        in: query
+        name: q
+        required: true
+        type: string
+      - description: 'Max results (default: 20, max: 100)'
+        in: query
+        name: limit
+        type: integer
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Search contract registry
+      tags:
+      - Contract Registry
+  /api/v1/explorer/contracts/seed:
+    post:
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Re-seed contract registry from token_registry
+      tags:
+      - Contract Registry
+  /api/v1/explorer/events:
+    get:
+      description: Returns paginated Soroban contract events enriched with contract
+        names and semantic type classification
+      parameters:
+      - description: Comma-separated event types (dynamically derived from classification
+          rules)
+        in: query
+        name: type
+        type: string
+      - description: 'UI tab shortcut: transfers, swaps, mints_burns, contract_calls'
+        in: query
+        name: tab
+        type: string
+      - description: Filter by contract ID (C... address)
+        in: query
+        name: contract_id
+        type: string
+      - description: Search by contract/token name (case-insensitive substring)
+        in: query
+        name: contract_name
+        type: string
+      - description: Filter by transaction hash
+        in: query
+        name: tx_hash
+        type: string
+      - description: Substring match across all decoded topics (case-insensitive)
+        in: query
+        name: topic_match
+        type: string
+      - description: Exact match on topic position 0
+        in: query
+        name: topic0
+        type: string
+      - description: Exact match on topic position 1
+        in: query
+        name: topic1
+        type: string
+      - description: Exact match on topic position 2
+        in: query
+        name: topic2
+        type: string
+      - description: Exact match on topic position 3
+        in: query
+        name: topic3
+        type: string
+      - description: Start of ledger range
+        in: query
+        name: start_ledger
+        type: integer
+      - description: End of ledger range
+        in: query
+        name: end_ledger
+        type: integer
+      - description: 'Max results (default: 20, max: 200)'
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination cursor from previous response
+        in: query
+        name: cursor
+        type: string
+      - description: 'Sort order: asc or desc (default: desc)'
+        in: query
+        name: order
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Explorer events with metadata and pagination
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get explorer events
+      tags:
+      - Explorer
+  /api/v1/explorer/events/rules:
+    get:
+      description: Returns the currently loaded classification rules
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Classification rules
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get event classification rules
+      tags:
+      - Explorer
+  /api/v1/explorer/events/rules/reload:
+    post:
+      description: Reloads classification rules from the database without restarting
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Reload result
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Reload failed
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Reload event classification rules
+      tags:
+      - Explorer
+  /api/v1/explorer/summary:
+    get:
+      consumes:
+      - application/json
+      description: Returns the aggregated summary payload for the explorer home page,
+        including header, hero, alert, leaders, contracts needing attention, utilization,
+        meta, and provenance. This handler is exposed on both /api/v1/explorer/summary
+        and /api/v1/home/summary.
+      parameters:
+      - default: 4
+        description: Maximum number of leaders/contracts-needing-attention to return
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Explorer home summary
+          schema:
+            $ref: '#/definitions/main.ExplorerHomeSummaryResponse'
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+        "503":
+          description: Explorer summary unavailable
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get explorer home summary
+      tags:
+      - Explorer
   /api/v1/gold/compliance/archive:
     post:
       consumes:
@@ -1939,6 +2811,40 @@ paths:
       summary: Get portfolio snapshot at timestamp
       tags:
       - Gold
+  /api/v1/home/summary:
+    get:
+      consumes:
+      - application/json
+      description: Returns the aggregated summary payload for the explorer home page,
+        including header, hero, alert, leaders, contracts needing attention, utilization,
+        meta, and provenance. This handler is exposed on both /api/v1/explorer/summary
+        and /api/v1/home/summary.
+      parameters:
+      - default: 4
+        description: Maximum number of leaders/contracts-needing-attention to return
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Explorer home summary
+          schema:
+            $ref: '#/definitions/main.ExplorerHomeSummaryResponse'
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+        "503":
+          description: Explorer summary unavailable
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get explorer home summary
+      tags:
+      - Explorer
   /api/v1/index/contracts/{contract_id}/ledgers:
     get:
       consumes:
@@ -2180,6 +3086,228 @@ paths:
       summary: Batch lookup transactions by hash
       tags:
       - Index
+  /api/v1/semantic/defi/exposure:
+    get:
+      parameters:
+      - description: User address
+        in: query
+        name: address
+        required: true
+        type: string
+      - default: USD
+        description: Quote currency
+        in: query
+        name: quote
+        type: string
+      - description: Optional protocol filter
+        in: query
+        name: protocol
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/main.DefiExposureResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get aggregated DeFi exposure for a user
+      tags:
+      - DeFi Positions
+  /api/v1/semantic/defi/markets:
+    get:
+      parameters:
+      - description: Filter by protocol id
+        in: query
+        name: protocol
+        type: string
+      - description: Filter by market type
+        in: query
+        name: market_type
+        type: string
+      - default: true
+        description: Only active markets
+        in: query
+        name: active_only
+        type: boolean
+      - default: 100
+        description: Max results
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination cursor
+        in: query
+        name: cursor
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: List DeFi markets
+      tags:
+      - DeFi Markets
+  /api/v1/semantic/defi/positions:
+    get:
+      parameters:
+      - description: User address
+        in: query
+        name: address
+        required: true
+        type: string
+      - default: USD
+        description: Quote currency
+        in: query
+        name: quote
+        type: string
+      - description: Optional protocol filter
+        in: query
+        name: protocol
+        type: string
+      - default: false
+        description: Include closed positions
+        in: query
+        name: include_closed
+        type: boolean
+      - default: 100
+        description: Max results
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination cursor
+        in: query
+        name: cursor
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/main.DefiPositionsResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: List DeFi positions for a user
+      tags:
+      - DeFi Positions
+  /api/v1/semantic/defi/positions/{position_id}:
+    get:
+      parameters:
+      - description: Position ID
+        in: path
+        name: position_id
+        required: true
+        type: string
+      - default: USD
+        description: Quote currency
+        in: query
+        name: quote
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get a single DeFi position
+      tags:
+      - DeFi Positions
+  /api/v1/semantic/defi/protocols:
+    get:
+      parameters:
+      - description: Filter by protocol status
+        in: query
+        name: status
+        type: string
+      - description: Filter by protocol category
+        in: query
+        name: category
+        type: string
+      - default: testnet
+        description: Network name
+        in: query
+        name: network
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: List supported DeFi protocols
+      tags:
+      - DeFi Registry
+  /api/v1/semantic/defi/status:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/main.DefiStatusResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get DeFi protocol freshness and degradation status
+      tags:
+      - DeFi Status
   /api/v1/silver/accounts:
     get:
       consumes:
@@ -2263,6 +3391,43 @@ paths:
             additionalProperties: true
             type: object
       summary: Get account balances
+      tags:
+      - Accounts
+  /api/v1/silver/accounts/{id}/contracts:
+    get:
+      consumes:
+      - application/json
+      description: Returns contracts an account has interacted with, including call
+        counts and token metadata
+      parameters:
+      - description: Stellar account ID (G...)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 'Maximum results to return (default: 50, max: 200)'
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Account contract interactions
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Missing account_id
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get account contract interactions
       tags:
       - Accounts
   /api/v1/silver/accounts/{id}/offers:
@@ -3326,7 +4491,7 @@ paths:
     get:
       description: Returns raw contract events from bronze layer with optional filters
       parameters:
-      - description: Filter by contract ID (C...)
+      - description: Filter by contract ID (64-character hex contract hash)
         in: query
         name: contract_id
         type: string
@@ -3334,9 +4499,25 @@ paths:
         in: query
         name: event_type
         type: string
-      - description: Search within topics_decoded
+      - description: Search within topics_decoded (ILIKE substring match)
         in: query
         name: topic_match
+        type: string
+      - description: Exact match on topic position 0 (e.g. transfer)
+        in: query
+        name: topic0
+        type: string
+      - description: Exact match on topic position 1 (e.g. sender address)
+        in: query
+        name: topic1
+        type: string
+      - description: Exact match on topic position 2 (e.g. receiver address)
+        in: query
+        name: topic2
+        type: string
+      - description: Exact match on topic position 3
+        in: query
+        name: topic3
         type: string
       - description: Start of ledger range
         in: query
@@ -3527,6 +4708,107 @@ paths:
       summary: Get ledger fee distribution
       tags:
       - Statistics
+  /api/v1/silver/ledgers/{seq}/soroban:
+    get:
+      consumes:
+      - application/json
+      description: Returns aggregated Soroban CPU, I/O, and rent statistics for a
+        specific ledger
+      parameters:
+      - description: Ledger sequence number
+        in: path
+        name: seq
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Ledger Soroban resource aggregates
+          schema:
+            $ref: '#/definitions/main.LedgerSorobanResponse'
+        "400":
+          description: Invalid ledger sequence
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: No transactions in ledger
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get ledger Soroban resource usage
+      tags:
+      - Statistics
+  /api/v1/silver/ledgers/{seq}/summary:
+    get:
+      consumes:
+      - application/json
+      description: Returns a structured ledger summary with totals, semantic composition,
+        Soroban utilization, representative transactions, and provenance metadata.
+      parameters:
+      - description: Ledger sequence number
+        in: path
+        name: seq
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Ledger summary
+          schema:
+            $ref: '#/definitions/main.LedgerSummaryResponse'
+        "400":
+          description: Invalid ledger sequence
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Ledger not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get ledger summary
+      tags:
+      - Ledgers
+  /api/v1/silver/ledgers/recent:
+    get:
+      consumes:
+      - application/json
+      description: Returns the newest ledgers for latest-ledgers UIs from serving
+        projections
+      parameters:
+      - description: 'Maximum results (default: 6, max: 25)'
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Recent ledgers
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get recent ledgers
+      tags:
+      - Ledgers
   /api/v1/silver/liquidity-pools:
     get:
       consumes:
@@ -3927,6 +5209,71 @@ paths:
       summary: List trading pairs
       tags:
       - Prices
+  /api/v1/silver/relationships/{address_a}/{address_b}:
+    get:
+      consumes:
+      - application/json
+      description: Returns a paginated v1 interaction history between two Stellar
+        addresses. v1 includes direct value transfers, account-to-contract calls,
+        contract-to-contract calls where indexed, and conservative typed-column co-event
+        edges. The response includes coverage limitations; v1 does not scan arbitrary
+        SCVal arguments, raw XDR/JSON payloads, or undecoded event topics.
+      parameters:
+      - description: First Stellar account (G...) or contract (C...) address
+        in: path
+        name: address_a
+        required: true
+        type: string
+      - description: Second Stellar account (G...) or contract (C...) address
+        in: path
+        name: address_b
+        required: true
+        type: string
+      - description: Page size (default 100, max 500)
+        in: query
+        name: limit
+        type: integer
+      - description: Opaque pagination cursor from previous response
+        in: query
+        name: cursor
+        type: string
+      - description: 'Sort order: desc or asc (default desc)'
+        in: query
+        name: order
+        type: string
+      - description: Inclusive starting ledger sequence
+        in: query
+        name: start_ledger
+        type: integer
+      - description: Inclusive ending ledger sequence
+        in: query
+        name: end_ledger
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Relationship edges with coverage limitations
+          schema:
+            $ref: '#/definitions/main.RelationshipResponse'
+        "400":
+          description: Invalid address, cursor, order, or ledger bound
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+        "503":
+          description: Unified reader unavailable
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get address relationship history
+      tags:
+      - Relationships
   /api/v1/silver/search:
     get:
       description: Detects query type (account, contract, transaction, ledger, asset)
@@ -3988,110 +5335,6 @@ paths:
       summary: Detect SEP-50 smart wallet
       tags:
       - Smart Wallets
-  /api/v1/silver/smart-wallets:
-    get:
-      description: Returns smart-account candidates from two sources. Classified wallets
-        come from semantic_entities_contracts where wallet_type is populated by the
-        silver-realtime-transformer. Heuristic candidates come from admin-function
-        signals (add_signer, allow_signing_key, set_webauthn_verifier, etc.) on
-        contract_invocations_raw, with dapp-backend false positives filtered out.
-        Classified rows take precedence over heuristic duplicates.
-      parameters:
-      - description: 'Filter by tier: passkey, oz_or_generic, crossmint, openzeppelin,
-          sep50_generic'
-        in: query
-        name: tier
-        type: string
-      - description: 'Filter by detection source: classified, heuristic'
-        in: query
-        name: source
-        type: string
-      - description: Maximum results (default 100, max 500)
-        in: query
-        name: limit
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: List of smart wallet candidates
-          schema:
-            $ref: '#/definitions/main.SmartWalletListResponse'
-        "500":
-          description: Internal server error
-          schema:
-            additionalProperties: true
-            type: object
-      summary: List smart wallets (classified + heuristic)
-      tags:
-      - Smart Wallets
-  /api/v1/silver/contracts/{contract_id}/transactions:
-    get:
-      description: Returns invocation records for a specific contract from
-        contract_invocations_raw in silver hot. Supports filtering by function name,
-        success status, time range, and ledger range.
-      parameters:
-      - description: Contract ID (C...)
-        in: path
-        name: contract_id
-        required: true
-        type: string
-      - description: Exact match on function_name
-        in: query
-        name: function_name
-        type: string
-      - description: Comma-separated function names (matches ANY)
-        in: query
-        name: function_any
-        type: string
-      - description: 'Filter by success: true or false'
-        in: query
-        name: successful
-        type: string
-      - description: Only transactions after this timestamp (RFC3339)
-        in: query
-        name: after
-        type: string
-      - description: Only transactions before this timestamp (RFC3339)
-        in: query
-        name: before
-        type: string
-      - description: Lower bound on ledger_sequence (inclusive)
-        in: query
-        name: from_ledger
-        type: integer
-      - description: Upper bound on ledger_sequence (exclusive)
-        in: query
-        name: to_ledger
-        type: integer
-      - description: Maximum results (default 100, max 500)
-        in: query
-        name: limit
-        type: integer
-      - description: 'Sort order on ledger_sequence: asc or desc (default desc)'
-        in: query
-        name: order
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: List of contract transactions
-          schema:
-            $ref: '#/definitions/main.ContractTransactionsResponse'
-        "400":
-          description: Invalid parameter
-          schema:
-            additionalProperties: true
-            type: object
-        "500":
-          description: Internal server error
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get transactions for a contract
-      tags:
-      - Contracts
   /api/v1/silver/stats/fees:
     get:
       consumes:
@@ -4341,6 +5584,33 @@ paths:
       summary: Get SEP-41 token transfer history
       tags:
       - Tokens
+  /api/v1/silver/transactions/recent:
+    get:
+      consumes:
+      - application/json
+      description: Returns the newest transactions with serving-backed summaries for
+        latest-activity UIs
+      parameters:
+      - description: 'Maximum results (default: 6, max: 25)'
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Recent transactions
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get recent transactions
+      tags:
+      - Transactions
   /api/v1/silver/transactions/summaries:
     get:
       consumes:
@@ -4766,35 +6036,60 @@ paths:
       summary: Get transaction contract hierarchy
       tags:
       - Contracts
-  /api/v1/semantic/activities:
+  /api/v1/silver/tx/{hash}/semantic:
     get:
       consumes:
       - application/json
-      description: Returns a unified feed of on-chain actions (payments, contract calls,
-        account creations, etc.) with human-readable descriptions
+      description: Returns an actor-centric semantic transaction response with classification,
+        actors, and asset movement context.
       parameters:
-      - description: Filter by source or destination account (G...)
-        in: query
-        name: account
+      - description: Transaction hash
+        in: path
+        name: hash
+        required: true
         type: string
-      - description: Filter by contract address (C...)
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Semantic transaction
+          schema:
+            $ref: '#/definitions/main.SemanticTransactionResponse'
+        "400":
+          description: Missing transaction hash
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Transaction not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get semantic transaction view
+      tags:
+      - Transactions
+  /api/v1/silver/tx/batch/decoded:
+    get:
+      consumes:
+      - application/json
+      description: Returns fully decoded transactions (summary, operations, events)
+        for up to 25 hashes or all transactions in a ledger. Same response shape as
+        /tx/{hash}/decoded per item.
+      parameters:
+      - description: Comma-separated transaction hashes (max 25)
         in: query
-        name: contract_id
+        name: hashes
         type: string
-      - description: 'Filter by activity type: payment, contract_call, account_created,
-          path_payment, manage_offer, inflation'
+      - description: Ledger sequence — returns all transactions in that ledger
         in: query
-        name: activity_type
-        type: string
-      - description: Only activities before this timestamp (ISO 8601)
-        in: query
-        name: before
-        type: string
-      - description: Only activities after this timestamp (ISO 8601)
-        in: query
-        name: after
-        type: string
-      - description: Maximum results (default 50, max 200)
+        name: ledger
+        type: integer
+      - description: 'Max transactions when using ledger (default: 25, max: 100)'
         in: query
         name: limit
         type: integer
@@ -4802,45 +6097,39 @@ paths:
       - application/json
       responses:
         "200":
-          description: List of semantic activities
+          description: Batch decoded transactions
           schema:
-            $ref: '#/definitions/main.SemanticActivitiesResponse'
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
         "500":
           description: Internal server error
           schema:
             additionalProperties: true
             type: object
-      summary: Get on-chain activity feed
+      summary: Batch decoded transactions
       tags:
-      - Semantic
-  /api/v1/semantic/contracts:
-    get:
+      - Transactions
+    post:
       consumes:
       - application/json
-      description: Returns classified contracts with type detection, usage statistics,
-        and observed function signatures. Supports filtering by contract type, wallet
-        type, deployer, and observed function names.
+      description: Returns fully decoded transactions (summary, operations, events)
+        for up to 25 hashes or all transactions in a ledger. Same response shape as
+        /tx/{hash}/decoded per item.
       parameters:
-      - description: 'Filter by contract type: sep41_token, smart_wallet, custom_soroban,
-          sac, unknown'
+      - description: Comma-separated transaction hashes (max 25)
         in: query
-        name: contract_type
+        name: hashes
         type: string
-      - description: Filter by deployer account (G...)
+      - description: Ledger sequence — returns all transactions in that ledger
         in: query
-        name: deployer
-        type: string
-      - description: 'Filter by wallet type: crossmint, openzeppelin, sep50_generic,
-          or "any" to match any non-null wallet_type'
-        in: query
-        name: wallet_type
-        type: string
-      - description: Comma-separated function names; matches contracts whose observed_functions
-          overlap (ANY), e.g. allow_signing_key,set_webauthn_verifier
-        in: query
-        name: function_any
-        type: string
-      - description: Maximum results (default 50, max 200)
+        name: ledger
+        type: integer
+      - description: 'Max transactions when using ledger (default: 25, max: 100)'
         in: query
         name: limit
         type: integer
@@ -4848,63 +6137,23 @@ paths:
       - application/json
       responses:
         "200":
-          description: List of contracts with stats
+          description: Batch decoded transactions
           schema:
-            $ref: '#/definitions/main.SemanticContractsResponse'
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid parameters
+          schema:
+            additionalProperties: true
+            type: object
         "500":
           description: Internal server error
           schema:
             additionalProperties: true
             type: object
-      summary: Get contract registry
+      summary: Batch decoded transactions
       tags:
-      - Semantic
-  /api/v1/semantic/flows:
-    get:
-      consumes:
-      - application/json
-      description: Returns normalized value transfers across all asset types (classic
-        payments, Soroban token transfers) with flow type classification
-      parameters:
-      - description: Filter by sender or recipient account (G...)
-        in: query
-        name: account
-        type: string
-      - description: Filter by asset code (e.g., XLM, USDC)
-        in: query
-        name: asset_code
-        type: string
-      - description: 'Filter by flow type: transfer, mint, burn'
-        in: query
-        name: flow_type
-        type: string
-      - description: Only flows before this timestamp (ISO 8601)
-        in: query
-        name: before
-        type: string
-      - description: Only flows after this timestamp (ISO 8601)
-        in: query
-        name: after
-        type: string
-      - description: Maximum results (default 50, max 200)
-        in: query
-        name: limit
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: List of value flows
-          schema:
-            $ref: '#/definitions/main.SemanticFlowsResponse'
-        "500":
-          description: Internal server error
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get value flows
-      tags:
-      - Semantic
+      - Transactions
 schemes:
 - https
 securityDefinitions:

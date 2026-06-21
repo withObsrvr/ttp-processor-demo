@@ -109,6 +109,8 @@ func (app *application) registerSilverRoutes(router *mux.Router) {
 
 	accountActivityHandler := NewAccountActivityHandler(unifiedSilverReader)
 	router.HandleFunc("/api/v1/silver/accounts/{id}/activity", accountActivityHandler.HandleAccountActivity).Methods("GET")
+	router.HandleFunc("/api/v1/silver/relationships/{address_a}/{address_b}", silverHandlers.HandleRelationship).Methods("GET")
+	log.Println("  ✓ /api/v1/silver/relationships/{address_a}/{address_b}")
 
 	app.registerSilverContractRoutes(router)
 	app.registerSilverAnalyticsRoutes(router)
