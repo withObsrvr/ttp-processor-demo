@@ -25,6 +25,14 @@ func NewContractTransactionsHandlers(hot *SilverHotReader) *ContractTransactions
 	return &ContractTransactionsHandlers{hot: hot}
 }
 
+// ContractTransactionsResponse is the response for contract transaction listing.
+type ContractTransactionsResponse struct {
+	ContractID   string                     `json:"contract_id"`
+	Transactions []ContractTransactionEntry `json:"transactions"`
+	Count        int                        `json:"count"`
+	HasMore      bool                       `json:"has_more"`
+}
+
 // ContractTransactionEntry is a single tx row returned by the endpoint.
 type ContractTransactionEntry struct {
 	ContractID      string  `json:"contract_id"`
@@ -38,6 +46,25 @@ type ContractTransactionEntry struct {
 }
 
 // HandleContractTransactions serves GET /api/v1/silver/contracts/{contract_id}/transactions
+// @Summary List contract transactions
+// @Description Returns recent silver-hot contract invocation transactions for a contract, with optional function, success, time, and ledger filters.
+// @Tags Contracts
+// @Produce json
+// @Param contract_id path string true "Contract ID (C...)"
+// @Param function_name query string false "Exact function_name filter"
+// @Param function_any query string false "Comma-separated function names; any may match"
+// @Param successful query bool false "Filter by transaction success"
+// @Param after query string false "RFC3339 lower bound on closed_at, inclusive"
+// @Param before query string false "RFC3339 upper bound on closed_at, exclusive"
+// @Param from_ledger query int false "Inclusive lower ledger bound"
+// @Param to_ledger query int false "Exclusive upper ledger bound"
+// @Param limit query int false "Page size (default 100, max 500)"
+// @Param order query string false "Sort order: desc or asc (default desc)"
+// @Success 200 {object} ContractTransactionsResponse
+// @Failure 400 {object} map[string]interface{}
+// @Failure 503 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
+// @Router /api/v1/silver/contracts/{contract_id}/transactions [get]
 //
 // Query params:
 //
@@ -191,11 +218,11 @@ func (h *ContractTransactionsHandlers) HandleContractTransactions(w http.Respons
 		out = out[:limit]
 	}
 
-	respondJSON(w, map[string]any{
-		"contract_id":  contractID,
-		"transactions": out,
-		"count":        len(out),
-		"has_more":     hasMore,
+	respondJSON(w, ContractTransactionsResponse{
+		ContractID:   contractID,
+		Transactions: out,
+		Count:        len(out),
+		HasMore:      hasMore,
 	})
 }
 

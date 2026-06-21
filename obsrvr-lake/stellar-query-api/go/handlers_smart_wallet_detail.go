@@ -205,6 +205,15 @@ func (h *SmartWalletHandlers) SetUnifiedDuckDBReader(reader *UnifiedDuckDBReader
 }
 
 // HandleSmartWalletDetail serves GET /api/v1/silver/smart-wallets/{contract_id}
+// @Summary Get smart-wallet detail
+// @Description Returns identity, signer configuration, policies, balances, activity summary, and timeline details for a smart-wallet contract.
+// @Tags Smart Wallets
+// @Produce json
+// @Param contract_id path string true "Smart-wallet contract ID (C...)"
+// @Success 200 {object} SmartWalletDetailResponse
+// @Failure 400 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
+// @Router /api/v1/silver/smart-wallets/{contract_id} [get]
 func (h *SmartWalletHandlers) HandleSmartWalletDetail(w http.ResponseWriter, r *http.Request) {
 	contractID := mux.Vars(r)["contract_id"]
 	if contractID == "" {
@@ -220,6 +229,16 @@ func (h *SmartWalletHandlers) HandleSmartWalletDetail(w http.ResponseWriter, r *
 	respondJSON(w, detail)
 }
 
+// HandleSmartWalletBalances serves GET /api/v1/silver/smart-wallets/{contract_id}/balances
+// @Summary Get smart-wallet balances
+// @Description Returns native and token balances for a smart-wallet contract.
+// @Tags Smart Wallets
+// @Produce json
+// @Param contract_id path string true "Smart-wallet contract ID (C...)"
+// @Success 200 {object} SmartWalletBalancesResponse
+// @Failure 400 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
+// @Router /api/v1/silver/smart-wallets/{contract_id}/balances [get]
 func (h *SmartWalletHandlers) HandleSmartWalletBalances(w http.ResponseWriter, r *http.Request) {
 	contractID := mux.Vars(r)["contract_id"]
 	if contractID == "" {

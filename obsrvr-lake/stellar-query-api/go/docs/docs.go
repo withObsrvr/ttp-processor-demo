@@ -548,6 +548,397 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/v1/explorer/contracts": {
+            "get": {
+                "tags": [
+                    "Contract Registry"
+                ],
+                "summary": "List contract registry entries",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Filter by category (token, dex, oracle, etc.)",
+                        "name": "category",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by project (soroswap, redstone, etc.)",
+                        "name": "project",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by source (manual, token_registry, etc.)",
+                        "name": "source",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Max results (default: 50, max: 500)",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Contract Registry"
+                ],
+                "summary": "Add/update contract registry entry",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/explorer/contracts/search": {
+            "get": {
+                "tags": [
+                    "Contract Registry"
+                ],
+                "summary": "Search contract registry",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Search query (matches display_name)",
+                        "name": "q",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Max results (default: 20, max: 100)",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/explorer/contracts/seed": {
+            "post": {
+                "tags": [
+                    "Contract Registry"
+                ],
+                "summary": "Re-seed contract registry from token_registry",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/explorer/contracts/{id}": {
+            "get": {
+                "tags": [
+                    "Contract Registry"
+                ],
+                "summary": "Get contract registry entry",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Contract ID (C... address)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/main.ContractRegistryEntry"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "tags": [
+                    "Contract Registry"
+                ],
+                "summary": "Delete contract registry entry",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Contract ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/explorer/events": {
+            "get": {
+                "description": "Returns paginated Soroban contract events enriched with contract names and semantic type classification",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Explorer"
+                ],
+                "summary": "Get explorer events",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Comma-separated event types (dynamically derived from classification rules)",
+                        "name": "type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "UI tab shortcut: transfers, swaps, mints_burns, contract_calls",
+                        "name": "tab",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by contract ID (C... address)",
+                        "name": "contract_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Search by contract/token name (case-insensitive substring)",
+                        "name": "contract_name",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by transaction hash",
+                        "name": "tx_hash",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Substring match across all decoded topics (case-insensitive)",
+                        "name": "topic_match",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact match on topic position 0",
+                        "name": "topic0",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact match on topic position 1",
+                        "name": "topic1",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact match on topic position 2",
+                        "name": "topic2",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact match on topic position 3",
+                        "name": "topic3",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Start of ledger range",
+                        "name": "start_ledger",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "End of ledger range",
+                        "name": "end_ledger",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Max results (default: 20, max: 200)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Pagination cursor from previous response",
+                        "name": "cursor",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Sort order: asc or desc (default: desc)",
+                        "name": "order",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Explorer events with metadata and pagination",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid parameters",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/explorer/events/rules": {
+            "get": {
+                "description": "Returns the currently loaded classification rules",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Explorer"
+                ],
+                "summary": "Get event classification rules",
+                "responses": {
+                    "200": {
+                        "description": "Classification rules",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/explorer/events/rules/reload": {
+            "post": {
+                "description": "Reloads classification rules from the database without restarting",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Explorer"
+                ],
+                "summary": "Reload event classification rules",
+                "responses": {
+                    "200": {
+                        "description": "Reload result",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Reload failed",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/explorer/summary": {
+            "get": {
+                "description": "Returns the aggregated summary payload for the explorer home page, including header, hero, alert, leaders, contracts needing attention, utilization, meta, and provenance. This handler is exposed on both /api/v1/explorer/summary and /api/v1/home/summary.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Explorer"
+                ],
+                "summary": "Get explorer home summary",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "default": 4,
+                        "description": "Maximum number of leaders/contracts-needing-attention to return",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Explorer home summary",
+                        "schema": {
+                            "$ref": "#/definitions/main.ExplorerHomeSummaryResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "503": {
+                        "description": "Explorer summary unavailable",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/gold/compliance/archive": {
             "post": {
                 "description": "Creates an async archive job for comprehensive compliance data export with methodology documentation",
@@ -1237,6 +1628,52 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/v1/home/summary": {
+            "get": {
+                "description": "Returns the aggregated summary payload for the explorer home page, including header, hero, alert, leaders, contracts needing attention, utilization, meta, and provenance. This handler is exposed on both /api/v1/explorer/summary and /api/v1/home/summary.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Explorer"
+                ],
+                "summary": "Get explorer home summary",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "default": 4,
+                        "description": "Maximum number of leaders/contracts-needing-attention to return",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Explorer home summary",
+                        "schema": {
+                            "$ref": "#/definitions/main.ExplorerHomeSummaryResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "503": {
+                        "description": "Explorer summary unavailable",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/index/contracts/health": {
             "get": {
                 "description": "Returns Contract Event Index health status and coverage statistics",
@@ -1588,6 +2025,335 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/v1/semantic/defi/exposure": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "DeFi Positions"
+                ],
+                "summary": "Get aggregated DeFi exposure for a user",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User address",
+                        "name": "address",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "default": "USD",
+                        "description": "Quote currency",
+                        "name": "quote",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Optional protocol filter",
+                        "name": "protocol",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/main.DefiExposureResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/semantic/defi/markets": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "DeFi Markets"
+                ],
+                "summary": "List DeFi markets",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Filter by protocol id",
+                        "name": "protocol",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by market type",
+                        "name": "market_type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "default": true,
+                        "description": "Only active markets",
+                        "name": "active_only",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 100,
+                        "description": "Max results",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Pagination cursor",
+                        "name": "cursor",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/semantic/defi/positions": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "DeFi Positions"
+                ],
+                "summary": "List DeFi positions for a user",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User address",
+                        "name": "address",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "default": "USD",
+                        "description": "Quote currency",
+                        "name": "quote",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Optional protocol filter",
+                        "name": "protocol",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Include closed positions",
+                        "name": "include_closed",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 100,
+                        "description": "Max results",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Pagination cursor",
+                        "name": "cursor",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/main.DefiPositionsResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/semantic/defi/positions/{position_id}": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "DeFi Positions"
+                ],
+                "summary": "Get a single DeFi position",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Position ID",
+                        "name": "position_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "default": "USD",
+                        "description": "Quote currency",
+                        "name": "quote",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/semantic/defi/protocols": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "DeFi Registry"
+                ],
+                "summary": "List supported DeFi protocols",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Filter by protocol status",
+                        "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by protocol category",
+                        "name": "category",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "default": "testnet",
+                        "description": "Network name",
+                        "name": "network",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/semantic/defi/status": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "DeFi Status"
+                ],
+                "summary": "Get DeFi protocol freshness and degradation status",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/main.DefiStatusResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/silver/accounts": {
             "get": {
                 "description": "Returns a paginated list of all Stellar accounts with sorting and filtering options",
@@ -1901,6 +2667,59 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "Account not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/silver/accounts/{id}/contracts": {
+            "get": {
+                "description": "Returns contracts an account has interacted with, including call counts and token metadata",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Accounts"
+                ],
+                "summary": "Get account contract interactions",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Stellar account ID (G...)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Maximum results to return (default: 50, max: 200)",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Account contract interactions",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Missing account_id",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -2480,6 +3299,110 @@ const docTemplate = `{
                     },
                     "500": {
                         "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/silver/contracts/{contract_id}/transactions": {
+            "get": {
+                "description": "Returns recent silver-hot contract invocation transactions for a contract, with optional function, success, time, and ledger filters.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Contracts"
+                ],
+                "summary": "List contract transactions",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Contract ID (C...)",
+                        "name": "contract_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact function_name filter",
+                        "name": "function_name",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Comma-separated function names; any may match",
+                        "name": "function_any",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "Filter by transaction success",
+                        "name": "successful",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "RFC3339 lower bound on closed_at, inclusive",
+                        "name": "after",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "RFC3339 upper bound on closed_at, exclusive",
+                        "name": "before",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Inclusive lower ledger bound",
+                        "name": "from_ledger",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Exclusive upper ledger bound",
+                        "name": "to_ledger",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default 100, max 500)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Sort order: desc or asc (default desc)",
+                        "name": "order",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/main.ContractTransactionsResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -3248,7 +4171,7 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Filter by contract ID (C...)",
+                        "description": "Filter by contract ID (64-character hex contract hash)",
                         "name": "contract_id",
                         "in": "query"
                     },
@@ -3260,8 +4183,32 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Search within topics_decoded",
+                        "description": "Search within topics_decoded (ILIKE substring match)",
                         "name": "topic_match",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact match on topic position 0 (e.g. transfer)",
+                        "name": "topic0",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact match on topic position 1 (e.g. sender address)",
+                        "name": "topic1",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact match on topic position 2 (e.g. receiver address)",
+                        "name": "topic2",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact match on topic position 3",
+                        "name": "topic3",
                         "in": "query"
                     },
                     {
@@ -3480,6 +4427,45 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/v1/silver/ledgers/recent": {
+            "get": {
+                "description": "Returns the newest ledgers for latest-ledgers UIs from serving projections",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Ledgers"
+                ],
+                "summary": "Get recent ledgers",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Maximum results (default: 6, max: 25)",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Recent ledgers",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/silver/ledgers/{seq}/fees": {
             "get": {
                 "description": "Returns fee histogram and percentiles for a specific ledger",
@@ -3518,6 +4504,112 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "No transactions in ledger",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/silver/ledgers/{seq}/soroban": {
+            "get": {
+                "description": "Returns aggregated Soroban CPU, I/O, and rent statistics for a specific ledger",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Statistics"
+                ],
+                "summary": "Get ledger Soroban resource usage",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Ledger sequence number",
+                        "name": "seq",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Ledger Soroban resource aggregates",
+                        "schema": {
+                            "$ref": "#/definitions/main.LedgerSorobanResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid ledger sequence",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "No transactions in ledger",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/silver/ledgers/{seq}/summary": {
+            "get": {
+                "description": "Returns a structured ledger summary with totals, semantic composition, Soroban utilization, representative transactions, and provenance metadata.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Ledgers"
+                ],
+                "summary": "Get ledger summary",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Ledger sequence number",
+                        "name": "seq",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Ledger summary",
+                        "schema": {
+                            "$ref": "#/definitions/main.LedgerSummaryResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid ledger sequence",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Ledger not found",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -4115,6 +5207,96 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/v1/silver/relationships/{address_a}/{address_b}": {
+            "get": {
+                "description": "Returns a paginated v1 interaction history between two Stellar addresses. v1 includes direct value transfers, account-to-contract calls, contract-to-contract calls where indexed, and conservative typed-column co-event edges. The response includes coverage limitations; v1 does not scan arbitrary SCVal arguments, raw XDR/JSON payloads, or undecoded event topics.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Relationships"
+                ],
+                "summary": "Get address relationship history",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "First Stellar account (G...) or contract (C...) address",
+                        "name": "address_a",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Second Stellar account (G...) or contract (C...) address",
+                        "name": "address_b",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default 100, max 500)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Opaque pagination cursor from previous response",
+                        "name": "cursor",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Sort order: desc or asc (default desc)",
+                        "name": "order",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Inclusive starting ledger sequence",
+                        "name": "start_ledger",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Inclusive ending ledger sequence",
+                        "name": "end_ledger",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Relationship edges with coverage limitations",
+                        "schema": {
+                            "$ref": "#/definitions/main.RelationshipResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid address, cursor, order, or ledger bound",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "503": {
+                        "description": "Unified reader unavailable",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/silver/search": {
             "get": {
                 "description": "Detects query type (account, contract, transaction, ledger, asset) and returns categorized results",
@@ -4193,6 +5375,146 @@ const docTemplate = `{
                     },
                     "500": {
                         "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/silver/smart-wallets": {
+            "get": {
+                "description": "Returns smart-account candidates from classified contract metadata and heuristic admin-function signals. Classified rows take precedence over heuristic duplicates.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Smart Wallets"
+                ],
+                "summary": "List smart-wallet candidates",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Filter by tier: passkey, oz_or_generic, crossmint, openzeppelin, sep50_generic",
+                        "name": "tier",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by source: classified or heuristic",
+                        "name": "source",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default 100, max 500)",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/main.SmartWalletListResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/silver/smart-wallets/{contract_id}": {
+            "get": {
+                "description": "Returns identity, signer configuration, policies, balances, activity summary, and timeline details for a smart-wallet contract.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Smart Wallets"
+                ],
+                "summary": "Get smart-wallet detail",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Smart-wallet contract ID (C...)",
+                        "name": "contract_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/main.SmartWalletDetailResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/silver/smart-wallets/{contract_id}/balances": {
+            "get": {
+                "description": "Returns native and token balances for a smart-wallet contract.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Smart Wallets"
+                ],
+                "summary": "Get smart-wallet balances",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Smart-wallet contract ID (C...)",
+                        "name": "contract_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/main.SmartWalletBalancesResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -4559,6 +5881,45 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/v1/silver/transactions/recent": {
+            "get": {
+                "description": "Returns the newest transactions with serving-backed summaries for latest-activity UIs",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Transactions"
+                ],
+                "summary": "Get recent transactions",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Maximum results (default: 6, max: 25)",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Recent transactions",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/silver/transactions/summaries": {
             "get": {
                 "description": "Returns summarized transaction data for a batch of hashes or a ledger",
@@ -4754,6 +6115,120 @@ const docTemplate = `{
                     },
                     "400": {
                         "description": "Invalid group_by value",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/silver/tx/batch/decoded": {
+            "get": {
+                "description": "Returns fully decoded transactions (summary, operations, events) for up to 25 hashes or all transactions in a ledger. Same response shape as /tx/{hash}/decoded per item.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Transactions"
+                ],
+                "summary": "Batch decoded transactions",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Comma-separated transaction hashes (max 25)",
+                        "name": "hashes",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Ledger sequence — returns all transactions in that ledger",
+                        "name": "ledger",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Max transactions when using ledger (default: 25, max: 100)",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Batch decoded transactions",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid parameters",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Returns fully decoded transactions (summary, operations, events) for up to 25 hashes or all transactions in a ledger. Same response shape as /tx/{hash}/decoded per item.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Transactions"
+                ],
+                "summary": "Batch decoded transactions",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Comma-separated transaction hashes (max 25)",
+                        "name": "hashes",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Ledger sequence — returns all transactions in that ledger",
+                        "name": "ledger",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Max transactions when using ledger (default: 25, max: 100)",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Batch decoded transactions",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid parameters",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -5167,6 +6642,59 @@ const docTemplate = `{
                     }
                 }
             }
+        },
+        "/api/v1/silver/tx/{hash}/semantic": {
+            "get": {
+                "description": "Returns an actor-centric semantic transaction response with classification, actors, and asset movement context.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Transactions"
+                ],
+                "summary": "Get semantic transaction view",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Transaction hash",
+                        "name": "hash",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Semantic transaction",
+                        "schema": {
+                            "$ref": "#/definitions/main.SemanticTransactionResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Missing transaction hash",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Transaction not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
         }
     },
     "definitions": {
@@ -5497,6 +7025,90 @@ const docTemplate = `{
                 }
             }
         },
+        "main.ContractRegistryEntry": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string"
+                },
+                "contract_id": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "display_name": {
+                    "type": "string"
+                },
+                "icon_url": {
+                    "type": "string"
+                },
+                "project": {
+                    "type": "string"
+                },
+                "source": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "verified": {
+                    "type": "boolean"
+                },
+                "website": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.ContractTransactionEntry": {
+            "type": "object",
+            "properties": {
+                "closed_at": {
+                    "type": "string"
+                },
+                "contract_id": {
+                    "type": "string"
+                },
+                "function_name": {
+                    "type": "string"
+                },
+                "ledger_sequence": {
+                    "type": "integer"
+                },
+                "operation_index": {
+                    "type": "integer"
+                },
+                "source_account": {
+                    "type": "string"
+                },
+                "successful": {
+                    "type": "boolean"
+                },
+                "transaction_hash": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.ContractTransactionsResponse": {
+            "type": "object",
+            "properties": {
+                "contract_id": {
+                    "type": "string"
+                },
+                "count": {
+                    "type": "integer"
+                },
+                "has_more": {
+                    "type": "boolean"
+                },
+                "transactions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.ContractTransactionEntry"
+                    }
+                }
+            }
+        },
         "main.DecodedOperation": {
             "type": "object",
             "properties": {
@@ -5568,6 +7180,9 @@ const docTemplate = `{
                 "ledger_sequence": {
                     "type": "integer"
                 },
+                "max_fee": {
+                    "type": "integer"
+                },
                 "operation_count": {
                     "type": "integer"
                 },
@@ -5598,6 +7213,656 @@ const docTemplate = `{
                 },
                 "tx_hash": {
                     "type": "string"
+                }
+            }
+        },
+        "main.DefiAsset": {
+            "type": "object",
+            "properties": {
+                "asset_code": {
+                    "type": "string"
+                },
+                "asset_contract_id": {
+                    "type": "string"
+                },
+                "asset_issuer": {
+                    "type": "string"
+                },
+                "asset_type": {
+                    "type": "string"
+                },
+                "decimals": {
+                    "type": "integer"
+                },
+                "symbol": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.DefiExposureByProtocol": {
+            "type": "object",
+            "properties": {
+                "net_value": {
+                    "type": "string"
+                },
+                "position_count": {
+                    "type": "integer"
+                },
+                "protocol_id": {
+                    "type": "string"
+                },
+                "total_borrowed_value": {
+                    "type": "string"
+                },
+                "total_deposit_value": {
+                    "type": "string"
+                },
+                "total_value": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.DefiExposureResponse": {
+            "type": "object",
+            "properties": {
+                "address": {
+                    "type": "string"
+                },
+                "as_of_ledger": {
+                    "type": "integer"
+                },
+                "as_of_time": {
+                    "type": "string"
+                },
+                "by_protocol": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.DefiExposureByProtocol"
+                    }
+                },
+                "data_status": {
+                    "type": "string"
+                },
+                "freshness_seconds": {
+                    "type": "integer"
+                },
+                "quote": {
+                    "type": "string"
+                },
+                "totals": {
+                    "$ref": "#/definitions/main.DefiExposureSummary"
+                }
+            }
+        },
+        "main.DefiExposureSummary": {
+            "type": "object",
+            "properties": {
+                "lowest_health_factor": {
+                    "type": "string"
+                },
+                "net_value": {
+                    "type": "string"
+                },
+                "open_position_count": {
+                    "type": "integer"
+                },
+                "positions_at_risk": {
+                    "type": "integer"
+                },
+                "protocol_count": {
+                    "type": "integer"
+                },
+                "total_borrowed_value": {
+                    "type": "string"
+                },
+                "total_claimable_rewards_value": {
+                    "type": "string"
+                },
+                "total_deposit_value": {
+                    "type": "string"
+                },
+                "total_value": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.DefiPosition": {
+            "type": "object",
+            "properties": {
+                "account_address": {
+                    "type": "string"
+                },
+                "as_of_ledger": {
+                    "type": "integer"
+                },
+                "as_of_time": {
+                    "type": "string"
+                },
+                "borrow_amount": {
+                    "type": "string"
+                },
+                "borrowed_value": {
+                    "type": "string"
+                },
+                "claimable_reward_amount": {
+                    "type": "string"
+                },
+                "claimable_rewards_value": {
+                    "type": "string"
+                },
+                "collateral_ratio": {
+                    "type": "string"
+                },
+                "current_return_percent": {
+                    "type": "string"
+                },
+                "current_return_value": {
+                    "type": "string"
+                },
+                "current_value": {
+                    "type": "string"
+                },
+                "deposit_amount": {
+                    "type": "string"
+                },
+                "deposit_value": {
+                    "type": "string"
+                },
+                "health_factor": {
+                    "type": "string"
+                },
+                "last_updated_at": {
+                    "type": "string"
+                },
+                "last_updated_ledger": {
+                    "type": "integer"
+                },
+                "liquidation_threshold": {
+                    "type": "string"
+                },
+                "ltv": {
+                    "type": "string"
+                },
+                "market_address": {
+                    "type": "string"
+                },
+                "market_id": {
+                    "type": "string"
+                },
+                "net_value": {
+                    "type": "string"
+                },
+                "owner_address": {
+                    "type": "string"
+                },
+                "position_id": {
+                    "type": "string"
+                },
+                "position_key_hash": {
+                    "type": "string"
+                },
+                "position_type": {
+                    "type": "string"
+                },
+                "protocol_id": {
+                    "type": "string"
+                },
+                "protocol_state_json": {
+                    "type": "object",
+                    "additionalProperties": {}
+                },
+                "protocol_version": {
+                    "type": "string"
+                },
+                "quote_currency": {
+                    "type": "string"
+                },
+                "related_address": {
+                    "type": "string"
+                },
+                "risk_status": {
+                    "type": "string"
+                },
+                "share_amount": {
+                    "type": "string"
+                },
+                "source_json": {
+                    "type": "object",
+                    "additionalProperties": {}
+                },
+                "status": {
+                    "type": "string"
+                },
+                "underlying_asset": {
+                    "$ref": "#/definitions/main.DefiAsset"
+                },
+                "valuation_json": {
+                    "type": "object",
+                    "additionalProperties": {}
+                }
+            }
+        },
+        "main.DefiPositionsResponse": {
+            "type": "object",
+            "properties": {
+                "address": {
+                    "type": "string"
+                },
+                "as_of_ledger": {
+                    "type": "integer"
+                },
+                "as_of_time": {
+                    "type": "string"
+                },
+                "data_status": {
+                    "type": "string"
+                },
+                "freshness_seconds": {
+                    "type": "integer"
+                },
+                "has_more": {
+                    "type": "boolean"
+                },
+                "next_cursor": {
+                    "type": "string"
+                },
+                "positions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.DefiPosition"
+                    }
+                },
+                "quote": {
+                    "type": "string"
+                },
+                "summary": {
+                    "$ref": "#/definitions/main.DefiExposureSummary"
+                }
+            }
+        },
+        "main.DefiStatusProtocol": {
+            "type": "object",
+            "properties": {
+                "freshness_seconds": {
+                    "type": "integer"
+                },
+                "last_successful_ledger": {
+                    "type": "integer"
+                },
+                "last_successful_time": {
+                    "type": "string"
+                },
+                "protocol_id": {
+                    "type": "string"
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "source_divergence": {
+                    "type": "boolean"
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.DefiStatusResponse": {
+            "type": "object",
+            "properties": {
+                "as_of_ledger": {
+                    "type": "integer"
+                },
+                "freshness_seconds": {
+                    "type": "integer"
+                },
+                "protocols": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.DefiStatusProtocol"
+                    }
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.ExplorerAttentionContract": {
+            "type": "object",
+            "properties": {
+                "contract_id": {
+                    "type": "string"
+                },
+                "contract_name": {
+                    "type": "string"
+                },
+                "protocol_name": {
+                    "type": "string"
+                },
+                "remaining_hours": {
+                    "type": "integer"
+                },
+                "remaining_human": {
+                    "type": "string"
+                },
+                "remaining_ledgers": {
+                    "type": "integer"
+                },
+                "runway_pct": {
+                    "type": "number"
+                },
+                "severity": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.ExplorerHeroLedger": {
+            "type": "object",
+            "properties": {
+                "closed_at": {
+                    "type": "string"
+                },
+                "operation_count": {
+                    "type": "integer"
+                },
+                "sequence": {
+                    "type": "integer"
+                },
+                "transaction_count": {
+                    "type": "integer"
+                }
+            }
+        },
+        "main.ExplorerHomeActivityMix": {
+            "type": "object",
+            "properties": {
+                "agent_tx_24h": {
+                    "type": "integer"
+                },
+                "contract_call_tx_24h": {
+                    "type": "integer"
+                },
+                "swap_tx_24h": {
+                    "type": "integer"
+                }
+            }
+        },
+        "main.ExplorerHomeAlert": {
+            "type": "object",
+            "properties": {
+                "affected_contract_count": {
+                    "type": "integer"
+                },
+                "severity": {
+                    "type": "string"
+                },
+                "top_contracts": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "type": {
+                    "type": "string"
+                },
+                "worst_remaining_hours": {
+                    "type": "integer"
+                }
+            }
+        },
+        "main.ExplorerHomeCadence": {
+            "type": "object",
+            "properties": {
+                "avg_close_seconds": {
+                    "type": "number"
+                },
+                "ops_per_ledger_recent_avg": {
+                    "type": "integer"
+                },
+                "tx_per_ledger_recent_avg": {
+                    "type": "integer"
+                }
+            }
+        },
+        "main.ExplorerHomeContracts": {
+            "type": "object",
+            "properties": {
+                "active_24h": {
+                    "type": "integer"
+                }
+            }
+        },
+        "main.ExplorerHomeHeader": {
+            "type": "object",
+            "properties": {
+                "latest_ledger_closed_at": {
+                    "type": "string"
+                },
+                "latest_ledger_sequence": {
+                    "type": "integer"
+                }
+            }
+        },
+        "main.ExplorerHomeHealth": {
+            "type": "object",
+            "properties": {
+                "activity_band": {
+                    "type": "string"
+                },
+                "load_band": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.ExplorerHomeHero": {
+            "type": "object",
+            "properties": {
+                "activity_mix": {
+                    "$ref": "#/definitions/main.ExplorerHomeActivityMix"
+                },
+                "cadence": {
+                    "$ref": "#/definitions/main.ExplorerHomeCadence"
+                },
+                "contracts": {
+                    "$ref": "#/definitions/main.ExplorerHomeContracts"
+                },
+                "health": {
+                    "$ref": "#/definitions/main.ExplorerHomeHealth"
+                },
+                "latest_ledger": {
+                    "$ref": "#/definitions/main.ExplorerHeroLedger"
+                },
+                "soroban": {
+                    "$ref": "#/definitions/main.ExplorerHomeSoroban"
+                },
+                "trends": {
+                    "$ref": "#/definitions/main.ExplorerHomeTrends"
+                },
+                "ttl": {
+                    "$ref": "#/definitions/main.ExplorerHomeTTL"
+                }
+            }
+        },
+        "main.ExplorerHomeMeta": {
+            "type": "object",
+            "properties": {
+                "latest_ledger_age_seconds": {
+                    "type": "integer"
+                }
+            }
+        },
+        "main.ExplorerHomeSoroban": {
+            "type": "object",
+            "properties": {
+                "instruction_pct": {
+                    "type": "number"
+                },
+                "read_write_pct": {
+                    "type": "number"
+                }
+            }
+        },
+        "main.ExplorerHomeSummaryProvenance": {
+            "type": "object",
+            "properties": {
+                "data_source": {
+                    "type": "string"
+                },
+                "generated_from": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "partial": {
+                    "type": "boolean"
+                },
+                "route": {
+                    "type": "string"
+                },
+                "warnings": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "main.ExplorerHomeSummaryResponse": {
+            "type": "object",
+            "properties": {
+                "alert": {
+                    "$ref": "#/definitions/main.ExplorerHomeAlert"
+                },
+                "contracts_needing_attention": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.ExplorerAttentionContract"
+                    }
+                },
+                "generated_at": {
+                    "type": "string"
+                },
+                "header": {
+                    "$ref": "#/definitions/main.ExplorerHomeHeader"
+                },
+                "hero": {
+                    "$ref": "#/definitions/main.ExplorerHomeHero"
+                },
+                "leaders": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.ExplorerLeader"
+                    }
+                },
+                "meta": {
+                    "$ref": "#/definitions/main.ExplorerHomeMeta"
+                },
+                "network": {
+                    "type": "string"
+                },
+                "provenance": {
+                    "$ref": "#/definitions/main.ExplorerHomeSummaryProvenance"
+                },
+                "utilization": {
+                    "$ref": "#/definitions/main.ExplorerHomeUtilization"
+                }
+            }
+        },
+        "main.ExplorerHomeTTL": {
+            "type": "object",
+            "properties": {
+                "expiring_contract_count": {
+                    "type": "integer"
+                },
+                "worst_remaining_hours": {
+                    "type": "integer"
+                },
+                "worst_remaining_ledgers": {
+                    "type": "integer"
+                }
+            }
+        },
+        "main.ExplorerHomeTrends": {
+            "type": "object",
+            "properties": {
+                "agent_activity_wow_pct": {
+                    "type": "number"
+                },
+                "anomaly_detected": {
+                    "type": "boolean"
+                },
+                "tx_vs_24h_avg_pct": {
+                    "type": "number"
+                }
+            }
+        },
+        "main.ExplorerHomeUtilization": {
+            "type": "object",
+            "properties": {
+                "avg_tx_size_bytes": {
+                    "type": "integer"
+                },
+                "instruction_limit": {
+                    "type": "integer"
+                },
+                "instruction_pct": {
+                    "type": "number"
+                },
+                "instruction_used": {
+                    "type": "integer"
+                },
+                "read_write_limit_bytes": {
+                    "type": "integer"
+                },
+                "read_write_pct": {
+                    "type": "number"
+                },
+                "read_write_used_bytes": {
+                    "type": "integer"
+                },
+                "source_ledger": {
+                    "type": "integer"
+                },
+                "tx_size_limit_bytes": {
+                    "type": "integer"
+                },
+                "tx_size_pct": {
+                    "type": "number"
+                }
+            }
+        },
+        "main.ExplorerLeader": {
+            "type": "object",
+            "properties": {
+                "call_count_24h": {
+                    "type": "integer"
+                },
+                "contract_id": {
+                    "type": "string"
+                },
+                "contract_name": {
+                    "type": "string"
+                },
+                "dominant_actions": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "growth_pct": {
+                    "type": "number"
+                },
+                "protocol_name": {
+                    "type": "string"
+                },
+                "unique_callers_24h": {
+                    "type": "integer"
                 }
             }
         },
@@ -5812,6 +8077,334 @@ const docTemplate = `{
                 }
             }
         },
+        "main.LedgerRepresentativeActorRef": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string"
+                },
+                "label": {
+                    "type": "string"
+                },
+                "type": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.LedgerRepresentativeActors": {
+            "type": "object",
+            "properties": {
+                "primary": {
+                    "$ref": "#/definitions/main.LedgerRepresentativeActorRef"
+                },
+                "secondary": {
+                    "$ref": "#/definitions/main.LedgerRepresentativeActorRef"
+                }
+            }
+        },
+        "main.LedgerRepresentativeClassification": {
+            "type": "object",
+            "properties": {
+                "confidence": {
+                    "type": "string"
+                },
+                "subtype": {
+                    "type": "string"
+                },
+                "tx_type": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.LedgerRepresentativeSummary": {
+            "type": "object",
+            "properties": {
+                "amount": {
+                    "type": "string"
+                },
+                "amount_display": {
+                    "type": "string"
+                },
+                "asset": {
+                    "type": "string"
+                },
+                "bought_amount": {
+                    "type": "string"
+                },
+                "bought_asset": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "function_name": {
+                    "type": "string"
+                },
+                "protocol_contract_id": {
+                    "type": "string"
+                },
+                "protocol_label": {
+                    "type": "string"
+                },
+                "sold_amount": {
+                    "type": "string"
+                },
+                "sold_asset": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.LedgerRepresentativeTx": {
+            "type": "object",
+            "properties": {
+                "actors": {
+                    "$ref": "#/definitions/main.LedgerRepresentativeActors"
+                },
+                "category": {
+                    "type": "string"
+                },
+                "category_label": {
+                    "type": "string"
+                },
+                "classification": {
+                    "$ref": "#/definitions/main.LedgerRepresentativeClassification"
+                },
+                "coverage_count": {
+                    "type": "integer"
+                },
+                "summary": {
+                    "$ref": "#/definitions/main.LedgerRepresentativeSummary"
+                },
+                "tx_hash": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.LedgerSorobanResponse": {
+            "type": "object",
+            "properties": {
+                "generated_at": {
+                    "type": "string"
+                },
+                "ledger_sequence": {
+                    "type": "integer"
+                },
+                "soroban_tx_count": {
+                    "type": "integer"
+                },
+                "total_cpu_insns": {
+                    "type": "integer"
+                },
+                "total_read_bytes": {
+                    "type": "integer"
+                },
+                "total_rent_charged": {
+                    "type": "integer"
+                },
+                "total_write_bytes": {
+                    "type": "integer"
+                },
+                "unique_contracts": {
+                    "type": "integer"
+                }
+            }
+        },
+        "main.LedgerSummaryClassifications": {
+            "type": "object",
+            "properties": {
+                "classic_tx_count": {
+                    "type": "integer"
+                },
+                "contract_call_tx_count": {
+                    "type": "integer"
+                },
+                "deployment_tx_count": {
+                    "type": "integer"
+                },
+                "payment_tx_count": {
+                    "type": "integer"
+                },
+                "soroban_tx_count": {
+                    "type": "integer"
+                },
+                "swap_tx_count": {
+                    "type": "integer"
+                },
+                "wallet_tx_count": {
+                    "type": "integer"
+                }
+            }
+        },
+        "main.LedgerSummaryComposition": {
+            "type": "object",
+            "properties": {
+                "dominant_tx_type": {
+                    "type": "string"
+                },
+                "dominant_tx_type_count": {
+                    "type": "integer"
+                },
+                "failed_share_pct": {
+                    "type": "number"
+                },
+                "soroban_share_pct": {
+                    "type": "number"
+                }
+            }
+        },
+        "main.LedgerSummaryLedger": {
+            "type": "object",
+            "properties": {
+                "close_time_seconds": {
+                    "type": "number"
+                },
+                "closed_at": {
+                    "type": "string"
+                },
+                "closed_by_node_id": {
+                    "type": "string"
+                },
+                "closed_by_validator": {
+                    "type": "string"
+                },
+                "hash": {
+                    "type": "string"
+                },
+                "previous_hash": {
+                    "type": "string"
+                },
+                "protocol_version": {
+                    "type": "integer"
+                },
+                "sequence": {
+                    "type": "integer"
+                }
+            }
+        },
+        "main.LedgerSummaryProvenance": {
+            "type": "object",
+            "properties": {
+                "classification_source": {
+                    "type": "string"
+                },
+                "partial": {
+                    "type": "boolean"
+                },
+                "sampling_source": {
+                    "type": "string"
+                },
+                "utilization_source": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.LedgerSummaryResponse": {
+            "type": "object",
+            "properties": {
+                "classification_counts": {
+                    "$ref": "#/definitions/main.LedgerSummaryClassifications"
+                },
+                "composition": {
+                    "$ref": "#/definitions/main.LedgerSummaryComposition"
+                },
+                "ledger": {
+                    "$ref": "#/definitions/main.LedgerSummaryLedger"
+                },
+                "provenance": {
+                    "$ref": "#/definitions/main.LedgerSummaryProvenance"
+                },
+                "representative_transactions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.LedgerRepresentativeTx"
+                    }
+                },
+                "sampling": {
+                    "$ref": "#/definitions/main.LedgerSummarySampling"
+                },
+                "soroban_utilization": {
+                    "$ref": "#/definitions/main.LedgerSummarySorobanUtilization"
+                },
+                "totals": {
+                    "$ref": "#/definitions/main.LedgerSummaryTotals"
+                }
+            }
+        },
+        "main.LedgerSummarySampling": {
+            "type": "object",
+            "properties": {
+                "represented_transaction_count": {
+                    "type": "integer"
+                },
+                "sample_count": {
+                    "type": "integer"
+                },
+                "strategy": {
+                    "type": "string"
+                },
+                "total_transaction_count": {
+                    "type": "integer"
+                }
+            }
+        },
+        "main.LedgerSummarySorobanUtilization": {
+            "type": "object",
+            "properties": {
+                "instructions_limit": {
+                    "type": "integer"
+                },
+                "instructions_pct": {
+                    "type": "number"
+                },
+                "instructions_used": {
+                    "type": "integer"
+                },
+                "read_bytes_used": {
+                    "type": "integer"
+                },
+                "read_write_bytes_limit": {
+                    "type": "integer"
+                },
+                "read_write_bytes_used": {
+                    "type": "integer"
+                },
+                "read_write_pct": {
+                    "type": "number"
+                },
+                "rent_burned": {
+                    "type": "number"
+                },
+                "write_bytes_used": {
+                    "type": "integer"
+                }
+            }
+        },
+        "main.LedgerSummaryTotals": {
+            "type": "object",
+            "properties": {
+                "contract_event_count": {
+                    "type": "integer"
+                },
+                "failed_tx_count": {
+                    "type": "integer"
+                },
+                "operation_count": {
+                    "type": "integer"
+                },
+                "soroban_op_count": {
+                    "type": "integer"
+                },
+                "successful_tx_count": {
+                    "type": "integer"
+                },
+                "total_fee_charged": {
+                    "type": "integer"
+                },
+                "transaction_count": {
+                    "type": "integer"
+                }
+            }
+        },
         "main.LineageResponse": {
             "type": "object",
             "properties": {
@@ -5843,6 +8436,99 @@ const docTemplate = `{
                 },
                 "start_ledger": {
                     "type": "integer"
+                }
+            }
+        },
+        "main.RelationshipCoverage": {
+            "type": "object",
+            "properties": {
+                "includes": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "limitations": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.RelationshipEdge": {
+            "type": "object",
+            "properties": {
+                "address_a": {
+                    "type": "string"
+                },
+                "address_b": {
+                    "type": "string"
+                },
+                "amount": {
+                    "type": "string"
+                },
+                "asset": {
+                    "type": "string"
+                },
+                "closed_at": {
+                    "type": "string"
+                },
+                "confidence": {
+                    "type": "string"
+                },
+                "contract_id": {
+                    "type": "string"
+                },
+                "direction": {
+                    "type": "string"
+                },
+                "function_name": {
+                    "type": "string"
+                },
+                "interaction_type": {
+                    "type": "string"
+                },
+                "ledger_sequence": {
+                    "type": "integer"
+                },
+                "source_table": {
+                    "type": "string"
+                },
+                "transaction_hash": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.RelationshipResponse": {
+            "type": "object",
+            "properties": {
+                "address_a": {
+                    "type": "string"
+                },
+                "address_b": {
+                    "type": "string"
+                },
+                "count": {
+                    "type": "integer"
+                },
+                "coverage": {
+                    "$ref": "#/definitions/main.RelationshipCoverage"
+                },
+                "cursor": {
+                    "type": "string"
+                },
+                "edges": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.RelationshipEdge"
+                    }
+                },
+                "has_more": {
+                    "type": "boolean"
                 }
             }
         },
@@ -5959,17 +8645,214 @@ const docTemplate = `{
                 }
             }
         },
-        "main.SmartWalletInfo": {
+        "main.SemanticActor": {
             "type": "object",
             "properties": {
+                "actor_id": {
+                    "type": "string"
+                },
+                "actor_type": {
+                    "type": "string"
+                },
                 "contract_id": {
                     "type": "string"
+                },
+                "label": {
+                    "type": "string"
+                },
+                "roles": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "wallet": {
+                    "$ref": "#/definitions/main.SemanticWalletContext"
+                }
+            }
+        },
+        "main.SemanticAssetContext": {
+            "type": "object",
+            "properties": {
+                "movements": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.SemanticAssetMovement"
+                    }
+                },
+                "path": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "received": {
+                    "$ref": "#/definitions/main.SemanticAssetMovement"
+                },
+                "sent": {
+                    "$ref": "#/definitions/main.SemanticAssetMovement"
+                }
+            }
+        },
+        "main.SemanticAssetMovement": {
+            "type": "object",
+            "properties": {
+                "amount": {
+                    "type": "string"
+                },
+                "asset": {
+                    "type": "string"
+                },
+                "contract": {
+                    "type": "string"
+                },
+                "from": {
+                    "type": "string"
+                },
+                "kind": {
+                    "type": "string"
+                },
+                "to": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.SemanticCallEdge": {
+            "type": "object",
+            "properties": {
+                "depth": {
+                    "type": "integer"
+                },
+                "from": {
+                    "type": "string"
+                },
+                "function": {
+                    "type": "string"
+                },
+                "order": {
+                    "type": "integer"
+                },
+                "successful": {
+                    "type": "boolean"
+                },
+                "to": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.SemanticTransactionClassification": {
+            "type": "object",
+            "properties": {
+                "confidence": {
+                    "type": "string"
+                },
+                "effective_actor_type": {
+                    "type": "string"
+                },
+                "operation_types": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "subtype": {
+                    "type": "string"
+                },
+                "tx_type": {
+                    "type": "string"
+                },
+                "wallet_involved": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "main.SemanticTransactionInfo": {
+            "type": "object",
+            "properties": {
+                "account_sequence": {
+                    "type": "integer"
+                },
+                "closed_at": {
+                    "type": "string"
+                },
+                "fee": {
+                    "type": "integer"
+                },
+                "ledger_sequence": {
+                    "type": "integer"
+                },
+                "max_fee": {
+                    "type": "integer"
+                },
+                "operation_count": {
+                    "type": "integer"
+                },
+                "source_account": {
+                    "type": "string"
+                },
+                "successful": {
+                    "type": "boolean"
+                },
+                "tx_hash": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.SemanticTransactionResponse": {
+            "type": "object",
+            "properties": {
+                "actors": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.SemanticActor"
+                    }
+                },
+                "assets": {
+                    "$ref": "#/definitions/main.SemanticAssetContext"
+                },
+                "call_graph": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.SemanticCallEdge"
+                    }
+                },
+                "classification": {
+                    "$ref": "#/definitions/main.SemanticTransactionClassification"
+                },
+                "diffs": {
+                    "$ref": "#/definitions/main.TxDiffs"
+                },
+                "events": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.UnifiedEvent"
+                    }
+                },
+                "legacy_summary": {
+                    "$ref": "#/definitions/main.TxSummary"
+                },
+                "operations": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.DecodedOperation"
+                    }
+                },
+                "transaction": {
+                    "$ref": "#/definitions/main.SemanticTransactionInfo"
+                }
+            }
+        },
+        "main.SemanticWalletContext": {
+            "type": "object",
+            "properties": {
+                "confidence": {
+                    "type": "number"
                 },
                 "has_check_auth": {
                     "type": "boolean"
                 },
-                "is_smart_wallet": {
-                    "type": "boolean"
+                "implementation": {
+                    "type": "string"
                 },
                 "signer_count": {
                     "type": "integer"
@@ -5977,8 +8860,629 @@ const docTemplate = `{
                 "signers": {
                     "type": "array",
                     "items": {
+                        "$ref": "#/definitions/main.WalletSignerInfo"
+                    }
+                },
+                "wallet_type": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.SmartWalletAccountSection": {
+            "type": "object",
+            "properties": {
+                "balances": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.SmartWalletBalanceSummary"
+                    }
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "created_ledger": {
+                    "type": "integer"
+                },
+                "last_activity_at": {
+                    "type": "string"
+                },
+                "native_balance": {
+                    "type": "string"
+                },
+                "num_subentries": {
+                    "type": "integer"
+                },
+                "sequence_number": {
+                    "type": "string"
+                },
+                "source": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.SmartWalletActivitySummary": {
+            "type": "object",
+            "properties": {
+                "active_windows": {
+                    "type": "array",
+                    "items": {
                         "type": "string"
                     }
+                },
+                "approvals_30d": {
+                    "type": "integer"
+                },
+                "common_functions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.SmartWalletCommonFunction"
+                    }
+                },
+                "common_protocols": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.SmartWalletCommonProtocol"
+                    }
+                },
+                "policy_updates_30d": {
+                    "type": "integer"
+                },
+                "protocol_interactions_30d": {
+                    "type": "integer"
+                },
+                "successful_transactions_7d": {
+                    "type": "integer"
+                },
+                "total_transactions_7d": {
+                    "type": "integer"
+                },
+                "unique_callers_30d": {
+                    "type": "integer"
+                }
+            }
+        },
+        "main.SmartWalletApprovalModel": {
+            "type": "object",
+            "properties": {
+                "min_signers_estimate": {
+                    "type": "integer"
+                },
+                "summary": {
+                    "type": "string"
+                },
+                "type": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.SmartWalletBalanceSummary": {
+            "type": "object",
+            "properties": {
+                "asset_code": {
+                    "type": "string"
+                },
+                "asset_issuer": {
+                    "type": "string"
+                },
+                "asset_type": {
+                    "type": "string"
+                },
+                "balance": {
+                    "type": "string"
+                },
+                "balance_source": {
+                    "type": "string"
+                },
+                "decimals": {
+                    "type": "integer"
+                },
+                "symbol": {
+                    "type": "string"
+                },
+                "token_contract_id": {
+                    "type": "string"
+                },
+                "value_usd": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.SmartWalletBalancesResponse": {
+            "type": "object",
+            "properties": {
+                "balance_status": {
+                    "type": "string"
+                },
+                "balances": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.SmartWalletBalanceSummary"
+                    }
+                },
+                "contract_id": {
+                    "type": "string"
+                },
+                "count": {
+                    "type": "integer"
+                },
+                "native_balance": {
+                    "type": "string"
+                },
+                "native_balance_source": {
+                    "type": "string"
+                },
+                "partial": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "main.SmartWalletCommonFunction": {
+            "type": "object",
+            "properties": {
+                "count": {
+                    "type": "integer"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.SmartWalletCommonProtocol": {
+            "type": "object",
+            "properties": {
+                "contract_id": {
+                    "type": "string"
+                },
+                "display_name": {
+                    "type": "string"
+                },
+                "interaction_count": {
+                    "type": "integer"
+                }
+            }
+        },
+        "main.SmartWalletContractSection": {
+            "type": "object",
+            "properties": {
+                "deployer": {
+                    "type": "string"
+                },
+                "exported_functions": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "interface_type": {
+                    "type": "string"
+                },
+                "observed_functions": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "persistent_entries": {
+                    "type": "integer"
+                },
+                "state_size_bytes": {
+                    "type": "integer"
+                },
+                "storage_entries": {
+                    "type": "integer"
+                },
+                "temporary_entries": {
+                    "type": "integer"
+                },
+                "wasm_hash": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.SmartWalletDetailMeta": {
+            "type": "object",
+            "properties": {
+                "generated_at": {
+                    "type": "string"
+                },
+                "partial": {
+                    "type": "boolean"
+                },
+                "sources": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "main.SmartWalletDetailResponse": {
+            "type": "object",
+            "properties": {
+                "account": {
+                    "$ref": "#/definitions/main.SmartWalletAccountSection"
+                },
+                "activity_summary": {
+                    "$ref": "#/definitions/main.SmartWalletActivitySummary"
+                },
+                "contract": {
+                    "$ref": "#/definitions/main.SmartWalletContractSection"
+                },
+                "contract_id": {
+                    "type": "string"
+                },
+                "display_name": {
+                    "type": "string"
+                },
+                "is_smart_wallet": {
+                    "type": "boolean"
+                },
+                "meta": {
+                    "$ref": "#/definitions/main.SmartWalletDetailMeta"
+                },
+                "policies": {
+                    "$ref": "#/definitions/main.SmartWalletPoliciesSection"
+                },
+                "rent": {
+                    "$ref": "#/definitions/main.SmartWalletRentSection"
+                },
+                "session_keys": {
+                    "$ref": "#/definitions/main.SmartWalletSessionKeysSection"
+                },
+                "signer_config": {
+                    "$ref": "#/definitions/main.SmartWalletSignerConfigSection"
+                },
+                "timeline": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.SmartWalletTimelineItem"
+                    }
+                },
+                "wallet": {
+                    "$ref": "#/definitions/main.SmartWalletIdentitySection"
+                }
+            }
+        },
+        "main.SmartWalletIdentitySection": {
+            "type": "object",
+            "properties": {
+                "classification_source": {
+                    "type": "string"
+                },
+                "confidence": {
+                    "type": "number"
+                },
+                "evidence": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "has_check_auth": {
+                    "type": "boolean"
+                },
+                "implementation": {
+                    "type": "string"
+                },
+                "wallet_type": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.SmartWalletInfo": {
+            "type": "object",
+            "properties": {
+                "confidence": {
+                    "type": "number"
+                },
+                "contract_id": {
+                    "type": "string"
+                },
+                "has_check_auth": {
+                    "type": "boolean"
+                },
+                "implementation": {
+                    "description": "human-readable detector name",
+                    "type": "string"
+                },
+                "is_smart_wallet": {
+                    "type": "boolean"
+                },
+                "policies": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "signer_count": {
+                    "type": "integer"
+                },
+                "signers": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.WalletSignerInfo"
+                    }
+                },
+                "wallet_type": {
+                    "description": "\"crossmint\", \"openzeppelin\", \"sep50_generic\"",
+                    "type": "string"
+                }
+            }
+        },
+        "main.SmartWalletListEntry": {
+            "type": "object",
+            "properties": {
+                "admin_calls": {
+                    "type": "integer"
+                },
+                "confidence": {
+                    "type": "number"
+                },
+                "contract_id": {
+                    "type": "string"
+                },
+                "deployer_account": {
+                    "type": "string"
+                },
+                "first_admin_ledger": {
+                    "type": "integer"
+                },
+                "last_admin_ledger": {
+                    "type": "integer"
+                },
+                "observed_functions": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "source": {
+                    "description": "\"classified\" | \"heuristic\"",
+                    "type": "string"
+                },
+                "tier": {
+                    "description": "\"passkey\" | \"oz_or_generic\" | \"crossmint\" | \"openzeppelin\" | \"sep50_generic\"",
+                    "type": "string"
+                },
+                "total_invocations": {
+                    "type": "integer"
+                },
+                "unique_callers": {
+                    "type": "integer"
+                },
+                "wallet_signers": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "wallet_type": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.SmartWalletListResponse": {
+            "type": "object",
+            "properties": {
+                "classified_count": {
+                    "type": "integer"
+                },
+                "count": {
+                    "type": "integer"
+                },
+                "heuristic_count": {
+                    "type": "integer"
+                },
+                "wallets": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.SmartWalletListEntry"
+                    }
+                }
+            }
+        },
+        "main.SmartWalletPoliciesSection": {
+            "type": "object",
+            "properties": {
+                "decoded": {
+                    "type": "boolean"
+                },
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.SmartWalletPolicyDetailItem"
+                    }
+                }
+            }
+        },
+        "main.SmartWalletPolicyDetailItem": {
+            "type": "object",
+            "properties": {
+                "config": {
+                    "type": "object",
+                    "additionalProperties": {}
+                },
+                "description": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "policy_type": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.SmartWalletRentSection": {
+            "type": "object",
+            "properties": {
+                "estimated_monthly_rent_stroops": {
+                    "type": "integer"
+                },
+                "rent_status": {
+                    "type": "string"
+                },
+                "ttl_expires_at": {
+                    "type": "string"
+                },
+                "ttl_ledgers": {
+                    "type": "integer"
+                }
+            }
+        },
+        "main.SmartWalletSessionKeySummary": {
+            "type": "object",
+            "properties": {
+                "expires_at": {
+                    "type": "string"
+                },
+                "key": {
+                    "type": "string"
+                },
+                "key_type": {
+                    "type": "string"
+                },
+                "scope": {
+                    "type": "string"
+                },
+                "spend_limit": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "used_amount": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.SmartWalletSessionKeysSection": {
+            "type": "object",
+            "properties": {
+                "count": {
+                    "type": "integer"
+                },
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.SmartWalletSessionKeySummary"
+                    }
+                },
+                "supported": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "main.SmartWalletSignerConfigSection": {
+            "type": "object",
+            "properties": {
+                "approval_model": {
+                    "$ref": "#/definitions/main.SmartWalletApprovalModel"
+                },
+                "decoded": {
+                    "type": "boolean"
+                },
+                "required_weight": {
+                    "type": "integer"
+                },
+                "signer_count": {
+                    "type": "integer"
+                },
+                "signers": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.SmartWalletSignerDetail"
+                    }
+                },
+                "source": {
+                    "type": "string"
+                },
+                "thresholds": {
+                    "$ref": "#/definitions/main.SmartWalletThresholds"
+                },
+                "total_weight": {
+                    "type": "integer"
+                }
+            }
+        },
+        "main.SmartWalletSignerDetail": {
+            "type": "object",
+            "properties": {
+                "added_at": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "key_type": {
+                    "type": "string"
+                },
+                "label": {
+                    "type": "string"
+                },
+                "role": {
+                    "type": "string"
+                },
+                "weight": {
+                    "type": "integer"
+                }
+            }
+        },
+        "main.SmartWalletThresholds": {
+            "type": "object",
+            "properties": {
+                "high": {
+                    "type": "integer"
+                },
+                "low": {
+                    "type": "integer"
+                },
+                "medium": {
+                    "type": "integer"
+                }
+            }
+        },
+        "main.SmartWalletTimelineItem": {
+            "type": "object",
+            "properties": {
+                "actors": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "description": {
+                    "type": "string"
+                },
+                "evidence": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "ledger_sequence": {
+                    "type": "integer"
+                },
+                "subtype": {
+                    "type": "string"
+                },
+                "successful": {
+                    "type": "boolean"
+                },
+                "timestamp": {
+                    "type": "string"
+                },
+                "title": {
+                    "type": "string"
+                },
+                "tx_hash": {
+                    "type": "string"
+                },
+                "type": {
+                    "type": "string"
                 }
             }
         },
@@ -6288,7 +9792,7 @@ const docTemplate = `{
                     "$ref": "#/definitions/main.TransferDetail"
                 },
                 "type": {
-                    "description": "transfer, mint, burn, swap, contract_call, classic",
+                    "description": "transfer, mint, burn, swap, contract_call, create_account, payment, etc.",
                     "type": "string"
                 }
             }
@@ -6337,8 +9841,38 @@ const docTemplate = `{
                 "to": {
                     "type": "string"
                 },
+                "token_decimals": {
+                    "type": "integer"
+                },
+                "token_name": {
+                    "type": "string"
+                },
+                "token_symbol": {
+                    "type": "string"
+                },
+                "token_type": {
+                    "type": "string"
+                },
                 "tx_hash": {
                     "type": "string"
+                }
+            }
+        },
+        "main.WalletSignerInfo": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string"
+                },
+                "key_type": {
+                    "description": "\"ed25519\", \"secp256k1\", \"webauthn\", \"unknown\"",
+                    "type": "string"
+                },
+                "raw_value": {
+                    "type": "string"
+                },
+                "weight": {
+                    "type": "integer"
                 }
             }
         }

@@ -10,21 +10,29 @@ import (
 	"github.com/lib/pq"
 )
 
+// SmartWalletListResponse is the response for the smart-wallet list endpoint.
+type SmartWalletListResponse struct {
+	Wallets         []SmartWalletListEntry `json:"wallets"`
+	Count           int                    `json:"count"`
+	ClassifiedCount int                    `json:"classified_count"`
+	HeuristicCount  int                    `json:"heuristic_count"`
+}
+
 // SmartWalletListEntry is a single row in the smart-wallets list response.
 type SmartWalletListEntry struct {
-	ContractID        string            `json:"contract_id"`
-	Source            string            `json:"source"` // "classified" | "heuristic"
-	Tier              string            `json:"tier"`   // "passkey" | "oz_or_generic" | "crossmint" | "openzeppelin" | "sep50_generic"
-	WalletType        *string           `json:"wallet_type,omitempty"`
-	Confidence        float64           `json:"confidence"`
-	AdminCalls        int64             `json:"admin_calls"`
-	FirstAdminLedger  *int64            `json:"first_admin_ledger,omitempty"`
-	LastAdminLedger   *int64            `json:"last_admin_ledger,omitempty"`
-	TotalInvocations  int64             `json:"total_invocations"`
-	UniqueCallers     int64             `json:"unique_callers"`
-	DeployerAccount   *string           `json:"deployer_account,omitempty"`
-	WalletSigners     *json.RawMessage  `json:"wallet_signers,omitempty"`
-	ObservedFunctions []string          `json:"observed_functions,omitempty"`
+	ContractID        string           `json:"contract_id"`
+	Source            string           `json:"source"` // "classified" | "heuristic"
+	Tier              string           `json:"tier"`   // "passkey" | "oz_or_generic" | "crossmint" | "openzeppelin" | "sep50_generic"
+	WalletType        *string          `json:"wallet_type,omitempty"`
+	Confidence        float64          `json:"confidence"`
+	AdminCalls        int64            `json:"admin_calls"`
+	FirstAdminLedger  *int64           `json:"first_admin_ledger,omitempty"`
+	LastAdminLedger   *int64           `json:"last_admin_ledger,omitempty"`
+	TotalInvocations  int64            `json:"total_invocations"`
+	UniqueCallers     int64            `json:"unique_callers"`
+	DeployerAccount   *string          `json:"deployer_account,omitempty"`
+	WalletSigners     *json.RawMessage `json:"wallet_signers,omitempty"`
+	ObservedFunctions []string         `json:"observed_functions,omitempty"`
 }
 
 // smart-wallet detection knobs.
@@ -77,6 +85,17 @@ var dappBackendFuncs = []string{
 }
 
 // HandleSmartWalletsList serves GET /api/v1/silver/smart-wallets
+// @Summary List smart-wallet candidates
+// @Description Returns smart-account candidates from classified contract metadata and heuristic admin-function signals. Classified rows take precedence over heuristic duplicates.
+// @Tags Smart Wallets
+// @Produce json
+// @Param tier query string false "Filter by tier: passkey, oz_or_generic, crossmint, openzeppelin, sep50_generic"
+// @Param source query string false "Filter by source: classified or heuristic"
+// @Param limit query int false "Page size (default 100, max 500)"
+// @Success 200 {object} SmartWalletListResponse
+// @Failure 503 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
+// @Router /api/v1/silver/smart-wallets [get]
 //
 // Returns smart-account candidates from two sources, unioned:
 //
@@ -133,11 +152,11 @@ func (h *SmartWalletHandlers) HandleSmartWalletsList(w http.ResponseWriter, r *h
 		combined = combined[:limit]
 	}
 
-	respondJSON(w, map[string]any{
-		"wallets":          combined,
-		"count":            len(combined),
-		"classified_count": len(classified),
-		"heuristic_count":  len(heuristic),
+	respondJSON(w, SmartWalletListResponse{
+		Wallets:         combined,
+		Count:           len(combined),
+		ClassifiedCount: len(classified),
+		HeuristicCount:  len(heuristic),
 	})
 }
 
@@ -342,4 +361,3 @@ func (h *SmartWalletHandlers) listHeuristicSmartWallets(
 	}
 	return out, rows.Err()
 }
-
