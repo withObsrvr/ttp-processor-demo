@@ -67,6 +67,7 @@ func TestProjectorDerivesCurrentTablesFromSilverFixture(t *testing.T) {
 		Start:        3,
 		End:          5,
 		Chunk:        100,
+		Partitions:   3,
 		SilverSchema: "silver",
 	}
 	projector := NewProjectorWithDB(db, cfg)
@@ -135,7 +136,7 @@ func TestProjectorVerificationFailures(t *testing.T) {
 	db := openFixtureDB(t)
 	defer db.Close()
 	loadCurrentProjectorFixture(t, ctx, db)
-	cfg := Config{Network: "mainnet", Start: 3, End: 5, Chunk: 100, SilverSchema: "silver"}
+	cfg := Config{Network: "mainnet", Start: 3, End: 5, Chunk: 100, Partitions: 2, SilverSchema: "silver"}
 	projector := NewProjectorWithDB(db, cfg)
 	if err := projector.ensureSchema(ctx); err != nil {
 		t.Fatal(err)
@@ -143,7 +144,8 @@ func TestProjectorVerificationFailures(t *testing.T) {
 	if err := projector.ensureManifest(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := projector.replaceProjection(ctx, Chunk{Start: 3, End: 5}, executableCurrentProjections()[0]); err != nil {
+	var out bytes.Buffer
+	if _, err := projector.replaceProjection(ctx, &out, Chunk{Start: 3, End: 5}, executableCurrentProjections()[0]); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO silver.accounts_current SELECT * FROM silver.accounts_current WHERE account_id='GA1'`); err != nil {
@@ -227,6 +229,7 @@ func loadCurrentProjectorFixture(t *testing.T, ctx context.Context, db *sql.DB) 
 		`INSERT INTO silver.contract_data_changes VALUES
 			('mainnet','CC1','K1','instance','persistent','credit_alphanum4','USD','ISSUER','GA1','10','value1',3,3,'2026-01-01 00:00:03',false,3),
 			('mainnet','CC1','K1','instance','persistent','credit_alphanum4','USD','ISSUER','GA1','20','value2',4,4,'2026-01-01 00:00:04',false,4),
+			('mainnet','CC1','K2','instance','persistent','credit_alphanum4','USD','ISSUER','GA1','20','old',4,4,'2026-01-01 00:00:04',false,4),
 			('mainnet','CC1','K2','instance','persistent','credit_alphanum4','USD','ISSER','GA1','20','deleted',5,5,'2026-01-01 00:00:05',true,5),
 			('mainnet','CC2','K1','instance','persistent','credit_alphanum4','EUR','ISSUER2','GA2','20','future',8,8,'2026-01-01 00:00:08',false,8)`,
 		`INSERT INTO silver.balance_changes VALUES

@@ -1028,28 +1028,61 @@ func (br *BronzeReader) QueryEffects(ctx context.Context, startLedger, endLedger
 // Used for contract_data_current upsert
 func (br *BronzeReader) QueryContractDataSnapshot(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
 	query := `
-		SELECT DISTINCT ON (contract_id, ledger_key_hash)
-			contract_id,
-			ledger_key_hash AS key_hash,
-			contract_durability AS durability,
-			asset_type,
-			asset_code,
-			asset_issuer,
-			contract_data_xdr AS data_value,
-			last_modified_ledger,
-			ledger_sequence,
-			closed_at,
-			created_at,
-			ledger_range
-		FROM contract_data_snapshot_v1
-		WHERE ledger_sequence BETWEEN $1 AND $2
-		  AND deleted = false
-		ORDER BY contract_id, ledger_key_hash, ledger_sequence DESC
+		WITH latest AS (
+			SELECT DISTINCT ON (contract_id, ledger_key_hash)
+				contract_id,
+				ledger_key_hash AS key_hash,
+				contract_durability AS durability,
+				asset_type,
+				asset_code,
+				asset_issuer,
+				contract_data_xdr AS data_value,
+				last_modified_ledger,
+				ledger_sequence,
+				closed_at,
+				created_at,
+				ledger_range,
+				deleted
+			FROM contract_data_snapshot_v1
+			WHERE ledger_sequence BETWEEN $1 AND $2
+			ORDER BY contract_id, ledger_key_hash, ledger_sequence DESC
+		)
+		SELECT contract_id, key_hash, durability, asset_type, asset_code, asset_issuer,
+		       data_value, last_modified_ledger, ledger_sequence, closed_at, created_at, ledger_range
+		FROM latest
+		WHERE deleted = false
 	`
 
 	rows, err := br.db.QueryContext(ctx, query, startLedger, endLedger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query contract data snapshot: %w", err)
+	}
+
+	return rows, nil
+}
+
+// QueryDeletedContractDataSnapshot reads the latest contract-data keys whose current
+// row inside the ledger range is a deletion. The transformer uses this to remove
+// phantom live state from contract_data_current after applying upserts.
+func (br *BronzeReader) QueryDeletedContractDataSnapshot(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
+	query := `
+		WITH latest AS (
+			SELECT DISTINCT ON (contract_id, ledger_key_hash)
+				contract_id,
+				ledger_key_hash AS key_hash,
+				deleted
+			FROM contract_data_snapshot_v1
+			WHERE ledger_sequence BETWEEN $1 AND $2
+			ORDER BY contract_id, ledger_key_hash, ledger_sequence DESC
+		)
+		SELECT contract_id, key_hash
+		FROM latest
+		WHERE deleted = true
+	`
+
+	rows, err := br.db.QueryContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query deleted contract data snapshot: %w", err)
 	}
 
 	return rows, nil

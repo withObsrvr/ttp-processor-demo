@@ -3730,30 +3730,34 @@ func (h *SilverHotReader) GetContractData(ctx context.Context, filters ContractD
 
 	// Contract ID is required
 	if filters.ContractID != "" {
-		conditions = append(conditions, fmt.Sprintf("contract_id = $%d", argNum))
+		conditions = append(conditions, fmt.Sprintf("cd.contract_id = $%d", argNum))
 		args = append(args, filters.ContractID)
 		argNum++
 	}
 
 	// Durability filter
 	if filters.Durability != "" {
-		conditions = append(conditions, fmt.Sprintf("durability = $%d", argNum))
+		conditions = append(conditions, fmt.Sprintf("cd.durability = $%d", argNum))
 		args = append(args, filters.Durability)
 		argNum++
 	}
 
 	// Single key lookup
 	if filters.KeyHash != "" {
-		conditions = append(conditions, fmt.Sprintf("key_hash = $%d", argNum))
+		conditions = append(conditions, fmt.Sprintf("cd.key_hash = $%d", argNum))
 		args = append(args, filters.KeyHash)
 		argNum++
 	}
 
 	// Cursor pagination
 	if filters.Cursor != nil {
-		conditions = append(conditions, fmt.Sprintf("(contract_id, key_hash) > ($%d, $%d)", argNum, argNum+1))
+		conditions = append(conditions, fmt.Sprintf("(cd.contract_id, cd.key_hash) > ($%d, $%d)", argNum, argNum+1))
 		args = append(args, filters.Cursor.ContractID, filters.Cursor.KeyHash)
 		argNum += 2
+	}
+
+	if filters.LiveOnly {
+		conditions = append(conditions, "COALESCE(t.expired, false) = false")
 	}
 
 	whereClause := "1=1"
@@ -3767,11 +3771,12 @@ func (h *SilverHotReader) GetContractData(ctx context.Context, filters ContractD
 	}
 
 	query := fmt.Sprintf(`
-		SELECT contract_id, key_hash, durability, data_value,
-			   asset_type, asset_code, asset_issuer, last_modified_ledger
-		FROM contract_data_current
+		SELECT cd.contract_id, cd.key_hash, cd.durability, cd.data_value,
+			   cd.asset_type, cd.asset_code, cd.asset_issuer, cd.last_modified_ledger
+		FROM contract_data_current cd
+		LEFT JOIN ttl_current t ON cd.key_hash = t.key_hash
 		WHERE %s
-		ORDER BY contract_id ASC, key_hash ASC
+		ORDER BY cd.contract_id ASC, cd.key_hash ASC
 		LIMIT $%d
 	`, whereClause, argNum)
 	args = append(args, limit+1)

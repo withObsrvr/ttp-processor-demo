@@ -3620,10 +3620,17 @@ func (h *SilverHandlers) HandleContractData(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	liveOnly, err := parseBoolQueryParam(r, "live_only", true)
+	if err != nil {
+		respondError(w, "invalid live_only: must be true or false", http.StatusBadRequest)
+		return
+	}
+
 	filters := ContractDataFilters{
 		ContractID: contractID,
 		KeyHash:    r.URL.Query().Get("key_hash"),
 		Durability: durability,
+		LiveOnly:   liveOnly,
 		Limit:      parseLimit(r, 100, 1000),
 		Cursor:     cursor,
 	}
@@ -3649,6 +3656,7 @@ func (h *SilverHandlers) HandleContractData(w http.ResponseWriter, r *http.Reque
 		"count":         len(data),
 		"has_more":      hasMore,
 		"contract_id":   contractID,
+		"live_only":     liveOnly,
 	}
 	if nextCursor != "" {
 		response["cursor"] = nextCursor
@@ -3671,14 +3679,20 @@ func (h *SilverHandlers) HandleContractDataEntry(w http.ResponseWriter, r *http.
 		return
 	}
 
+	liveOnly, err := parseBoolQueryParam(r, "live_only", true)
+	if err != nil {
+		respondError(w, "invalid live_only: must be true or false", http.StatusBadRequest)
+		return
+	}
+
 	filters := ContractDataFilters{
 		ContractID: contractID,
 		KeyHash:    keyHash,
+		LiveOnly:   liveOnly,
 		Limit:      1,
 	}
 
 	var data []ContractData
-	var err error
 
 	if h.unifiedReader != nil {
 		data, _, _, err = h.unifiedReader.GetContractData(r.Context(), filters)
@@ -3980,36 +3994,73 @@ func (h *SilverHandlers) HandleContractStorage(w http.ResponseWriter, r *http.Re
 		}
 	}
 	durability := r.URL.Query().Get("durability")
+	liveOnly, err := parseBoolQueryParam(r, "live_only", true)
+	if err != nil {
+		respondError(w, "invalid live_only: must be true or false", http.StatusBadRequest)
+		return
+	}
 
 	ctx := r.Context()
 
-	// Build query against silver hot
-	query := fmt.Sprintf(`
-		SELECT cd.contract_id, cd.key_hash, cd.durability,
-		       LENGTH(cd.data_value), cd.data_value, cd.last_modified_ledger, cd.closed_at,
-		       t.live_until_ledger_seq, t.ttl_remaining, t.expired
-		FROM %s.contract_data_current cd
-		LEFT JOIN %s.ttl_current t ON cd.key_hash = t.key_hash
-		WHERE cd.contract_id = $1
-	`, h.unifiedReader.hotSchema, h.unifiedReader.hotSchema)
-
+	conditions := []string{"cd.contract_id = $1"}
 	args := []interface{}{contractID}
 	argIdx := 2
 
 	if durability != "" {
-		query += fmt.Sprintf(" AND cd.durability = $%d", argIdx)
+		conditions = append(conditions, fmt.Sprintf("cd.durability = $%d", argIdx))
 		args = append(args, durability)
 		argIdx++
 	}
+	if liveOnly {
+		conditions = append(conditions, "COALESCE(t.expired, false) = false")
+	}
+	whereClause := strings.Join(conditions, " AND ")
 
-	query += " ORDER BY cd.key_hash"
-	query += fmt.Sprintf(" LIMIT $%d OFFSET $%d", argIdx, argIdx+1)
+	query := fmt.Sprintf(`
+		SELECT contract_id, key_hash, durability, size_bytes, data_value,
+		       last_modified_ledger, closed_at, live_until_ledger_seq, ttl_remaining, expired
+		FROM (
+			SELECT cd.contract_id, cd.key_hash, cd.durability,
+			       LENGTH(cd.data_value) AS size_bytes, cd.data_value, cd.last_modified_ledger, cd.closed_at,
+			       t.live_until_ledger_seq, t.ttl_remaining, t.expired
+			FROM %s.contract_data_current cd
+			LEFT JOIN %s.ttl_current t ON cd.key_hash = t.key_hash
+			WHERE %s
+			UNION ALL
+			SELECT cd.contract_id, cd.key_hash, cd.durability,
+			       LENGTH(cd.data_value) AS size_bytes, cd.data_value, cd.last_modified_ledger, cd.closed_at,
+			       t.live_until_ledger_seq, t.ttl_remaining, t.expired
+			FROM %s.contract_data_current cd
+			LEFT JOIN %s.ttl_current t ON cd.key_hash = t.key_hash
+			WHERE %s
+		) combined
+		ORDER BY key_hash
+		LIMIT $%d OFFSET $%d
+	`, h.unifiedReader.hotSchema, h.unifiedReader.hotSchema, whereClause,
+		h.unifiedReader.coldSchema, h.unifiedReader.coldSchema, whereClause, argIdx, argIdx+1)
 	args = append(args, limit, offset)
 
 	rows, err := h.unifiedReader.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		respondError(w, err.Error(), http.StatusInternalServerError)
-		return
+		errStr := err.Error()
+		if strings.Contains(errStr, "does not exist") || strings.Contains(errStr, "not found") ||
+			strings.Contains(errStr, "contract_data_current") || strings.Contains(errStr, "ttl_current") {
+			hotOnlyQuery := fmt.Sprintf(`
+				SELECT cd.contract_id, cd.key_hash, cd.durability,
+				       LENGTH(cd.data_value), cd.data_value, cd.last_modified_ledger, cd.closed_at,
+				       t.live_until_ledger_seq, t.ttl_remaining, t.expired
+				FROM %s.contract_data_current cd
+				LEFT JOIN %s.ttl_current t ON cd.key_hash = t.key_hash
+				WHERE %s
+				ORDER BY cd.key_hash
+				LIMIT $%d OFFSET $%d
+			`, h.unifiedReader.hotSchema, h.unifiedReader.hotSchema, whereClause, argIdx, argIdx+1)
+			rows, err = h.unifiedReader.db.QueryContext(ctx, hotOnlyQuery, args...)
+		}
+		if err != nil {
+			respondError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	defer rows.Close()
 
@@ -4064,6 +4115,7 @@ func (h *SilverHandlers) HandleContractStorage(w http.ResponseWriter, r *http.Re
 		"count":       len(entries),
 		"limit":       limit,
 		"offset":      offset,
+		"live_only":   liveOnly,
 	})
 }
 

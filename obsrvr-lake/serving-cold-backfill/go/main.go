@@ -19,6 +19,7 @@ import (
 var Version = "dev"
 
 const componentID = "serving-cold-backfill"
+const progressInterval = 15 * time.Second
 
 type FailureClass string
 
@@ -56,6 +57,10 @@ type Config struct {
 	ServingSchema  string
 	ManifestPath   string
 	SummaryPath    string
+	S3KeyID        string
+	S3Secret       string
+	S3Region       string
+	S3Endpoint     string
 
 	FlowctlEnabled   bool
 	FlowctlEndpoint  string
@@ -199,6 +204,10 @@ func parseConfig(args []string) (Config, error) {
 	fs.StringVar(&cfg.ServingSchema, "serving-schema", getenv("SERVING_SCHEMA", "serving"), "target serving schema")
 	fs.StringVar(&cfg.ManifestPath, "manifest-path", getenv("MANIFEST_PATH", ""), "JSONL manifest path for batch-local durable status")
 	fs.StringVar(&cfg.SummaryPath, "summary-path", getenv("SUMMARY_PATH", ""), "optional JSON summary output path")
+	fs.StringVar(&cfg.S3KeyID, "s3-key-id", getenv("S3_KEY_ID", getenv("B2_KEY_ID", "")), "S3/B2 access key ID")
+	fs.StringVar(&cfg.S3Secret, "s3-secret", getenv("S3_SECRET", getenv("B2_KEY_SECRET", "")), "S3/B2 secret access key")
+	fs.StringVar(&cfg.S3Region, "s3-region", getenv("S3_REGION", getenv("B2_REGION", "us-west-004")), "S3/B2 region")
+	fs.StringVar(&cfg.S3Endpoint, "s3-endpoint", getenv("S3_ENDPOINT", getenv("B2_ENDPOINT", "")), "S3/B2 endpoint")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -276,6 +285,10 @@ func NewBackfiller(ctx context.Context, cfg Config) (*Backfiller, error) {
 			return nil, fmt.Errorf("%s: %w", stmt, err)
 		}
 	}
+	if err := b.configureS3(ctx); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if err := b.attach(ctx, cfg.BronzeAlias, cfg.BronzeCatalog, cfg.BronzeData, cfg.BronzeMeta); err != nil {
 		db.Close()
 		return nil, err
@@ -297,6 +310,21 @@ func NewBackfiller(ctx context.Context, cfg Config) (*Backfiller, error) {
 
 func NewBackfillerWithDB(db *sql.DB, cfg Config) *Backfiller {
 	return &Backfiller{db: db, cfg: cfg, jsonl: JSONLManifest{path: cfg.ManifestPath}}
+}
+
+func (b *Backfiller) configureS3(ctx context.Context) error {
+	if b.cfg.S3KeyID == "" && b.cfg.S3Secret == "" {
+		return nil
+	}
+	if b.cfg.S3KeyID == "" || b.cfg.S3Secret == "" {
+		return errors.New("--s3-key-id and --s3-secret must be provided together")
+	}
+	endpoint := strings.TrimPrefix(strings.TrimPrefix(b.cfg.S3Endpoint, "https://"), "http://")
+	stmt := fmt.Sprintf("CREATE OR REPLACE SECRET (TYPE S3, KEY_ID %s, SECRET %s, REGION %s, ENDPOINT %s, URL_STYLE 'path')", q(b.cfg.S3KeyID), q(b.cfg.S3Secret), q(b.cfg.S3Region), q(endpoint))
+	if _, err := b.db.ExecContext(ctx, stmt); err != nil {
+		return fmt.Errorf("create s3 secret: %w", err)
+	}
+	return nil
 }
 
 func (b *Backfiller) Close() error {
@@ -334,7 +362,9 @@ func (b *Backfiller) Run(ctx context.Context, out io.Writer) error {
 		emit(out, Event{EventType: "component.chunk_started", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, Status: "running"})
 		for _, p := range feed {
 			emit(out, Event{EventType: "component.projection_started", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: p.Name, TargetTable: b.servingTable(p.TargetTable), Phase: "chunk_replace", Status: "running"})
+			stopProgress := startProgressHeartbeat(out, Event{ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: p.Name, TargetTable: b.servingTable(p.TargetTable), Phase: "chunk_replace", Status: "running"}, map[string]interface{}{"mode": "chunk_delete_insert", "range_column": p.RangeCol})
 			rows, err := b.replaceFeedProjection(ctx, chunk, p)
+			stopProgress()
 			if err != nil {
 				_ = b.markManifest(ctx, chunk, p.Name, "failed", 0, err.Error())
 				emit(out, Event{EventType: "component.failed", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: p.Name, TargetTable: b.servingTable(p.TargetTable), Phase: "chunk_replace", FailureClass: classifyFailure(err), Error: err.Error(), Recommended: recommendedAction(classifyFailure(err))})
@@ -347,7 +377,9 @@ func (b *Backfiller) Run(ctx context.Context, out io.Writer) error {
 	currentChunk := Chunk{Start: cfg.Start, End: cfg.End}
 	for _, p := range current {
 		emit(out, Event{EventType: "component.projection_started", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: currentChunk.Start, ChunkEnd: currentChunk.End, ProjectionName: p.Name, TargetTable: b.servingTable(p.TargetTable), Phase: "current_replace", Status: "running"})
+		stopProgress := startProgressHeartbeat(out, Event{ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: currentChunk.Start, ChunkEnd: currentChunk.End, ProjectionName: p.Name, TargetTable: b.servingTable(p.TargetTable), Phase: "current_replace", Status: "running"}, map[string]interface{}{"mode": "current_replace"})
 		rows, err := b.replaceCurrentProjection(ctx, currentChunk, p)
+		stopProgress()
 		if err != nil {
 			_ = b.markManifest(ctx, currentChunk, p.Name, "failed", 0, err.Error())
 			emit(out, Event{EventType: "component.failed", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: currentChunk.Start, ChunkEnd: currentChunk.End, ProjectionName: p.Name, TargetTable: b.servingTable(p.TargetTable), Phase: "current_replace", FailureClass: classifyFailure(err), Error: err.Error(), Recommended: recommendedAction(classifyFailure(err))})
@@ -1060,6 +1092,38 @@ func emit(out io.Writer, ev Event) {
 		ev.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
 	}
 	_ = json.NewEncoder(out).Encode(ev)
+}
+
+func startProgressHeartbeat(out io.Writer, base Event, metadata map[string]interface{}) func() {
+	started := time.Now()
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(progressInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				progressMetadata := map[string]interface{}{}
+				for k, v := range metadata {
+					progressMetadata[k] = v
+				}
+				progressMetadata["elapsed_seconds"] = int64(time.Since(started).Seconds())
+				progressMetadata["heartbeat_interval_seconds"] = int64(progressInterval.Seconds())
+				ev := base
+				ev.EventType = "component.projection_progress"
+				ev.Metadata = progressMetadata
+				emit(out, ev)
+			case <-done:
+				return
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-stopped
+	}
 }
 
 func writeStatus(out io.Writer, cfg Config) error {

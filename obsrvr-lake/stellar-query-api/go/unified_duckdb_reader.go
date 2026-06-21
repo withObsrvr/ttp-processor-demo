@@ -3623,27 +3623,31 @@ func (r *UnifiedDuckDBReader) GetContractData(ctx context.Context, filters Contr
 	argNum := 1
 
 	if filters.ContractID != "" {
-		conditions = append(conditions, fmt.Sprintf("contract_id = $%d", argNum))
+		conditions = append(conditions, fmt.Sprintf("cd.contract_id = $%d", argNum))
 		args = append(args, filters.ContractID)
 		argNum++
 	}
 
 	if filters.Durability != "" {
-		conditions = append(conditions, fmt.Sprintf("durability = $%d", argNum))
+		conditions = append(conditions, fmt.Sprintf("cd.durability = $%d", argNum))
 		args = append(args, filters.Durability)
 		argNum++
 	}
 
 	if filters.KeyHash != "" {
-		conditions = append(conditions, fmt.Sprintf("key_hash = $%d", argNum))
+		conditions = append(conditions, fmt.Sprintf("cd.key_hash = $%d", argNum))
 		args = append(args, filters.KeyHash)
 		argNum++
 	}
 
 	if filters.Cursor != nil {
-		conditions = append(conditions, fmt.Sprintf("(contract_id, key_hash) > ($%d, $%d)", argNum, argNum+1))
+		conditions = append(conditions, fmt.Sprintf("(cd.contract_id, cd.key_hash) > ($%d, $%d)", argNum, argNum+1))
 		args = append(args, filters.Cursor.ContractID, filters.Cursor.KeyHash)
 		argNum += 2
+	}
+
+	if filters.LiveOnly {
+		conditions = append(conditions, "COALESCE(t.expired, false) = false")
 	}
 
 	whereClause := "1=1"
@@ -3660,17 +3664,21 @@ func (r *UnifiedDuckDBReader) GetContractData(ctx context.Context, filters Contr
 		SELECT contract_id, key_hash, durability, data_value,
 			   asset_type, asset_code, asset_issuer, last_modified_ledger
 		FROM (
-			SELECT contract_id, key_hash, durability, data_value,
-				   asset_type, asset_code, asset_issuer, last_modified_ledger
-			FROM %s.contract_data_current WHERE %s
+			SELECT cd.contract_id, cd.key_hash, cd.durability, cd.data_value,
+				   cd.asset_type, cd.asset_code, cd.asset_issuer, cd.last_modified_ledger
+			FROM %s.contract_data_current cd
+			LEFT JOIN %s.ttl_current t ON cd.key_hash = t.key_hash
+			WHERE %s
 			UNION ALL
-			SELECT contract_id, key_hash, durability, data_value,
-				   asset_type, asset_code, asset_issuer, last_modified_ledger
-			FROM %s.contract_data_current WHERE %s
+			SELECT cd.contract_id, cd.key_hash, cd.durability, cd.data_value,
+				   cd.asset_type, cd.asset_code, cd.asset_issuer, cd.last_modified_ledger
+			FROM %s.contract_data_current cd
+			LEFT JOIN %s.ttl_current t ON cd.key_hash = t.key_hash
+			WHERE %s
 		) combined
 		ORDER BY contract_id ASC, key_hash ASC
 		LIMIT $%d
-	`, r.hotSchema, whereClause, r.coldSchema, whereClause, argNum)
+	`, r.hotSchema, r.hotSchema, whereClause, r.coldSchema, r.coldSchema, whereClause, argNum)
 	args = append(args, limit+1)
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
@@ -3679,14 +3687,17 @@ func (r *UnifiedDuckDBReader) GetContractData(ctx context.Context, filters Contr
 		errStr := err.Error()
 		if strings.Contains(errStr, "does not exist") ||
 			strings.Contains(errStr, "not found in FROM clause") ||
-			strings.Contains(errStr, "contract_data") {
+			strings.Contains(errStr, "contract_data") ||
+			strings.Contains(errStr, "ttl_current") {
 			hotOnlyQuery := fmt.Sprintf(`
-				SELECT contract_id, key_hash, durability, data_value,
-					   asset_type, asset_code, asset_issuer, last_modified_ledger
-				FROM %s.contract_data_current WHERE %s
-				ORDER BY contract_id ASC, key_hash ASC
+				SELECT cd.contract_id, cd.key_hash, cd.durability, cd.data_value,
+					   cd.asset_type, cd.asset_code, cd.asset_issuer, cd.last_modified_ledger
+				FROM %s.contract_data_current cd
+				LEFT JOIN %s.ttl_current t ON cd.key_hash = t.key_hash
+				WHERE %s
+				ORDER BY cd.contract_id ASC, cd.key_hash ASC
 				LIMIT $%d
-			`, r.hotSchema, whereClause, argNum)
+			`, r.hotSchema, r.hotSchema, whereClause, argNum)
 			rows, err = r.db.QueryContext(ctx, hotOnlyQuery, args...)
 			if err != nil {
 				return nil, "", false, fmt.Errorf("unified GetContractData (hot-only): %w", err)
