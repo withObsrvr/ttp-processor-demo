@@ -274,6 +274,11 @@ func NewProjector(ctx context.Context, cfg Config) (*Projector, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Pin to a single connection so SET memory_limit / temp_directory / the S3 secret / the
+	// DuckLake ATTACH all apply to the one connection that runs every query. With a pool, those
+	// session settings could land on a connection the heavy query never uses (a prime suspect for
+	// memory_limit not constraining the run).
+	db.SetMaxOpenConns(1)
 	p := &Projector{db: db, cfg: cfg, jsonl: JSONLManifest{path: cfg.ManifestPath}}
 	for _, stmt := range []string{"INSTALL ducklake FROM core_nightly", "LOAD ducklake", "INSTALL httpfs", "LOAD httpfs"} {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
@@ -396,7 +401,13 @@ func (p *Projector) Run(ctx context.Context, out io.Writer) error {
 		ledgerWindowStart, ledgerWindowEnd = chunks[0].Start, chunks[0].End
 	}
 	ledgerWindows := PlanChunks(ledgerWindowStart, ledgerWindowEnd, cfg.Chunk)
-	emit(out, Event{EventType: "component.run_started", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, Status: "running", FlowctlEndpoint: safeEndpoint(cfg.FlowctlEndpoint), Metadata: map[string]interface{}{"version": Version, "range_start": ledgerWindowStart, "range_end": ledgerWindowEnd, "chunk_count": len(chunks), "ledger_window_count": len(ledgerWindows), "ledger_window_size": cfg.Chunk, "capabilities": []string{"current-state-as-of", "deterministic-chunk-inputs", "idempotent-replace-contract", "ledger-window-staging-merge", "resume-manifest", "typed-failures", "duplicate-key-verify", "max-ledger-verify"}}})
+	// Surface the DuckDB settings actually in effect so the log proves whether memory_limit /
+	// temp_directory were applied (the recurring kernel-OOM-with-no-DuckDB-error suggested they
+	// might not be). Best-effort — never blocks the run.
+	var effMemLimit, effTempDir string
+	_ = p.db.QueryRowContext(ctx, "SELECT current_setting('memory_limit')").Scan(&effMemLimit)
+	_ = p.db.QueryRowContext(ctx, "SELECT current_setting('temp_directory')").Scan(&effTempDir)
+	emit(out, Event{EventType: "component.run_started", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, Status: "running", FlowctlEndpoint: safeEndpoint(cfg.FlowctlEndpoint), Metadata: map[string]interface{}{"version": Version, "range_start": ledgerWindowStart, "range_end": ledgerWindowEnd, "chunk_count": len(chunks), "ledger_window_count": len(ledgerWindows), "ledger_window_size": cfg.Chunk, "effective_memory_limit": effMemLimit, "effective_temp_directory": effTempDir, "capabilities": []string{"current-state-as-of", "deterministic-chunk-inputs", "idempotent-replace-contract", "ledger-window-staging-merge", "resume-manifest", "typed-failures", "duplicate-key-verify", "max-ledger-verify"}}})
 
 	for _, chunk := range chunks {
 		if cfg.Resume {
@@ -466,35 +477,48 @@ func (p *Projector) replaceProjection(ctx context.Context, out io.Writer, chunk 
 	if _, err := p.db.ExecContext(ctx, "DROP TABLE IF EXISTS "+staging); err != nil {
 		return 0, fmt.Errorf("drop staging %s: %w", projection.Name, err)
 	}
-	// Current-state compute. SelectSQL already filters ledger_sequence <= end and keeps the
-	// latest row per key (row_number() = 1), so scanning the source as of chunk.End produces
-	// the complete current state directly in local scratch — replacing the old per-window fold
-	// that re-scanned the cumulative history every window (O(N^2); see redesign doc).
-	//
-	// The row_number() window does NOT reliably spill, so a single global pass OOMs on full
-	// mainnet. We bound peak memory by partitioning over the key-space: ComputeBuckets passes,
-	// each windowing only the keys whose partition hash == bucket, appended into local staging.
-	// O(N log N) work, ~1/N peak memory, N source scans (N small/fixed, not O(windows)).
-	computeN := p.cfg.ComputeBuckets
-	if computeN < 1 || projection.PartitionExpr == "" {
-		computeN = 1
-	}
+	// Ledger-windowed merge. Each window reads only rows in [w.Start, w.End] — a pushdown-able
+	// ledger range, so DuckLake/Parquet reads just that slice (bounded memory + I/O), and each
+	// source row is read once across all windows (O(N)). This is the original fold's structure;
+	// the bug it fixes is the cumulative `ledger_sequence <= end` filter (every window re-scanned
+	// the whole history -> O(N^2) AND a full-table read that buffered to OOM). KeySQL yields every
+	// key touched in the window (incl. deletes) for the DELETE; SelectSQL yields the non-deleted
+	// latest rows for the INSERT. Ascending windows => later windows overwrite earlier keys, so
+	// staging converges to the global latest-per-key. Working set is one window, regardless of
+	// whether memory_limit is honored.
 	if _, err := p.db.ExecContext(ctx, fmt.Sprintf("CREATE TABLE %s AS SELECT * FROM (%s) seed WHERE false", staging, projection.SelectSQL(p, chunk.Start, chunk.Start-1))); err != nil {
 		return 0, fmt.Errorf("create staging %s: %w", projection.Name, err)
 	}
-	emit(out, Event{EventType: "component.staging_started", ComponentID: p.cfg.Component(), RunID: p.cfg.RunID(), Network: p.cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "staging_compute", Status: "running", Metadata: map[string]interface{}{"mode": "key_partitioned", "compute_buckets": computeN, "as_of_ledger": chunk.End, "source": projection.Source}})
-	p.computePartitionExpr = projection.PartitionExpr
-	p.computeBucketCount = computeN
-	for i := 0; i < computeN; i++ {
-		p.computeBucket = i
-		if _, err := p.db.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s %s", staging, projection.SelectSQL(p, chunk.Start, chunk.End))); err != nil {
-			p.computeBucketCount = 0
-			return 0, fmt.Errorf("compute staging %s bucket %d/%d: %w", projection.Name, i, computeN, err)
+	windows := PlanChunks(chunk.Start, chunk.End, p.cfg.Chunk)
+	emit(out, Event{EventType: "component.staging_started", ComponentID: p.cfg.Component(), RunID: p.cfg.RunID(), Network: p.cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "staging_merge", Status: "running", Metadata: map[string]interface{}{"mode": "ledger_window_merge", "window_count": len(windows), "as_of_ledger": chunk.End, "source": projection.Source}})
+	keys := p.localTable(projection.TargetTable + "__keys")
+	delta := p.localTable(projection.TargetTable + "__delta")
+	for _, w := range windows {
+		if _, err := p.db.ExecContext(ctx, "DROP TABLE IF EXISTS "+keys); err != nil {
+			return 0, fmt.Errorf("drop keys %s window %d: %w", projection.Name, w.Index, err)
 		}
-		emit(out, Event{EventType: "component.staging_bucket_completed", ComponentID: p.cfg.Component(), RunID: p.cfg.RunID(), Network: p.cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "staging_compute", Status: "completed", Metadata: map[string]interface{}{"bucket": i, "compute_buckets": computeN}})
+		if _, err := p.db.ExecContext(ctx, "DROP TABLE IF EXISTS "+delta); err != nil {
+			return 0, fmt.Errorf("drop delta %s window %d: %w", projection.Name, w.Index, err)
+		}
+		if _, err := p.db.ExecContext(ctx, fmt.Sprintf("CREATE TABLE %s AS %s", keys, projection.KeySQL(p, w.Start, w.End))); err != nil {
+			return 0, fmt.Errorf("compute keys %s window %d: %w", projection.Name, w.Index, err)
+		}
+		if _, err := p.db.ExecContext(ctx, fmt.Sprintf("CREATE TABLE %s AS %s", delta, projection.SelectSQL(p, w.Start, w.End))); err != nil {
+			return 0, fmt.Errorf("compute delta %s window %d: %w", projection.Name, w.Index, err)
+		}
+		if _, err := p.db.ExecContext(ctx, p.deleteSeenKeysSQL(staging, keys, projection)); err != nil {
+			return 0, fmt.Errorf("merge delete %s window %d: %w", projection.Name, w.Index, err)
+		}
+		if _, err := p.db.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s SELECT * FROM %s", staging, delta)); err != nil {
+			return 0, fmt.Errorf("merge insert %s window %d: %w", projection.Name, w.Index, err)
+		}
+		if w.Index%50 == 0 || w.Index == len(windows)-1 {
+			emit(out, Event{EventType: "component.ledger_window_completed", ComponentID: p.cfg.Component(), RunID: p.cfg.RunID(), Network: p.cfg.Network, ChunkStart: w.Start, ChunkEnd: w.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "staging_merge", Status: "running", Metadata: map[string]interface{}{"window_index": w.Index, "window_count": len(windows)}})
+		}
 	}
-	p.computeBucketCount = 0
-	emit(out, Event{EventType: "component.staging_completed", ComponentID: p.cfg.Component(), RunID: p.cfg.RunID(), Network: p.cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "staging_compute", Status: "completed", Metadata: map[string]interface{}{"mode": "key_partitioned", "compute_buckets": computeN, "as_of_ledger": chunk.End}})
+	_, _ = p.db.ExecContext(ctx, "DROP TABLE IF EXISTS "+keys)
+	_, _ = p.db.ExecContext(ctx, "DROP TABLE IF EXISTS "+delta)
+	emit(out, Event{EventType: "component.staging_completed", ComponentID: p.cfg.Component(), RunID: p.cfg.RunID(), Network: p.cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "staging_merge", Status: "completed", Metadata: map[string]interface{}{"mode": "ledger_window_merge", "window_count": len(windows), "as_of_ledger": chunk.End}})
 	if _, err := p.verifyProjectionTable(ctx, projection, staging); err != nil {
 		return 0, err
 	}
@@ -558,9 +582,13 @@ func (p *Projector) verifyProjectionTable(ctx context.Context, projection Curren
 	return rowCount, nil
 }
 
-func (p *Projector) sourceFilter(projection CurrentProjection, _ int64, end int64) string {
+func (p *Projector) sourceFilter(projection CurrentProjection, start int64, end int64) string {
+	// Per-window ledger RANGE (not cumulative <= end). The range is pushdown-able to
+	// DuckLake/Parquet, so each window reads only its slice — bounded memory + I/O, and each
+	// source row is read once across all windows (O(N), not the old O(N^2) cumulative rescan).
 	parts := []string{
 		fmt.Sprintf("network = %s", q(p.cfg.Network)),
+		fmt.Sprintf("%s >= %d", ident(projection.SourceLedgerCol), start),
 		fmt.Sprintf("%s <= %d", ident(projection.SourceLedgerCol), end),
 	}
 	if projection.SourceFilter != "" {

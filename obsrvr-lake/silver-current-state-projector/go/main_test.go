@@ -248,15 +248,14 @@ func TestSinglePassIsChunkIndependentAndLatestPerKey(t *testing.T) {
 	}
 }
 
-func TestPartitionedComputeIsCompleteAndDeduped(t *testing.T) {
+func TestLedgerWindowMergeAcrossWindowsLatestWins(t *testing.T) {
 	ctx := context.Background()
 	db := openFixtureDB(t)
 	defer db.Close()
 	loadCurrentProjectorFixture(t, ctx, db)
-	// ComputeBuckets>1 partitions the window over the key-space. The union across buckets must
-	// equal the full current state, with every key produced exactly once (verifyProjection's
-	// duplicate-key check would fail otherwise).
-	cfg := Config{Network: "mainnet", Start: 3, End: 5, Chunk: 100, SilverSchema: "silver", PublishBuckets: 4, ComputeBuckets: 4}
+	// Chunk=1 forces a separate ledger window per ledger, so the merge must combine windows:
+	// later windows overwrite earlier keys, deletes in a later window remove a key seen earlier.
+	cfg := Config{Network: "mainnet", Start: 3, End: 5, Chunk: 1, SilverSchema: "silver", PublishBuckets: 4}
 	projector := NewProjectorWithDB(db, cfg)
 	if err := projector.ensureSchema(ctx); err != nil {
 		t.Fatal(err)
@@ -269,7 +268,7 @@ func TestPartitionedComputeIsCompleteAndDeduped(t *testing.T) {
 		t.Fatalf("run: %v\n%s", err, out.String())
 	}
 
-	// Identical result to the single-pass / windowed versions.
+	// Identical result regardless of window count (latest <= end ledger 5, no dup keys).
 	assertCount(t, db, `SELECT COUNT(*) FROM silver.accounts_current WHERE network='mainnet'`, 2)
 	assertCount(t, db, `SELECT COUNT(*) FROM silver.trustlines_current WHERE network='mainnet'`, 2)
 	assertCount(t, db, `SELECT COUNT(*) FROM silver.address_balances_current WHERE network='mainnet'`, 4)
@@ -278,10 +277,18 @@ func TestPartitionedComputeIsCompleteAndDeduped(t *testing.T) {
 		t.Fatal(err)
 	}
 	if bal != "200" {
-		t.Fatalf("GA1 balance = %s, want 200", bal)
+		t.Fatalf("GA1 balance = %s, want 200 (ledger 4 wins across windows; ledger 8 excluded)", bal)
 	}
-	if !strings.Contains(out.String(), "staging_bucket_completed") {
-		t.Fatalf("expected staging_bucket_completed events from partitioned compute")
+	// Deleted-in-a-later-window key must be removed from staging by the merge.
+	var k2 int64
+	if err := db.QueryRow(`SELECT COUNT(*) FROM silver.contract_data_current WHERE contract_id='CC1' AND key_hash='K2'`).Scan(&k2); err != nil {
+		t.Fatal(err)
+	}
+	if k2 != 0 {
+		t.Fatalf("CC1/K2 deleted in a later window but survived the merge")
+	}
+	if !strings.Contains(out.String(), "ledger_window_completed") {
+		t.Fatalf("expected ledger_window_completed events from the windowed merge")
 	}
 }
 
