@@ -4949,7 +4949,7 @@ func (r *UnifiedDuckDBReader) GetAddressTokenPortfolio(ctx context.Context, addr
 		),
 		transfers AS (
 			SELECT DISTINCT ON (transaction_hash, ledger_sequence, from_account, to_account, amount, token_contract_id, evt_idx)
-				from_account, to_account, amount, token_contract_id, asset_code, asset_issuer, source_type, timestamp
+				from_account, to_account, amount, token_contract_id, asset_code, asset_issuer, source_type, timestamp, ledger_sequence
 			FROM raw_transfers
 		)
 		SELECT
@@ -4960,6 +4960,7 @@ func (r *UnifiedDuckDBReader) GetAddressTokenPortfolio(ctx context.Context, addr
 			SUM(CASE WHEN to_account = $1 THEN amount ELSE 0 END) -
 			SUM(CASE WHEN from_account = $1 THEN amount ELSE 0 END) as net_balance,
 			COUNT(*) as tx_count,
+			MAX(ledger_sequence) as last_ledger,
 			MAX(timestamp) as last_seen
 		FROM transfers
 		GROUP BY token_contract_id
@@ -4975,7 +4976,7 @@ func (r *UnifiedDuckDBReader) GetAddressTokenPortfolio(ctx context.Context, addr
 		if strings.Contains(errStr, "does not exist") || strings.Contains(errStr, "not found in FROM clause") {
 			hotOnlyQuery := fmt.Sprintf(`
 				WITH transfers AS (
-					SELECT from_account, to_account, amount, token_contract_id, asset_code, asset_issuer, source_type, timestamp
+					SELECT from_account, to_account, amount, token_contract_id, asset_code, asset_issuer, source_type, timestamp, ledger_sequence
 					FROM %s.token_transfers_raw
 					WHERE (from_account = $1 OR to_account = $1) AND transaction_successful = true
 				)
@@ -4987,6 +4988,7 @@ func (r *UnifiedDuckDBReader) GetAddressTokenPortfolio(ctx context.Context, addr
 					SUM(CASE WHEN to_account = $1 THEN amount ELSE 0 END) -
 					SUM(CASE WHEN from_account = $1 THEN amount ELSE 0 END) as net_balance,
 					COUNT(*) as tx_count,
+					MAX(ledger_sequence) as last_ledger,
 					MAX(timestamp) as last_seen
 				FROM transfers
 				GROUP BY token_contract_id
@@ -5009,7 +5011,7 @@ func (r *UnifiedDuckDBReader) GetAddressTokenPortfolio(ctx context.Context, addr
 	for rows.Next() {
 		var h TokenHolding
 		if err := rows.Scan(&h.ContractID, &h.AssetCode, &h.AssetIssuer,
-			&h.SourceType, &h.BalanceRaw, &h.TxCount, &h.LastSeen); err != nil {
+			&h.SourceType, &h.BalanceRaw, &h.TxCount, &h.LastLedger, &h.LastSeen); err != nil {
 			return nil, err
 		}
 		h.Balance = formatStroopsLocal(h.BalanceRaw)
