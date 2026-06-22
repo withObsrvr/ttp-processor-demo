@@ -203,6 +203,51 @@ func TestPublishBucketsRecordedAndResumable(t *testing.T) {
 	}
 }
 
+func TestSinglePassIsChunkIndependentAndLatestPerKey(t *testing.T) {
+	ctx := context.Background()
+	db := openFixtureDB(t)
+	defer db.Close()
+	loadCurrentProjectorFixture(t, ctx, db)
+	// Chunk=1 would have produced many windows under the old per-window fold; single-pass
+	// must still yield exactly latest-row-per-key as of the end ledger, independent of chunk.
+	cfg := Config{Network: "mainnet", Start: 3, End: 5, Chunk: 1, SilverSchema: "silver", PublishBuckets: 4}
+	projector := NewProjectorWithDB(db, cfg)
+	if err := projector.ensureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := projector.ensureManifest(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := projector.Run(ctx, &out); err != nil {
+		t.Fatalf("run: %v\n%s", err, out.String())
+	}
+
+	// Same expected current state the windowed version produced (latest row <= end ledger 5).
+	assertCount(t, db, `SELECT COUNT(*) FROM silver.accounts_current WHERE network='mainnet'`, 2)
+	var bal string
+	if err := db.QueryRow(`SELECT balance FROM silver.accounts_current WHERE account_id='GA1'`).Scan(&bal); err != nil {
+		t.Fatal(err)
+	}
+	if bal != "200" {
+		t.Fatalf("GA1 balance = %s, want 200 (ledger 4 is latest <= end 5; ledger 8 excluded)", bal)
+	}
+	var future int64
+	if err := db.QueryRow(`SELECT COUNT(*) FROM silver.accounts_current WHERE last_modified_ledger > 5`).Scan(&future); err != nil {
+		t.Fatal(err)
+	}
+	if future != 0 {
+		t.Fatalf("projected %d rows beyond end ledger", future)
+	}
+	// Confirm it took the single-pass path (no per-window fold) and emitted the new phase.
+	if strings.Contains(out.String(), "ledger_window_started") {
+		t.Fatalf("expected single-pass staging, but found ledger_window events")
+	}
+	if !strings.Contains(out.String(), "component.staging_completed") {
+		t.Fatalf("expected component.staging_completed event from single-pass path")
+	}
+}
+
 func openFixtureDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("duckdb", "")

@@ -454,36 +454,18 @@ func (p *Projector) replaceProjection(ctx context.Context, out io.Writer, chunk 
 	if _, err := p.db.ExecContext(ctx, "DROP TABLE IF EXISTS "+staging); err != nil {
 		return 0, fmt.Errorf("drop staging %s: %w", projection.Name, err)
 	}
-	if _, err := p.db.ExecContext(ctx, fmt.Sprintf("CREATE TABLE %s AS SELECT * FROM (%s) seed WHERE false", staging, projection.SelectSQL(p, chunk.Start, chunk.Start-1))); err != nil {
-		return 0, fmt.Errorf("create staging %s: %w", projection.Name, err)
+	// Single-pass current-state compute. SelectSQL already filters ledger_sequence <= end and
+	// keeps the latest row per key (row_number() = 1), so one scan of the source as of chunk.End
+	// produces the complete current state directly in local scratch. This replaces the former
+	// per-window fold: because SelectSQL/KeySQL filter ledger_sequence <= window.End (cumulative,
+	// not the window slice), every window re-scanned the entire history up to its end, making the
+	// staging phase O(N^2) and pathologically slow on full mainnet (see redesign doc). One pass is
+	// O(N log N); local scratch + temp_directory spill keep the sort bounded.
+	emit(out, Event{EventType: "component.staging_started", ComponentID: p.cfg.Component(), RunID: p.cfg.RunID(), Network: p.cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "staging_compute", Status: "running", Metadata: map[string]interface{}{"mode": "single_pass", "as_of_ledger": chunk.End, "source": projection.Source}})
+	if _, err := p.db.ExecContext(ctx, fmt.Sprintf("CREATE TABLE %s AS %s", staging, projection.SelectSQL(p, chunk.Start, chunk.End))); err != nil {
+		return 0, fmt.Errorf("compute staging %s: %w", projection.Name, err)
 	}
-	windows := PlanChunks(chunk.Start, chunk.End, p.cfg.Chunk)
-	for _, window := range windows {
-		keys := p.localTable(projection.TargetTable + "__keys")
-		delta := p.localTable(projection.TargetTable + "__delta")
-		emit(out, Event{EventType: "component.ledger_window_started", ComponentID: p.cfg.Component(), RunID: p.cfg.RunID(), Network: p.cfg.Network, ChunkStart: window.Start, ChunkEnd: window.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "staging_merge", Status: "running", Metadata: map[string]interface{}{"window_index": window.Index, "window_count": len(windows)}})
-		if _, err := p.db.ExecContext(ctx, "DROP TABLE IF EXISTS "+keys); err != nil {
-			return 0, fmt.Errorf("drop keys %s window %d: %w", projection.Name, window.Index, err)
-		}
-		if _, err := p.db.ExecContext(ctx, "DROP TABLE IF EXISTS "+delta); err != nil {
-			return 0, fmt.Errorf("drop delta %s window %d: %w", projection.Name, window.Index, err)
-		}
-		if _, err := p.db.ExecContext(ctx, fmt.Sprintf("CREATE TABLE %s AS %s", keys, projection.KeySQL(p, window.Start, window.End))); err != nil {
-			return 0, fmt.Errorf("create keys %s window %d: %w", projection.Name, window.Index, err)
-		}
-		if _, err := p.db.ExecContext(ctx, fmt.Sprintf("CREATE TABLE %s AS %s", delta, projection.SelectSQL(p, window.Start, window.End))); err != nil {
-			return 0, fmt.Errorf("create delta %s window %d: %w", projection.Name, window.Index, err)
-		}
-		if _, err := p.db.ExecContext(ctx, p.deleteSeenKeysSQL(staging, keys, projection)); err != nil {
-			return 0, fmt.Errorf("delete seen keys %s window %d: %w", projection.Name, window.Index, err)
-		}
-		if _, err := p.db.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s SELECT * FROM %s", staging, delta)); err != nil {
-			return 0, fmt.Errorf("insert staging %s window %d: %w", projection.Name, window.Index, err)
-		}
-		_, _ = p.db.ExecContext(ctx, "DROP TABLE IF EXISTS "+keys)
-		_, _ = p.db.ExecContext(ctx, "DROP TABLE IF EXISTS "+delta)
-		emit(out, Event{EventType: "component.ledger_window_completed", ComponentID: p.cfg.Component(), RunID: p.cfg.RunID(), Network: p.cfg.Network, ChunkStart: window.Start, ChunkEnd: window.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "staging_merge", Status: "completed", Metadata: map[string]interface{}{"window_index": window.Index, "window_count": len(windows)}})
-	}
+	emit(out, Event{EventType: "component.staging_completed", ComponentID: p.cfg.Component(), RunID: p.cfg.RunID(), Network: p.cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "staging_compute", Status: "completed", Metadata: map[string]interface{}{"mode": "single_pass", "as_of_ledger": chunk.End}})
 	if _, err := p.verifyProjectionTable(ctx, projection, staging); err != nil {
 		return 0, err
 	}
