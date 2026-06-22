@@ -10,6 +10,7 @@ Unified query API for Stellar blockchain data across Bronze (raw), Silver (analy
 - **[Horizon Migration](./analyst-guide/horizon-migration.md)** - Side-by-side Horizon vs Query API mappings
 - **[nebu for Analysts](./analyst-guide/nebu-for-analysts.md)** - Power user CLI guide
 - **[vs Hubble](./analyst-guide/vs-hubble.md)** - When to use which tool
+- **[Events API](./docs/EVENTS_API.md)** - Semantic token-transfer events vs raw generic contract events
 
 ## Architecture
 
@@ -110,9 +111,9 @@ All endpoints return JSON. See the [full API reference](./analyst-guide/common-q
 **Events:**
 | Endpoint | Description |
 |----------|-------------|
-| `GET /api/v1/silver/events` | CAP-67 unified event stream |
-| `GET /api/v1/silver/events/generic` | Raw contract events (all types) |
-| `GET /api/v1/silver/events/by-contract` | Events for a specific contract |
+| `GET /api/v1/silver/events` | Semantic token transfer/mint/burn stream with coverage metadata |
+| `GET /api/v1/silver/events/generic` | Raw contract events (all types) with topic filters |
+| `GET /api/v1/silver/events/by-contract` | Semantic token events for a specific contract |
 
 **Transactions:**
 | Endpoint | Description |

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -39,7 +40,11 @@ func NewGenericEventHandlers(reader *ColdReader, hotReader *SilverHotReader) *Ge
 // @Failure 500 {object} map[string]interface{} "Internal server error"
 // @Router /api/v1/silver/events/generic [get]
 func (h *GenericEventHandlers) HandleGenericEvents(w http.ResponseWriter, r *http.Request) {
-	filters := parseGenericEventFilters(r)
+	filters, err := parseGenericEventFilters(r)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	if h.hotReader != nil {
 		events, nextCursor, hasMore, err := h.hotReader.GetServingGenericEvents(r.Context(), filters)
@@ -49,6 +54,7 @@ func (h *GenericEventHandlers) HandleGenericEvents(w http.ResponseWriter, r *htt
 				"count":       len(events),
 				"has_more":    hasMore,
 				"next_cursor": nextCursor,
+				"coverage":    genericEventCoverage(),
 			})
 			return
 		}
@@ -65,6 +71,7 @@ func (h *GenericEventHandlers) HandleGenericEvents(w http.ResponseWriter, r *htt
 		"count":       len(events),
 		"has_more":    hasMore,
 		"next_cursor": nextCursor,
+		"coverage":    genericEventCoverage(),
 	})
 }
 
@@ -90,7 +97,11 @@ func (h *GenericEventHandlers) HandleContractGenericEvents(w http.ResponseWriter
 		return
 	}
 
-	filters := parseGenericEventFilters(r)
+	filters, err := parseGenericEventFilters(r)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	filters.ContractID = &contractID
 	if h.hotReader != nil {
@@ -102,6 +113,7 @@ func (h *GenericEventHandlers) HandleContractGenericEvents(w http.ResponseWriter
 				"count":       len(events),
 				"has_more":    hasMore,
 				"next_cursor": nextCursor,
+				"coverage":    genericEventCoverage(),
 			})
 			return
 		}
@@ -119,17 +131,21 @@ func (h *GenericEventHandlers) HandleContractGenericEvents(w http.ResponseWriter
 		"count":       len(events),
 		"has_more":    hasMore,
 		"next_cursor": nextCursor,
+		"coverage":    genericEventCoverage(),
 	})
 }
 
-func parseGenericEventFilters(r *http.Request) GenericEventFilters {
+func parseGenericEventFilters(r *http.Request) (GenericEventFilters, error) {
 	filters := GenericEventFilters{
 		Limit: parseLimit(r, 20, 200),
 		Order: "desc",
 	}
 
-	if order := r.URL.Query().Get("order"); order == "asc" {
-		filters.Order = "asc"
+	if order := r.URL.Query().Get("order"); order != "" {
+		if order != "asc" && order != "desc" {
+			return filters, fmt.Errorf("order must be asc or desc")
+		}
+		filters.Order = order
 	}
 
 	if v := r.URL.Query().Get("contract_id"); v != "" {
@@ -139,6 +155,11 @@ func parseGenericEventFilters(r *http.Request) GenericEventFilters {
 		filters.TxHash = &v
 	}
 	if v := r.URL.Query().Get("event_type"); v != "" {
+		switch v {
+		case "contract", "system", "diagnostic":
+		default:
+			return filters, fmt.Errorf("event_type must be contract, system, or diagnostic")
+		}
 		filters.EventType = &v
 	}
 	if v := r.URL.Query().Get("topic_match"); v != "" {
@@ -157,18 +178,25 @@ func parseGenericEventFilters(r *http.Request) GenericEventFilters {
 		filters.Topic3 = &v
 	}
 	if v := r.URL.Query().Get("start_ledger"); v != "" {
-		if val, err := strconv.ParseInt(v, 10, 64); err == nil {
-			filters.StartLedger = &val
+		val, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || val <= 0 {
+			return filters, fmt.Errorf("invalid start_ledger")
 		}
+		filters.StartLedger = &val
 	}
 	if v := r.URL.Query().Get("end_ledger"); v != "" {
-		if val, err := strconv.ParseInt(v, 10, 64); err == nil {
-			filters.EndLedger = &val
+		val, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || val <= 0 {
+			return filters, fmt.Errorf("invalid end_ledger")
 		}
+		filters.EndLedger = &val
+	}
+	if filters.StartLedger != nil && filters.EndLedger != nil && *filters.StartLedger > *filters.EndLedger {
+		return filters, fmt.Errorf("start_ledger must be <= end_ledger")
 	}
 	if v := r.URL.Query().Get("cursor"); v != "" {
 		filters.Cursor = &v
 	}
 
-	return filters
+	return filters, nil
 }
