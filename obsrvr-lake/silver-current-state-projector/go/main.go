@@ -422,6 +422,16 @@ func (p *Projector) Run(ctx context.Context, out io.Writer) error {
 		}
 		emit(out, Event{EventType: "component.chunk_started", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, Status: "running"})
 		for _, projection := range executableCurrentProjections() {
+			if cfg.Resume {
+				done, err := p.projectionComplete(ctx, chunk.Start, chunk.End, projection.Name)
+				if err != nil {
+					return err
+				}
+				if done {
+					emit(out, Event{EventType: "component.projection_skipped", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "replace_current", Status: "completed", Metadata: map[string]interface{}{"reason": "already completed in manifest (resume)"}})
+					continue
+				}
+			}
 			emit(out, Event{EventType: "component.projection_started", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "replace_current", Status: "running"})
 			stopProgress := startProgressHeartbeat(out, Event{ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "replace_current", Status: "running"}, map[string]interface{}{"source": projection.Source, "mode": "replace_as_of", "as_of_ledger": chunk.End})
 			rows, err := p.replaceProjection(ctx, out, chunk, projection)
@@ -750,12 +760,32 @@ func (p *Projector) markManifest(ctx context.Context, start, end int64, projecti
 }
 
 func (p *Projector) chunkComplete(ctx context.Context, start, end int64) (bool, error) {
+	for _, projection := range executableCurrentProjections() {
+		done, err := p.projectionComplete(ctx, start, end, projection.Name)
+		if err != nil {
+			return false, err
+		}
+		if !done {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// projectionComplete reports whether this projection is already published for the same
+// (component, network, ledger range). It intentionally does NOT filter on run_id: each
+// dispatch gets a fresh run_id (the wrapper stamps a timestamp), so resuming across
+// re-dispatches — e.g. to bump --chunk-size without redoing finished projections — must
+// match on the durable identity of the work, not the run. The targets are replace-as-of-end
+// and deterministic, so a completed projection's data is valid to keep.
+func (p *Projector) projectionComplete(ctx context.Context, start, end int64, projection string) (bool, error) {
 	var count int64
-	query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE run_id=%s AND component_id=%s AND network=%s AND start_ledger=%d AND end_ledger=%d AND status='completed'", p.table("silver_current_projector_manifest"), q(p.cfg.RunID()), q(p.cfg.Component()), q(p.cfg.Network), start, end)
+	query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE component_id=%s AND network=%s AND start_ledger=%d AND end_ledger=%d AND projection_name=%s AND status='completed'",
+		p.table("silver_current_projector_manifest"), q(p.cfg.Component()), q(p.cfg.Network), start, end, q(projection))
 	if err := p.db.QueryRowContext(ctx, query).Scan(&count); err != nil {
 		return false, err
 	}
-	return count == int64(len(executableCurrentProjections())), nil
+	return count > 0, nil
 }
 
 func selectAccountsCurrent(p *Projector, start, end int64) string {

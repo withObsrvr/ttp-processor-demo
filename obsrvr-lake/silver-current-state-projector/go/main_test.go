@@ -292,6 +292,54 @@ func TestLedgerWindowMergeAcrossWindowsLatestWins(t *testing.T) {
 	}
 }
 
+func TestResumeSkipsCompletedProjectionsAcrossRunIDs(t *testing.T) {
+	ctx := context.Background()
+	db := openFixtureDB(t)
+	defer db.Close()
+	loadCurrentProjectorFixture(t, ctx, db)
+	cfg := Config{Network: "mainnet", Start: 3, End: 5, Chunk: 100, SilverSchema: "silver", PublishBuckets: 2}
+	projector := NewProjectorWithDB(db, cfg)
+	if err := projector.ensureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := projector.ensureManifest(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := projector.Run(ctx, &out); err != nil {
+		t.Fatalf("first run: %v\n%s", err, out.String())
+	}
+
+	// Simulate a partial state: one projection not yet completed (so the chunk isn't skipped
+	// wholesale). Drop its manifest rows; the other five remain completed.
+	if _, err := db.Exec(`DELETE FROM silver.silver_current_projector_manifest WHERE projection_name='trustlines_current'`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Re-dispatch with a NEW run id (the wrapper stamps a fresh timestamp each time) + resume.
+	// The five completed projections must be skipped despite the differing run id; only the
+	// incomplete one re-runs.
+	projector.cfg.Resume = true
+	projector.cfg.FlowctlRunID = "redispatch-with-a-different-run-id"
+	out.Reset()
+	if err := projector.Run(ctx, &out); err != nil {
+		t.Fatalf("resume run: %v\n%s", err, out.String())
+	}
+	if got := strings.Count(out.String(), "component.projection_skipped"); got != 5 {
+		t.Fatalf("expected 5 projection_skipped events on resume, got %d:\n%s", got, out.String())
+	}
+	if got := strings.Count(out.String(), `"event_type":"component.staging_started"`); got != 1 {
+		t.Fatalf("expected exactly 1 projection (trustlines) to re-run, got %d staging_started", got)
+	}
+	if !strings.Contains(out.String(), `"event_type":"component.staging_started","component_id":"silver-current-state-projector","run_id":"redispatch-with-a-different-run-id","network":"mainnet","chunk_start":3,"chunk_end":5,"projection_name":"trustlines_current"`) {
+		t.Fatalf("expected the re-run to be trustlines_current:\n%s", out.String())
+	}
+	// Data intact and unchanged.
+	assertCount(t, db, `SELECT COUNT(*) FROM silver.accounts_current WHERE network='mainnet'`, 2)
+	assertCount(t, db, `SELECT COUNT(*) FROM silver.trustlines_current WHERE network='mainnet'`, 2)
+	assertCount(t, db, `SELECT COUNT(*) FROM silver.address_balances_current WHERE network='mainnet'`, 4)
+}
+
 func openFixtureDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("duckdb", "")
