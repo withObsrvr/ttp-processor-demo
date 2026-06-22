@@ -70,6 +70,11 @@ type Config struct {
 	LocalScratchPath string
 	MemoryLimit      string
 	PublishBuckets   int
+	// ComputeBuckets partitions the single-pass current-state compute over the key-space
+	// (hash of the projection's partition key) so each pass windows only 1/N of the keys.
+	// This bounds peak memory of the row_number() window, which does not reliably spill and
+	// otherwise OOMs on full mainnet. <=1 disables partitioning (one pass).
+	ComputeBuckets int
 }
 
 type Chunk struct {
@@ -136,6 +141,12 @@ type Projector struct {
 	jsonl       ManifestStore
 	localAlias  string // attached catalog for local staging; "" => in-process memory catalog
 	scratchFile string // on-disk scratch DB path to remove on Close, if any
+
+	// compute-bucket state, read by sourceFilter to inject a key-space hash predicate
+	// so a single projection's window runs over one key bucket at a time.
+	computeBucketCount   int
+	computeBucket        int
+	computePartitionExpr string
 }
 
 type CurrentProjection struct {
@@ -198,6 +209,7 @@ func parseConfig(args []string) (Config, error) {
 	fs.StringVar(&cfg.LocalScratchPath, "local-scratch-path", getenv("LOCAL_SCRATCH_PATH", ""), "local on-disk dir for staging + spill (NVMe); empty uses the in-memory catalog")
 	fs.StringVar(&cfg.MemoryLimit, "memory-limit", getenv("MEMORY_LIMIT", ""), "DuckDB memory_limit (e.g. 80GB); empty leaves the DuckDB default")
 	fs.IntVar(&cfg.PublishBuckets, "publish-buckets", envInt("PUBLISH_BUCKETS", 32), "hash buckets for the resumable bounded publish")
+	fs.IntVar(&cfg.ComputeBuckets, "compute-buckets", envInt("COMPUTE_BUCKETS", 16), "key-space partitions for the current-state compute (bounds window memory)")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -454,18 +466,35 @@ func (p *Projector) replaceProjection(ctx context.Context, out io.Writer, chunk 
 	if _, err := p.db.ExecContext(ctx, "DROP TABLE IF EXISTS "+staging); err != nil {
 		return 0, fmt.Errorf("drop staging %s: %w", projection.Name, err)
 	}
-	// Single-pass current-state compute. SelectSQL already filters ledger_sequence <= end and
-	// keeps the latest row per key (row_number() = 1), so one scan of the source as of chunk.End
-	// produces the complete current state directly in local scratch. This replaces the former
-	// per-window fold: because SelectSQL/KeySQL filter ledger_sequence <= window.End (cumulative,
-	// not the window slice), every window re-scanned the entire history up to its end, making the
-	// staging phase O(N^2) and pathologically slow on full mainnet (see redesign doc). One pass is
-	// O(N log N); local scratch + temp_directory spill keep the sort bounded.
-	emit(out, Event{EventType: "component.staging_started", ComponentID: p.cfg.Component(), RunID: p.cfg.RunID(), Network: p.cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "staging_compute", Status: "running", Metadata: map[string]interface{}{"mode": "single_pass", "as_of_ledger": chunk.End, "source": projection.Source}})
-	if _, err := p.db.ExecContext(ctx, fmt.Sprintf("CREATE TABLE %s AS %s", staging, projection.SelectSQL(p, chunk.Start, chunk.End))); err != nil {
-		return 0, fmt.Errorf("compute staging %s: %w", projection.Name, err)
+	// Current-state compute. SelectSQL already filters ledger_sequence <= end and keeps the
+	// latest row per key (row_number() = 1), so scanning the source as of chunk.End produces
+	// the complete current state directly in local scratch — replacing the old per-window fold
+	// that re-scanned the cumulative history every window (O(N^2); see redesign doc).
+	//
+	// The row_number() window does NOT reliably spill, so a single global pass OOMs on full
+	// mainnet. We bound peak memory by partitioning over the key-space: ComputeBuckets passes,
+	// each windowing only the keys whose partition hash == bucket, appended into local staging.
+	// O(N log N) work, ~1/N peak memory, N source scans (N small/fixed, not O(windows)).
+	computeN := p.cfg.ComputeBuckets
+	if computeN < 1 || projection.PartitionExpr == "" {
+		computeN = 1
 	}
-	emit(out, Event{EventType: "component.staging_completed", ComponentID: p.cfg.Component(), RunID: p.cfg.RunID(), Network: p.cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "staging_compute", Status: "completed", Metadata: map[string]interface{}{"mode": "single_pass", "as_of_ledger": chunk.End}})
+	if _, err := p.db.ExecContext(ctx, fmt.Sprintf("CREATE TABLE %s AS SELECT * FROM (%s) seed WHERE false", staging, projection.SelectSQL(p, chunk.Start, chunk.Start-1))); err != nil {
+		return 0, fmt.Errorf("create staging %s: %w", projection.Name, err)
+	}
+	emit(out, Event{EventType: "component.staging_started", ComponentID: p.cfg.Component(), RunID: p.cfg.RunID(), Network: p.cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "staging_compute", Status: "running", Metadata: map[string]interface{}{"mode": "key_partitioned", "compute_buckets": computeN, "as_of_ledger": chunk.End, "source": projection.Source}})
+	p.computePartitionExpr = projection.PartitionExpr
+	p.computeBucketCount = computeN
+	for i := 0; i < computeN; i++ {
+		p.computeBucket = i
+		if _, err := p.db.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s %s", staging, projection.SelectSQL(p, chunk.Start, chunk.End))); err != nil {
+			p.computeBucketCount = 0
+			return 0, fmt.Errorf("compute staging %s bucket %d/%d: %w", projection.Name, i, computeN, err)
+		}
+		emit(out, Event{EventType: "component.staging_bucket_completed", ComponentID: p.cfg.Component(), RunID: p.cfg.RunID(), Network: p.cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "staging_compute", Status: "completed", Metadata: map[string]interface{}{"bucket": i, "compute_buckets": computeN}})
+	}
+	p.computeBucketCount = 0
+	emit(out, Event{EventType: "component.staging_completed", ComponentID: p.cfg.Component(), RunID: p.cfg.RunID(), Network: p.cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "staging_compute", Status: "completed", Metadata: map[string]interface{}{"mode": "key_partitioned", "compute_buckets": computeN, "as_of_ledger": chunk.End}})
 	if _, err := p.verifyProjectionTable(ctx, projection, staging); err != nil {
 		return 0, err
 	}
@@ -536,6 +565,13 @@ func (p *Projector) sourceFilter(projection CurrentProjection, _ int64, end int6
 	}
 	if projection.SourceFilter != "" {
 		parts = append(parts, fmt.Sprintf("(%s)", projection.SourceFilter))
+	}
+	// Key-space partitioning: keep only source rows whose partition key hashes to the
+	// current compute bucket. hash() is deterministic per key value, so every row of a
+	// given key lands in the same bucket — the per-key row_number() window stays correct
+	// while processing only 1/N of the keys per pass.
+	if p.computeBucketCount > 1 && p.computePartitionExpr != "" {
+		parts = append(parts, fmt.Sprintf("hash(%s) %% %d = %d", p.computePartitionExpr, p.computeBucketCount, p.computeBucket))
 	}
 	return strings.Join(parts, " AND ")
 }

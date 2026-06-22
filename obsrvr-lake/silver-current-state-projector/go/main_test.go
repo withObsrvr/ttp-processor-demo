@@ -248,6 +248,43 @@ func TestSinglePassIsChunkIndependentAndLatestPerKey(t *testing.T) {
 	}
 }
 
+func TestPartitionedComputeIsCompleteAndDeduped(t *testing.T) {
+	ctx := context.Background()
+	db := openFixtureDB(t)
+	defer db.Close()
+	loadCurrentProjectorFixture(t, ctx, db)
+	// ComputeBuckets>1 partitions the window over the key-space. The union across buckets must
+	// equal the full current state, with every key produced exactly once (verifyProjection's
+	// duplicate-key check would fail otherwise).
+	cfg := Config{Network: "mainnet", Start: 3, End: 5, Chunk: 100, SilverSchema: "silver", PublishBuckets: 4, ComputeBuckets: 4}
+	projector := NewProjectorWithDB(db, cfg)
+	if err := projector.ensureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := projector.ensureManifest(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := projector.Run(ctx, &out); err != nil {
+		t.Fatalf("run: %v\n%s", err, out.String())
+	}
+
+	// Identical result to the single-pass / windowed versions.
+	assertCount(t, db, `SELECT COUNT(*) FROM silver.accounts_current WHERE network='mainnet'`, 2)
+	assertCount(t, db, `SELECT COUNT(*) FROM silver.trustlines_current WHERE network='mainnet'`, 2)
+	assertCount(t, db, `SELECT COUNT(*) FROM silver.address_balances_current WHERE network='mainnet'`, 4)
+	var bal string
+	if err := db.QueryRow(`SELECT balance FROM silver.accounts_current WHERE account_id='GA1'`).Scan(&bal); err != nil {
+		t.Fatal(err)
+	}
+	if bal != "200" {
+		t.Fatalf("GA1 balance = %s, want 200", bal)
+	}
+	if !strings.Contains(out.String(), "staging_bucket_completed") {
+		t.Fatalf("expected staging_bucket_completed events from partitioned compute")
+	}
+}
+
 func openFixtureDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("duckdb", "")
