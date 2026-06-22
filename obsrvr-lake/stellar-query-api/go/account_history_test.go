@@ -10,6 +10,7 @@ import (
 
 func TestGetAccountTransactionsHotColdDedupAndPagination(t *testing.T) {
 	db := newAccountHistoryDuckDB(t)
+	defer db.Close()
 	reader := &UnifiedDuckDBReader{db: db, hotSchema: "memory.hot", coldSchema: "memory.cold"}
 	ctx := context.Background()
 
@@ -47,6 +48,7 @@ func TestGetAccountTransactionsHotColdDedupAndPagination(t *testing.T) {
 
 func TestGetAddressBalanceHistoryClassicAndContract(t *testing.T) {
 	db := newAccountHistoryDuckDB(t)
+	defer db.Close()
 	reader := &UnifiedDuckDBReader{db: db, hotSchema: "memory.hot", coldSchema: "memory.cold"}
 	ctx := context.Background()
 	insertBalanceHistoryFixtures(t, db)

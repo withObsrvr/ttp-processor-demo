@@ -204,7 +204,19 @@ func (h *SilverHandlers) HandleAccountTransactions(w http.ResponseWriter, r *htt
 		}
 	}
 	filters.StartTime = r.URL.Query().Get("start_time")
+	if filters.StartTime != "" {
+		if _, err := time.Parse(time.RFC3339, filters.StartTime); err != nil {
+			respondError(w, "invalid start_time; expected RFC3339 timestamp", http.StatusBadRequest)
+			return
+		}
+	}
 	filters.EndTime = r.URL.Query().Get("end_time")
+	if filters.EndTime != "" {
+		if _, err := time.Parse(time.RFC3339, filters.EndTime); err != nil {
+			respondError(w, "invalid end_time; expected RFC3339 timestamp", http.StatusBadRequest)
+			return
+		}
+	}
 	if v := r.URL.Query().Get("success"); v != "" {
 		b, err := strconv.ParseBool(v)
 		if err != nil {
@@ -225,8 +237,8 @@ func (h *SilverHandlers) HandleAccountTransactions(w http.ResponseWriter, r *htt
 // @Router /api/v1/silver/addresses/{addr}/balances/history [get]
 func (h *SilverHandlers) HandleAddressBalanceHistory(w http.ResponseWriter, r *http.Request) {
 	addr := mux.Vars(r)["addr"]
-	if !validAccountAddress(addr) {
-		respondError(w, "addr must be a valid Stellar account (G...) address", http.StatusBadRequest)
+	if !isValidStellarAddress(addr) {
+		respondError(w, "addr must be a valid Stellar account (G...) or contract (C...) address", http.StatusBadRequest)
 		return
 	}
 	if h.unifiedReader == nil {
