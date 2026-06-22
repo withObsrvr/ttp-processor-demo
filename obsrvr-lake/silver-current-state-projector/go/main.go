@@ -209,7 +209,7 @@ func parseConfig(args []string) (Config, error) {
 	fs.StringVar(&cfg.LocalScratchPath, "local-scratch-path", getenv("LOCAL_SCRATCH_PATH", ""), "local on-disk dir for staging + spill (NVMe); empty uses the in-memory catalog")
 	fs.StringVar(&cfg.MemoryLimit, "memory-limit", getenv("MEMORY_LIMIT", ""), "DuckDB memory_limit (e.g. 80GB); empty leaves the DuckDB default")
 	fs.IntVar(&cfg.PublishBuckets, "publish-buckets", envInt("PUBLISH_BUCKETS", 32), "hash buckets for the resumable bounded publish")
-	fs.IntVar(&cfg.ComputeBuckets, "compute-buckets", envInt("COMPUTE_BUCKETS", 16), "key-space partitions for the current-state compute (bounds window memory)")
+	fs.IntVar(&cfg.ComputeBuckets, "compute-buckets", envInt("COMPUTE_BUCKETS", 1), "optional key-space partitions for the compute; 1 = single pass (the arg_max hash aggregate is already memory-bounded and spills, so partitioning is normally unnecessary)")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -737,10 +737,11 @@ func selectAccountsCurrent(p *Projector, start, end int64) string {
 		signers, sponsor_account, created_at, COALESCE(updated_at, closed_at, current_timestamp) AS updated_at,
 		ledger_sequence AS last_modified_ledger, ledger_range, era_id, version_label
 		FROM (
-			SELECT *, row_number() OVER (PARTITION BY account_id ORDER BY ledger_sequence DESC, COALESCE(updated_at, closed_at) DESC NULLS LAST) AS rn
-			FROM %s
-			WHERE %s
-		) WHERE rn = 1`, p.table("accounts_snapshot"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
+			SELECT r.* FROM (
+				SELECT arg_max(s, ROW(s.ledger_sequence, COALESCE(s.updated_at, s.closed_at))) AS r
+				FROM %s s WHERE %s GROUP BY account_id
+			)
+		)`, p.table("accounts_snapshot"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
 }
 
 func selectAccountsCurrentKeys(p *Projector, start, end int64) string {
@@ -764,13 +765,12 @@ func selectTrustlinesCurrent(p *Projector, start, end int64) string {
 		ledger_sequence AS last_modified_ledger, ledger_sequence, created_at, NULL::VARCHAR AS sponsor,
 		ledger_range, era_id, version_label, current_timestamp AS inserted_at, current_timestamp AS updated_at
 		FROM (
-			SELECT *, row_number() OVER (
-				PARTITION BY account_id, asset_type, COALESCE(asset_code, ''), COALESCE(asset_issuer, '')
-				ORDER BY ledger_sequence DESC, created_at DESC NULLS LAST
-			) AS rn
-			FROM %s
-			WHERE %s
-		) WHERE rn = 1`, p.table("trustlines_snapshot"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
+			SELECT r.* FROM (
+				SELECT arg_max(s, ROW(s.ledger_sequence, s.created_at)) AS r
+				FROM %s s WHERE %s
+				GROUP BY account_id, asset_type, COALESCE(asset_code, ''), COALESCE(asset_issuer, '')
+			)
+		)`, p.table("trustlines_snapshot"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
 }
 
 func selectTrustlinesCurrentKeys(p *Projector, start, end int64) string {
@@ -799,10 +799,11 @@ func selectOffersCurrent(p *Projector, start, end int64) string {
 		flags, ledger_sequence AS last_modified_ledger, ledger_sequence, created_at, NULL::VARCHAR AS sponsor,
 		ledger_range, era_id, version_label, current_timestamp AS inserted_at, current_timestamp AS updated_at
 		FROM (
-			SELECT *, row_number() OVER (PARTITION BY offer_id ORDER BY ledger_sequence DESC, created_at DESC NULLS LAST) AS rn
-			FROM %s
-			WHERE %s
-		) WHERE rn = 1`, p.table("offers_snapshot"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
+			SELECT r.* FROM (
+				SELECT arg_max(s, ROW(s.ledger_sequence, s.created_at)) AS r
+				FROM %s s WHERE %s GROUP BY offer_id
+			)
+		)`, p.table("offers_snapshot"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
 }
 
 func selectOffersCurrentKeys(p *Projector, start, end int64) string {
@@ -819,13 +820,11 @@ func selectContractDataCurrent(p *Projector, start, end int64) string {
 		last_modified_ledger, ledger_sequence, closed_at, closed_at AS created_at, ledger_range,
 		current_timestamp AS updated_at
 		FROM (
-			SELECT *, row_number() OVER (
-				PARTITION BY contract_id, key_hash
-				ORDER BY ledger_sequence DESC, last_modified_ledger DESC NULLS LAST, closed_at DESC NULLS LAST
-			) AS rn
-			FROM %s
-			WHERE %s
-		) WHERE rn = 1 AND COALESCE(deleted, false) = false`, p.table("contract_data_changes"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
+			SELECT r.* FROM (
+				SELECT arg_max(s, ROW(s.ledger_sequence, s.last_modified_ledger, s.closed_at)) AS r
+				FROM %s s WHERE %s GROUP BY contract_id, key_hash
+			)
+		) WHERE COALESCE(deleted, false) = false`, p.table("contract_data_changes"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
 }
 
 func selectContractDataCurrentKeys(p *Projector, start, end int64) string {
@@ -846,13 +845,11 @@ func selectNativeBalancesCurrent(p *Projector, start, end int64) string {
 		NULL::BIGINT AS sequence_number, ledger_sequence AS last_modified_ledger, ledger_sequence,
 		ledger_range, current_timestamp AS inserted_at, current_timestamp AS updated_at
 		FROM (
-			SELECT *, row_number() OVER (
-				PARTITION BY address
-				ORDER BY ledger_sequence DESC, ledger_closed_at DESC NULLS LAST
-			) AS rn
-			FROM %s
-			WHERE %s
-		) WHERE rn = 1 AND COALESCE(deleted, false) = false`, p.table("balance_changes"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence", SourceFilter: "(asset_type = 'native' OR asset_code = 'XLM')"}, start, end))
+			SELECT r.* FROM (
+				SELECT arg_max(s, ROW(s.ledger_sequence, s.ledger_closed_at)) AS r
+				FROM %s s WHERE %s GROUP BY address
+			)
+		) WHERE COALESCE(deleted, false) = false`, p.table("balance_changes"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence", SourceFilter: "(asset_type = 'native' OR asset_code = 'XLM')"}, start, end))
 }
 
 func selectNativeBalancesCurrentKeys(p *Projector, start, end int64) string {
@@ -884,19 +881,17 @@ func selectAddressBalancesCurrent(p *Projector, start, end int64) string {
 		WHEN asset_type = 'native' OR asset_code = 'XLM' THEN TRY_CAST(balance AS DECIMAL(38,7)) / 10000000
 		ELSE TRY_CAST(balance AS DECIMAL(38,7))
 	END`
-	return fmt.Sprintf(`SELECT network, address AS owner_address, asset_key, asset_type,
+	return fmt.Sprintf(`SELECT network, address AS owner_address, %s AS asset_key, asset_type,
 		NULL::VARCHAR AS token_contract_id, asset_code, asset_issuer, asset_code AS symbol, 7::INTEGER AS decimals,
 		CAST(%s AS VARCHAR) AS balance_raw, CAST(%s AS VARCHAR) AS balance_display,
 		'silver.balance_changes' AS balance_source, ledger_sequence AS last_updated_ledger,
 		ledger_closed_at AS last_updated_at, current_timestamp AS updated_at
 		FROM (
-			SELECT *, %s AS asset_key, row_number() OVER (
-				PARTITION BY address, %s
-				ORDER BY ledger_sequence DESC, ledger_closed_at DESC NULLS LAST
-			) AS rn
-			FROM %s
-			WHERE %s
-		) WHERE rn = 1 AND COALESCE(deleted, false) = false`, balanceRaw, balanceDisplay, assetKey, assetKey, p.table("balance_changes"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
+			SELECT r.* FROM (
+				SELECT arg_max(s, ROW(s.ledger_sequence, s.ledger_closed_at)) AS r
+				FROM %s s WHERE %s GROUP BY address, %s
+			)
+		) WHERE COALESCE(deleted, false) = false`, assetKey, balanceRaw, balanceDisplay, p.table("balance_changes"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end), assetKey)
 }
 
 func selectAddressBalancesCurrentKeys(p *Projector, start, end int64) string {
