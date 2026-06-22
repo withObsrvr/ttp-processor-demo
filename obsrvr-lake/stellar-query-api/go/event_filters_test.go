@@ -11,6 +11,8 @@ func TestParseEventFiltersValidation(t *testing.T) {
 		"/api/v1/silver/events?source_type=other",
 		"/api/v1/silver/events?order=sideways",
 		"/api/v1/silver/events?start_ledger=-1",
+		"/api/v1/silver/events?start_ledger=0",
+		"/api/v1/silver/events?start_ledger=1&end_ledger=0",
 		"/api/v1/silver/events?start_ledger=10&end_ledger=9",
 	}
 	for _, target := range cases {
@@ -35,6 +37,7 @@ func TestParseGenericEventFiltersValidation(t *testing.T) {
 		"/api/v1/silver/events/generic?event_type=transfer",
 		"/api/v1/silver/events/generic?order=sideways",
 		"/api/v1/silver/events/generic?start_ledger=nope",
+		"/api/v1/silver/events/generic?end_ledger=0",
 		"/api/v1/silver/events/generic?start_ledger=10&end_ledger=9",
 	}
 	for _, target := range cases {

@@ -156,7 +156,7 @@ func (h *EventHandlers) HandleContractEvents(w http.ResponseWriter, r *http.Requ
 // @Param cursor query string false "Pagination cursor"
 // @Param order query string false "Sort order" default(desc) Enums(asc, desc)
 // @Success 200 {object} map[string]interface{} "Address events with pagination"
-// @Failure 400 {object} map[string]interface{} "Missing address"
+// @Failure 400 {object} map[string]interface{} "Invalid address or parameters"
 // @Failure 500 {object} map[string]interface{} "Internal server error"
 // @Router /api/v1/silver/address/{addr}/events [get]
 func (h *EventHandlers) HandleAddressEvents(w http.ResponseWriter, r *http.Request) {
@@ -263,7 +263,7 @@ func parseEventFilters(r *http.Request) (UnifiedEventFilters, error) {
 
 	if startLedger := r.URL.Query().Get("start_ledger"); startLedger != "" {
 		val, err := strconv.ParseInt(startLedger, 10, 64)
-		if err != nil || val < 0 {
+		if err != nil || val <= 0 {
 			return filters, fmt.Errorf("invalid start_ledger")
 		}
 		filters.StartLedger = val
@@ -271,7 +271,7 @@ func parseEventFilters(r *http.Request) (UnifiedEventFilters, error) {
 
 	if endLedger := r.URL.Query().Get("end_ledger"); endLedger != "" {
 		val, err := strconv.ParseInt(endLedger, 10, 64)
-		if err != nil || val < 0 {
+		if err != nil || val <= 0 {
 			return filters, fmt.Errorf("invalid end_ledger")
 		}
 		filters.EndLedger = val

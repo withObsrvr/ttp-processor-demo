@@ -179,14 +179,14 @@ func parseGenericEventFilters(r *http.Request) (GenericEventFilters, error) {
 	}
 	if v := r.URL.Query().Get("start_ledger"); v != "" {
 		val, err := strconv.ParseInt(v, 10, 64)
-		if err != nil || val < 0 {
+		if err != nil || val <= 0 {
 			return filters, fmt.Errorf("invalid start_ledger")
 		}
 		filters.StartLedger = &val
 	}
 	if v := r.URL.Query().Get("end_ledger"); v != "" {
 		val, err := strconv.ParseInt(v, 10, 64)
-		if err != nil || val < 0 {
+		if err != nil || val <= 0 {
 			return filters, fmt.Errorf("invalid end_ledger")
 		}
 		filters.EndLedger = &val
