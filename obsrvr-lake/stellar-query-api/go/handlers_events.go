@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -11,6 +12,44 @@ import (
 type EventHandlers struct {
 	reader        *SilverColdReader
 	hotPathReader *TxHotPathReader
+}
+
+type EventAPICoverage struct {
+	Version     string   `json:"version"`
+	Includes    []string `json:"includes"`
+	Limitations []string `json:"limitations"`
+}
+
+func unifiedEventCoverage() EventAPICoverage {
+	return EventAPICoverage{
+		Version: "cap67_transfer_events_v1",
+		Includes: []string{
+			"CAP-67-like transfer, mint, and burn events derived from token_transfers_raw",
+			"classic Stellar payments/path payments and decoded Soroban token transfers where present in token_transfers_raw",
+			"filters for contract_id, event_type, source_type, address, transaction, ledger range, order, and cursor pagination",
+		},
+		Limitations: []string{
+			"this endpoint is a semantic token-transfer stream, not the complete raw Soroban event stream",
+			"non-transfer contract events, diagnostic events, and raw topic/data payloads are exposed through /api/v1/silver/events/generic",
+			"amounts are raw token units; callers should use token metadata for display decimals",
+		},
+	}
+}
+
+func genericEventCoverage() EventAPICoverage {
+	return EventAPICoverage{
+		Version: "raw_contract_events_v1",
+		Includes: []string{
+			"raw Soroban contract_events_stream_v1 rows with decoded topic/data fields where available",
+			"contract, system, and diagnostic event filters",
+			"topic0-topic3 exact filters, topic substring search, transaction hash, ledger range, order, and cursor pagination",
+		},
+		Limitations: []string{
+			"raw generic events are not guaranteed to be classified into business actions",
+			"topic_match is substring search over decoded topics and should not be treated as complete address extraction",
+			"for Prism-style semantic classification use /api/v1/explorer/events",
+		},
+	}
 }
 
 // NewEventHandlers creates new CAP-67 event API handlers
@@ -54,6 +93,7 @@ func (h *EventHandlers) HandleUnifiedEvents(w http.ResponseWriter, r *http.Reque
 		"count":       len(events),
 		"has_more":    hasMore,
 		"next_cursor": nextCursor,
+		"coverage":    unifiedEventCoverage(),
 	})
 }
 
@@ -99,6 +139,7 @@ func (h *EventHandlers) HandleContractEvents(w http.ResponseWriter, r *http.Requ
 		"count":       len(events),
 		"has_more":    hasMore,
 		"next_cursor": nextCursor,
+		"coverage":    unifiedEventCoverage(),
 	})
 }
 
@@ -121,8 +162,8 @@ func (h *EventHandlers) HandleContractEvents(w http.ResponseWriter, r *http.Requ
 func (h *EventHandlers) HandleAddressEvents(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	addr := vars["addr"]
-	if addr == "" {
-		respondError(w, "address required", http.StatusBadRequest)
+	if !isValidStellarAddress(addr) {
+		respondError(w, "addr must be a valid Stellar account (G...) or contract (C...) address", http.StatusBadRequest)
 		return
 	}
 
@@ -144,6 +185,7 @@ func (h *EventHandlers) HandleAddressEvents(w http.ResponseWriter, r *http.Reque
 		"count":       len(events),
 		"has_more":    hasMore,
 		"next_cursor": nextCursor,
+		"coverage":    unifiedEventCoverage(),
 	})
 }
 
@@ -183,6 +225,7 @@ func (h *EventHandlers) HandleTransactionEvents(w http.ResponseWriter, r *http.R
 		"transaction_hash": txHash,
 		"events":           events,
 		"count":            len(events),
+		"coverage":         unifiedEventCoverage(),
 	})
 }
 
@@ -196,24 +239,46 @@ func parseEventFilters(r *http.Request) (UnifiedEventFilters, error) {
 		Order:      "desc",
 	}
 
-	if order := r.URL.Query().Get("order"); order == "asc" {
-		filters.Order = "asc"
+	if order := r.URL.Query().Get("order"); order != "" {
+		if order != "asc" && order != "desc" {
+			return filters, fmt.Errorf("order must be asc or desc")
+		}
+		filters.Order = order
+	}
+
+	if filters.EventType != "" {
+		switch filters.EventType {
+		case "transfer", "mint", "burn":
+		default:
+			return filters, fmt.Errorf("event_type must be transfer, mint, or burn")
+		}
+	}
+	if filters.SourceType != "" {
+		switch filters.SourceType {
+		case "classic", "soroban":
+		default:
+			return filters, fmt.Errorf("source_type must be classic or soroban")
+		}
 	}
 
 	if startLedger := r.URL.Query().Get("start_ledger"); startLedger != "" {
 		val, err := strconv.ParseInt(startLedger, 10, 64)
-		if err != nil {
-			return filters, err
+		if err != nil || val < 0 {
+			return filters, fmt.Errorf("invalid start_ledger")
 		}
 		filters.StartLedger = val
 	}
 
 	if endLedger := r.URL.Query().Get("end_ledger"); endLedger != "" {
 		val, err := strconv.ParseInt(endLedger, 10, 64)
-		if err != nil {
-			return filters, err
+		if err != nil || val < 0 {
+			return filters, fmt.Errorf("invalid end_ledger")
 		}
 		filters.EndLedger = val
+	}
+
+	if filters.StartLedger > 0 && filters.EndLedger > 0 && filters.StartLedger > filters.EndLedger {
+		return filters, fmt.Errorf("start_ledger must be <= end_ledger")
 	}
 
 	if cursorStr := r.URL.Query().Get("cursor"); cursorStr != "" {
