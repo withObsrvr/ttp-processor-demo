@@ -90,7 +90,9 @@ func newAccountHistoryDuckDB(t *testing.T) *sql.DB {
 			`CREATE TABLE memory.` + schema + `.enriched_history_operations (ledger_sequence BIGINT, ledger_closed_at TIMESTAMP, transaction_hash VARCHAR, tx_successful BOOLEAN, source_account VARCHAR, destination VARCHAR, from_account VARCHAR, to_address VARCHAR, address VARCHAR, tx_fee_charged VARCHAR, tx_memo_type VARCHAR, tx_memo VARCHAR, is_payment_op BOOLEAN, is_soroban_op BOOLEAN, type_string VARCHAR)`,
 			`CREATE TABLE memory.` + schema + `.token_transfers_raw (ledger_sequence BIGINT, "timestamp" TIMESTAMP, transaction_hash VARCHAR, transaction_successful BOOLEAN, from_account VARCHAR, to_account VARCHAR, token_contract_id VARCHAR, amount VARCHAR, event_index INTEGER)`,
 			`CREATE TABLE memory.` + schema + `.contract_invocations_raw (ledger_sequence BIGINT, closed_at TIMESTAMP, transaction_hash VARCHAR, successful BOOLEAN, source_account VARCHAR, contract_id VARCHAR)`,
-			`CREATE TABLE memory.` + schema + `.balance_changes (ledger_sequence BIGINT, ledger_closed_at TIMESTAMP, address VARCHAR, asset_type VARCHAR, asset_code VARCHAR, asset_issuer VARCHAR, balance VARCHAR, deleted BOOLEAN)`,
+		}
+		if schema == "cold" {
+			stmts = append(stmts, `CREATE TABLE memory.`+schema+`.balance_changes (ledger_sequence BIGINT, ledger_closed_at TIMESTAMP, address VARCHAR, asset_type VARCHAR, asset_code VARCHAR, asset_issuer VARCHAR, balance VARCHAR, deleted BOOLEAN)`)
 		}
 		for _, stmt := range stmts {
 			if _, err := db.Exec(stmt); err != nil {
@@ -120,7 +122,7 @@ func insertBalanceHistoryFixtures(t *testing.T, db *sql.DB) {
 	t.Helper()
 	stmts := []string{
 		`INSERT INTO cold.balance_changes VALUES (1, TIMESTAMP '2026-01-01 00:00:01', 'GA', 'native', 'XLM', NULL, '100', false)`,
-		`INSERT INTO hot.balance_changes VALUES (3, TIMESTAMP '2026-01-01 00:00:03', 'GA', 'native', 'XLM', NULL, '150', false)`,
+		`INSERT INTO cold.balance_changes VALUES (3, TIMESTAMP '2026-01-01 00:00:03', 'GA', 'native', 'XLM', NULL, '150', false)`,
 		`INSERT INTO cold.token_transfers_raw VALUES (1, TIMESTAMP '2026-01-01 00:00:01', 'tx1', true, NULL, 'GA', 'CC', '10', 0)`,
 		`INSERT INTO cold.token_transfers_raw VALUES (2, TIMESTAMP '2026-01-01 00:00:02', 'tx2', true, 'GA', 'GB', 'CC', '3', 0)`,
 		`INSERT INTO hot.token_transfers_raw VALUES (4, TIMESTAMP '2026-01-01 00:00:04', 'tx4', true, 'GB', 'GA', 'CC', '5', 0)`,

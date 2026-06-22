@@ -444,6 +444,9 @@ func (r *UnifiedDuckDBReader) GetAddressBalanceHistory(ctx context.Context, filt
 	if strings.TrimSpace(r.hotSchema) == "" && strings.TrimSpace(r.coldSchema) == "" {
 		return nil, "", false, fmt.Errorf("GetAddressBalanceHistory: no hot or cold schema configured")
 	}
+	if filters.ContractID == "" && strings.TrimSpace(r.coldSchema) == "" {
+		return nil, "", false, fmt.Errorf("GetAddressBalanceHistory: classic balance history requires cold balance_changes")
+	}
 	requestLimit := filters.Limit + 1
 	orderDir, cursorOp := "DESC", "<"
 	if filters.Order == "asc" {
@@ -535,9 +538,11 @@ func buildBalanceHistoryQuery(hotSchema, coldSchema string, contractMode bool, w
 		return fmt.Sprintf(`SELECT ledger_sequence, ledger_closed_at AS closed_at, asset_type, asset_code, asset_issuer, NULL AS contract_id, CAST(balance AS VARCHAR) AS balance, NULL AS delta, NULL AS transaction_hash, 'balance_changes' AS source_table, CAST(ledger_sequence AS VARCHAR) || '|balance_changes|' || COALESCE(asset_code,'') || '|' || COALESCE(asset_issuer,'') AS tie_breaker, %d AS source_rank FROM %s.balance_changes WHERE address = $1 AND (($2 = 'XLM' AND (asset_type = 'native' OR asset_code = 'XLM')) OR asset_code || COALESCE(':' || asset_issuer, '') = $2 OR asset_code = $2) AND COALESCE(deleted, false) = false`, rank, schema)
 	}
 	parts := []string{}
-	if strings.TrimSpace(hotSchema) != "" {
-		parts = append(parts, oneClassic(hotSchema, 1))
-	}
+	// balance_changes is produced by the cold silver-history-loader, not the
+	// realtime hot schema. Do not emit a hot balance_changes branch in the normal
+	// unified-reader setup: DuckDB validates every UNION branch up front, so a
+	// missing hot table would fail the whole request instead of returning cold
+	// history.
 	if strings.TrimSpace(coldSchema) != "" {
 		parts = append(parts, oneClassic(coldSchema, 2))
 	}
