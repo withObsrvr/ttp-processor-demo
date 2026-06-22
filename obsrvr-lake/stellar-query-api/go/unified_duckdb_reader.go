@@ -4957,8 +4957,11 @@ func (r *UnifiedDuckDBReader) GetAddressTokenPortfolio(ctx context.Context, addr
 			MAX(asset_code) as asset_code,
 			MAX(asset_issuer) as asset_issuer,
 			MAX(source_type) as source_type,
-			SUM(CASE WHEN to_account = $1 THEN amount ELSE 0 END) -
-			SUM(CASE WHEN from_account = $1 THEN amount ELSE 0 END) as net_balance,
+			CAST(
+				SUM(CASE WHEN to_account = $1 THEN amount ELSE 0 END) -
+				SUM(CASE WHEN from_account = $1 THEN amount ELSE 0 END)
+				AS BIGINT
+			) as net_balance,
 			COUNT(*) as tx_count,
 			MAX(timestamp) as last_seen
 		FROM transfers
@@ -4984,8 +4987,11 @@ func (r *UnifiedDuckDBReader) GetAddressTokenPortfolio(ctx context.Context, addr
 					MAX(asset_code) as asset_code,
 					MAX(asset_issuer) as asset_issuer,
 					MAX(source_type) as source_type,
-					SUM(CASE WHEN to_account = $1 THEN amount ELSE 0 END) -
-					SUM(CASE WHEN from_account = $1 THEN amount ELSE 0 END) as net_balance,
+					CAST(
+						SUM(CASE WHEN to_account = $1 THEN amount ELSE 0 END) -
+						SUM(CASE WHEN from_account = $1 THEN amount ELSE 0 END)
+						AS BIGINT
+					) as net_balance,
 					COUNT(*) as tx_count,
 					MAX(timestamp) as last_seen
 				FROM transfers

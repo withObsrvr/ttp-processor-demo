@@ -57,7 +57,8 @@ All endpoints return JSON. See the [full API reference](./analyst-guide/common-q
 | `GET /api/v1/silver/accounts/history` | Historical account snapshots |
 | `GET /api/v1/silver/accounts/top` | Top accounts by balance |
 | `GET /api/v1/silver/accounts/signers` | Account signer configurations |
-| `GET /api/v1/silver/accounts/{id}/balances` | All balances (XLM + trustlines) |
+| `GET /api/v1/silver/accounts/{id}/balances` | Classic account balances (XLM + trustlines) |
+| `GET /api/v1/silver/addresses/{addr}/balances` | Unified address balances (XLM + trustlines + Soroban tokens) |
 | `GET /api/v1/silver/accounts/{id}/offers` | Account DEX offers |
 | `GET /api/v1/silver/accounts/{id}/activity` | Account activity feed |
 | `GET /api/v1/silver/accounts/{id}/contracts` | Account contract interactions with call counts |
