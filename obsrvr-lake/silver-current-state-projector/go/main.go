@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -60,6 +61,15 @@ type Config struct {
 	FlowctlRunID     string
 	FlowctlAttempt   string
 	FlowctlComponent string
+
+	// LocalScratchPath, when set, points staging/keys/delta tables at a local
+	// on-disk DuckDB attached at this path (NVMe recommended) instead of the
+	// DuckLake catalog, and sets temp_directory for spill. Empty = in-process
+	// memory catalog. MemoryLimit sets DuckDB memory_limit. PublishBuckets is
+	// the number of hash buckets used for the resumable, bounded final publish.
+	LocalScratchPath string
+	MemoryLimit      string
+	PublishBuckets   int
 }
 
 type Chunk struct {
@@ -121,9 +131,11 @@ type JSONLManifest struct {
 }
 
 type Projector struct {
-	db    *sql.DB
-	cfg   Config
-	jsonl ManifestStore
+	db          *sql.DB
+	cfg         Config
+	jsonl       ManifestStore
+	localAlias  string // attached catalog for local staging; "" => in-process memory catalog
+	scratchFile string // on-disk scratch DB path to remove on Close, if any
 }
 
 type CurrentProjection struct {
@@ -183,6 +195,9 @@ func parseConfig(args []string) (Config, error) {
 	fs.StringVar(&cfg.S3Secret, "s3-secret", getenv("S3_SECRET", getenv("B2_KEY_SECRET", "")), "S3/B2 secret access key")
 	fs.StringVar(&cfg.S3Region, "s3-region", getenv("S3_REGION", getenv("B2_REGION", "us-west-004")), "S3/B2 region")
 	fs.StringVar(&cfg.S3Endpoint, "s3-endpoint", getenv("S3_ENDPOINT", getenv("B2_ENDPOINT", "")), "S3/B2 endpoint")
+	fs.StringVar(&cfg.LocalScratchPath, "local-scratch-path", getenv("LOCAL_SCRATCH_PATH", ""), "local on-disk dir for staging + spill (NVMe); empty uses the in-memory catalog")
+	fs.StringVar(&cfg.MemoryLimit, "memory-limit", getenv("MEMORY_LIMIT", ""), "DuckDB memory_limit (e.g. 80GB); empty leaves the DuckDB default")
+	fs.IntVar(&cfg.PublishBuckets, "publish-buckets", envInt("PUBLISH_BUCKETS", 32), "hash buckets for the resumable bounded publish")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -262,6 +277,10 @@ func NewProjector(ctx context.Context, cfg Config) (*Projector, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := p.configureLocal(ctx); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if err := p.ensureSchema(ctx); err != nil {
 		db.Close()
 		return nil, err
@@ -293,7 +312,57 @@ func (p *Projector) configureS3(ctx context.Context) error {
 }
 
 func (p *Projector) Close() error {
-	return p.db.Close()
+	if p.localAlias != "" {
+		_, _ = p.db.ExecContext(context.Background(), "DETACH "+ident(p.localAlias))
+	}
+	err := p.db.Close()
+	if p.scratchFile != "" {
+		_ = os.Remove(p.scratchFile)
+	}
+	return err
+}
+
+// configureLocal sets spill/memory pragmas and, when LocalScratchPath is set,
+// attaches an on-disk DuckDB as the "scratch" catalog so staging/keys/delta live
+// on local NVMe instead of the DuckLake (object-storage) catalog. With no path,
+// local tables fall back to the in-process memory catalog (fine for tests/small
+// runs). Either way, no intermediate writes hit DuckLake — only the final publish.
+func (p *Projector) configureLocal(ctx context.Context) error {
+	if _, err := p.db.ExecContext(ctx, "SET preserve_insertion_order=false"); err != nil {
+		return fmt.Errorf("set preserve_insertion_order: %w", err)
+	}
+	if p.cfg.MemoryLimit != "" {
+		if _, err := p.db.ExecContext(ctx, fmt.Sprintf("SET memory_limit=%s", q(p.cfg.MemoryLimit))); err != nil {
+			return fmt.Errorf("set memory_limit: %w", err)
+		}
+	}
+	if p.cfg.LocalScratchPath == "" {
+		return nil
+	}
+	tmp := filepath.Join(p.cfg.LocalScratchPath, "duckdb_tmp")
+	if err := os.MkdirAll(tmp, 0o755); err != nil {
+		return fmt.Errorf("create temp dir: %w", err)
+	}
+	if _, err := p.db.ExecContext(ctx, fmt.Sprintf("SET temp_directory=%s", q(tmp))); err != nil {
+		return fmt.Errorf("set temp_directory: %w", err)
+	}
+	p.scratchFile = filepath.Join(p.cfg.LocalScratchPath, "silver_current_projector_scratch.duckdb")
+	_ = os.Remove(p.scratchFile) // a stale scratch from a killed run is never reused
+	if _, err := p.db.ExecContext(ctx, fmt.Sprintf("ATTACH %s AS %s", q(p.scratchFile), ident("scratch"))); err != nil {
+		return fmt.Errorf("attach local scratch: %w", err)
+	}
+	p.localAlias = "scratch"
+	return nil
+}
+
+// localTable resolves a staging/keys/delta table name to the local scratch
+// catalog (never DuckLake). With no attached scratch it uses the in-process
+// memory catalog (default catalog/schema), which is still local, not DuckLake.
+func (p *Projector) localTable(name string) string {
+	if p.localAlias == "" {
+		return ident(name)
+	}
+	return fmt.Sprintf("%s.main.%s", ident(p.localAlias), ident(name))
 }
 
 func (p *Projector) attachSilver(ctx context.Context) error {
@@ -381,7 +450,7 @@ func (p *Projector) replaceProjection(ctx context.Context, out io.Writer, chunk 
 		return 0, err
 	}
 
-	staging := p.stagingTable(projection)
+	staging := p.localTable(projection.TargetTable + "__staging")
 	if _, err := p.db.ExecContext(ctx, "DROP TABLE IF EXISTS "+staging); err != nil {
 		return 0, fmt.Errorf("drop staging %s: %w", projection.Name, err)
 	}
@@ -390,8 +459,8 @@ func (p *Projector) replaceProjection(ctx context.Context, out io.Writer, chunk 
 	}
 	windows := PlanChunks(chunk.Start, chunk.End, p.cfg.Chunk)
 	for _, window := range windows {
-		keys := p.stagingTable(CurrentProjection{TargetTable: projection.TargetTable + "__keys"})
-		delta := p.stagingTable(CurrentProjection{TargetTable: projection.TargetTable + "__delta"})
+		keys := p.localTable(projection.TargetTable + "__keys")
+		delta := p.localTable(projection.TargetTable + "__delta")
 		emit(out, Event{EventType: "component.ledger_window_started", ComponentID: p.cfg.Component(), RunID: p.cfg.RunID(), Network: p.cfg.Network, ChunkStart: window.Start, ChunkEnd: window.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "staging_merge", Status: "running", Metadata: map[string]interface{}{"window_index": window.Index, "window_count": len(windows)}})
 		if _, err := p.db.ExecContext(ctx, "DROP TABLE IF EXISTS "+keys); err != nil {
 			return 0, fmt.Errorf("drop keys %s window %d: %w", projection.Name, window.Index, err)
@@ -418,21 +487,8 @@ func (p *Projector) replaceProjection(ctx context.Context, out io.Writer, chunk 
 	if _, err := p.verifyProjectionTable(ctx, projection, staging); err != nil {
 		return 0, err
 	}
-	tx, err := p.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, fmt.Errorf("begin %s: %w", projection.Name, err)
-	}
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE network = %s", p.table(projection.TargetTable), q(p.cfg.Network))); err != nil {
-		_ = tx.Rollback()
-		return 0, fmt.Errorf("delete %s: %w", projection.Name, err)
-	}
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s SELECT * FROM %s", p.table(projection.TargetTable), staging)); err != nil {
-		_ = tx.Rollback()
-		return 0, fmt.Errorf("insert %s: %w", projection.Name, err)
-	}
-	if err := tx.Commit(); err != nil {
-		_ = tx.Rollback()
-		return 0, fmt.Errorf("commit %s: %w", projection.Name, err)
+	if err := p.publishProjection(ctx, out, chunk, projection, staging); err != nil {
+		return 0, err
 	}
 	rowCount, err := p.verifyProjection(ctx, projection)
 	if err != nil {
@@ -511,8 +567,82 @@ func (p *Projector) deleteSeenKeysSQL(staging, keys string, projection CurrentPr
 	return fmt.Sprintf("DELETE FROM %s AS s WHERE EXISTS (SELECT 1 FROM %s AS k WHERE %s)", staging, keys, strings.Join(parts, " AND "))
 }
 
-func (p *Projector) stagingTable(projection CurrentProjection) string {
-	return p.table(projection.TargetTable + "__staging")
+// publishProjection writes the locally-computed staging table into the DuckLake
+// target in N hash-bucket transactions instead of one giant DELETE+INSERT. Each
+// bucket is idempotent (DELETE then INSERT for that bucket) and checkpointed, so
+// an external kill costs one bucket of work rather than the whole projection.
+func (p *Projector) publishProjection(ctx context.Context, out io.Writer, chunk Chunk, projection CurrentProjection, staging string) error {
+	n := p.cfg.PublishBuckets
+	if n < 1 {
+		n = 1
+	}
+	target := p.table(projection.TargetTable)
+	bexpr := bucketExpr(projection, n)
+	for i := 0; i < n; i++ {
+		if p.cfg.Resume {
+			done, err := p.bucketComplete(ctx, chunk, projection.Name, i)
+			if err != nil {
+				return err
+			}
+			if done {
+				emit(out, Event{EventType: "component.publish_bucket_skipped", ComponentID: p.cfg.Component(), RunID: p.cfg.RunID(), Network: p.cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "publish", Status: "completed", Metadata: map[string]interface{}{"bucket": i, "bucket_count": n}})
+				continue
+			}
+		}
+		tx, err := p.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin publish %s bucket %d: %w", projection.Name, i, err)
+		}
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE network = %s AND (%s) = %d", target, q(p.cfg.Network), bexpr, i)); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("publish delete %s bucket %d: %w", projection.Name, i, err)
+		}
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s SELECT * FROM %s WHERE (%s) = %d", target, staging, bexpr, i)); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("publish insert %s bucket %d: %w", projection.Name, i, err)
+		}
+		if err := tx.Commit(); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("publish commit %s bucket %d: %w", projection.Name, i, err)
+		}
+		if err := p.markBucketComplete(ctx, chunk, projection.Name, i); err != nil {
+			return err
+		}
+		emit(out, Event{EventType: "component.publish_bucket_completed", ComponentID: p.cfg.Component(), RunID: p.cfg.RunID(), Network: p.cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "publish", Status: "completed", Metadata: map[string]interface{}{"bucket": i, "bucket_count": n}})
+	}
+	return nil
+}
+
+// bucketExpr is a deterministic hash of the projection's key columns into [0, n).
+// It is evaluated identically on the target (for DELETE) and staging (for INSERT)
+// so the two sides of a bucket's publish always refer to the same logical rows.
+func bucketExpr(projection CurrentProjection, n int) string {
+	parts := make([]string, 0, len(projection.KeyExprs))
+	for _, key := range projection.KeyExprs {
+		parts = append(parts, fmt.Sprintf("COALESCE(CAST(%s AS VARCHAR), '')", ident(key)))
+	}
+	return fmt.Sprintf("CAST(hash(concat_ws('|', %s)) %% %d AS INTEGER)", strings.Join(parts, ", "), n)
+}
+
+func (p *Projector) bucketComplete(ctx context.Context, chunk Chunk, projection string, bucket int) (bool, error) {
+	var count int64
+	query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE run_id=%s AND component_id=%s AND network=%s AND start_ledger=%d AND end_ledger=%d AND projection_name=%s AND bucket=%d AND status='completed'",
+		p.table("silver_current_projector_publish_manifest"), q(p.cfg.RunID()), q(p.cfg.Component()), q(p.cfg.Network), chunk.Start, chunk.End, q(projection), bucket)
+	if err := p.db.QueryRowContext(ctx, query).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func (p *Projector) markBucketComplete(ctx context.Context, chunk Chunk, projection string, bucket int) error {
+	table := p.table("silver_current_projector_publish_manifest")
+	if _, err := p.db.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE run_id=%s AND component_id=%s AND network=%s AND start_ledger=%d AND end_ledger=%d AND projection_name=%s AND bucket=%d",
+		table, q(p.cfg.RunID()), q(p.cfg.Component()), q(p.cfg.Network), chunk.Start, chunk.End, q(projection), bucket)); err != nil {
+		return err
+	}
+	_, err := p.db.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s VALUES (%s, %s, %s, %s, %d, %d, %d, 'completed', current_timestamp)",
+		table, q(p.cfg.RunID()), q(p.cfg.Component()), q(projection), q(p.cfg.Network), chunk.Start, chunk.End, bucket))
+	return err
 }
 
 func (p *Projector) ensureSchema(ctx context.Context) error {
@@ -538,6 +668,20 @@ func (p *Projector) ensureManifest(ctx context.Context) error {
 	)`, p.table("silver_current_projector_manifest"))
 	if _, err := p.db.ExecContext(ctx, stmt); err != nil {
 		return fmt.Errorf("create manifest: %w", err)
+	}
+	pubStmt := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+		run_id VARCHAR,
+		component_id VARCHAR,
+		projection_name VARCHAR,
+		network VARCHAR,
+		start_ledger BIGINT,
+		end_ledger BIGINT,
+		bucket INTEGER,
+		status VARCHAR,
+		updated_at TIMESTAMP
+	)`, p.table("silver_current_projector_publish_manifest"))
+	if _, err := p.db.ExecContext(ctx, pubStmt); err != nil {
+		return fmt.Errorf("create publish manifest: %w", err)
 	}
 	return nil
 }

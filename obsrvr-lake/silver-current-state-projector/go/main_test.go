@@ -168,6 +168,41 @@ func TestProjectorVerificationFailures(t *testing.T) {
 	}
 }
 
+func TestPublishBucketsRecordedAndResumable(t *testing.T) {
+	ctx := context.Background()
+	db := openFixtureDB(t)
+	defer db.Close()
+	loadCurrentProjectorFixture(t, ctx, db)
+	cfg := Config{Network: "mainnet", Start: 3, End: 5, Chunk: 100, SilverSchema: "silver", PublishBuckets: 8}
+	projector := NewProjectorWithDB(db, cfg)
+	if err := projector.ensureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := projector.ensureManifest(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	proj := executableCurrentProjections()[0] // accounts_current
+	if _, err := projector.replaceProjection(ctx, &out, Chunk{Start: 3, End: 5}, proj); err != nil {
+		t.Fatalf("first publish: %v\n%s", err, out.String())
+	}
+	assertCount(t, db, `SELECT COUNT(*) FROM silver.accounts_current WHERE network='mainnet'`, 2)
+	assertCount(t, db, `SELECT COUNT(*) FROM silver.silver_current_projector_publish_manifest WHERE projection_name='accounts_current' AND status='completed'`, 8)
+
+	// Resume run: every bucket is already complete, so publish skips them and the
+	// target stays correct (idempotent) without re-issuing DuckLake writes.
+	projector.cfg.Resume = true
+	out.Reset()
+	if _, err := projector.replaceProjection(ctx, &out, Chunk{Start: 3, End: 5}, proj); err != nil {
+		t.Fatalf("resume publish: %v\n%s", err, out.String())
+	}
+	assertCount(t, db, `SELECT COUNT(*) FROM silver.accounts_current WHERE network='mainnet'`, 2)
+	if !strings.Contains(out.String(), "publish_bucket_skipped") {
+		t.Fatalf("expected publish_bucket_skipped events on resume run, got:\n%s", out.String())
+	}
+}
+
 func openFixtureDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("duckdb", "")
