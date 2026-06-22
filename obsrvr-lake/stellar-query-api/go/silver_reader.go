@@ -872,6 +872,7 @@ type TokenHolding struct {
 	Balance     string  `json:"balance"`
 	BalanceRaw  int64   `json:"balance_raw"`
 	TxCount     int64   `json:"tx_count"`
+	LastLedger  int64   `json:"last_activity_ledger"`
 	LastSeen    string  `json:"last_activity"`
 }
 
