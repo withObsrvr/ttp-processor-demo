@@ -340,6 +340,40 @@ func TestResumeSkipsCompletedProjectionsAcrossRunIDs(t *testing.T) {
 	assertCount(t, db, `SELECT COUNT(*) FROM silver.address_balances_current WHERE network='mainnet'`, 4)
 }
 
+func TestIsRetryableIOAndExecWindow(t *testing.T) {
+	// Transient cold-storage read blips are retryable; logic/schema errors are not.
+	if !isRetryableIO(errors.New("IO Error: Transferred a partial file error for HTTP GET to '...parquet'")) {
+		t.Fatal("partial-file B2 read should be classified retryable")
+	}
+	if !isRetryableIO(errors.New("Connection reset by peer")) {
+		t.Fatal("connection reset should be retryable")
+	}
+	if isRetryableIO(errors.New("Binder Error: column nope does not exist")) {
+		t.Fatal("binder/schema error must NOT be retryable")
+	}
+
+	ctx := context.Background()
+	db := openFixtureDB(t)
+	defer db.Close()
+	if _, err := db.Exec(`CREATE SCHEMA s`); err != nil {
+		t.Fatal(err)
+	}
+	p := NewProjectorWithDB(db, Config{Network: "mainnet", SilverSchema: "s"})
+	var out bytes.Buffer
+	// happy path: succeeds first try
+	if err := p.execWindow(ctx, &out, `CREATE OR REPLACE TABLE s.t AS SELECT 1 AS a`, "test", 0); err != nil {
+		t.Fatalf("execWindow happy path: %v", err)
+	}
+	// idempotent on repeat (CREATE OR REPLACE)
+	if err := p.execWindow(ctx, &out, `CREATE OR REPLACE TABLE s.t AS SELECT 2 AS a`, "test", 1); err != nil {
+		t.Fatalf("execWindow repeat: %v", err)
+	}
+	// non-retryable error returns promptly (does not loop)
+	if err := p.execWindow(ctx, &out, `CREATE OR REPLACE TABLE s.t AS SELECT nonexistent_col`, "test", 2); err == nil {
+		t.Fatal("expected an error for a bad column reference")
+	}
+}
+
 func openFixtureDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("duckdb", "")

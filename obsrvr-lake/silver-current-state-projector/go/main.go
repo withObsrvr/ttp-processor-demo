@@ -504,16 +504,13 @@ func (p *Projector) replaceProjection(ctx context.Context, out io.Writer, chunk 
 	keys := p.localTable(projection.TargetTable + "__keys")
 	delta := p.localTable(projection.TargetTable + "__delta")
 	for _, w := range windows {
-		if _, err := p.db.ExecContext(ctx, "DROP TABLE IF EXISTS "+keys); err != nil {
-			return 0, fmt.Errorf("drop keys %s window %d: %w", projection.Name, w.Index, err)
-		}
-		if _, err := p.db.ExecContext(ctx, "DROP TABLE IF EXISTS "+delta); err != nil {
-			return 0, fmt.Errorf("drop delta %s window %d: %w", projection.Name, w.Index, err)
-		}
-		if _, err := p.db.ExecContext(ctx, fmt.Sprintf("CREATE TABLE %s AS %s", keys, projection.KeySQL(p, w.Start, w.End))); err != nil {
+		// keys/delta read source Parquet from cold storage (B2); a single transient read blip
+		// ("partial file"/HTTP) over a multi-hour projection otherwise kills the whole run.
+		// Retry those reads — CREATE OR REPLACE keeps each attempt idempotent.
+		if err := p.execWindow(ctx, out, fmt.Sprintf("CREATE OR REPLACE TABLE %s AS %s", keys, projection.KeySQL(p, w.Start, w.End)), projection.Name, w.Index); err != nil {
 			return 0, fmt.Errorf("compute keys %s window %d: %w", projection.Name, w.Index, err)
 		}
-		if _, err := p.db.ExecContext(ctx, fmt.Sprintf("CREATE TABLE %s AS %s", delta, projection.SelectSQL(p, w.Start, w.End))); err != nil {
+		if err := p.execWindow(ctx, out, fmt.Sprintf("CREATE OR REPLACE TABLE %s AS %s", delta, projection.SelectSQL(p, w.Start, w.End)), projection.Name, w.Index); err != nil {
 			return 0, fmt.Errorf("compute delta %s window %d: %w", projection.Name, w.Index, err)
 		}
 		if _, err := p.db.ExecContext(ctx, p.deleteSeenKeysSQL(staging, keys, projection)); err != nil {
@@ -1102,6 +1099,39 @@ func writeSummary(cfg Config, chunks []Chunk, projections []Projection) error {
 	}
 	defer f.Close()
 	return json.NewEncoder(f).Encode(map[string]interface{}{"component_id": cfg.Component(), "run_id": cfg.RunID(), "network": cfg.Network, "chunks": chunks, "projections": projections, "status": "completed"})
+}
+
+// execWindow runs a per-window statement, retrying transient cold-storage IO errors with
+// backoff. The window keys/delta CREATEs read source Parquet from B2 and occasionally hit a
+// "Transferred a partial file"/HTTP blip; without retry, one blip over a multi-hour projection
+// fails the whole run (exit 75). Statements passed here are idempotent (CREATE OR REPLACE).
+func (p *Projector) execWindow(ctx context.Context, out io.Writer, sql, projection string, windowIndex int) error {
+	const maxAttempts = 6
+	var err error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if _, err = p.db.ExecContext(ctx, sql); err == nil {
+			return nil
+		}
+		if attempt == maxAttempts || !isRetryableIO(err) {
+			return err
+		}
+		emit(out, Event{EventType: "component.retry", ComponentID: p.cfg.Component(), RunID: p.cfg.RunID(), Network: p.cfg.Network, ProjectionName: projection, Phase: "staging_merge", Status: "running", FailureClass: FailureRetryableInfrastructure, Error: err.Error(), Metadata: map[string]interface{}{"window_index": windowIndex, "attempt": attempt, "max_attempts": maxAttempts}})
+		time.Sleep(time.Duration(attempt*3) * time.Second) // 3,6,9,12,15s
+	}
+	return err
+}
+
+func isRetryableIO(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, s := range []string{"io error", "transferred a partial file", "http", "connection", "timeout", "reset by peer", "temporarily", "503", "500", "throttl"} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
 }
 
 func classifyFailure(err error) FailureClass {
