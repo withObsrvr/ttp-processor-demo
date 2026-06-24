@@ -54,6 +54,7 @@ type Config struct {
 	SilverSchema   string
 	SilverMeta     string
 	TargetPostgres string
+	ServingCatalog string
 	ServingSchema  string
 	ManifestPath   string
 	SummaryPath    string
@@ -201,6 +202,7 @@ func parseConfig(args []string) (Config, error) {
 	fs.StringVar(&cfg.SilverSchema, "silver-schema", getenv("SILVER_SCHEMA", "silver"), "Silver schema name")
 	fs.StringVar(&cfg.SilverMeta, "silver-metadata-schema", getenv("SILVER_DUCKLAKE_METADATA_SCHEMA", "silver_meta"), "Silver DuckLake metadata schema")
 	fs.StringVar(&cfg.TargetPostgres, "target-postgres", getenv("TARGET_POSTGRES", ""), "target serving PostgreSQL DSN")
+	fs.StringVar(&cfg.ServingCatalog, "serving-catalog", getenv("SERVING_CATALOG", "serving_pg"), "DuckDB ATTACH alias for the target Postgres; serving tables are written to <catalog>.<schema>.<table>. Empty = write to the in-memory DuckDB catalog (tests only)")
 	fs.StringVar(&cfg.ServingSchema, "serving-schema", getenv("SERVING_SCHEMA", "serving"), "target serving schema")
 	fs.StringVar(&cfg.ManifestPath, "manifest-path", getenv("MANIFEST_PATH", ""), "JSONL manifest path for batch-local durable status")
 	fs.StringVar(&cfg.SummaryPath, "summary-path", getenv("SUMMARY_PATH", ""), "optional JSON summary output path")
@@ -279,7 +281,7 @@ func NewBackfiller(ctx context.Context, cfg Config) (*Backfiller, error) {
 		return nil, err
 	}
 	b := &Backfiller{db: db, cfg: cfg, jsonl: JSONLManifest{path: cfg.ManifestPath}}
-	for _, stmt := range []string{"INSTALL ducklake FROM core_nightly", "LOAD ducklake", "INSTALL httpfs", "LOAD httpfs"} {
+	for _, stmt := range []string{"INSTALL ducklake FROM core_nightly", "LOAD ducklake", "INSTALL httpfs", "LOAD httpfs", "INSTALL postgres", "LOAD postgres"} {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("%s: %w", stmt, err)
@@ -294,6 +296,10 @@ func NewBackfiller(ctx context.Context, cfg Config) (*Backfiller, error) {
 		return nil, err
 	}
 	if err := b.attach(ctx, cfg.SilverAlias, cfg.SilverCatalog, cfg.SilverData, cfg.SilverMeta); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := b.attachTargetPostgres(ctx); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -578,8 +584,28 @@ func (b *Backfiller) countCurrentRows(ctx context.Context, projection CurrentPro
 	return rows, nil
 }
 
+func (b *Backfiller) attachTargetPostgres(ctx context.Context) error {
+	if b.cfg.ServingCatalog == "" {
+		return nil // tests / in-memory mode: serving tables live in the default DuckDB catalog
+	}
+	// ATTACH the target serving Postgres as a DuckDB catalog so each INSERT ... SELECT from the
+	// DuckLake sources lands in Postgres rather than the ephemeral in-memory DuckDB catalog.
+	stmt := fmt.Sprintf("ATTACH %s AS %s (TYPE postgres)", q(b.cfg.TargetPostgres), ident(b.cfg.ServingCatalog))
+	if _, err := b.db.ExecContext(ctx, stmt); err != nil {
+		return fmt.Errorf("attach target postgres %q: %w", b.cfg.ServingCatalog, err)
+	}
+	return nil
+}
+
+func (b *Backfiller) servingSchemaRef() string {
+	if b.cfg.ServingCatalog != "" {
+		return fmt.Sprintf("%s.%s", ident(b.cfg.ServingCatalog), ident(b.cfg.ServingSchema))
+	}
+	return ident(b.cfg.ServingSchema)
+}
+
 func (b *Backfiller) ensureServingSchema(ctx context.Context) error {
-	if _, err := b.db.ExecContext(ctx, "CREATE SCHEMA IF NOT EXISTS "+ident(b.cfg.ServingSchema)); err != nil {
+	if _, err := b.db.ExecContext(ctx, "CREATE SCHEMA IF NOT EXISTS "+b.servingSchemaRef()); err != nil {
 		return fmt.Errorf("create serving schema: %w", err)
 	}
 	return nil
@@ -1026,6 +1052,9 @@ func (c Config) PlannedChunks() []Chunk {
 }
 
 func (b *Backfiller) servingTable(table string) string {
+	if b.cfg.ServingCatalog != "" {
+		return fmt.Sprintf("%s.%s.%s", ident(b.cfg.ServingCatalog), ident(b.cfg.ServingSchema), ident(table))
+	}
 	return fmt.Sprintf("%s.%s", ident(b.cfg.ServingSchema), ident(table))
 }
 
