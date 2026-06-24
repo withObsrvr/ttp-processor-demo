@@ -954,8 +954,10 @@ func selectContractsCurrent(b *Backfiller) string {
 			m.created_at AS first_seen_at,
 			COALESCE(s.last_seen_at, m.created_at) AS last_seen_at,
 			current_timestamp AS updated_at
-		FROM %s m LEFT JOIN storage s ON s.contract_id=m.contract_id
-		WHERE m.network=%s AND m.created_ledger <= %d`,
+		FROM (
+			SELECT * FROM %s WHERE network=%s AND created_ledger <= %d
+			QUALIFY row_number() OVER (PARTITION BY contract_id ORDER BY created_ledger DESC NULLS LAST) = 1
+		) m LEFT JOIN storage s ON s.contract_id=m.contract_id`,
 		b.silverTable("contract_data_current"), q(b.cfg.Network), b.silverTable("contract_metadata"), q(b.cfg.Network), b.cfg.End)
 }
 
