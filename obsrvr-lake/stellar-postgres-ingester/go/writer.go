@@ -97,6 +97,7 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 
 	// Process each ledger
 	var totalTxCount, totalOpCount uint64
+	var pendingCheckpoints []checkpointUpdate
 	var allTransactions []TransactionData
 	var allOperations []OperationData
 	var allEffects []EffectData
@@ -443,16 +444,13 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 			}
 		}
 
-		// Update checkpoint
-		if err := w.checkpoint.Update(
-			ledgerData.Sequence,
-			ledgerData.LedgerHash,
-			ledgerData.LedgerRange,
-			uint64(ledgerData.TransactionCount),
-			uint64(ledgerData.OperationCount),
-		); err != nil {
-			return fmt.Errorf("failed to update checkpoint: %w", err)
-		}
+		pendingCheckpoints = append(pendingCheckpoints, checkpointUpdate{
+			ledgerSeq:   ledgerData.Sequence,
+			ledgerHash:  ledgerData.LedgerHash,
+			ledgerRange: ledgerData.LedgerRange,
+			txCount:     uint64(ledgerData.TransactionCount),
+			opCount:     uint64(ledgerData.OperationCount),
+		})
 
 		totalTxCount += uint64(ledgerData.TransactionCount)
 		totalOpCount += uint64(ledgerData.OperationCount)
@@ -573,18 +571,15 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 	insertDuration := time.Since(insertStart)
 	commitStart := time.Now()
 
-	// Commit transaction
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
+	// Commit transaction before mutating or persisting the checkpoint. If commit
+	// fails, the checkpoint must remain at the last successfully committed ledger
+	// so restart replays this batch.
+	if err := commitAndPersistCheckpoint(ctx, tx, w.checkpoint, pendingCheckpoints); err != nil {
+		return err
 	}
 
 	commitDuration := time.Since(commitStart)
 	log.Printf("Batch DB phases: extract=%v insert=%v commit=%v", extractDuration, insertDuration, commitDuration)
-
-	// Save checkpoint
-	if err := w.checkpoint.Save(); err != nil {
-		log.Printf("Warning: Failed to save checkpoint: %v", err)
-	}
 
 	// Broadcast to gRPC subscribers after checkpoint is persisted
 	if w.broadcaster != nil {
@@ -603,6 +598,38 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 	log.Printf("Batch written successfully in %v (%.2f ledgers/sec)",
 		time.Since(startTime),
 		float64(len(rawLedgers))/time.Since(startTime).Seconds())
+
+	return nil
+}
+
+type checkpointUpdate struct {
+	ledgerSeq   uint32
+	ledgerHash  string
+	ledgerRange uint32
+	txCount     uint64
+	opCount     uint64
+}
+
+func commitAndPersistCheckpoint(ctx context.Context, tx pgx.Tx, checkpoint *Checkpoint, updates []checkpointUpdate) error {
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	for _, update := range updates {
+		if err := checkpoint.Update(
+			update.ledgerSeq,
+			update.ledgerHash,
+			update.ledgerRange,
+			update.txCount,
+			update.opCount,
+		); err != nil {
+			return fmt.Errorf("failed to update checkpoint: %w", err)
+		}
+	}
+
+	if err := checkpoint.Save(); err != nil {
+		log.Printf("Warning: Failed to save checkpoint: %v", err)
+	}
 
 	return nil
 }
