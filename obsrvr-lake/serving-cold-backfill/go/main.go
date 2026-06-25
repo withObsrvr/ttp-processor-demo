@@ -55,6 +55,8 @@ type Config struct {
 	SilverMeta     string
 	TargetPostgres string
 	ServingCatalog string
+	MemoryLimit    string
+	TempDirectory  string
 	ServingSchema  string
 	ManifestPath   string
 	SummaryPath    string
@@ -189,6 +191,8 @@ func parseConfig(args []string) (Config, error) {
 	fs.Int64Var(&cfg.ChunkStart, "chunk-start", envInt64("CHUNK_START", 0), "optional assigned inclusive chunk start")
 	fs.Int64Var(&cfg.ChunkEnd, "chunk-end", envInt64("CHUNK_END", 0), "optional assigned inclusive chunk end")
 	fs.IntVar(&cfg.RetentionDays, "retention-days", envInt("RETENTION_DAYS", 30), "recent serving retention window")
+	fs.StringVar(&cfg.MemoryLimit, "memory-limit", getenv("MEMORY_LIMIT", ""), "DuckDB memory_limit (e.g. 64GB); empty = DuckDB default")
+	fs.StringVar(&cfg.TempDirectory, "temp-directory", getenv("TEMP_DIRECTORY", ""), "DuckDB temp_directory for spilling; REQUIRED for the in-memory DB to spill large current-table aggregates instead of OOM")
 	fs.BoolVar(&cfg.Resume, "resume", getenv("RESUME", "") == "true", "skip completed manifest records")
 	fs.BoolVar(&cfg.Status, "status", false, "emit machine-readable component status and exit")
 	fs.StringVar(&cfg.BronzeCatalog, "bronze-ducklake-catalog", getenv("BRONZE_DUCKLAKE_CATALOG", ""), "Bronze DuckLake catalog DSN/path")
@@ -280,7 +284,12 @@ func NewBackfiller(ctx context.Context, cfg Config) (*Backfiller, error) {
 	if err != nil {
 		return nil, err
 	}
+	db.SetMaxOpenConns(1) // pin to one connection so memory_limit/temp_directory PRAGMAs apply to all work
 	b := &Backfiller{db: db, cfg: cfg, jsonl: JSONLManifest{path: cfg.ManifestPath}}
+	if err := b.configureMemory(ctx); err != nil {
+		db.Close()
+		return nil, err
+	}
 	for _, stmt := range []string{"INSTALL ducklake FROM core_nightly", "LOAD ducklake", "INSTALL httpfs", "LOAD httpfs", "INSTALL postgres", "LOAD postgres"} {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			db.Close()
@@ -316,6 +325,26 @@ func NewBackfiller(ctx context.Context, cfg Config) (*Backfiller, error) {
 
 func NewBackfillerWithDB(db *sql.DB, cfg Config) *Backfiller {
 	return &Backfiller{db: db, cfg: cfg, jsonl: JSONLManifest{path: cfg.ManifestPath}}
+}
+
+func (b *Backfiller) configureMemory(ctx context.Context) error {
+	// The in-memory DuckDB does NOT spill by default (no temp_directory), so a large
+	// current-table hash aggregate (e.g. sv_assets_current over ~163M sv_account_balances_current
+	// rows) OOM-kills the container. Cap memory_limit and point temp_directory at disk scratch so
+	// it spills instead. preserve_insertion_order=false cuts peak memory on the big INSERTs.
+	stmts := []string{"SET preserve_insertion_order = false"}
+	if b.cfg.MemoryLimit != "" {
+		stmts = append(stmts, fmt.Sprintf("SET memory_limit = %s", q(b.cfg.MemoryLimit)))
+	}
+	if b.cfg.TempDirectory != "" {
+		stmts = append(stmts, fmt.Sprintf("SET temp_directory = %s", q(b.cfg.TempDirectory)))
+	}
+	for _, s := range stmts {
+		if _, err := b.db.ExecContext(ctx, s); err != nil {
+			return fmt.Errorf("%s: %w", s, err)
+		}
+	}
+	return nil
 }
 
 func (b *Backfiller) configureS3(ctx context.Context) error {
