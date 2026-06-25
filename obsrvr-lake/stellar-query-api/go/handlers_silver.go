@@ -3944,18 +3944,24 @@ func (h *SilverHandlers) HandleTransactionSummaries(w http.ResponseWriter, r *ht
 
 // ContractStorageEntry represents a contract storage entry with TTL info
 type ContractStorageEntry struct {
-	ContractID         string  `json:"contract_id"`
-	Key                string  `json:"key"`
-	KeyHash            string  `json:"key_hash"`
-	Type               string  `json:"type"`
-	Durability         string  `json:"durability"`
-	SizeBytes          *int    `json:"size_bytes,omitempty"`
-	DataValue          *string `json:"data_value,omitempty"`
-	LastModifiedLedger int64   `json:"last_modified_ledger"`
-	ClosedAt           string  `json:"closed_at"`
-	LiveUntilLedgerSeq *int64  `json:"live_until_ledger_seq,omitempty"`
-	TTLRemaining       *int    `json:"ttl_remaining,omitempty"`
-	Expired            *bool   `json:"expired,omitempty"`
+	ContractID         string        `json:"contract_id"`
+	Key                string        `json:"key"`
+	KeyHash            string        `json:"key_hash"`
+	Type               string        `json:"type"`
+	Durability         string        `json:"durability"`
+	SizeBytes          *int          `json:"size_bytes,omitempty"`
+	DataValue          *string       `json:"data_value,omitempty"`
+	KeyXDR             *string       `json:"key_xdr,omitempty"`
+	ValueXDR           *string       `json:"value_xdr,omitempty"`
+	KeyDecoded         *DecodedScVal `json:"key_decoded,omitempty"`
+	ValueDecoded       *DecodedScVal `json:"value_decoded,omitempty"`
+	KeyDecodedError    *string       `json:"key_decoded_error,omitempty"`
+	ValueDecodedError  *string       `json:"value_decoded_error,omitempty"`
+	LastModifiedLedger int64         `json:"last_modified_ledger"`
+	ClosedAt           string        `json:"closed_at"`
+	LiveUntilLedgerSeq *int64        `json:"live_until_ledger_seq,omitempty"`
+	TTLRemaining       *int          `json:"ttl_remaining,omitempty"`
+	Expired            *bool         `json:"expired,omitempty"`
 }
 
 // HandleContractStorage returns storage entries for a contract
@@ -4146,6 +4152,7 @@ func (h *SilverHandlers) HandleContractStorage(w http.ResponseWriter, r *http.Re
 		if expired.Valid {
 			entry.Expired = &expired.Bool
 		}
+		applyDecodedContractStorageFields(&entry)
 
 		entries = append(entries, entry)
 	}

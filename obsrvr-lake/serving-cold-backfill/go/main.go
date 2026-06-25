@@ -54,6 +54,9 @@ type Config struct {
 	SilverSchema   string
 	SilverMeta     string
 	TargetPostgres string
+	ServingCatalog string
+	MemoryLimit    string
+	TempDirectory  string
 	ServingSchema  string
 	ManifestPath   string
 	SummaryPath    string
@@ -155,6 +158,11 @@ type CurrentProjection struct {
 	MaxLedgerCol string
 	KeyExprs     []string
 	SelectSQL    func(*Backfiller) string
+	// PostgresNative runs this projection's DDL/DELETE/INSERT server-side in Postgres via
+	// postgres_execute instead of through DuckDB. Use for aggregates over LARGE serving tables
+	// (e.g. sv_assets_current GROUP BY over ~163M-row sv_account_balances_current) — pulling
+	// those out of Postgres into DuckDB buffers outside memory_limit and OOMs.
+	PostgresNative bool
 }
 
 func main() {
@@ -188,6 +196,8 @@ func parseConfig(args []string) (Config, error) {
 	fs.Int64Var(&cfg.ChunkStart, "chunk-start", envInt64("CHUNK_START", 0), "optional assigned inclusive chunk start")
 	fs.Int64Var(&cfg.ChunkEnd, "chunk-end", envInt64("CHUNK_END", 0), "optional assigned inclusive chunk end")
 	fs.IntVar(&cfg.RetentionDays, "retention-days", envInt("RETENTION_DAYS", 30), "recent serving retention window")
+	fs.StringVar(&cfg.MemoryLimit, "memory-limit", getenv("MEMORY_LIMIT", ""), "DuckDB memory_limit (e.g. 64GB); empty = DuckDB default")
+	fs.StringVar(&cfg.TempDirectory, "temp-directory", getenv("TEMP_DIRECTORY", ""), "DuckDB temp_directory for spilling; REQUIRED for the in-memory DB to spill large current-table aggregates instead of OOM")
 	fs.BoolVar(&cfg.Resume, "resume", getenv("RESUME", "") == "true", "skip completed manifest records")
 	fs.BoolVar(&cfg.Status, "status", false, "emit machine-readable component status and exit")
 	fs.StringVar(&cfg.BronzeCatalog, "bronze-ducklake-catalog", getenv("BRONZE_DUCKLAKE_CATALOG", ""), "Bronze DuckLake catalog DSN/path")
@@ -201,6 +211,7 @@ func parseConfig(args []string) (Config, error) {
 	fs.StringVar(&cfg.SilverSchema, "silver-schema", getenv("SILVER_SCHEMA", "silver"), "Silver schema name")
 	fs.StringVar(&cfg.SilverMeta, "silver-metadata-schema", getenv("SILVER_DUCKLAKE_METADATA_SCHEMA", "silver_meta"), "Silver DuckLake metadata schema")
 	fs.StringVar(&cfg.TargetPostgres, "target-postgres", getenv("TARGET_POSTGRES", ""), "target serving PostgreSQL DSN")
+	fs.StringVar(&cfg.ServingCatalog, "serving-catalog", getenv("SERVING_CATALOG", "serving_pg"), "DuckDB ATTACH alias for the target Postgres; serving tables are written to <catalog>.<schema>.<table>. Empty = write to the in-memory DuckDB catalog (tests only)")
 	fs.StringVar(&cfg.ServingSchema, "serving-schema", getenv("SERVING_SCHEMA", "serving"), "target serving schema")
 	fs.StringVar(&cfg.ManifestPath, "manifest-path", getenv("MANIFEST_PATH", ""), "JSONL manifest path for batch-local durable status")
 	fs.StringVar(&cfg.SummaryPath, "summary-path", getenv("SUMMARY_PATH", ""), "optional JSON summary output path")
@@ -278,8 +289,13 @@ func NewBackfiller(ctx context.Context, cfg Config) (*Backfiller, error) {
 	if err != nil {
 		return nil, err
 	}
+	db.SetMaxOpenConns(1) // pin to one connection so memory_limit/temp_directory PRAGMAs apply to all work
 	b := &Backfiller{db: db, cfg: cfg, jsonl: JSONLManifest{path: cfg.ManifestPath}}
-	for _, stmt := range []string{"INSTALL ducklake FROM core_nightly", "LOAD ducklake", "INSTALL httpfs", "LOAD httpfs"} {
+	if err := b.configureMemory(ctx); err != nil {
+		db.Close()
+		return nil, err
+	}
+	for _, stmt := range []string{"INSTALL ducklake FROM core_nightly", "LOAD ducklake", "INSTALL httpfs", "LOAD httpfs", "INSTALL postgres", "LOAD postgres"} {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("%s: %w", stmt, err)
@@ -297,6 +313,10 @@ func NewBackfiller(ctx context.Context, cfg Config) (*Backfiller, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := b.attachTargetPostgres(ctx); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if err := b.ensureServingSchema(ctx); err != nil {
 		db.Close()
 		return nil, err
@@ -310,6 +330,26 @@ func NewBackfiller(ctx context.Context, cfg Config) (*Backfiller, error) {
 
 func NewBackfillerWithDB(db *sql.DB, cfg Config) *Backfiller {
 	return &Backfiller{db: db, cfg: cfg, jsonl: JSONLManifest{path: cfg.ManifestPath}}
+}
+
+func (b *Backfiller) configureMemory(ctx context.Context) error {
+	// The in-memory DuckDB does NOT spill by default (no temp_directory), so a large
+	// current-table hash aggregate (e.g. sv_assets_current over ~163M sv_account_balances_current
+	// rows) OOM-kills the container. Cap memory_limit and point temp_directory at disk scratch so
+	// it spills instead. preserve_insertion_order=false cuts peak memory on the big INSERTs.
+	stmts := []string{"SET preserve_insertion_order = false"}
+	if b.cfg.MemoryLimit != "" {
+		stmts = append(stmts, fmt.Sprintf("SET memory_limit = %s", q(b.cfg.MemoryLimit)))
+	}
+	if b.cfg.TempDirectory != "" {
+		stmts = append(stmts, fmt.Sprintf("SET temp_directory = %s", q(b.cfg.TempDirectory)))
+	}
+	for _, s := range stmts {
+		if _, err := b.db.ExecContext(ctx, s); err != nil {
+			return fmt.Errorf("%s: %w", s, err)
+		}
+	}
+	return nil
 }
 
 func (b *Backfiller) configureS3(ctx context.Context) error {
@@ -469,8 +509,8 @@ func currentProjections() []CurrentProjection {
 		{Name: "sv_accounts_current", TargetTable: "sv_accounts_current", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"account_id"}, SelectSQL: selectAccountsCurrent},
 		{Name: "sv_account_balances_current", TargetTable: "sv_account_balances_current", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"account_id", "asset_key"}, SelectSQL: selectAccountBalancesCurrent},
 		{Name: "sv_network_stats_current", TargetTable: "sv_network_stats_current", MaxLedgerCol: "latest_ledger", KeyExprs: []string{"network"}, SelectSQL: selectNetworkStatsCurrent},
-		{Name: "sv_assets_current", TargetTable: "sv_assets_current", KeyExprs: []string{"asset_key"}, SelectSQL: selectAssetsCurrent},
-		{Name: "sv_asset_stats_current", TargetTable: "sv_asset_stats_current", KeyExprs: []string{"asset_key"}, SelectSQL: selectAssetStatsCurrent},
+		{Name: "sv_assets_current", TargetTable: "sv_assets_current", KeyExprs: []string{"asset_key"}, SelectSQL: selectAssetsCurrent, PostgresNative: true},
+		{Name: "sv_asset_stats_current", TargetTable: "sv_asset_stats_current", KeyExprs: []string{"asset_key"}, SelectSQL: selectAssetStatsCurrent, PostgresNative: true},
 		{Name: "sv_contracts_current", TargetTable: "sv_contracts_current", MaxLedgerCol: "deploy_ledger", KeyExprs: []string{"contract_id"}, SelectSQL: selectContractsCurrent},
 		{Name: "sv_contract_stats_current", TargetTable: "sv_contract_stats_current", KeyExprs: []string{"contract_id"}, SelectSQL: selectContractStatsCurrent},
 		{Name: "sv_contract_function_stats_current", TargetTable: "sv_contract_function_stats_current", KeyExprs: []string{"contract_id", "function_name"}, SelectSQL: selectContractFunctionStatsCurrent},
@@ -512,9 +552,57 @@ func (b *Backfiller) replaceFeedProjection(ctx context.Context, chunk Chunk, pro
 	return rows, nil
 }
 
+// toPostgresNative rewrites DuckDB SQL that targets the attached Postgres catalog into native
+// Postgres SQL: strips the catalog prefix (serving_pg.serving.X -> serving.X) and fixes the one
+// dialect cast that differs (DuckDB DOUBLE -> Postgres double precision).
+func (b *Backfiller) toPostgresNative(sql string) string {
+	if b.cfg.ServingCatalog != "" {
+		sql = strings.ReplaceAll(sql, ident(b.cfg.ServingCatalog)+".", "")
+	}
+	sql = strings.ReplaceAll(sql, "::DOUBLE", "::double precision")
+	return sql
+}
+
+// pgExec runs a single statement directly on the attached Postgres server (not through DuckDB's
+// engine), so aggregates over large serving tables execute server-side without buffering rows
+// into DuckDB.
+func (b *Backfiller) pgExec(ctx context.Context, sql string) error {
+	if _, err := b.db.ExecContext(ctx, fmt.Sprintf("CALL postgres_execute(%s, %s)", q(b.cfg.ServingCatalog), q(sql))); err != nil {
+		return fmt.Errorf("postgres_execute: %w", err)
+	}
+	return nil
+}
+
+func (b *Backfiller) replaceCurrentProjectionPG(ctx context.Context, chunk Chunk, projection CurrentProjection) (int64, error) {
+	tgt := b.toPostgresNative(b.servingTable(projection.TargetTable))
+	sel := b.toPostgresNative(projection.SelectSQL(b))
+	// Server-side ensure (Postgres short-circuits WHERE false, so no 163M-row scan), then
+	// full replace — all executed in Postgres, zero rows pulled into DuckDB.
+	if err := b.pgExec(ctx, fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s AS SELECT * FROM (%s) seed WHERE false", tgt, sel)); err != nil {
+		return 0, fmt.Errorf("create %s: %w", projection.Name, err)
+	}
+	if err := b.pgExec(ctx, "DELETE FROM "+tgt); err != nil {
+		return 0, fmt.Errorf("delete %s: %w", projection.Name, err)
+	}
+	if err := b.pgExec(ctx, fmt.Sprintf("INSERT INTO %s %s", tgt, sel)); err != nil {
+		return 0, fmt.Errorf("insert %s: %w", projection.Name, err)
+	}
+	rows, err := b.countCurrentRows(ctx, projection) // small result table; DuckDB read is cheap
+	if err != nil {
+		return 0, err
+	}
+	if err := b.markManifest(ctx, chunk, projection.Name, "completed", rows, ""); err != nil {
+		return 0, err
+	}
+	return rows, nil
+}
+
 func (b *Backfiller) replaceCurrentProjection(ctx context.Context, chunk Chunk, projection CurrentProjection) (int64, error) {
 	if err := b.markManifest(ctx, chunk, projection.Name, "running", 0, ""); err != nil {
 		return 0, err
+	}
+	if projection.PostgresNative && b.cfg.ServingCatalog != "" {
+		return b.replaceCurrentProjectionPG(ctx, chunk, projection)
 	}
 	if err := b.ensureCurrentTargetTable(ctx, projection); err != nil {
 		return 0, err
@@ -578,8 +666,28 @@ func (b *Backfiller) countCurrentRows(ctx context.Context, projection CurrentPro
 	return rows, nil
 }
 
+func (b *Backfiller) attachTargetPostgres(ctx context.Context) error {
+	if b.cfg.ServingCatalog == "" {
+		return nil // tests / in-memory mode: serving tables live in the default DuckDB catalog
+	}
+	// ATTACH the target serving Postgres as a DuckDB catalog so each INSERT ... SELECT from the
+	// DuckLake sources lands in Postgres rather than the ephemeral in-memory DuckDB catalog.
+	stmt := fmt.Sprintf("ATTACH %s AS %s (TYPE postgres)", q(b.cfg.TargetPostgres), ident(b.cfg.ServingCatalog))
+	if _, err := b.db.ExecContext(ctx, stmt); err != nil {
+		return fmt.Errorf("attach target postgres %q: %w", b.cfg.ServingCatalog, err)
+	}
+	return nil
+}
+
+func (b *Backfiller) servingSchemaRef() string {
+	if b.cfg.ServingCatalog != "" {
+		return fmt.Sprintf("%s.%s", ident(b.cfg.ServingCatalog), ident(b.cfg.ServingSchema))
+	}
+	return ident(b.cfg.ServingSchema)
+}
+
 func (b *Backfiller) ensureServingSchema(ctx context.Context) error {
-	if _, err := b.db.ExecContext(ctx, "CREATE SCHEMA IF NOT EXISTS "+ident(b.cfg.ServingSchema)); err != nil {
+	if _, err := b.db.ExecContext(ctx, "CREATE SCHEMA IF NOT EXISTS "+b.servingSchemaRef()); err != nil {
 		return fmt.Errorf("create serving schema: %w", err)
 	}
 	return nil
@@ -954,8 +1062,10 @@ func selectContractsCurrent(b *Backfiller) string {
 			m.created_at AS first_seen_at,
 			COALESCE(s.last_seen_at, m.created_at) AS last_seen_at,
 			current_timestamp AS updated_at
-		FROM %s m LEFT JOIN storage s ON s.contract_id=m.contract_id
-		WHERE m.network=%s AND m.created_ledger <= %d`,
+		FROM (
+			SELECT * FROM %s WHERE network=%s AND created_ledger <= %d
+			QUALIFY row_number() OVER (PARTITION BY contract_id ORDER BY created_ledger DESC NULLS LAST) = 1
+		) m LEFT JOIN storage s ON s.contract_id=m.contract_id`,
 		b.silverTable("contract_data_current"), q(b.cfg.Network), b.silverTable("contract_metadata"), q(b.cfg.Network), b.cfg.End)
 }
 
@@ -1024,6 +1134,9 @@ func (c Config) PlannedChunks() []Chunk {
 }
 
 func (b *Backfiller) servingTable(table string) string {
+	if b.cfg.ServingCatalog != "" {
+		return fmt.Sprintf("%s.%s.%s", ident(b.cfg.ServingCatalog), ident(b.cfg.ServingSchema), ident(table))
+	}
 	return fmt.Sprintf("%s.%s", ident(b.cfg.ServingSchema), ident(table))
 }
 

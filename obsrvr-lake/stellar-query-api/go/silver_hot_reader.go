@@ -3811,6 +3811,7 @@ func (h *SilverHotReader) GetContractData(ctx context.Context, filters ContractD
 				Issuer: &issuer,
 			}
 		}
+		applyDecodedContractDataFields(&d)
 
 		data = append(data, d)
 	}

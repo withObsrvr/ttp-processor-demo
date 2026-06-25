@@ -1492,12 +1492,18 @@ type SorobanContractLimits struct {
 
 // ContractData represents a contract storage entry
 type ContractData struct {
-	ContractID         string     `json:"contract_id"`
-	KeyHash            string     `json:"key_hash"`
-	Durability         string     `json:"durability"`
-	DataValueXDR       *string    `json:"data_value_xdr,omitempty"`
-	Asset              *AssetInfo `json:"asset,omitempty"`
-	LastModifiedLedger int64      `json:"last_modified_ledger"`
+	ContractID         string        `json:"contract_id"`
+	KeyHash            string        `json:"key_hash"`
+	Durability         string        `json:"durability"`
+	DataValueXDR       *string       `json:"data_value_xdr,omitempty"`
+	KeyXDR             *string       `json:"key_xdr,omitempty"`
+	ValueXDR           *string       `json:"value_xdr,omitempty"`
+	KeyDecoded         *DecodedScVal `json:"key_decoded,omitempty"`
+	ValueDecoded       *DecodedScVal `json:"value_decoded,omitempty"`
+	KeyDecodedError    *string       `json:"key_decoded_error,omitempty"`
+	ValueDecodedError  *string       `json:"value_decoded_error,omitempty"`
+	Asset              *AssetInfo    `json:"asset,omitempty"`
+	LastModifiedLedger int64         `json:"last_modified_ledger"`
 }
 
 // ContractDataFilters contains filter options for contract data queries

@@ -136,6 +136,7 @@ type Projector struct {
 	jsonl       ManifestStore
 	localAlias  string // attached catalog for local staging; "" => in-process memory catalog
 	scratchFile string // on-disk scratch DB path to remove on Close, if any
+
 }
 
 type CurrentProjection struct {
@@ -262,6 +263,11 @@ func NewProjector(ctx context.Context, cfg Config) (*Projector, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Pin to a single connection so SET memory_limit / temp_directory / the S3 secret / the
+	// DuckLake ATTACH all apply to the one connection that runs every query. With a pool, those
+	// session settings could land on a connection the heavy query never uses (a prime suspect for
+	// memory_limit not constraining the run).
+	db.SetMaxOpenConns(1)
 	p := &Projector{db: db, cfg: cfg, jsonl: JSONLManifest{path: cfg.ManifestPath}}
 	for _, stmt := range []string{"INSTALL ducklake FROM core_nightly", "LOAD ducklake", "INSTALL httpfs", "LOAD httpfs"} {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
@@ -384,7 +390,13 @@ func (p *Projector) Run(ctx context.Context, out io.Writer) error {
 		ledgerWindowStart, ledgerWindowEnd = chunks[0].Start, chunks[0].End
 	}
 	ledgerWindows := PlanChunks(ledgerWindowStart, ledgerWindowEnd, cfg.Chunk)
-	emit(out, Event{EventType: "component.run_started", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, Status: "running", FlowctlEndpoint: safeEndpoint(cfg.FlowctlEndpoint), Metadata: map[string]interface{}{"version": Version, "range_start": ledgerWindowStart, "range_end": ledgerWindowEnd, "chunk_count": len(chunks), "ledger_window_count": len(ledgerWindows), "ledger_window_size": cfg.Chunk, "capabilities": []string{"current-state-as-of", "deterministic-chunk-inputs", "idempotent-replace-contract", "ledger-window-staging-merge", "resume-manifest", "typed-failures", "duplicate-key-verify", "max-ledger-verify"}}})
+	// Surface the DuckDB settings actually in effect so the log proves whether memory_limit /
+	// temp_directory were applied (the recurring kernel-OOM-with-no-DuckDB-error suggested they
+	// might not be). Best-effort — never blocks the run.
+	var effMemLimit, effTempDir string
+	_ = p.db.QueryRowContext(ctx, "SELECT current_setting('memory_limit')").Scan(&effMemLimit)
+	_ = p.db.QueryRowContext(ctx, "SELECT current_setting('temp_directory')").Scan(&effTempDir)
+	emit(out, Event{EventType: "component.run_started", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, Status: "running", FlowctlEndpoint: safeEndpoint(cfg.FlowctlEndpoint), Metadata: map[string]interface{}{"version": Version, "range_start": ledgerWindowStart, "range_end": ledgerWindowEnd, "chunk_count": len(chunks), "ledger_window_count": len(ledgerWindows), "ledger_window_size": cfg.Chunk, "effective_memory_limit": effMemLimit, "effective_temp_directory": effTempDir, "capabilities": []string{"current-state-as-of", "deterministic-chunk-inputs", "idempotent-replace-contract", "ledger-window-staging-merge", "resume-manifest", "typed-failures", "duplicate-key-verify", "max-ledger-verify"}}})
 
 	for _, chunk := range chunks {
 		if cfg.Resume {
@@ -399,6 +411,16 @@ func (p *Projector) Run(ctx context.Context, out io.Writer) error {
 		}
 		emit(out, Event{EventType: "component.chunk_started", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, Status: "running"})
 		for _, projection := range executableCurrentProjections() {
+			if cfg.Resume {
+				done, err := p.projectionComplete(ctx, chunk.Start, chunk.End, projection.Name)
+				if err != nil {
+					return err
+				}
+				if done {
+					emit(out, Event{EventType: "component.projection_skipped", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "replace_current", Status: "completed", Metadata: map[string]interface{}{"reason": "already completed in manifest (resume)"}})
+					continue
+				}
+			}
 			emit(out, Event{EventType: "component.projection_started", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "replace_current", Status: "running"})
 			stopProgress := startProgressHeartbeat(out, Event{ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "replace_current", Status: "running"}, map[string]interface{}{"source": projection.Source, "mode": "replace_as_of", "as_of_ledger": chunk.End})
 			rows, err := p.replaceProjection(ctx, out, chunk, projection)
@@ -454,36 +476,53 @@ func (p *Projector) replaceProjection(ctx context.Context, out io.Writer, chunk 
 	if _, err := p.db.ExecContext(ctx, "DROP TABLE IF EXISTS "+staging); err != nil {
 		return 0, fmt.Errorf("drop staging %s: %w", projection.Name, err)
 	}
+	// Ledger-windowed merge. Each window reads only rows in [w.Start, w.End] — a pushdown-able
+	// ledger range, so DuckLake/Parquet reads just that slice (bounded memory + I/O), and each
+	// source row is read once across all windows (O(N)). This is the original fold's structure;
+	// the bug it fixes is the cumulative `ledger_sequence <= end` filter (every window re-scanned
+	// the whole history -> O(N^2) AND a full-table read that buffered to OOM). KeySQL yields every
+	// key touched in the window (incl. deletes) for the DELETE; SelectSQL yields the non-deleted
+	// latest rows for the INSERT. Ascending windows => later windows overwrite earlier keys, so
+	// staging converges to the global latest-per-key. Working set is one window, regardless of
+	// whether memory_limit is honored.
 	if _, err := p.db.ExecContext(ctx, fmt.Sprintf("CREATE TABLE %s AS SELECT * FROM (%s) seed WHERE false", staging, projection.SelectSQL(p, chunk.Start, chunk.Start-1))); err != nil {
 		return 0, fmt.Errorf("create staging %s: %w", projection.Name, err)
 	}
-	windows := PlanChunks(chunk.Start, chunk.End, p.cfg.Chunk)
-	for _, window := range windows {
-		keys := p.localTable(projection.TargetTable + "__keys")
-		delta := p.localTable(projection.TargetTable + "__delta")
-		emit(out, Event{EventType: "component.ledger_window_started", ComponentID: p.cfg.Component(), RunID: p.cfg.RunID(), Network: p.cfg.Network, ChunkStart: window.Start, ChunkEnd: window.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "staging_merge", Status: "running", Metadata: map[string]interface{}{"window_index": window.Index, "window_count": len(windows)}})
-		if _, err := p.db.ExecContext(ctx, "DROP TABLE IF EXISTS "+keys); err != nil {
-			return 0, fmt.Errorf("drop keys %s window %d: %w", projection.Name, window.Index, err)
+	// Current-state must reflect EVERY key as-of chunk.End, so the windowed merge always scans
+	// from genesis (ledger 1, the first Stellar ledger) regardless of chunk.Start. A non-genesis
+	// start would drop keys last-modified before it, and publishProjection (which replaces ALL
+	// target buckets) would then delete them — producing truncated current tables (PR #84 review;
+	// this is the bug that corrupted accounts_current/trustlines_current when run with --start
+	// mid-history). The per-window BETWEEN filter still bounds memory; leading empty windows are
+	// pushdown-skipped. (PlanChunks requires start >= 1.)
+	const genesisLedger = 1
+	windows := PlanChunks(genesisLedger, chunk.End, p.cfg.Chunk)
+	emit(out, Event{EventType: "component.staging_started", ComponentID: p.cfg.Component(), RunID: p.cfg.RunID(), Network: p.cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "staging_merge", Status: "running", Metadata: map[string]interface{}{"mode": "ledger_window_merge", "window_count": len(windows), "window_start": genesisLedger, "requested_start": chunk.Start, "as_of_ledger": chunk.End, "source": projection.Source}})
+	keys := p.localTable(projection.TargetTable + "__keys")
+	delta := p.localTable(projection.TargetTable + "__delta")
+	for _, w := range windows {
+		// keys/delta read source Parquet from cold storage (B2); a single transient read blip
+		// ("partial file"/HTTP) over a multi-hour projection otherwise kills the whole run.
+		// Retry those reads — CREATE OR REPLACE keeps each attempt idempotent.
+		if err := p.execWindow(ctx, out, fmt.Sprintf("CREATE OR REPLACE TABLE %s AS %s", keys, projection.KeySQL(p, w.Start, w.End)), projection.Name, w.Index); err != nil {
+			return 0, fmt.Errorf("compute keys %s window %d: %w", projection.Name, w.Index, err)
 		}
-		if _, err := p.db.ExecContext(ctx, "DROP TABLE IF EXISTS "+delta); err != nil {
-			return 0, fmt.Errorf("drop delta %s window %d: %w", projection.Name, window.Index, err)
-		}
-		if _, err := p.db.ExecContext(ctx, fmt.Sprintf("CREATE TABLE %s AS %s", keys, projection.KeySQL(p, window.Start, window.End))); err != nil {
-			return 0, fmt.Errorf("create keys %s window %d: %w", projection.Name, window.Index, err)
-		}
-		if _, err := p.db.ExecContext(ctx, fmt.Sprintf("CREATE TABLE %s AS %s", delta, projection.SelectSQL(p, window.Start, window.End))); err != nil {
-			return 0, fmt.Errorf("create delta %s window %d: %w", projection.Name, window.Index, err)
+		if err := p.execWindow(ctx, out, fmt.Sprintf("CREATE OR REPLACE TABLE %s AS %s", delta, projection.SelectSQL(p, w.Start, w.End)), projection.Name, w.Index); err != nil {
+			return 0, fmt.Errorf("compute delta %s window %d: %w", projection.Name, w.Index, err)
 		}
 		if _, err := p.db.ExecContext(ctx, p.deleteSeenKeysSQL(staging, keys, projection)); err != nil {
-			return 0, fmt.Errorf("delete seen keys %s window %d: %w", projection.Name, window.Index, err)
+			return 0, fmt.Errorf("merge delete %s window %d: %w", projection.Name, w.Index, err)
 		}
 		if _, err := p.db.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s SELECT * FROM %s", staging, delta)); err != nil {
-			return 0, fmt.Errorf("insert staging %s window %d: %w", projection.Name, window.Index, err)
+			return 0, fmt.Errorf("merge insert %s window %d: %w", projection.Name, w.Index, err)
 		}
-		_, _ = p.db.ExecContext(ctx, "DROP TABLE IF EXISTS "+keys)
-		_, _ = p.db.ExecContext(ctx, "DROP TABLE IF EXISTS "+delta)
-		emit(out, Event{EventType: "component.ledger_window_completed", ComponentID: p.cfg.Component(), RunID: p.cfg.RunID(), Network: p.cfg.Network, ChunkStart: window.Start, ChunkEnd: window.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "staging_merge", Status: "completed", Metadata: map[string]interface{}{"window_index": window.Index, "window_count": len(windows)}})
+		if w.Index%50 == 0 || w.Index == len(windows)-1 {
+			emit(out, Event{EventType: "component.ledger_window_completed", ComponentID: p.cfg.Component(), RunID: p.cfg.RunID(), Network: p.cfg.Network, ChunkStart: w.Start, ChunkEnd: w.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "staging_merge", Status: "running", Metadata: map[string]interface{}{"window_index": w.Index, "window_count": len(windows)}})
+		}
 	}
+	_, _ = p.db.ExecContext(ctx, "DROP TABLE IF EXISTS "+keys)
+	_, _ = p.db.ExecContext(ctx, "DROP TABLE IF EXISTS "+delta)
+	emit(out, Event{EventType: "component.staging_completed", ComponentID: p.cfg.Component(), RunID: p.cfg.RunID(), Network: p.cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "staging_merge", Status: "completed", Metadata: map[string]interface{}{"mode": "ledger_window_merge", "window_count": len(windows), "as_of_ledger": chunk.End}})
 	if _, err := p.verifyProjectionTable(ctx, projection, staging); err != nil {
 		return 0, err
 	}
@@ -547,9 +586,13 @@ func (p *Projector) verifyProjectionTable(ctx context.Context, projection Curren
 	return rowCount, nil
 }
 
-func (p *Projector) sourceFilter(projection CurrentProjection, _ int64, end int64) string {
+func (p *Projector) sourceFilter(projection CurrentProjection, start int64, end int64) string {
+	// Per-window ledger RANGE (not cumulative <= end). The range is pushdown-able to
+	// DuckLake/Parquet, so each window reads only its slice — bounded memory + I/O, and each
+	// source row is read once across all windows (O(N), not the old O(N^2) cumulative rescan).
 	parts := []string{
 		fmt.Sprintf("network = %s", q(p.cfg.Network)),
+		fmt.Sprintf("%s >= %d", ident(projection.SourceLedgerCol), start),
 		fmt.Sprintf("%s <= %d", ident(projection.SourceLedgerCol), end),
 	}
 	if projection.SourceFilter != "" {
@@ -704,12 +747,32 @@ func (p *Projector) markManifest(ctx context.Context, start, end int64, projecti
 }
 
 func (p *Projector) chunkComplete(ctx context.Context, start, end int64) (bool, error) {
+	for _, projection := range executableCurrentProjections() {
+		done, err := p.projectionComplete(ctx, start, end, projection.Name)
+		if err != nil {
+			return false, err
+		}
+		if !done {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// projectionComplete reports whether this projection is already published for the same
+// (component, network, ledger range). It intentionally does NOT filter on run_id: each
+// dispatch gets a fresh run_id (the wrapper stamps a timestamp), so resuming across
+// re-dispatches — e.g. to bump --chunk-size without redoing finished projections — must
+// match on the durable identity of the work, not the run. The targets are replace-as-of-end
+// and deterministic, so a completed projection's data is valid to keep.
+func (p *Projector) projectionComplete(ctx context.Context, start, end int64, projection string) (bool, error) {
 	var count int64
-	query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE run_id=%s AND component_id=%s AND network=%s AND start_ledger=%d AND end_ledger=%d AND status='completed'", p.table("silver_current_projector_manifest"), q(p.cfg.RunID()), q(p.cfg.Component()), q(p.cfg.Network), start, end)
+	query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE component_id=%s AND network=%s AND start_ledger=%d AND end_ledger=%d AND projection_name=%s AND status='completed'",
+		p.table("silver_current_projector_manifest"), q(p.cfg.Component()), q(p.cfg.Network), start, end, q(projection))
 	if err := p.db.QueryRowContext(ctx, query).Scan(&count); err != nil {
 		return false, err
 	}
-	return count == int64(len(executableCurrentProjections())), nil
+	return count > 0, nil
 }
 
 func selectAccountsCurrent(p *Projector, start, end int64) string {
@@ -719,10 +782,11 @@ func selectAccountsCurrent(p *Projector, start, end int64) string {
 		signers, sponsor_account, created_at, COALESCE(updated_at, closed_at, current_timestamp) AS updated_at,
 		ledger_sequence AS last_modified_ledger, ledger_range, era_id, version_label
 		FROM (
-			SELECT *, row_number() OVER (PARTITION BY account_id ORDER BY ledger_sequence DESC, COALESCE(updated_at, closed_at) DESC NULLS LAST) AS rn
-			FROM %s
-			WHERE %s
-		) WHERE rn = 1`, p.table("accounts_snapshot"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
+			SELECT r.* FROM (
+				SELECT arg_max(s, ROW(s.ledger_sequence, COALESCE(s.updated_at, s.closed_at))) AS r
+				FROM %s s WHERE %s GROUP BY account_id
+			)
+		)`, p.table("accounts_snapshot"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
 }
 
 func selectAccountsCurrentKeys(p *Projector, start, end int64) string {
@@ -746,13 +810,12 @@ func selectTrustlinesCurrent(p *Projector, start, end int64) string {
 		ledger_sequence AS last_modified_ledger, ledger_sequence, created_at, NULL::VARCHAR AS sponsor,
 		ledger_range, era_id, version_label, current_timestamp AS inserted_at, current_timestamp AS updated_at
 		FROM (
-			SELECT *, row_number() OVER (
-				PARTITION BY account_id, asset_type, COALESCE(asset_code, ''), COALESCE(asset_issuer, '')
-				ORDER BY ledger_sequence DESC, created_at DESC NULLS LAST
-			) AS rn
-			FROM %s
-			WHERE %s
-		) WHERE rn = 1`, p.table("trustlines_snapshot"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
+			SELECT r.* FROM (
+				SELECT arg_max(s, ROW(s.ledger_sequence, s.created_at)) AS r
+				FROM %s s WHERE %s
+				GROUP BY account_id, asset_type, COALESCE(asset_code, ''), COALESCE(asset_issuer, '')
+			)
+		)`, p.table("trustlines_snapshot"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
 }
 
 func selectTrustlinesCurrentKeys(p *Projector, start, end int64) string {
@@ -781,10 +844,11 @@ func selectOffersCurrent(p *Projector, start, end int64) string {
 		flags, ledger_sequence AS last_modified_ledger, ledger_sequence, created_at, NULL::VARCHAR AS sponsor,
 		ledger_range, era_id, version_label, current_timestamp AS inserted_at, current_timestamp AS updated_at
 		FROM (
-			SELECT *, row_number() OVER (PARTITION BY offer_id ORDER BY ledger_sequence DESC, created_at DESC NULLS LAST) AS rn
-			FROM %s
-			WHERE %s
-		) WHERE rn = 1`, p.table("offers_snapshot"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
+			SELECT r.* FROM (
+				SELECT arg_max(s, ROW(s.ledger_sequence, s.created_at)) AS r
+				FROM %s s WHERE %s GROUP BY offer_id
+			)
+		)`, p.table("offers_snapshot"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
 }
 
 func selectOffersCurrentKeys(p *Projector, start, end int64) string {
@@ -801,13 +865,11 @@ func selectContractDataCurrent(p *Projector, start, end int64) string {
 		last_modified_ledger, ledger_sequence, closed_at, closed_at AS created_at, ledger_range,
 		current_timestamp AS updated_at
 		FROM (
-			SELECT *, row_number() OVER (
-				PARTITION BY contract_id, key_hash
-				ORDER BY ledger_sequence DESC, last_modified_ledger DESC NULLS LAST, closed_at DESC NULLS LAST
-			) AS rn
-			FROM %s
-			WHERE %s
-		) WHERE rn = 1 AND COALESCE(deleted, false) = false`, p.table("contract_data_changes"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
+			SELECT r.* FROM (
+				SELECT arg_max(s, ROW(s.ledger_sequence, s.last_modified_ledger, s.closed_at)) AS r
+				FROM %s s WHERE %s GROUP BY contract_id, key_hash
+			)
+		) WHERE COALESCE(deleted, false) = false`, p.table("contract_data_changes"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
 }
 
 func selectContractDataCurrentKeys(p *Projector, start, end int64) string {
@@ -828,13 +890,11 @@ func selectNativeBalancesCurrent(p *Projector, start, end int64) string {
 		NULL::BIGINT AS sequence_number, ledger_sequence AS last_modified_ledger, ledger_sequence,
 		ledger_range, current_timestamp AS inserted_at, current_timestamp AS updated_at
 		FROM (
-			SELECT *, row_number() OVER (
-				PARTITION BY address
-				ORDER BY ledger_sequence DESC, ledger_closed_at DESC NULLS LAST
-			) AS rn
-			FROM %s
-			WHERE %s
-		) WHERE rn = 1 AND COALESCE(deleted, false) = false`, p.table("balance_changes"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence", SourceFilter: "(asset_type = 'native' OR asset_code = 'XLM')"}, start, end))
+			SELECT r.* FROM (
+				SELECT arg_max(s, ROW(s.ledger_sequence, s.ledger_closed_at)) AS r
+				FROM %s s WHERE %s GROUP BY address
+			)
+		) WHERE COALESCE(deleted, false) = false`, p.table("balance_changes"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence", SourceFilter: "(asset_type = 'native' OR asset_code = 'XLM')"}, start, end))
 }
 
 func selectNativeBalancesCurrentKeys(p *Projector, start, end int64) string {
@@ -866,19 +926,17 @@ func selectAddressBalancesCurrent(p *Projector, start, end int64) string {
 		WHEN asset_type = 'native' OR asset_code = 'XLM' THEN TRY_CAST(balance AS DECIMAL(38,7)) / 10000000
 		ELSE TRY_CAST(balance AS DECIMAL(38,7))
 	END`
-	return fmt.Sprintf(`SELECT network, address AS owner_address, asset_key, asset_type,
+	return fmt.Sprintf(`SELECT network, address AS owner_address, %s AS asset_key, asset_type,
 		NULL::VARCHAR AS token_contract_id, asset_code, asset_issuer, asset_code AS symbol, 7::INTEGER AS decimals,
 		CAST(%s AS VARCHAR) AS balance_raw, CAST(%s AS VARCHAR) AS balance_display,
 		'silver.balance_changes' AS balance_source, ledger_sequence AS last_updated_ledger,
 		ledger_closed_at AS last_updated_at, current_timestamp AS updated_at
 		FROM (
-			SELECT *, %s AS asset_key, row_number() OVER (
-				PARTITION BY address, %s
-				ORDER BY ledger_sequence DESC, ledger_closed_at DESC NULLS LAST
-			) AS rn
-			FROM %s
-			WHERE %s
-		) WHERE rn = 1 AND COALESCE(deleted, false) = false`, balanceRaw, balanceDisplay, assetKey, assetKey, p.table("balance_changes"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
+			SELECT r.* FROM (
+				SELECT arg_max(s, ROW(s.ledger_sequence, s.ledger_closed_at)) AS r
+				FROM %s s WHERE %s GROUP BY address, %s
+			)
+		) WHERE COALESCE(deleted, false) = false`, assetKey, balanceRaw, balanceDisplay, p.table("balance_changes"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end), assetKey)
 }
 
 func selectAddressBalancesCurrentKeys(p *Projector, start, end int64) string {
@@ -1031,6 +1089,43 @@ func writeSummary(cfg Config, chunks []Chunk, projections []Projection) error {
 	}
 	defer f.Close()
 	return json.NewEncoder(f).Encode(map[string]interface{}{"component_id": cfg.Component(), "run_id": cfg.RunID(), "network": cfg.Network, "chunks": chunks, "projections": projections, "status": "completed"})
+}
+
+// execWindow runs a per-window statement, retrying transient cold-storage IO errors with
+// backoff. The window keys/delta CREATEs read source Parquet from B2 and occasionally hit a
+// "Transferred a partial file"/HTTP blip; without retry, one blip over a multi-hour projection
+// fails the whole run (exit 75). Statements passed here are idempotent (CREATE OR REPLACE).
+func (p *Projector) execWindow(ctx context.Context, out io.Writer, sql, projection string, windowIndex int) error {
+	const maxAttempts = 6
+	var err error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if _, err = p.db.ExecContext(ctx, sql); err == nil {
+			return nil
+		}
+		if attempt == maxAttempts || !isRetryableIO(err) {
+			return err
+		}
+		emit(out, Event{EventType: "component.retry", ComponentID: p.cfg.Component(), RunID: p.cfg.RunID(), Network: p.cfg.Network, ProjectionName: projection, Phase: "staging_merge", Status: "running", FailureClass: FailureRetryableInfrastructure, Error: err.Error(), Metadata: map[string]interface{}{"window_index": windowIndex, "attempt": attempt, "max_attempts": maxAttempts}})
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(attempt*3) * time.Second): // 3,6,9,12,15s
+		}
+	}
+	return err
+}
+
+func isRetryableIO(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, s := range []string{"io error", "transferred a partial file", "http", "connection", "timeout", "reset by peer", "temporarily", "503", "500", "throttl"} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
 }
 
 func classifyFailure(err error) FailureClass {

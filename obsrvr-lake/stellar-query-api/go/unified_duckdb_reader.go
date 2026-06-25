@@ -3764,6 +3764,7 @@ func (r *UnifiedDuckDBReader) GetContractData(ctx context.Context, filters Contr
 				Issuer: &issuer,
 			}
 		}
+		applyDecodedContractDataFields(&d)
 
 		data = append(data, d)
 	}

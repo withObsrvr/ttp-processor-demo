@@ -203,6 +203,209 @@ func TestPublishBucketsRecordedAndResumable(t *testing.T) {
 	}
 }
 
+func TestSinglePassIsChunkIndependentAndLatestPerKey(t *testing.T) {
+	ctx := context.Background()
+	db := openFixtureDB(t)
+	defer db.Close()
+	loadCurrentProjectorFixture(t, ctx, db)
+	// Chunk=1 would have produced many windows under the old per-window fold; single-pass
+	// must still yield exactly latest-row-per-key as of the end ledger, independent of chunk.
+	cfg := Config{Network: "mainnet", Start: 3, End: 5, Chunk: 1, SilverSchema: "silver", PublishBuckets: 4}
+	projector := NewProjectorWithDB(db, cfg)
+	if err := projector.ensureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := projector.ensureManifest(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := projector.Run(ctx, &out); err != nil {
+		t.Fatalf("run: %v\n%s", err, out.String())
+	}
+
+	// Same expected current state the windowed version produced (latest row <= end ledger 5).
+	assertCount(t, db, `SELECT COUNT(*) FROM silver.accounts_current WHERE network='mainnet'`, 2)
+	var bal string
+	if err := db.QueryRow(`SELECT balance FROM silver.accounts_current WHERE account_id='GA1'`).Scan(&bal); err != nil {
+		t.Fatal(err)
+	}
+	if bal != "200" {
+		t.Fatalf("GA1 balance = %s, want 200 (ledger 4 is latest <= end 5; ledger 8 excluded)", bal)
+	}
+	var future int64
+	if err := db.QueryRow(`SELECT COUNT(*) FROM silver.accounts_current WHERE last_modified_ledger > 5`).Scan(&future); err != nil {
+		t.Fatal(err)
+	}
+	if future != 0 {
+		t.Fatalf("projected %d rows beyond end ledger", future)
+	}
+	// Confirm it took the single-pass path (no per-window fold) and emitted the new phase.
+	if strings.Contains(out.String(), "ledger_window_started") {
+		t.Fatalf("expected single-pass staging, but found ledger_window events")
+	}
+	if !strings.Contains(out.String(), "component.staging_completed") {
+		t.Fatalf("expected component.staging_completed event from single-pass path")
+	}
+}
+
+func TestLedgerWindowMergeAcrossWindowsLatestWins(t *testing.T) {
+	ctx := context.Background()
+	db := openFixtureDB(t)
+	defer db.Close()
+	loadCurrentProjectorFixture(t, ctx, db)
+	// Chunk=1 forces a separate ledger window per ledger, so the merge must combine windows:
+	// later windows overwrite earlier keys, deletes in a later window remove a key seen earlier.
+	cfg := Config{Network: "mainnet", Start: 3, End: 5, Chunk: 1, SilverSchema: "silver", PublishBuckets: 4}
+	projector := NewProjectorWithDB(db, cfg)
+	if err := projector.ensureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := projector.ensureManifest(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := projector.Run(ctx, &out); err != nil {
+		t.Fatalf("run: %v\n%s", err, out.String())
+	}
+
+	// Identical result regardless of window count (latest <= end ledger 5, no dup keys).
+	assertCount(t, db, `SELECT COUNT(*) FROM silver.accounts_current WHERE network='mainnet'`, 2)
+	assertCount(t, db, `SELECT COUNT(*) FROM silver.trustlines_current WHERE network='mainnet'`, 2)
+	assertCount(t, db, `SELECT COUNT(*) FROM silver.address_balances_current WHERE network='mainnet'`, 4)
+	var bal string
+	if err := db.QueryRow(`SELECT balance FROM silver.accounts_current WHERE account_id='GA1'`).Scan(&bal); err != nil {
+		t.Fatal(err)
+	}
+	if bal != "200" {
+		t.Fatalf("GA1 balance = %s, want 200 (ledger 4 wins across windows; ledger 8 excluded)", bal)
+	}
+	// Deleted-in-a-later-window key must be removed from staging by the merge.
+	var k2 int64
+	if err := db.QueryRow(`SELECT COUNT(*) FROM silver.contract_data_current WHERE contract_id='CC1' AND key_hash='K2'`).Scan(&k2); err != nil {
+		t.Fatal(err)
+	}
+	if k2 != 0 {
+		t.Fatalf("CC1/K2 deleted in a later window but survived the merge")
+	}
+	if !strings.Contains(out.String(), "ledger_window_completed") {
+		t.Fatalf("expected ledger_window_completed events from the windowed merge")
+	}
+}
+
+func TestResumeSkipsCompletedProjectionsAcrossRunIDs(t *testing.T) {
+	ctx := context.Background()
+	db := openFixtureDB(t)
+	defer db.Close()
+	loadCurrentProjectorFixture(t, ctx, db)
+	cfg := Config{Network: "mainnet", Start: 3, End: 5, Chunk: 100, SilverSchema: "silver", PublishBuckets: 2}
+	projector := NewProjectorWithDB(db, cfg)
+	if err := projector.ensureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := projector.ensureManifest(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := projector.Run(ctx, &out); err != nil {
+		t.Fatalf("first run: %v\n%s", err, out.String())
+	}
+
+	// Simulate a partial state: one projection not yet completed (so the chunk isn't skipped
+	// wholesale). Drop its manifest rows; the other five remain completed.
+	if _, err := db.Exec(`DELETE FROM silver.silver_current_projector_manifest WHERE projection_name='trustlines_current'`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Re-dispatch with a NEW run id (the wrapper stamps a fresh timestamp each time) + resume.
+	// The five completed projections must be skipped despite the differing run id; only the
+	// incomplete one re-runs.
+	projector.cfg.Resume = true
+	projector.cfg.FlowctlRunID = "redispatch-with-a-different-run-id"
+	out.Reset()
+	if err := projector.Run(ctx, &out); err != nil {
+		t.Fatalf("resume run: %v\n%s", err, out.String())
+	}
+	if got := strings.Count(out.String(), "component.projection_skipped"); got != 5 {
+		t.Fatalf("expected 5 projection_skipped events on resume, got %d:\n%s", got, out.String())
+	}
+	if got := strings.Count(out.String(), `"event_type":"component.staging_started"`); got != 1 {
+		t.Fatalf("expected exactly 1 projection (trustlines) to re-run, got %d staging_started", got)
+	}
+	if !strings.Contains(out.String(), `"event_type":"component.staging_started","component_id":"silver-current-state-projector","run_id":"redispatch-with-a-different-run-id","network":"mainnet","chunk_start":3,"chunk_end":5,"projection_name":"trustlines_current"`) {
+		t.Fatalf("expected the re-run to be trustlines_current:\n%s", out.String())
+	}
+	// Data intact and unchanged.
+	assertCount(t, db, `SELECT COUNT(*) FROM silver.accounts_current WHERE network='mainnet'`, 2)
+	assertCount(t, db, `SELECT COUNT(*) FROM silver.trustlines_current WHERE network='mainnet'`, 2)
+	assertCount(t, db, `SELECT COUNT(*) FROM silver.address_balances_current WHERE network='mainnet'`, 4)
+}
+
+func TestIsRetryableIOAndExecWindow(t *testing.T) {
+	// Transient cold-storage read blips are retryable; logic/schema errors are not.
+	if !isRetryableIO(errors.New("IO Error: Transferred a partial file error for HTTP GET to '...parquet'")) {
+		t.Fatal("partial-file B2 read should be classified retryable")
+	}
+	if !isRetryableIO(errors.New("Connection reset by peer")) {
+		t.Fatal("connection reset should be retryable")
+	}
+	if isRetryableIO(errors.New("Binder Error: column nope does not exist")) {
+		t.Fatal("binder/schema error must NOT be retryable")
+	}
+
+	ctx := context.Background()
+	db := openFixtureDB(t)
+	defer db.Close()
+	if _, err := db.Exec(`CREATE SCHEMA s`); err != nil {
+		t.Fatal(err)
+	}
+	p := NewProjectorWithDB(db, Config{Network: "mainnet", SilverSchema: "s"})
+	var out bytes.Buffer
+	// happy path: succeeds first try
+	if err := p.execWindow(ctx, &out, `CREATE OR REPLACE TABLE s.t AS SELECT 1 AS a`, "test", 0); err != nil {
+		t.Fatalf("execWindow happy path: %v", err)
+	}
+	// idempotent on repeat (CREATE OR REPLACE)
+	if err := p.execWindow(ctx, &out, `CREATE OR REPLACE TABLE s.t AS SELECT 2 AS a`, "test", 1); err != nil {
+		t.Fatalf("execWindow repeat: %v", err)
+	}
+	// non-retryable error returns promptly (does not loop)
+	if err := p.execWindow(ctx, &out, `CREATE OR REPLACE TABLE s.t AS SELECT nonexistent_col`, "test", 2); err == nil {
+		t.Fatal("expected an error for a bad column reference")
+	}
+}
+
+func TestCurrentStateScansFromGenesisRegardlessOfStart(t *testing.T) {
+	// PR #84 (Codex P1): a mid-history --start must NOT truncate current state. GA2 was last
+	// modified at ledger 3; running with Start=4 must still include it — current state is always
+	// computed from genesis, else publishProjection (replace-all-buckets) would delete GA2 from
+	// the target. (This is the bug that corrupted accounts_current when run with --start mid-history.)
+	ctx := context.Background()
+	db := openFixtureDB(t)
+	defer db.Close()
+	loadCurrentProjectorFixture(t, ctx, db)
+	cfg := Config{Network: "mainnet", Start: 4, End: 5, Chunk: 1, SilverSchema: "silver", PublishBuckets: 4}
+	projector := NewProjectorWithDB(db, cfg)
+	if err := projector.ensureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := projector.ensureManifest(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := projector.Run(ctx, &out); err != nil {
+		t.Fatalf("run: %v\n%s", err, out.String())
+	}
+	// Both accounts present even though GA2's last change (ledger 3) predates Start=4.
+	assertCount(t, db, `SELECT COUNT(*) FROM silver.accounts_current WHERE network='mainnet'`, 2)
+	var bal string
+	if err := db.QueryRow(`SELECT balance FROM silver.accounts_current WHERE account_id='GA2'`).Scan(&bal); err != nil {
+		t.Fatalf("GA2 dropped by non-genesis start (regression of PR #84 fix): %v", err)
+	}
+	if bal != "50" {
+		t.Fatalf("GA2 balance = %s, want 50 (ledger 3, before start=4)", bal)
+	}
+}
+
 func openFixtureDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("duckdb", "")

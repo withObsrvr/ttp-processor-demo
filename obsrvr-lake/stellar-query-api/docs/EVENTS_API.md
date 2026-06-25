@@ -1,6 +1,6 @@
 # Silver Events API
 
-Ticket 6 polish: the event API deliberately exposes two different streams.
+The Silver Events API deliberately exposes two different streams: a semantic token-transfer stream for wallet/token activity, and a raw generic contract-event stream for protocol-specific indexing and debugging.
 
 ## Semantic token-transfer stream
 
