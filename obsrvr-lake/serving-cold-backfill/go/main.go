@@ -158,6 +158,11 @@ type CurrentProjection struct {
 	MaxLedgerCol string
 	KeyExprs     []string
 	SelectSQL    func(*Backfiller) string
+	// PostgresNative runs this projection's DDL/DELETE/INSERT server-side in Postgres via
+	// postgres_execute instead of through DuckDB. Use for aggregates over LARGE serving tables
+	// (e.g. sv_assets_current GROUP BY over ~163M-row sv_account_balances_current) — pulling
+	// those out of Postgres into DuckDB buffers outside memory_limit and OOMs.
+	PostgresNative bool
 }
 
 func main() {
@@ -504,8 +509,8 @@ func currentProjections() []CurrentProjection {
 		{Name: "sv_accounts_current", TargetTable: "sv_accounts_current", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"account_id"}, SelectSQL: selectAccountsCurrent},
 		{Name: "sv_account_balances_current", TargetTable: "sv_account_balances_current", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"account_id", "asset_key"}, SelectSQL: selectAccountBalancesCurrent},
 		{Name: "sv_network_stats_current", TargetTable: "sv_network_stats_current", MaxLedgerCol: "latest_ledger", KeyExprs: []string{"network"}, SelectSQL: selectNetworkStatsCurrent},
-		{Name: "sv_assets_current", TargetTable: "sv_assets_current", KeyExprs: []string{"asset_key"}, SelectSQL: selectAssetsCurrent},
-		{Name: "sv_asset_stats_current", TargetTable: "sv_asset_stats_current", KeyExprs: []string{"asset_key"}, SelectSQL: selectAssetStatsCurrent},
+		{Name: "sv_assets_current", TargetTable: "sv_assets_current", KeyExprs: []string{"asset_key"}, SelectSQL: selectAssetsCurrent, PostgresNative: true},
+		{Name: "sv_asset_stats_current", TargetTable: "sv_asset_stats_current", KeyExprs: []string{"asset_key"}, SelectSQL: selectAssetStatsCurrent, PostgresNative: true},
 		{Name: "sv_contracts_current", TargetTable: "sv_contracts_current", MaxLedgerCol: "deploy_ledger", KeyExprs: []string{"contract_id"}, SelectSQL: selectContractsCurrent},
 		{Name: "sv_contract_stats_current", TargetTable: "sv_contract_stats_current", KeyExprs: []string{"contract_id"}, SelectSQL: selectContractStatsCurrent},
 		{Name: "sv_contract_function_stats_current", TargetTable: "sv_contract_function_stats_current", KeyExprs: []string{"contract_id", "function_name"}, SelectSQL: selectContractFunctionStatsCurrent},
@@ -547,9 +552,57 @@ func (b *Backfiller) replaceFeedProjection(ctx context.Context, chunk Chunk, pro
 	return rows, nil
 }
 
+// toPostgresNative rewrites DuckDB SQL that targets the attached Postgres catalog into native
+// Postgres SQL: strips the catalog prefix (serving_pg.serving.X -> serving.X) and fixes the one
+// dialect cast that differs (DuckDB DOUBLE -> Postgres double precision).
+func (b *Backfiller) toPostgresNative(sql string) string {
+	if b.cfg.ServingCatalog != "" {
+		sql = strings.ReplaceAll(sql, ident(b.cfg.ServingCatalog)+".", "")
+	}
+	sql = strings.ReplaceAll(sql, "::DOUBLE", "::double precision")
+	return sql
+}
+
+// pgExec runs a single statement directly on the attached Postgres server (not through DuckDB's
+// engine), so aggregates over large serving tables execute server-side without buffering rows
+// into DuckDB.
+func (b *Backfiller) pgExec(ctx context.Context, sql string) error {
+	if _, err := b.db.ExecContext(ctx, fmt.Sprintf("CALL postgres_execute(%s, %s)", q(b.cfg.ServingCatalog), q(sql))); err != nil {
+		return fmt.Errorf("postgres_execute: %w", err)
+	}
+	return nil
+}
+
+func (b *Backfiller) replaceCurrentProjectionPG(ctx context.Context, chunk Chunk, projection CurrentProjection) (int64, error) {
+	tgt := b.toPostgresNative(b.servingTable(projection.TargetTable))
+	sel := b.toPostgresNative(projection.SelectSQL(b))
+	// Server-side ensure (Postgres short-circuits WHERE false, so no 163M-row scan), then
+	// full replace — all executed in Postgres, zero rows pulled into DuckDB.
+	if err := b.pgExec(ctx, fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s AS SELECT * FROM (%s) seed WHERE false", tgt, sel)); err != nil {
+		return 0, fmt.Errorf("create %s: %w", projection.Name, err)
+	}
+	if err := b.pgExec(ctx, "DELETE FROM "+tgt); err != nil {
+		return 0, fmt.Errorf("delete %s: %w", projection.Name, err)
+	}
+	if err := b.pgExec(ctx, fmt.Sprintf("INSERT INTO %s %s", tgt, sel)); err != nil {
+		return 0, fmt.Errorf("insert %s: %w", projection.Name, err)
+	}
+	rows, err := b.countCurrentRows(ctx, projection) // small result table; DuckDB read is cheap
+	if err != nil {
+		return 0, err
+	}
+	if err := b.markManifest(ctx, chunk, projection.Name, "completed", rows, ""); err != nil {
+		return 0, err
+	}
+	return rows, nil
+}
+
 func (b *Backfiller) replaceCurrentProjection(ctx context.Context, chunk Chunk, projection CurrentProjection) (int64, error) {
 	if err := b.markManifest(ctx, chunk, projection.Name, "running", 0, ""); err != nil {
 		return 0, err
+	}
+	if projection.PostgresNative && b.cfg.ServingCatalog != "" {
+		return b.replaceCurrentProjectionPG(ctx, chunk, projection)
 	}
 	if err := b.ensureCurrentTargetTable(ctx, projection); err != nil {
 		return 0, err
