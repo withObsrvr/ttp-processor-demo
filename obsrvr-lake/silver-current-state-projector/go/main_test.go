@@ -374,6 +374,38 @@ func TestIsRetryableIOAndExecWindow(t *testing.T) {
 	}
 }
 
+func TestCurrentStateScansFromGenesisRegardlessOfStart(t *testing.T) {
+	// PR #84 (Codex P1): a mid-history --start must NOT truncate current state. GA2 was last
+	// modified at ledger 3; running with Start=4 must still include it — current state is always
+	// computed from genesis, else publishProjection (replace-all-buckets) would delete GA2 from
+	// the target. (This is the bug that corrupted accounts_current when run with --start mid-history.)
+	ctx := context.Background()
+	db := openFixtureDB(t)
+	defer db.Close()
+	loadCurrentProjectorFixture(t, ctx, db)
+	cfg := Config{Network: "mainnet", Start: 4, End: 5, Chunk: 1, SilverSchema: "silver", PublishBuckets: 4}
+	projector := NewProjectorWithDB(db, cfg)
+	if err := projector.ensureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := projector.ensureManifest(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := projector.Run(ctx, &out); err != nil {
+		t.Fatalf("run: %v\n%s", err, out.String())
+	}
+	// Both accounts present even though GA2's last change (ledger 3) predates Start=4.
+	assertCount(t, db, `SELECT COUNT(*) FROM silver.accounts_current WHERE network='mainnet'`, 2)
+	var bal string
+	if err := db.QueryRow(`SELECT balance FROM silver.accounts_current WHERE account_id='GA2'`).Scan(&bal); err != nil {
+		t.Fatalf("GA2 dropped by non-genesis start (regression of PR #84 fix): %v", err)
+	}
+	if bal != "50" {
+		t.Fatalf("GA2 balance = %s, want 50 (ledger 3, before start=4)", bal)
+	}
+}
+
 func openFixtureDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("duckdb", "")
