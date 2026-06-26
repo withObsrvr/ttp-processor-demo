@@ -87,7 +87,7 @@ func (c *DuckDBClient) initialize() error {
 	attachQuery := fmt.Sprintf(`
 		ATTACH 'ducklake:postgres:%s'
 		AS %s
-		(DATA_PATH '%s', METADATA_SCHEMA '%s', DATA_INLINING_ROW_LIMIT 250, AUTOMATIC_MIGRATION TRUE)
+		(DATA_PATH '%s', METADATA_SCHEMA '%s', DATA_INLINING_ROW_LIMIT 250, AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE)
 	`, c.config.CatalogPath, c.config.CatalogName, c.config.DataPath, c.config.MetadataSchema)
 
 	if _, err := c.db.Exec(attachQuery); err != nil {
@@ -98,7 +98,7 @@ func (c *DuckDBClient) initialize() error {
 			createAttachQuery := fmt.Sprintf(`
 				ATTACH 'ducklake:postgres:%s'
 				AS %s
-				(TYPE ducklake, DATA_PATH '%s', METADATA_SCHEMA '%s', DATA_INLINING_ROW_LIMIT 250)
+				(TYPE ducklake, DATA_PATH '%s', METADATA_SCHEMA '%s', DATA_INLINING_ROW_LIMIT 250, AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE)
 			`, c.config.CatalogPath, c.config.CatalogName, c.config.DataPath, c.config.MetadataSchema)
 			if _, err := c.db.Exec(createAttachQuery); err != nil {
 				return fmt.Errorf("failed to create and attach DuckLake catalog: %w", err)
