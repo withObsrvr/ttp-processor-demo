@@ -581,7 +581,9 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 	commitDuration := time.Since(commitStart)
 	log.Printf("Batch DB phases: extract=%v insert=%v commit=%v", extractDuration, insertDuration, commitDuration)
 
-	// Broadcast to gRPC subscribers after checkpoint is persisted
+	// Broadcast to gRPC subscribers after the batch is committed. Checkpoint
+	// persistence was attempted above; a persistence warning should not imply the
+	// database commit failed.
 	if w.broadcaster != nil {
 		w.broadcaster.Broadcast(BronzeBatchInfo{
 			StartLedger: rawLedgers[0].Sequence,

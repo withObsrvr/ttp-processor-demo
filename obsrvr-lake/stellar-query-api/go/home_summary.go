@@ -393,17 +393,12 @@ func (h *ExplorerHomeSummaryHandler) loadUtilization(ctx context.Context, ledger
 }
 
 func (h *ExplorerHomeSummaryHandler) loadActivityMix(ctx context.Context, servingStats *NetworkStats) (int64, int64, string) {
-	// Preferred path: use the precomputed 24h op aggregates from
-	// serving.sv_network_stats_current (maintained by the serving processor),
-	// avoiding a full ~14.5M-row scan of enriched_history_operations on every
-	// request. These are op-level counts (a close proxy for the home activity
-	// mix), not distinct-tx counts. Falls through to the live query only when the
-	// serving stats row is unavailable.
-	if servingStats != nil {
-		return servingStats.Operations24h.Payments, servingStats.Operations24h.ContractInvoke, ""
-	}
-	// Fast path: query silver-hot PG directly. The previous implementation
-	// went through DuckDB ATTACH POSTGRES (h.unified.db), which doesn't push
+	// Fast path: query silver-hot PG directly. Keep the existing response
+	// semantics: these fields are distinct transaction counts. Do not substitute
+	// serving.sv_network_stats_current op aggregates here; those are operation
+	// counts and are not equivalent to swap_tx_24h / contract_call_tx_24h.
+	// The previous implementation went through DuckDB ATTACH POSTGRES
+	// (h.unified.db), which doesn't push
 	// the time predicate down — DuckDB pulls the entire enriched_history_operations
 	// table over the wire and filters locally, taking 10-20s on mainnet.
 	// "Last 24h" only ever needs hot, so the cold UNION is dropped: silver-hot
