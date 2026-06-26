@@ -269,7 +269,7 @@ func NewProjector(ctx context.Context, cfg Config) (*Projector, error) {
 	// memory_limit not constraining the run).
 	db.SetMaxOpenConns(1)
 	p := &Projector{db: db, cfg: cfg, jsonl: JSONLManifest{path: cfg.ManifestPath}}
-	for _, stmt := range []string{"INSTALL ducklake FROM core_nightly", "LOAD ducklake", "INSTALL httpfs", "LOAD httpfs"} {
+	for _, stmt := range []string{"INSTALL ducklake", "LOAD ducklake", "INSTALL httpfs", "LOAD httpfs"} {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("%s: %w", stmt, err)

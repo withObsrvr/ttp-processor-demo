@@ -38,7 +38,7 @@ func NewIndexReader(config IndexConfig) (*IndexReader, error) {
 	}
 
 	// Install extensions
-	if _, err := db.Exec("INSTALL ducklake FROM core_nightly"); err != nil {
+	if _, err := db.Exec("INSTALL ducklake"); err != nil {
 		return nil, fmt.Errorf("failed to install ducklake: %w", err)
 	}
 	if _, err := db.Exec("LOAD ducklake"); err != nil {

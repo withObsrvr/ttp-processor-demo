@@ -295,7 +295,7 @@ func NewBackfiller(ctx context.Context, cfg Config) (*Backfiller, error) {
 		db.Close()
 		return nil, err
 	}
-	for _, stmt := range []string{"INSTALL ducklake FROM core_nightly", "LOAD ducklake", "INSTALL httpfs", "LOAD httpfs", "INSTALL postgres", "LOAD postgres"} {
+	for _, stmt := range []string{"INSTALL ducklake", "LOAD ducklake", "INSTALL httpfs", "LOAD httpfs", "INSTALL postgres", "LOAD postgres"} {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("%s: %w", stmt, err)
