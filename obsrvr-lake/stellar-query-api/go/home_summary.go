@@ -237,7 +237,7 @@ func (h *ExplorerHomeSummaryHandler) HandleExplorerSummary(w http.ResponseWriter
 		resp.Hero.Soroban.ReadWritePct = utilization.ReadWritePct
 	}
 
-	swap24h, contractCall24h, mixWarning := h.loadActivityMix(ctx)
+	swap24h, contractCall24h, mixWarning := h.loadActivityMix(ctx, servingStats)
 	if mixWarning != "" {
 		resp.Provenance.Partial = true
 		resp.Provenance.Warnings = append(resp.Provenance.Warnings, mixWarning)
@@ -392,9 +392,13 @@ func (h *ExplorerHomeSummaryHandler) loadUtilization(ctx context.Context, ledger
 	return resp, ""
 }
 
-func (h *ExplorerHomeSummaryHandler) loadActivityMix(ctx context.Context) (int64, int64, string) {
-	// Fast path: query silver-hot PG directly. The previous implementation
-	// went through DuckDB ATTACH POSTGRES (h.unified.db), which doesn't push
+func (h *ExplorerHomeSummaryHandler) loadActivityMix(ctx context.Context, servingStats *NetworkStats) (int64, int64, string) {
+	// Fast path: query silver-hot PG directly. Keep the existing response
+	// semantics: these fields are distinct transaction counts. Do not substitute
+	// serving.sv_network_stats_current op aggregates here; those are operation
+	// counts and are not equivalent to swap_tx_24h / contract_call_tx_24h.
+	// The previous implementation went through DuckDB ATTACH POSTGRES
+	// (h.unified.db), which doesn't push
 	// the time predicate down — DuckDB pulls the entire enriched_history_operations
 	// table over the wire and filters locally, taking 10-20s on mainnet.
 	// "Last 24h" only ever needs hot, so the cold UNION is dropped: silver-hot

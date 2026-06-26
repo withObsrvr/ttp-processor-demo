@@ -306,13 +306,16 @@ func (h *SilverHotReader) GetServingNetworkStats(ctx context.Context) (*NetworkS
 	var avgClose sql.NullFloat64
 	var proto sql.NullInt64
 	var txTotal, txFailed, activeAccounts, createdAccounts sql.NullInt64
+	var opsTotal, opsContractInvoke, opsPayments, activeContracts sql.NullInt64
 	if err := h.db.QueryRowContext(ctx, `
 		SELECT generated_at, latest_ledger, latest_ledger_closed_at, avg_close_time_seconds,
-		       protocol_version, tx_24h_total, tx_24h_failed, active_accounts_24h, created_accounts_24h
+		       protocol_version, tx_24h_total, tx_24h_failed, active_accounts_24h, created_accounts_24h,
+		       ops_24h_total, ops_24h_contract_invoke, ops_24h_payments, active_contracts_24h
 		FROM serving.sv_network_stats_current
 		WHERE network = $1
 		LIMIT 1
-	`, h.network).Scan(&generatedAt, &stats.Ledger.CurrentSequence, &latestClosedAt, &avgClose, &proto, &txTotal, &txFailed, &activeAccounts, &createdAccounts); err != nil {
+	`, h.network).Scan(&generatedAt, &stats.Ledger.CurrentSequence, &latestClosedAt, &avgClose, &proto, &txTotal, &txFailed, &activeAccounts, &createdAccounts,
+		&opsTotal, &opsContractInvoke, &opsPayments, &activeContracts); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -340,6 +343,20 @@ func (h *SilverHotReader) GetServingNetworkStats(ctx context.Context) (*NetworkS
 	}
 	if createdAccounts.Valid {
 		stats.Accounts.Created24h = createdAccounts.Int64
+	}
+	// Precomputed 24h op aggregates — let the home summary read these instead of
+	// scanning enriched_history_operations live.
+	if opsTotal.Valid {
+		stats.Operations24h.Total = opsTotal.Int64
+	}
+	if opsContractInvoke.Valid {
+		stats.Operations24h.ContractInvoke = opsContractInvoke.Int64
+	}
+	if opsPayments.Valid {
+		stats.Operations24h.Payments = opsPayments.Int64
+	}
+	if activeContracts.Valid {
+		stats.Soroban = &SorobanNetStats{ActiveContracts24h: activeContracts.Int64}
 	}
 	_ = h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM serving.sv_accounts_current`).Scan(&stats.Accounts.Total)
 	return stats, nil

@@ -38,14 +38,16 @@ func TestHandleExplorerSummaryHotOnlySuccess(t *testing.T) {
 
 	mock.ExpectQuery(regexp.QuoteMeta(`
 		SELECT generated_at, latest_ledger, latest_ledger_closed_at, avg_close_time_seconds,
-		       protocol_version, tx_24h_total, tx_24h_failed, active_accounts_24h, created_accounts_24h
+		       protocol_version, tx_24h_total, tx_24h_failed, active_accounts_24h, created_accounts_24h,
+		       ops_24h_total, ops_24h_contract_invoke, ops_24h_payments, active_contracts_24h
 		FROM serving.sv_network_stats_current
 		WHERE network = $1
 		LIMIT 1
 	`)).WithArgs("testnet").WillReturnRows(sqlmock.NewRows([]string{
 		"generated_at", "latest_ledger", "latest_ledger_closed_at", "avg_close_time_seconds",
 		"protocol_version", "tx_24h_total", "tx_24h_failed", "active_accounts_24h", "created_accounts_24h",
-	}).AddRow(now, int64(2144030), closedAt, 5.0, int64(23), int64(1200), int64(12), int64(345), int64(9)))
+		"ops_24h_total", "ops_24h_contract_invoke", "ops_24h_payments", "active_contracts_24h",
+	}).AddRow(now, int64(2144030), closedAt, 5.0, int64(23), int64(1200), int64(12), int64(345), int64(9), nil, nil, nil, nil))
 
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT COUNT(*) FROM serving.sv_accounts_current`)).WillReturnRows(
 		sqlmock.NewRows([]string{"count"}).AddRow(int64(9999)),
@@ -66,6 +68,13 @@ func TestHandleExplorerSummaryHotOnlySuccess(t *testing.T) {
 		"ledger_sequence", "closed_at", "ledger_hash", "prev_hash", "protocol_version", "base_fee_stroops", "successful_tx_count", "failed_tx_count", "operation_count",
 	}).AddRow(int64(2144030), closedAt, "abc", "def", 23, int64(100), 11, 1, 44).
 		AddRow(int64(2144029), closedAt.Add(-5*time.Second), "abc2", "def2", 23, int64(100), 10, 0, 30))
+
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT ledger_closed_at FROM enriched_history_operations ORDER BY ledger_sequence DESC LIMIT 1`)).WillReturnRows(
+		sqlmock.NewRows([]string{"ledger_closed_at"}).AddRow(now),
+	)
+	mock.ExpectQuery(`(?s)FROM enriched_history_operations\s+WHERE ledger_closed_at > TIMESTAMP`).WillReturnRows(
+		sqlmock.NewRows([]string{"swap_tx_24h", "contract_call_tx_24h"}).AddRow(int64(2), int64(3)),
+	)
 
 	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\)\s+FROM serving\.sv_contract_stats_current\s+WHERE COALESCE\(total_calls_24h, 0\) > 0`).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(int64(1)))
 
