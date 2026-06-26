@@ -87,7 +87,7 @@ func (c *DuckDBClient) initialize() error {
 	attachQuery := fmt.Sprintf(`
 		ATTACH 'ducklake:postgres:%s'
 		AS %s
-		(DATA_PATH '%s', METADATA_SCHEMA '%s', DATA_INLINING_ROW_LIMIT 250)
+		(DATA_PATH '%s', METADATA_SCHEMA '%s', DATA_INLINING_ROW_LIMIT 250, AUTOMATIC_MIGRATION TRUE)
 	`, c.config.CatalogPath, c.config.CatalogName, c.config.DataPath, c.config.MetadataSchema)
 
 	if _, err := c.db.Exec(attachQuery); err != nil {
