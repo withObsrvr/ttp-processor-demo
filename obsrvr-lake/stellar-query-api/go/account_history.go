@@ -403,14 +403,22 @@ func splitCSV(s string) []string {
 const accountTxOverscanFactor = 8
 
 func buildAccountTransactionsQuery(hotSchema, coldSchema, whereClause, orderDir string, overscanArg, limitArg int) string {
-	rows := func(schema string, rank int) string {
+	rows := func(schema string, rank int, isCold bool) string {
+		// Hot enriched_history_operations has all five participant columns as VARCHAR (and indexed);
+		// silver COLD typed from_account/to_address/address as int32 because the backfill left them
+		// all-NULL, so comparing them to an account string errors. Drop them from the cold filter —
+		// they carry no data there, and source_account (senders) + destination (receivers) cover it.
+		ehoWhere := "source_account = $1 OR destination = $1 OR from_account = $1 OR to_address = $1 OR address = $1"
+		if isCold {
+			ehoWhere = "source_account = $1 OR destination = $1"
+		}
 		return fmt.Sprintf(`
 		SELECT ledger_sequence, ledger_closed_at AS closed_at, transaction_hash, tx_successful AS successful, source_account,
 		       CAST(tx_fee_charged AS VARCHAR) AS fee_charged, tx_memo_type AS memo_type, tx_memo AS memo,
 		       CASE WHEN is_payment_op THEN 'classic_payment' WHEN is_soroban_op THEN 'soroban_operation' ELSE COALESCE(type_string, 'operation') END AS activity_type,
 		       'enriched_history_operations' AS source_table, %d AS source_rank
 		FROM %s.enriched_history_operations
-		WHERE source_account = $1 OR destination = $1 OR from_account = $1 OR to_address = $1 OR address = $1
+		WHERE %s
 		UNION ALL
 		SELECT ledger_sequence, timestamp AS closed_at, transaction_hash, transaction_successful, NULL,
 		       NULL, NULL, NULL,
@@ -422,22 +430,22 @@ func buildAccountTransactionsQuery(hotSchema, coldSchema, whereClause, orderDir 
 		SELECT ledger_sequence, closed_at, transaction_hash, successful, source_account,
 		       NULL, NULL, NULL, 'contract_invocation', 'contract_invocations_raw', %d
 		FROM %s.contract_invocations_raw
-		WHERE source_account = $1 OR contract_id = $1`, rank, schema, rank, schema, rank, schema)
+		WHERE source_account = $1 OR contract_id = $1`, rank, schema, ehoWhere, rank, schema, rank, schema)
 	}
 	// Bounded arm: apply the cursor/filters and keep only the top (overscan) op/event rows by the
 	// page order BEFORE the union+dedup+group. This is what lets the COLD arm read just the relevant
 	// DuckLake partitions (ledger ordering + top-N pushdown over ledger_range stats) instead of
 	// scanning all of cold for the un-indexed participant filter.
-	arm := func(schema string, rank int) string {
+	arm := func(schema string, rank int, isCold bool) string {
 		return fmt.Sprintf(`(SELECT * FROM (%s) raw WHERE %s ORDER BY ledger_sequence %s, closed_at %s, transaction_hash %s LIMIT $%d)`,
-			rows(schema, rank), whereClause, orderDir, orderDir, orderDir, overscanArg)
+			rows(schema, rank, isCold), whereClause, orderDir, orderDir, orderDir, overscanArg)
 	}
 	parts := []string{}
 	if strings.TrimSpace(hotSchema) != "" {
-		parts = append(parts, arm(hotSchema, 1))
+		parts = append(parts, arm(hotSchema, 1, false))
 	}
 	if strings.TrimSpace(coldSchema) != "" {
-		parts = append(parts, arm(coldSchema, 2))
+		parts = append(parts, arm(coldSchema, 2, true))
 	}
 	return fmt.Sprintf(`WITH combined AS (%s), ranked AS (
 		SELECT *, ROW_NUMBER() OVER (PARTITION BY ledger_sequence, transaction_hash, activity_type, source_table ORDER BY source_rank ASC) AS rn FROM combined
