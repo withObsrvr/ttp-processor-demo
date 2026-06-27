@@ -16,6 +16,33 @@ real account, `GB32463O…XVY7X`:
 
 The data is intact and federation logic exists — this is a **read-path wiring** gap, not data loss.
 
+> **🚧 IN PROGRESS 2026-06-27** — query-api cold-arm bounding **implemented + correctness-tested**
+> (`account_history.go:buildAccountTransactionsQuery` now bounds each hot/cold arm with the cursor +
+> `ORDER BY ledger LIMIT overscan` before union/dedup/group; `accountTxOverscanFactor=8`). New test
+> `TestGetAccountTransactionsPaginationNoDropsAcrossPages` walks a multi-page history (hot+cold,
+> op→tx collapse) and asserts no drops/dupes; existing dedup+pagination test still green.
+> **REMAINING:** (1) **prod perf gate** — deploy + time `/accounts/{id}/transactions` for a deep-history
+> account (or `EXPLAIN` the cold arm) to confirm DuckDB does top-N partition pruning; if it doesn't,
+> the bound caps rows but not the scan → need the index-plane. (2) **Prism wiring** — point the account
+> page at this federated endpoint (it still calls hot-only `GetAccountOverview`). (3) build/deploy.
+> Known v1 limitation: an account whose page window averages > overscan ops/transaction could
+> under-paginate deep history — the index-plane is the durable fix.
+
+## Investigation finding (2026-06-27) — the cold arm is UNBOUNDED (the real blocker)
+Traced the live code. The federated endpoint `/api/v1/silver/accounts/{id}/transactions`
+(`routes_silver.go:26` → `HandleAccountTransactions` → `UnifiedDuckDBReader.GetAccountTransactions`)
+**exists, is routed, and cold IS attached** (`unified_duckdb_reader.go:113–128` ATTACHes DuckLake as
+`cold_db` and sets `coldSchema` unconditionally; the attach is fatal-on-failure, so a live query-api
+has cold). So functionally it federates hot+cold today.
+
+**But `buildAccountTransactionsQuery` (`account_history.go:399–440`) applies the cursor filter and
+`ORDER BY ledger LIMIT $N` only at the OUTER level** — nothing bounds the cold arm. So each call scans
+cold `enriched_history_operations` (+ `token_transfers_raw` + `contract_invocations_raw`) for
+`source_account=$1 OR destination=$1 OR from_account=$1 OR to_address=$1 OR address=$1` across **all
+~23.3B rows** (cold is Parquet, no per-account index) before the limit applies. Measured: an account
+query took ~40s+. **Therefore wiring Prism to this endpoint as-is just relocates the timeout from hot
+to cold.** Bounding the cold arm is the actual work — the rest is wiring.
+
 ## What already exists (don't rebuild)
 `account_history.go` already implements **"hot+cold query-layer federation with hot-over-cold
 de-duplication"**:

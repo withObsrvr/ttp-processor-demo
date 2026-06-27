@@ -336,8 +336,9 @@ func (r *UnifiedDuckDBReader) GetAccountTransactions(ctx context.Context, filter
 		args = append(args, filters.Cursor.LedgerSequence, filters.Cursor.ClosedAt, filters.Cursor.TransactionHash)
 		arg += 3
 	}
-	args = append(args, requestLimit)
-	query := buildAccountTransactionsQuery(r.hotSchema, r.coldSchema, strings.Join(where, " AND "), orderDir, arg)
+	args = append(args, requestLimit*accountTxOverscanFactor) // $arg   : per-arm op/event row cap (bounds the cold scan)
+	args = append(args, requestLimit)                         // $arg+1 : transaction page limit
+	query := buildAccountTransactionsQuery(r.hotSchema, r.coldSchema, strings.Join(where, " AND "), orderDir, arg, arg+1)
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, "", false, fmt.Errorf("GetAccountTransactions: %w", err)
@@ -396,8 +397,13 @@ func splitCSV(s string) []string {
 	return out
 }
 
-func buildAccountTransactionsQuery(hotSchema, coldSchema, whereClause, orderDir string, limitArg int) string {
-	one := func(schema string, rank int) string {
+// accountTxOverscanFactor multiplies the page limit to get the per-arm op/event row cap.
+// The arms emit operation/event-level rows that later collapse to transaction-level, so each
+// arm must over-fetch to guarantee a full page of transactions survives the grouping.
+const accountTxOverscanFactor = 8
+
+func buildAccountTransactionsQuery(hotSchema, coldSchema, whereClause, orderDir string, overscanArg, limitArg int) string {
+	rows := func(schema string, rank int) string {
 		return fmt.Sprintf(`
 		SELECT ledger_sequence, ledger_closed_at AS closed_at, transaction_hash, tx_successful AS successful, source_account,
 		       CAST(tx_fee_charged AS VARCHAR) AS fee_charged, tx_memo_type AS memo_type, tx_memo AS memo,
@@ -418,15 +424,23 @@ func buildAccountTransactionsQuery(hotSchema, coldSchema, whereClause, orderDir 
 		FROM %s.contract_invocations_raw
 		WHERE source_account = $1 OR contract_id = $1`, rank, schema, rank, schema, rank, schema)
 	}
+	// Bounded arm: apply the cursor/filters and keep only the top (overscan) op/event rows by the
+	// page order BEFORE the union+dedup+group. This is what lets the COLD arm read just the relevant
+	// DuckLake partitions (ledger ordering + top-N pushdown over ledger_range stats) instead of
+	// scanning all of cold for the un-indexed participant filter.
+	arm := func(schema string, rank int) string {
+		return fmt.Sprintf(`(SELECT * FROM (%s) raw WHERE %s ORDER BY ledger_sequence %s, closed_at %s, transaction_hash %s LIMIT $%d)`,
+			rows(schema, rank), whereClause, orderDir, orderDir, orderDir, overscanArg)
+	}
 	parts := []string{}
 	if strings.TrimSpace(hotSchema) != "" {
-		parts = append(parts, one(hotSchema, 1))
+		parts = append(parts, arm(hotSchema, 1))
 	}
 	if strings.TrimSpace(coldSchema) != "" {
-		parts = append(parts, one(coldSchema, 2))
+		parts = append(parts, arm(coldSchema, 2))
 	}
-	return fmt.Sprintf(`WITH combined AS (%s), filtered AS (SELECT * FROM combined WHERE %s), ranked AS (
-		SELECT *, ROW_NUMBER() OVER (PARTITION BY ledger_sequence, transaction_hash, activity_type, source_table ORDER BY source_rank ASC) AS rn FROM filtered
+	return fmt.Sprintf(`WITH combined AS (%s), ranked AS (
+		SELECT *, ROW_NUMBER() OVER (PARTITION BY ledger_sequence, transaction_hash, activity_type, source_table ORDER BY source_rank ASC) AS rn FROM combined
 	), per_tx AS (
 		SELECT ledger_sequence, closed_at, transaction_hash,
 		       bool_or(COALESCE(successful, false)) AS successful,
@@ -437,7 +451,7 @@ func buildAccountTransactionsQuery(hotSchema, coldSchema, whereClause, orderDir 
 		FROM ranked WHERE rn = 1 GROUP BY ledger_sequence, closed_at, transaction_hash
 	)
 	SELECT ledger_sequence, closed_at, transaction_hash, successful, source_account, fee_charged, memo_type, memo, activity_types, source_tables, summary
-	FROM per_tx ORDER BY ledger_sequence %s, closed_at %s, transaction_hash %s LIMIT $%d`, strings.Join(parts, " UNION ALL "), whereClause, orderDir, orderDir, orderDir, limitArg)
+	FROM per_tx ORDER BY ledger_sequence %s, closed_at %s, transaction_hash %s LIMIT $%d`, strings.Join(parts, " UNION ALL "), orderDir, orderDir, orderDir, limitArg)
 }
 
 func (r *UnifiedDuckDBReader) GetAddressBalanceHistory(ctx context.Context, filters BalanceHistoryFilters) ([]BalanceHistoryPoint, string, bool, error) {
