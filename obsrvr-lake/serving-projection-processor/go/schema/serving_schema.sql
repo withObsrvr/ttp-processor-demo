@@ -973,3 +973,50 @@ create index if not exists sv_tx_receipts_contracts_gin_idx
     on serving.sv_tx_receipts using gin (involved_contracts);
 create index if not exists sv_tx_receipts_accounts_gin_idx
     on serving.sv_tx_receipts using gin (involved_accounts);
+
+-- ============================================================
+-- SELF-HEAL: ensure ON CONFLICT unique indexes exist
+-- ============================================================
+-- Every serving table above declares its PRIMARY KEY inline, which is the unique
+-- index the streaming projectors' `INSERT ... ON CONFLICT (...)` upserts require.
+-- BUT when these tables are first created by serving-cold-backfill (not by this
+-- schema), they are created WITHOUT those primary keys, and the `create table if
+-- not exists` statements above then become no-ops — so the constraint is never
+-- added and every upsert fails with SQLSTATE 42P10, freezing serving at its
+-- checkpoint. This block idempotently adds the required unique index to any such
+-- constraint-less table, and is a no-op when the table already has its primary key.
+-- The key list is the single source of truth for every projector ON CONFLICT clause.
+-- See docs/serving-onconflict-constraints-shaped-fix.md.
+do $$
+declare
+  r record;
+begin
+  for r in
+    select * from (values
+      ('serving.sv_projection_checkpoints', 'sv_projection_checkpoints_pn_uq',   'projection_name, network'),
+      ('serving.sv_accounts_current',       'sv_accounts_current_account_id_uq', 'account_id'),
+      ('serving.sv_network_stats_current',  'sv_network_stats_current_net_uq',   'network'),
+      ('serving.sv_ledger_stats_recent',    'sv_ledger_stats_recent_ls_uq',      'ledger_sequence'),
+      ('serving.sv_operations_recent',      'sv_operations_recent_op_uq',        'operation_id'),
+      ('serving.sv_transactions_recent',    'sv_transactions_recent_tx_uq',      'tx_hash'),
+      ('serving.sv_tx_receipts',            'sv_tx_receipts_tx_uq',              'tx_hash'),
+      ('serving.sv_contract_calls_recent',  'sv_contract_calls_recent_cc_uq',    'call_id'),
+      ('serving.sv_events_recent',          'sv_events_recent_ev_uq',            'event_id'),
+      ('serving.sv_explorer_events_recent', 'sv_explorer_events_recent_ev_uq',   'event_id')
+    ) as t(tbl, idxname, cols)
+  loop
+    if to_regclass(r.tbl) is null then
+      continue;  -- table not present in this deployment; skip
+    end if;
+    -- skip when the table already has ANY unique index (its inline PRIMARY KEY in the
+    -- normal schema-created case, OR a unique index added by a prior run / hand-patch).
+    -- These tables only ever carry one logical key — the ON CONFLICT key — so an
+    -- existing unique index is necessarily the right one, and we avoid a redundant copy.
+    if not exists (
+      select 1 from pg_index where indrelid = r.tbl::regclass and indisunique
+    ) then
+      execute format('create unique index if not exists %I on %s (%s)', r.idxname, r.tbl, r.cols);
+      raise notice 'serving self-heal: ensured unique index % on % (%)', r.idxname, r.tbl, r.cols;
+    end if;
+  end loop;
+end $$;
