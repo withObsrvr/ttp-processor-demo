@@ -117,6 +117,64 @@ func TestGetAccountTransactionsPaginationNoDropsAcrossPages(t *testing.T) {
 	}
 }
 
+// TestGetAccountTransactionsHighFanoutDoesNotHideOlder reproduces the bug where a single recent
+// transaction with many op/event rows (here: a token-transfer batch emitting 20 rows for GA in one
+// tx) could consume a per-row arm bound and make older transactions unreachable. The arm must bound
+// by DISTINCT transactions, so the fat transaction collapses to one and older history still pages.
+func TestGetAccountTransactionsHighFanoutDoesNotHideOlder(t *testing.T) {
+	db := newAccountHistoryDuckDB(t)
+	defer db.Close()
+	reader := &UnifiedDuckDBReader{db: db, hotSchema: "memory.hot", coldSchema: "memory.cold"}
+	ctx := context.Background()
+
+	// Newest ledger 100 = one transaction with 20 token-transfer rows for GA. Older ledgers 99/98
+	// are ordinary single-op transactions. With a per-row bound and limit=1 the 20 fanout rows would
+	// fill the arm and hide tx99/tx98 entirely.
+	for i := 0; i < 20; i++ {
+		stmt := fmt.Sprintf(`INSERT INTO hot.token_transfers_raw VALUES (100, TIMESTAMP '2026-01-01 00:01:40', 'tx100', true, 'GA', 'GZ', 'CC', '1', %d)`, i)
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("fanout insert: %v", err)
+		}
+	}
+	for _, s := range []string{
+		`INSERT INTO hot.enriched_history_operations VALUES (99, TIMESTAMP '2026-01-01 00:01:39', 'tx99', true, 'GA', 'GB', NULL, NULL, NULL, '100', 'none', NULL, true, false, 'payment')`,
+		`INSERT INTO hot.enriched_history_operations VALUES (98, TIMESTAMP '2026-01-01 00:01:38', 'tx98', true, 'GA', 'GB', NULL, NULL, NULL, '100', 'none', NULL, true, false, 'payment')`,
+	} {
+		if _, err := db.Exec(s); err != nil {
+			t.Fatalf("older insert: %v", err)
+		}
+	}
+
+	var seen []string
+	var cursor *HistoryCursor
+	for page := 0; page < 10; page++ {
+		txs, cur, hasMore, err := reader.GetAccountTransactions(ctx, AccountTransactionsFilters{AccountID: "GA", Limit: 1, Order: "desc", Cursor: cursor})
+		if err != nil {
+			t.Fatalf("page %d: %v", page, err)
+		}
+		for _, tx := range txs {
+			seen = append(seen, tx.TransactionHash)
+		}
+		if !hasMore {
+			break
+		}
+		cursor, err = DecodeHistoryCursor(cur)
+		if err != nil {
+			t.Fatalf("decode cursor: %v", err)
+		}
+	}
+
+	want := []string{"tx100", "tx99", "tx98"}
+	if len(seen) != len(want) {
+		t.Fatalf("walked %v, want %v (older transactions hidden by the high-fanout tx?)", seen, want)
+	}
+	for i := range want {
+		if seen[i] != want[i] {
+			t.Fatalf("order mismatch at %d: got %v want %v", i, seen, want)
+		}
+	}
+}
+
 func TestGetAddressBalanceHistoryClassicAndContract(t *testing.T) {
 	db := newAccountHistoryDuckDB(t)
 	defer db.Close()

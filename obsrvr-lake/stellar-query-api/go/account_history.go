@@ -336,9 +336,8 @@ func (r *UnifiedDuckDBReader) GetAccountTransactions(ctx context.Context, filter
 		args = append(args, filters.Cursor.LedgerSequence, filters.Cursor.ClosedAt, filters.Cursor.TransactionHash)
 		arg += 3
 	}
-	args = append(args, requestLimit*accountTxOverscanFactor) // $arg   : per-arm op/event row cap (bounds the cold scan)
-	args = append(args, requestLimit)                         // $arg+1 : transaction page limit
-	query := buildAccountTransactionsQuery(r.hotSchema, r.coldSchema, strings.Join(where, " AND "), orderDir, arg, arg+1)
+	args = append(args, requestLimit) // $arg : per-arm distinct-transaction bound AND final page limit
+	query := buildAccountTransactionsQuery(r.hotSchema, r.coldSchema, strings.Join(where, " AND "), orderDir, arg)
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, "", false, fmt.Errorf("GetAccountTransactions: %w", err)
@@ -397,12 +396,7 @@ func splitCSV(s string) []string {
 	return out
 }
 
-// accountTxOverscanFactor multiplies the page limit to get the per-arm op/event row cap.
-// The arms emit operation/event-level rows that later collapse to transaction-level, so each
-// arm must over-fetch to guarantee a full page of transactions survives the grouping.
-const accountTxOverscanFactor = 8
-
-func buildAccountTransactionsQuery(hotSchema, coldSchema, whereClause, orderDir string, overscanArg, limitArg int) string {
+func buildAccountTransactionsQuery(hotSchema, coldSchema, whereClause, orderDir string, limitArg int) string {
 	rows := func(schema string, rank int, isCold bool) string {
 		// Hot enriched_history_operations has all five participant columns as VARCHAR (and indexed);
 		// silver COLD typed from_account/to_address/address as int32 because the backfill left them
@@ -432,13 +426,19 @@ func buildAccountTransactionsQuery(hotSchema, coldSchema, whereClause, orderDir 
 		FROM %s.contract_invocations_raw
 		WHERE source_account = $1 OR contract_id = $1`, rank, schema, ehoWhere, rank, schema, rank, schema)
 	}
-	// Bounded arm: apply the cursor/filters and keep only the top (overscan) op/event rows by the
-	// page order BEFORE the union+dedup+group. This is what lets the COLD arm read just the relevant
-	// DuckLake partitions (ledger ordering + top-N pushdown over ledger_range stats) instead of
-	// scanning all of cold for the un-indexed participant filter.
+	// Bounded arm: keep only the rows of the top (limit+1) DISTINCT transactions in page order
+	// BEFORE the union/dedup/group. DENSE_RANK ties every op/event row of a transaction to one rank
+	// — a transaction is uniquely (ledger_sequence, transaction_hash); closed_at is constant within a
+	// ledger so it's omitted — so a single high-fanout transaction (e.g. a Soroban call emitting
+	// hundreds of token_transfers_raw rows) can never consume the bound and hide older transactions,
+	// which a per-row LIMIT could. NOTE: this materializes the arm's matching rows to rank them;
+	// pruning the COLD scan for sparse accounts is the job of the account index-plane, not this bound.
 	arm := func(schema string, rank int, isCold bool) string {
-		return fmt.Sprintf(`(SELECT * FROM (%s) raw WHERE %s ORDER BY ledger_sequence %s, closed_at %s, transaction_hash %s LIMIT $%d)`,
-			rows(schema, rank, isCold), whereClause, orderDir, orderDir, orderDir, overscanArg)
+		return fmt.Sprintf(`(SELECT * EXCLUDE (txn_rank) FROM (
+			SELECT *, DENSE_RANK() OVER (ORDER BY ledger_sequence %s, transaction_hash %s) AS txn_rank
+			FROM (%s) raw WHERE %s
+		) bounded WHERE txn_rank <= $%d)`,
+			orderDir, orderDir, rows(schema, rank, isCold), whereClause, limitArg)
 	}
 	parts := []string{}
 	if strings.TrimSpace(hotSchema) != "" {

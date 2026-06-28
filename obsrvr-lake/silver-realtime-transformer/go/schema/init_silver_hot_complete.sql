@@ -155,19 +155,12 @@ CREATE INDEX IF NOT EXISTS idx_enriched_ops_type ON enriched_history_operations(
 CREATE INDEX IF NOT EXISTS idx_enriched_ops_created_at ON enriched_history_operations(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_enriched_ops_ledger_range ON enriched_history_operations(ledger_range);
 
--- Participant-column indexes for account history. The account-activity query filters
--- `WHERE (source_account=$1 OR destination=$1)` and the hot+cold federated
--- /accounts/{id}/transactions query ORs across source_account/destination/from_account/
--- to_address/address. source_account is indexed above; without the rest a receive-heavy
--- account seq-scans this 175M+ row table -> gateway 503. Partial (NOT NULL) keeps them small
--- since these columns are null for most op types, and `col = $1` implies `col IS NOT NULL`
--- so the planner still uses them. On a large EXISTING table create these CONCURRENTLY out of
--- band: this statement is a no-op once they exist, and builds instantly on a fresh/empty table.
+-- Participant-column indexes for account history (destination/from_account/to_address/address) are
+-- INTENTIONALLY NOT created here. On an existing ~175M-row enriched_history_operations a plain
+-- CREATE INDEX takes a write-blocking lock and would freeze the realtime transformer/ingesters while
+-- it scans the whole table. They are built CONCURRENTLY in the background by EnsureSilverHotIndexes()
+-- (schema_init.go), called off the startup critical path from main.go.
 -- See docs/enriched-operations-participant-indexes-shaped-fix.md.
-CREATE INDEX IF NOT EXISTS idx_enriched_ops_destination  ON enriched_history_operations(destination)  WHERE destination IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_enriched_ops_from_account ON enriched_history_operations(from_account) WHERE from_account IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_enriched_ops_to_address   ON enriched_history_operations(to_address)   WHERE to_address IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_enriched_ops_address      ON enriched_history_operations(address)      WHERE address IS NOT NULL;
 
 -- Table: enriched_history_operations_soroban
 -- Filtered view of enriched operations for Soroban contract invocations only
