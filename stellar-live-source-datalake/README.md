@@ -1,21 +1,26 @@
-# Stellar Live Source (Data Lake)
+# Stellar Live Source
 
-This service reads Stellar ledger data from a data lake (GCS, S3, or local filesystem) and streams it via gRPC to consumers. It uses the `stellar-datastore` and `stellar-cdp` packages to efficiently read and process ledger data from storage.
+This service streams raw Stellar ledger data via gRPC to downstream consumers. It can read ledgers from multiple upstream backend types:
 
-> **Note**: This service reads from **storage backends** (data lakes). If you need to stream data from **Stellar RPC endpoints**, use the `stellar-live-source` service instead, which connects directly to Stellar RPC nodes.
+- **RPC**: Stellar RPC endpoint via the official Stellar Go SDK RPC ledger backend
+- **ARCHIVE**: Datalake/archive storage via GCS or S3 using the official Stellar Go SDK datastore and buffered storage backend
+- **CAPTIVE_CORE**: Captive Core ledger backend
+
+Despite the historical `stellar-live-source-datalake` directory name, this service is no longer datalake-only. Select exactly one upstream backend with `BACKEND_TYPE`.
 
 ## Features
 
-- Reads ledger data from various storage backends (GCS, S3, FS)
+- Reads ledger data from Stellar RPC, archive/datalake storage, or Captive Core
 - Streams raw ledger data via gRPC
 - Supports continuous streaming from a specified ledger
-- Efficient processing using buffered storage backend
+- Supports optional RPC authorization headers
+- Efficient archive processing using buffered storage backend
 
 ## Prerequisites
 
 - Go 1.21+
 - Protocol Buffers compiler (protoc)
-- Access to a data lake containing Stellar ledger data
+- Access to the selected upstream backend: Stellar RPC, GCS/S3 archive storage, or Captive Core
 
 ## Building
 
@@ -32,9 +37,6 @@ make nix-run
 
 # Build Docker image (Nix binary + Docker)
 make docker-build
-
-# Run Docker container
-make docker-run
 ```
 
 For pure Nix Docker image:
@@ -46,7 +48,7 @@ make nix-docker
 make nix-docker-load
 ```
 
-See [NIX_USAGE.md](./NIX_USAGE.md) for detailed build options and troubleshooting.
+The Nix flake in this directory defines the reproducible build environment used by these targets.
 
 ### Development Environment
 
@@ -70,7 +72,7 @@ If you prefer not to use Nix:
 
 2. Generate gRPC code:
    ```bash
-   make generate-proto
+   make gen-proto
    ```
 
 3. Build the service:
@@ -80,17 +82,57 @@ If you prefer not to use Nix:
 
 ## Configuration
 
-The service is configured via environment variables:
+The service is configured via environment variables.
 
-### Storage Configuration
+### Backend Selection
 
-- `STORAGE_TYPE`: Type of storage backend ("GCS", "S3", or "FS")
-- `BUCKET_NAME`: Name of the bucket or path to the data
-- `AWS_REGION`: AWS region (required for S3)
-- `S3_ENDPOINT_URL`: Custom S3 endpoint URL (optional)
-- `S3_FORCE_PATH_STYLE`: Set to "true" for non-AWS S3 (optional)
-- `LEDGERS_PER_FILE`: Number of ledgers per file (default: 64)
-- `FILES_PER_PARTITION`: Number of files per partition (default: 10)
+- `BACKEND_TYPE`: Upstream backend type. Supported values: `RPC`, `ARCHIVE`, or `CAPTIVE_CORE`.
+  - Default: `CAPTIVE_CORE`
+  - Legacy `STORAGE_TYPE=GCS` or `STORAGE_TYPE=S3` maps to `ARCHIVE` when `BACKEND_TYPE` is unset.
+
+### Shared Configuration
+
+- `NETWORK_PASSPHRASE`: Stellar network passphrase. Default: `Public Network; September 2015`
+- `PORT`: gRPC service port. Default: `50053`
+- `HEALTH_PORT`: Health check HTTP port. Default: `8088`
+
+### RPC Backend Configuration
+
+Required when `BACKEND_TYPE=RPC`:
+
+- `RPC_ENDPOINT`: Stellar RPC endpoint URL
+- `RPC_AUTH_HEADER`: Optional Authorization header value for RPC requests, for example `Api-Key xyz123`
+
+### Archive / Datalake Backend Configuration
+
+Required when `BACKEND_TYPE=ARCHIVE`:
+
+- `ARCHIVE_STORAGE_TYPE`: Archive storage backend type. Supported values: `GCS` or `S3`
+- `ARCHIVE_BUCKET_NAME`: Bucket name
+- `ARCHIVE_PATH`: Optional path inside the bucket. For GCS, if unset, defaults to `landing/ledgers/testnet`
+- `LEDGERS_PER_FILE`: Number of ledgers per file. Default: `64`
+- `FILES_PER_PARTITION`: Number of files per partition. Default: `10`
+- `BUFFER_SIZE`: Archive read-ahead buffer size. Default: `5`
+- `NUM_WORKERS`: Archive backend worker count. Default: `2`
+
+S3-specific options:
+
+- `AWS_REGION`: AWS region. Default: `us-east-1`
+- `S3_ENDPOINT_URL`: Custom S3 endpoint URL, for example MinIO
+- `S3_FORCE_PATH_STYLE`: Set to `true` for path-style S3 URLs
+
+Legacy archive variables are still accepted for compatibility:
+
+- `STORAGE_TYPE`: Legacy alias for `ARCHIVE_STORAGE_TYPE` when set to `GCS` or `S3`
+- `BUCKET_NAME`: Legacy alias for `ARCHIVE_BUCKET_NAME`
+
+### Captive Core Backend Configuration
+
+Required when `BACKEND_TYPE=CAPTIVE_CORE`:
+
+- `STELLAR_CORE_BINARY_PATH`: Path to the Stellar Core binary
+- `HISTORY_ARCHIVE_URLS`: Comma-separated history archive URLs
+- `STELLAR_CORE_CONFIG_PATH`: Currently loaded by configuration but not used by backend construction
 
 ### Flowctl Integration
 
@@ -100,7 +142,7 @@ This service supports integration with the Obsrvr flowctl control plane. Enable 
 - `FLOWCTL_ENDPOINT`: The control plane endpoint (e.g., "localhost:8080")
 - `SERVICE_ID`: Optional unique ID for this service instance
 
-See [FLOWCTL_INTEGRATION.md](./FLOWCTL_INTEGRATION.md) for detailed integration instructions.
+When enabled, the service registers with the configured flowctl control plane and exposes health/metrics data.
 
 ## Running
 
@@ -108,10 +150,11 @@ The service can be run in several ways depending on your environment and needs:
 
 ### Method 1: Direct Execution with Make
 
-1. Set required environment variables:
+1. Set required environment variables for one backend. For example, archive/datalake:
    ```bash
-   export STORAGE_TYPE="GCS"
-   export BUCKET_NAME="my-stellar-ledgers"
+   export BACKEND_TYPE="ARCHIVE"
+   export ARCHIVE_STORAGE_TYPE="GCS"
+   export ARCHIVE_BUCKET_NAME="my-stellar-ledgers"
    export NETWORK_PASSPHRASE="Test SDF Network ; September 2015"
    ```
 
@@ -138,14 +181,22 @@ make run
 Run the service in a containerized environment:
 
 ```bash
-# Build and run with Docker
+# Build the Docker image
 make docker-build
-make docker-run
 
-# Or use Nix-built Docker image
+# Run with explicit backend configuration
+# Note: the current Makefile docker-run target is legacy; prefer explicit docker run.
+docker run \
+  -p 50053:50053 \
+  -p 8088:8088 \
+  -e BACKEND_TYPE=ARCHIVE \
+  -e ARCHIVE_STORAGE_TYPE=GCS \
+  -e ARCHIVE_BUCKET_NAME=my-bucket \
+  stellar-live-source-datalake:latest
+
+# Or use a Nix-built Docker image
 make nix-docker
 make nix-docker-load
-docker run -e STORAGE_TYPE=GCS -e BUCKET_NAME=my-bucket stellar-live-source-datalake
 ```
 
 ### Method 4: Direct Go Execution
@@ -154,47 +205,60 @@ For development and debugging:
 
 ```bash
 cd go
-# Set environment variables
-export STORAGE_TYPE="FS"
-export BUCKET_NAME="./test-data"
+# Set environment variables for an RPC backend
+export BACKEND_TYPE="RPC"
+export RPC_ENDPOINT="https://soroban-testnet.stellar.org"
 export NETWORK_PASSPHRASE="Test SDF Network ; September 2015"
 
 # Run directly
 go run main.go
 ```
 
-### Storage Backend Examples
+### Backend Examples
 
-#### Google Cloud Storage (GCS)
+#### Stellar RPC
 ```bash
-export STORAGE_TYPE="GCS"
-export BUCKET_NAME="stellar-ledgers-prod"
+export BACKEND_TYPE="RPC"
+export RPC_ENDPOINT="https://soroban-testnet.stellar.org"
+export RPC_AUTH_HEADER="Api-Key your-key" # optional
+```
+
+#### Google Cloud Storage archive/datalake
+```bash
+export BACKEND_TYPE="ARCHIVE"
+export ARCHIVE_STORAGE_TYPE="GCS"
+export ARCHIVE_BUCKET_NAME="stellar-ledgers-prod"
+export ARCHIVE_PATH="landing/ledgers/testnet" # optional
 export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account.json"
 ```
 
-#### Amazon S3
+#### Amazon S3 archive/datalake
 ```bash
-export STORAGE_TYPE="S3"
-export BUCKET_NAME="stellar-ledgers"
+export BACKEND_TYPE="ARCHIVE"
+export ARCHIVE_STORAGE_TYPE="S3"
+export ARCHIVE_BUCKET_NAME="stellar-ledgers"
 export AWS_REGION="us-east-1"
 export AWS_ACCESS_KEY_ID="your-access-key"
 export AWS_SECRET_ACCESS_KEY="your-secret-key"
 ```
 
-#### Local Filesystem
+#### MinIO or S3-compatible archive/datalake
 ```bash
-export STORAGE_TYPE="FS"
-export BUCKET_NAME="/path/to/ledger/data"
-```
-
-#### MinIO or S3-Compatible Storage
-```bash
-export STORAGE_TYPE="S3"
-export BUCKET_NAME="stellar-ledgers"
+export BACKEND_TYPE="ARCHIVE"
+export ARCHIVE_STORAGE_TYPE="S3"
+export ARCHIVE_BUCKET_NAME="stellar-ledgers"
 export S3_ENDPOINT_URL="http://localhost:9000"
 export S3_FORCE_PATH_STYLE="true"
 export AWS_ACCESS_KEY_ID="minioadmin"
 export AWS_SECRET_ACCESS_KEY="minioadmin"
+```
+
+#### Captive Core
+```bash
+export BACKEND_TYPE="CAPTIVE_CORE"
+export STELLAR_CORE_BINARY_PATH="/path/to/stellar-core"
+export HISTORY_ARCHIVE_URLS="https://history.stellar.org/prd/core-live/core_live_001"
+export NETWORK_PASSPHRASE="Public Network; September 2015"
 ```
 
 ### Running with Flowctl Integration
@@ -212,20 +276,30 @@ make run
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `STORAGE_TYPE` | Yes | - | Storage backend type: "GCS", "S3", or "FS" |
-| `BUCKET_NAME` | Yes | - | Bucket name or filesystem path |
-| `NETWORK_PASSPHRASE` | Yes | - | Stellar network passphrase |
-| `PORT` | No | 50052 | gRPC service port |
-| `HEALTH_PORT` | No | 8088 | Health check HTTP port |
-| `AWS_REGION` | If S3 | - | AWS region for S3 storage |
-| `S3_ENDPOINT_URL` | No | - | Custom S3 endpoint (e.g., MinIO) |
-| `S3_FORCE_PATH_STYLE` | No | false | Use path-style S3 URLs |
-| `LEDGERS_PER_FILE` | No | 64 | Ledgers per storage file |
-| `FILES_PER_PARTITION` | No | 10 | Files per storage partition |
-| `ENABLE_FLOWCTL` | No | false | Enable flowctl integration |
+| `BACKEND_TYPE` | No | `CAPTIVE_CORE` | Upstream backend: `RPC`, `ARCHIVE`, or `CAPTIVE_CORE` |
+| `NETWORK_PASSPHRASE` | No | `Public Network; September 2015` | Stellar network passphrase |
+| `PORT` | No | `50053` | gRPC service port |
+| `HEALTH_PORT` | No | `8088` | Health check HTTP port |
+| `RPC_ENDPOINT` | If RPC | - | Stellar RPC endpoint URL |
+| `RPC_AUTH_HEADER` | No | - | Authorization header value for RPC requests |
+| `ARCHIVE_STORAGE_TYPE` | If ARCHIVE | - | Archive storage backend: `GCS` or `S3` |
+| `ARCHIVE_BUCKET_NAME` | If ARCHIVE | - | Archive bucket name |
+| `ARCHIVE_PATH` | No | GCS: `landing/ledgers/testnet` | Optional archive path inside bucket |
+| `AWS_REGION` | If S3 | `us-east-1` | AWS region for S3 storage |
+| `S3_ENDPOINT_URL` | No | - | Custom S3 endpoint, for example MinIO |
+| `S3_FORCE_PATH_STYLE` | No | `false` | Use path-style S3 URLs |
+| `LEDGERS_PER_FILE` | No | `64` | Ledgers per archive file |
+| `FILES_PER_PARTITION` | No | `10` | Files per archive partition |
+| `BUFFER_SIZE` | No | `5` | Archive backend read-ahead buffer size |
+| `NUM_WORKERS` | No | `2` | Archive backend worker count |
+| `STELLAR_CORE_BINARY_PATH` | If CAPTIVE_CORE | - | Stellar Core binary path |
+| `HISTORY_ARCHIVE_URLS` | If CAPTIVE_CORE | - | Comma-separated history archive URLs |
+| `STORAGE_TYPE` | Legacy | - | Legacy alias for archive storage type (`GCS`/`S3`) |
+| `BUCKET_NAME` | Legacy | - | Legacy alias for archive bucket name |
+| `ENABLE_FLOWCTL` | No | `false` | Enable flowctl integration |
 | `FLOWCTL_ENDPOINT` | If flowctl | - | Control plane endpoint |
 
-The service will start listening on port 50052 (or configured PORT) and begin streaming ledger data when requested.
+The service will start listening on port 50053 (or configured `PORT`) and begin streaming ledger data when requested.
 
 ## gRPC Interface
 
@@ -243,8 +317,8 @@ service RawLedgerService {
 ## Architecture
 
 The service uses:
-- `stellar-datastore` for reading from various storage backends
-- `stellar-cdp` for efficient ledger processing
+- Official Stellar Go SDK `ledgerbackend` implementations for RPC, archive/datalake storage, and Captive Core
+- Official Stellar Go SDK `datastore` for archive/datalake reads from GCS or S3
 - gRPC for streaming the data to consumers
 
 ## Development
@@ -277,9 +351,10 @@ github.com/withObsrvr/ttp-processor-demo/
 
 The project depends on several key packages:
 
-- `github.com/withObsrvr/stellar-datastore`: For reading from various storage backends
-- `github.com/withObsrvr/stellar-cdp`: For efficient ledger processing
-- `github.com/withObsrvr/stellar-ledgerbackend`: For ledger backend functionality
+- `github.com/stellar/go-stellar-sdk`: For ledger backends, datastore access, and XDR types
+- `google.golang.org/grpc`: For the streaming service API
+- `go.uber.org/zap`: For structured logging
+- `github.com/withobsrvr/flowctl`: For optional control plane integration
 
 ### Protobuf Generation
 
@@ -287,7 +362,7 @@ The gRPC service definitions are generated from Protocol Buffer files. The gener
 
 1. The `go/go.mod` file should have the correct module path:
    ```go
-   module github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/go
+   module github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake
    ```
 
 2. The generated protobuf code should be in the correct directory structure:
