@@ -133,7 +133,7 @@ func NewLoader(ctx context.Context, cfg Config) (*Loader, error) {
 		return nil, err
 	}
 	l := &Loader{db: db, cfg: cfg}
-	for _, stmt := range []string{"INSTALL ducklake FROM core_nightly", "LOAD ducklake", "INSTALL httpfs", "LOAD httpfs"} {
+	for _, stmt := range []string{"INSTALL ducklake", "LOAD ducklake", "INSTALL httpfs", "LOAD httpfs"} {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("%s: %w", stmt, err)

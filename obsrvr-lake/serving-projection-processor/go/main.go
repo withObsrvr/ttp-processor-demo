@@ -99,6 +99,10 @@ func main() {
 		if *applySchemaOnly {
 			return
 		}
+		// Best-effort, in the background: ensure the tx_receipts source-table indexes
+		// exist (CONCURRENTLY builds can take minutes on large tables; tx_receipts stays
+		// slow until they finish, but the other projectors run unaffected meanwhile).
+		go EnsureSourceIndexes(ctx, silverPool, bronzePool)
 	}
 
 	checkpoints := NewCheckpointStore(servingPool)

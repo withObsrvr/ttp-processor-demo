@@ -92,6 +92,10 @@ func main() {
 		log.Fatalf("Failed to ensure silver_hot schema: %v", err)
 	}
 
+	// Build the large participant indexes CONCURRENTLY off the startup critical path so they never
+	// write-lock the ~175M-row enriched_history_operations table and stall ingestion.
+	go EnsureSilverHotIndexes(silverDB)
+
 	// Initialize components
 	bronzeHotReader := NewBronzeReader(bronzeDB)
 	silverWriter := NewSilverWriter(silverDB)

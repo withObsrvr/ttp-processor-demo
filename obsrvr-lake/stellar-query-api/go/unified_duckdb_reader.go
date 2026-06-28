@@ -59,7 +59,7 @@ func NewUnifiedDuckDBReader(config UnifiedReaderConfig) (*UnifiedDuckDBReader, e
 		load    string
 	}{
 		{"postgres", "INSTALL postgres", "LOAD postgres"},
-		{"ducklake", "INSTALL ducklake FROM core_nightly", "LOAD ducklake"},
+		{"ducklake", "INSTALL ducklake", "LOAD ducklake"},
 		{"httpfs", "INSTALL httpfs", "LOAD httpfs"},
 	}
 

@@ -336,7 +336,7 @@ func (r *UnifiedDuckDBReader) GetAccountTransactions(ctx context.Context, filter
 		args = append(args, filters.Cursor.LedgerSequence, filters.Cursor.ClosedAt, filters.Cursor.TransactionHash)
 		arg += 3
 	}
-	args = append(args, requestLimit)
+	args = append(args, requestLimit) // $arg : per-arm distinct-transaction bound AND final page limit
 	query := buildAccountTransactionsQuery(r.hotSchema, r.coldSchema, strings.Join(where, " AND "), orderDir, arg)
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -397,14 +397,22 @@ func splitCSV(s string) []string {
 }
 
 func buildAccountTransactionsQuery(hotSchema, coldSchema, whereClause, orderDir string, limitArg int) string {
-	one := func(schema string, rank int) string {
+	rows := func(schema string, rank int, isCold bool) string {
+		// Hot enriched_history_operations has all five participant columns as VARCHAR (and indexed);
+		// silver COLD typed from_account/to_address/address as int32 because the backfill left them
+		// all-NULL, so comparing them to an account string errors. Drop them from the cold filter —
+		// they carry no data there, and source_account (senders) + destination (receivers) cover it.
+		ehoWhere := "source_account = $1 OR destination = $1 OR from_account = $1 OR to_address = $1 OR address = $1"
+		if isCold {
+			ehoWhere = "source_account = $1 OR destination = $1"
+		}
 		return fmt.Sprintf(`
 		SELECT ledger_sequence, ledger_closed_at AS closed_at, transaction_hash, tx_successful AS successful, source_account,
 		       CAST(tx_fee_charged AS VARCHAR) AS fee_charged, tx_memo_type AS memo_type, tx_memo AS memo,
 		       CASE WHEN is_payment_op THEN 'classic_payment' WHEN is_soroban_op THEN 'soroban_operation' ELSE COALESCE(type_string, 'operation') END AS activity_type,
 		       'enriched_history_operations' AS source_table, %d AS source_rank
 		FROM %s.enriched_history_operations
-		WHERE source_account = $1 OR destination = $1 OR from_account = $1 OR to_address = $1 OR address = $1
+		WHERE %s
 		UNION ALL
 		SELECT ledger_sequence, timestamp AS closed_at, transaction_hash, transaction_successful, NULL,
 		       NULL, NULL, NULL,
@@ -416,17 +424,31 @@ func buildAccountTransactionsQuery(hotSchema, coldSchema, whereClause, orderDir 
 		SELECT ledger_sequence, closed_at, transaction_hash, successful, source_account,
 		       NULL, NULL, NULL, 'contract_invocation', 'contract_invocations_raw', %d
 		FROM %s.contract_invocations_raw
-		WHERE source_account = $1 OR contract_id = $1`, rank, schema, rank, schema, rank, schema)
+		WHERE source_account = $1 OR contract_id = $1`, rank, schema, ehoWhere, rank, schema, rank, schema)
+	}
+	// Bounded arm: keep only the rows of the top (limit+1) DISTINCT transactions in page order
+	// BEFORE the union/dedup/group. DENSE_RANK ties every op/event row of a transaction to one rank
+	// — a transaction is uniquely (ledger_sequence, transaction_hash); closed_at is constant within a
+	// ledger so it's omitted — so a single high-fanout transaction (e.g. a Soroban call emitting
+	// hundreds of token_transfers_raw rows) can never consume the bound and hide older transactions,
+	// which a per-row LIMIT could. NOTE: this materializes the arm's matching rows to rank them;
+	// pruning the COLD scan for sparse accounts is the job of the account index-plane, not this bound.
+	arm := func(schema string, rank int, isCold bool) string {
+		return fmt.Sprintf(`(SELECT * EXCLUDE (txn_rank) FROM (
+			SELECT *, DENSE_RANK() OVER (ORDER BY ledger_sequence %s, transaction_hash %s) AS txn_rank
+			FROM (%s) raw WHERE %s
+		) bounded WHERE txn_rank <= $%d)`,
+			orderDir, orderDir, rows(schema, rank, isCold), whereClause, limitArg)
 	}
 	parts := []string{}
 	if strings.TrimSpace(hotSchema) != "" {
-		parts = append(parts, one(hotSchema, 1))
+		parts = append(parts, arm(hotSchema, 1, false))
 	}
 	if strings.TrimSpace(coldSchema) != "" {
-		parts = append(parts, one(coldSchema, 2))
+		parts = append(parts, arm(coldSchema, 2, true))
 	}
-	return fmt.Sprintf(`WITH combined AS (%s), filtered AS (SELECT * FROM combined WHERE %s), ranked AS (
-		SELECT *, ROW_NUMBER() OVER (PARTITION BY ledger_sequence, transaction_hash, activity_type, source_table ORDER BY source_rank ASC) AS rn FROM filtered
+	return fmt.Sprintf(`WITH combined AS (%s), ranked AS (
+		SELECT *, ROW_NUMBER() OVER (PARTITION BY ledger_sequence, transaction_hash, activity_type, source_table ORDER BY source_rank ASC) AS rn FROM combined
 	), per_tx AS (
 		SELECT ledger_sequence, closed_at, transaction_hash,
 		       bool_or(COALESCE(successful, false)) AS successful,
@@ -437,7 +459,7 @@ func buildAccountTransactionsQuery(hotSchema, coldSchema, whereClause, orderDir 
 		FROM ranked WHERE rn = 1 GROUP BY ledger_sequence, closed_at, transaction_hash
 	)
 	SELECT ledger_sequence, closed_at, transaction_hash, successful, source_account, fee_charged, memo_type, memo, activity_types, source_tables, summary
-	FROM per_tx ORDER BY ledger_sequence %s, closed_at %s, transaction_hash %s LIMIT $%d`, strings.Join(parts, " UNION ALL "), whereClause, orderDir, orderDir, orderDir, limitArg)
+	FROM per_tx ORDER BY ledger_sequence %s, closed_at %s, transaction_hash %s LIMIT $%d`, strings.Join(parts, " UNION ALL "), orderDir, orderDir, orderDir, limitArg)
 }
 
 func (r *UnifiedDuckDBReader) GetAddressBalanceHistory(ctx context.Context, filters BalanceHistoryFilters) ([]BalanceHistoryPoint, string, bool, error) {

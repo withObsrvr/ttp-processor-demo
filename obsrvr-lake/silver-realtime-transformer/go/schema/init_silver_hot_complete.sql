@@ -155,6 +155,13 @@ CREATE INDEX IF NOT EXISTS idx_enriched_ops_type ON enriched_history_operations(
 CREATE INDEX IF NOT EXISTS idx_enriched_ops_created_at ON enriched_history_operations(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_enriched_ops_ledger_range ON enriched_history_operations(ledger_range);
 
+-- Participant-column indexes for account history (destination/from_account/to_address/address) are
+-- INTENTIONALLY NOT created here. On an existing ~175M-row enriched_history_operations a plain
+-- CREATE INDEX takes a write-blocking lock and would freeze the realtime transformer/ingesters while
+-- it scans the whole table. They are built CONCURRENTLY in the background by EnsureSilverHotIndexes()
+-- (schema_init.go), called off the startup critical path from main.go.
+-- See docs/enriched-operations-participant-indexes-shaped-fix.md.
+
 -- Table: enriched_history_operations_soroban
 -- Filtered view of enriched operations for Soroban contract invocations only
 CREATE TABLE IF NOT EXISTS enriched_history_operations_soroban (

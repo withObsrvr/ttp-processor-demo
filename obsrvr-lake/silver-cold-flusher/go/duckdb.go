@@ -50,7 +50,7 @@ func (c *DuckDBClient) initialize() error {
 		return fmt.Errorf("failed to load postgres extension: %w", err)
 	}
 
-	if _, err := c.db.Exec("INSTALL ducklake FROM core_nightly"); err != nil {
+	if _, err := c.db.Exec("INSTALL ducklake"); err != nil {
 		return fmt.Errorf("failed to install ducklake extension: %w", err)
 	}
 	if _, err := c.db.Exec("LOAD ducklake"); err != nil {
@@ -87,7 +87,7 @@ func (c *DuckDBClient) initialize() error {
 	attachQuery := fmt.Sprintf(`
 		ATTACH 'ducklake:postgres:%s'
 		AS %s
-		(DATA_PATH '%s', METADATA_SCHEMA '%s', DATA_INLINING_ROW_LIMIT 250)
+		(DATA_PATH '%s', METADATA_SCHEMA '%s', DATA_INLINING_ROW_LIMIT 250, AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE)
 	`, c.config.CatalogPath, c.config.CatalogName, c.config.DataPath, c.config.MetadataSchema)
 
 	if _, err := c.db.Exec(attachQuery); err != nil {
@@ -98,7 +98,7 @@ func (c *DuckDBClient) initialize() error {
 			createAttachQuery := fmt.Sprintf(`
 				ATTACH 'ducklake:postgres:%s'
 				AS %s
-				(TYPE ducklake, DATA_PATH '%s', METADATA_SCHEMA '%s', DATA_INLINING_ROW_LIMIT 250)
+				(TYPE ducklake, DATA_PATH '%s', METADATA_SCHEMA '%s', DATA_INLINING_ROW_LIMIT 250, AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE)
 			`, c.config.CatalogPath, c.config.CatalogName, c.config.DataPath, c.config.MetadataSchema)
 			if _, err := c.db.Exec(createAttachQuery); err != nil {
 				return fmt.Errorf("failed to create and attach DuckLake catalog: %w", err)
@@ -120,304 +120,126 @@ func (c *DuckDBClient) initialize() error {
 	return nil
 }
 
-// FlushTable flushes a table from PostgreSQL to DuckLake using postgres_scan
+// describeColumns returns the column names, in order, of a DuckDB relation or query.
+func (c *DuckDBClient) describeColumns(target string) ([]string, error) {
+	rows, err := c.db.Query("DESCRIBE " + target)
+	if err != nil {
+		return nil, fmt.Errorf("describe %s: %w", target, err)
+	}
+	defer rows.Close()
+
+	var cols []string
+	for rows.Next() {
+		var name string
+		var ctype, null, key, def, extra sql.NullString
+		if err := rows.Scan(&name, &ctype, &null, &key, &def, &extra); err != nil {
+			return nil, fmt.Errorf("scan describe row: %w", err)
+		}
+		cols = append(cols, name)
+	}
+	return cols, rows.Err()
+}
+
+// flushOverrides maps table -> cold column -> SELECT expression, for the few columns that must be
+// computed or cast during flush rather than copied straight from silver_hot.
+var flushOverrides = map[string]map[string]string{
+	"token_transfers_raw": {
+		"amount":       "CAST(amount AS DOUBLE)",
+		"ledger_range": "FLOOR(ledger_sequence / 100000)",
+	},
+}
+
+// buildFlushColumns computes the INSERT column list and matching SELECT expressions for a flush,
+// using only columns present in BOTH the cold and hot schemas (matched by name), plus any computed
+// overrides. Cold-only columns without an override are omitted (they take their column default), and
+// hot-only columns are ignored. This is what keeps flushing correct as the cold schema gains columns
+// the hot table doesn't have yet (era_id / version_label / inserted_at / ...). Pure, for testability.
+func buildFlushColumns(coldCols, hotCols []string, overrides map[string]string) (insertCols, selectExprs []string) {
+	hotSet := make(map[string]bool, len(hotCols))
+	for _, h := range hotCols {
+		hotSet[h] = true
+	}
+	for _, col := range coldCols {
+		switch {
+		case overrides[col] != "":
+			insertCols = append(insertCols, col)
+			selectExprs = append(selectExprs, overrides[col]+" AS "+col)
+		case hotSet[col]:
+			insertCols = append(insertCols, col)
+			selectExprs = append(selectExprs, col)
+		}
+	}
+	return insertCols, selectExprs
+}
+
+// buildIntersectionFlush builds an INSERT copying watermark-bounded rows from silver_hot into the
+// cold DuckLake table, projecting only the columns the two schemas share (plus computed overrides).
+func (c *DuckDBClient) buildIntersectionFlush(tableName, watermarkCol string, watermark, lastFlushed int64, pgConnStr string) (string, error) {
+	coldCols, err := c.describeColumns(fmt.Sprintf("%s.%s.%s", c.config.CatalogName, c.config.SchemaName, tableName))
+	if err != nil {
+		return "", fmt.Errorf("describe cold %s: %w", tableName, err)
+	}
+	hotCols, err := c.describeColumns(fmt.Sprintf("SELECT * FROM postgres_scan('%s', 'public', '%s')", pgConnStr, tableName))
+	if err != nil {
+		return "", fmt.Errorf("describe hot %s: %w", tableName, err)
+	}
+	insertCols, selectExprs := buildFlushColumns(coldCols, hotCols, flushOverrides[tableName])
+	if len(insertCols) == 0 {
+		return "", fmt.Errorf("no shared columns between hot and cold for %s", tableName)
+	}
+	return fmt.Sprintf(`
+		INSERT INTO %s.%s.%s (%s)
+		SELECT %s
+		FROM postgres_scan('%s', 'public', '%s')
+		WHERE %s > %d AND %s <= %d
+	`, c.config.CatalogName, c.config.SchemaName, tableName,
+		strings.Join(insertCols, ", "), strings.Join(selectExprs, ", "),
+		pgConnStr, tableName, watermarkCol, lastFlushed, watermarkCol, watermark), nil
+}
+
+// execFlush runs a flush INSERT and returns the affected row count.
+func (c *DuckDBClient) execFlush(tableName, query string) (int64, error) {
+	result, err := c.db.Exec(query)
+	if err != nil {
+		return 0, fmt.Errorf("failed to flush table %s: %w", tableName, err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get rows affected for %s: %w", tableName, err)
+	}
+	return rowsAffected, nil
+}
+
+// FlushTable flushes a current-state table to DuckLake (watermark column last_modified_ledger).
 func (c *DuckDBClient) FlushTable(tableName string, watermark int64, pgConnStr string, lastFlushed int64) (int64, error) {
-	var query string
-
-	switch tableName {
-	case "accounts_current":
-		// PostgreSQL silver_hot.accounts_current currently contains additional legacy
-		// and derived columns. Use an explicit projection to map into the 24-column
-		// DuckLake schema in a stable order.
-		query = fmt.Sprintf(`
-			INSERT INTO %s.%s.%s
-			SELECT
-				account_id,
-				balance,
-				sequence_number,
-				num_subentries,
-				num_sponsoring,
-				num_sponsored,
-				home_domain,
-				master_weight,
-				low_threshold,
-				med_threshold,
-				high_threshold,
-				flags,
-				auth_required,
-				auth_revocable,
-				auth_immutable,
-				auth_clawback_enabled,
-				signers,
-				sponsor_account,
-				created_at,
-				updated_at,
-				last_modified_ledger,
-				ledger_range,
-				era_id,
-				version_label
-			FROM postgres_scan('%s', 'public', '%s')
-			WHERE last_modified_ledger > %d AND last_modified_ledger <= %d
-		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, lastFlushed, watermark)
-	case "trustlines_current":
-		// Versioning columns may be appended at the tail of silver_hot via
-		// ALTER TABLE on existing deployments, while fresh schemas can place
-		// them before inserted_at/updated_at. Use an explicit projection so
-		// hot/cold flushing is stable across both layouts.
-		query = fmt.Sprintf(`
-			INSERT INTO %s.%s.%s (
-				account_id,
-				asset_type,
-				asset_issuer,
-				asset_code,
-				liquidity_pool_id,
-				balance,
-				trust_line_limit,
-				buying_liabilities,
-				selling_liabilities,
-				flags,
-				last_modified_ledger,
-				ledger_sequence,
-				created_at,
-				sponsor,
-				ledger_range,
-				era_id,
-				version_label,
-				inserted_at,
-				updated_at
-			)
-			SELECT
-				account_id,
-				asset_type,
-				asset_issuer,
-				asset_code,
-				liquidity_pool_id,
-				balance,
-				trust_line_limit,
-				buying_liabilities,
-				selling_liabilities,
-				flags,
-				last_modified_ledger,
-				ledger_sequence,
-				created_at,
-				sponsor,
-				ledger_range,
-				era_id,
-				version_label,
-				inserted_at,
-				updated_at
-			FROM postgres_scan('%s', 'public', '%s')
-			WHERE last_modified_ledger > %d AND last_modified_ledger <= %d
-		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, lastFlushed, watermark)
-	case "offers_current":
-		// Same column-order issue as trustlines_current.
-		query = fmt.Sprintf(`
-			INSERT INTO %s.%s.%s (
-				offer_id,
-				seller_id,
-				selling_asset_type,
-				selling_asset_code,
-				selling_asset_issuer,
-				buying_asset_type,
-				buying_asset_code,
-				buying_asset_issuer,
-				amount,
-				price_n,
-				price_d,
-				price,
-				flags,
-				last_modified_ledger,
-				ledger_sequence,
-				created_at,
-				sponsor,
-				ledger_range,
-				era_id,
-				version_label,
-				inserted_at,
-				updated_at
-			)
-			SELECT
-				offer_id,
-				seller_id,
-				selling_asset_type,
-				selling_asset_code,
-				selling_asset_issuer,
-				buying_asset_type,
-				buying_asset_code,
-				buying_asset_issuer,
-				amount,
-				price_n,
-				price_d,
-				price,
-				flags,
-				last_modified_ledger,
-				ledger_sequence,
-				created_at,
-				sponsor,
-				ledger_range,
-				era_id,
-				version_label,
-				inserted_at,
-				updated_at
-			FROM postgres_scan('%s', 'public', '%s')
-			WHERE last_modified_ledger > %d AND last_modified_ledger <= %d
-		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, lastFlushed, watermark)
-	case "claimable_balances_current":
-		// Source table in silver_hot has 15 columns, while DuckLake carries two
-		// additional compatibility columns (claimants, asset). Project explicitly.
-		query = fmt.Sprintf(`
-			INSERT INTO %s.%s.%s
-			SELECT
-				balance_id,
-				NULL AS claimants,
-				asset_type,
-				asset_code,
-				asset_issuer,
-				NULL AS asset,
-				amount,
-				sponsor,
-				flags,
-				last_modified_ledger,
-				ledger_sequence,
-				created_at,
-				ledger_range,
-				inserted_at,
-				updated_at,
-				claimants_count,
-				closed_at
-			FROM postgres_scan('%s', 'public', '%s')
-			WHERE last_modified_ledger > %d AND last_modified_ledger <= %d
-		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, lastFlushed, watermark)
-	default:
-		query = fmt.Sprintf(`
-			INSERT INTO %s.%s.%s
-			SELECT * FROM postgres_scan('%s', 'public', '%s')
-			WHERE last_modified_ledger > %d AND last_modified_ledger <= %d
-		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, lastFlushed, watermark)
-	}
-
-	result, err := c.db.Exec(query)
+	query, err := c.buildIntersectionFlush(tableName, "last_modified_ledger", watermark, lastFlushed, pgConnStr)
 	if err != nil {
-		return 0, fmt.Errorf("failed to flush table %s: %w", tableName, err)
+		return 0, err
 	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("failed to get rows affected for %s: %w", tableName, err)
-	}
-
-	return rowsAffected, nil
+	return c.execFlush(tableName, query)
 }
 
-// FlushSnapshotTable flushes a snapshot table (uses ledger_sequence instead of last_modified_ledger)
+// FlushSnapshotTable flushes a snapshot/event table to DuckLake (watermark column ledger_sequence).
 func (c *DuckDBClient) FlushSnapshotTable(tableName string, watermark int64, pgConnStr string, lastFlushed int64) (int64, error) {
-	var query string
-
-	// token_transfers_raw needs ledger_range computed, explicit column ordering
-	// (PG column order differs from DuckLake schema: inserted_at/event_index swapped),
-	// and amount cast to DOUBLE to handle arbitrarily large Soroban token amounts on testnet
-	if tableName == "token_transfers_raw" {
-		query = fmt.Sprintf(`
-			INSERT INTO %s.%s.%s
-			SELECT timestamp, transaction_hash, ledger_sequence, source_type,
-			       from_account, to_account, asset_code, asset_issuer,
-			       CAST(amount AS DOUBLE) AS amount,
-			       token_contract_id, operation_type, transaction_successful,
-			       event_index, inserted_at, FLOOR(ledger_sequence / 100000) AS ledger_range
-			FROM postgres_scan('%s', 'public', '%s')
-			WHERE ledger_sequence > %d AND ledger_sequence <= %d
-		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, lastFlushed, watermark)
-	} else if tableName == "contract_invocations_raw" {
-		query = fmt.Sprintf(`
-			INSERT INTO %s.%s.%s (
-				ledger_sequence,
-				transaction_index,
-				operation_index,
-				transaction_hash,
-				source_account,
-				contract_id,
-				function_name,
-				arguments_json,
-				successful,
-				closed_at,
-				ledger_range,
-				inserted_at,
-				era_id,
-				version_label
-			)
-			SELECT ledger_sequence, transaction_index, operation_index, transaction_hash,
-			       source_account, contract_id, function_name, arguments_json,
-			       successful, closed_at, ledger_range, inserted_at,
-			       era_id, version_label
-			FROM postgres_scan('%s', 'public', '%s')
-			WHERE ledger_sequence > %d AND ledger_sequence <= %d
-		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, lastFlushed, watermark)
-	} else if tableName == "claimable_balances_snapshot" {
-		// Source table does not currently exist in silver_hot. Keep explicit handling
-		// here so future re-enablement is intentional.
+	if tableName == "claimable_balances_snapshot" {
+		// Source table does not currently exist in silver_hot; keep this explicit so a future
+		// re-enablement is intentional.
 		return 0, fmt.Errorf("source table %s does not exist in silver_hot", tableName)
-	} else {
-		// Other snapshot tables use SELECT * (columns match)
-		query = fmt.Sprintf(`
-			INSERT INTO %s.%s.%s
-			SELECT * FROM postgres_scan('%s', 'public', '%s')
-			WHERE ledger_sequence > %d AND ledger_sequence <= %d
-		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, lastFlushed, watermark)
 	}
-
-	result, err := c.db.Exec(query)
+	query, err := c.buildIntersectionFlush(tableName, "ledger_sequence", watermark, lastFlushed, pgConnStr)
 	if err != nil {
-		return 0, fmt.Errorf("failed to flush snapshot table %s: %w", tableName, err)
+		return 0, err
 	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("failed to get rows affected for %s: %w", tableName, err)
-	}
-
-	return rowsAffected, nil
+	return c.execFlush(tableName, query)
 }
 
-// FlushTableWithColumn flushes a table using a custom watermark column
+// FlushTableWithColumn flushes a table to DuckLake using a custom watermark column.
 func (c *DuckDBClient) FlushTableWithColumn(tableName string, watermark int64, pgConnStr string, column string, lastFlushed int64) (int64, error) {
-	var query string
-
-	if tableName == "contract_metadata" {
-		query = fmt.Sprintf(`
-			INSERT INTO %s.%s.%s (
-				contract_id,
-				creator_address,
-				wasm_hash,
-				created_ledger,
-				created_at,
-				inserted_at,
-				era_id,
-				version_label
-			)
-			SELECT contract_id, creator_address, wasm_hash, created_ledger,
-			       created_at, inserted_at, era_id, version_label
-			FROM postgres_scan('%s', 'public', '%s')
-			WHERE %s > %d AND %s <= %d
-		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, column, lastFlushed, column, watermark)
-	} else {
-		query = fmt.Sprintf(`
-			INSERT INTO %s.%s.%s
-			SELECT * FROM postgres_scan('%s', 'public', '%s')
-			WHERE %s > %d AND %s <= %d
-		`, c.config.CatalogName, c.config.SchemaName, tableName, pgConnStr, tableName, column, lastFlushed, column, watermark)
-	}
-
-	result, err := c.db.Exec(query)
+	query, err := c.buildIntersectionFlush(tableName, column, watermark, lastFlushed, pgConnStr)
 	if err != nil {
-		return 0, fmt.Errorf("failed to flush table %s: %w", tableName, err)
+		return 0, err
 	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("failed to get rows affected for %s: %w", tableName, err)
-	}
-
-	return rowsAffected, nil
+	return c.execFlush(tableName, query)
 }
 
 // VerifyTableExists checks if a table exists in the DuckLake catalog

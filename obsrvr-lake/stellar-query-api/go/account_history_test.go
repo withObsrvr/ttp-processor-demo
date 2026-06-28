@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"testing"
 
 	_ "github.com/duckdb/duckdb-go/v2"
@@ -43,6 +44,134 @@ func TestGetAccountTransactionsHotColdDedupAndPagination(t *testing.T) {
 	}
 	if len(next) != 1 || next[0].TransactionHash != "tx1" {
 		t.Fatalf("unexpected page 2: %#v", next)
+	}
+}
+
+// TestGetAccountTransactionsPaginationNoDropsAcrossPages walks the full paginated history of an
+// account whose transactions span both the cold and hot arms, with a page size smaller than the
+// total. It guards the per-arm bounding/overscan change: every transaction must come back exactly
+// once, in descending ledger order, across page boundaries (no drops, no duplicates).
+func TestGetAccountTransactionsPaginationNoDropsAcrossPages(t *testing.T) {
+	db := newAccountHistoryDuckDB(t)
+	defer db.Close()
+	reader := &UnifiedDuckDBReader{db: db, hotSchema: "memory.hot", coldSchema: "memory.cold"}
+	ctx := context.Background()
+
+	// One transaction per ledger; cold holds the older ledgers (10-13), hot the newer (14-16).
+	// Ledgers 11/13/15 carry a second op (GA as destination) to exercise op->transaction collapse.
+	insert := func(schema string, ledger int, tx string, secondOp bool) {
+		stmts := []string{fmt.Sprintf(`INSERT INTO %s.enriched_history_operations VALUES (%d, TIMESTAMP '2026-01-01 00:00:%02d', '%s', true, 'GA', 'GB', NULL, NULL, NULL, '100', 'none', NULL, true, false, 'payment')`, schema, ledger, ledger, tx)}
+		if secondOp {
+			stmts = append(stmts, fmt.Sprintf(`INSERT INTO %s.enriched_history_operations VALUES (%d, TIMESTAMP '2026-01-01 00:00:%02d', '%s', true, 'GC', 'GA', NULL, NULL, NULL, '100', 'none', NULL, true, false, 'payment')`, schema, ledger, ledger, tx))
+		}
+		for _, s := range stmts {
+			if _, err := db.Exec(s); err != nil {
+				t.Fatalf("insert: %v\n%s", err, s)
+			}
+		}
+	}
+	insert("cold", 10, "tx10", false)
+	insert("cold", 11, "tx11", true)
+	insert("cold", 12, "tx12", false)
+	insert("cold", 13, "tx13", true)
+	insert("hot", 14, "tx14", false)
+	insert("hot", 15, "tx15", true)
+	insert("hot", 16, "tx16", false)
+
+	var seen []string
+	var cursor *HistoryCursor
+	for page := 0; page < 20; page++ {
+		txs, cur, hasMore, err := reader.GetAccountTransactions(ctx, AccountTransactionsFilters{AccountID: "GA", Limit: 2, Order: "desc", Cursor: cursor})
+		if err != nil {
+			t.Fatalf("page %d: %v", page, err)
+		}
+		if len(txs) > 2 {
+			t.Fatalf("page %d returned %d txns, want <= page limit 2", page, len(txs))
+		}
+		for _, tx := range txs {
+			seen = append(seen, tx.TransactionHash)
+		}
+		if !hasMore {
+			break
+		}
+		decoded, err := DecodeHistoryCursor(cur)
+		if err != nil {
+			t.Fatalf("decode cursor: %v", err)
+		}
+		cursor = decoded
+	}
+
+	want := []string{"tx16", "tx15", "tx14", "tx13", "tx12", "tx11", "tx10"}
+	if len(seen) != len(want) {
+		t.Fatalf("walked %d txns %v, want %d %v", len(seen), seen, len(want), want)
+	}
+	uniq := map[string]bool{}
+	for i := range want {
+		if seen[i] != want[i] {
+			t.Fatalf("page-walk order mismatch at %d: got %v want %v", i, seen, want)
+		}
+		if uniq[seen[i]] {
+			t.Fatalf("duplicate transaction %s across pages: %v", seen[i], seen)
+		}
+		uniq[seen[i]] = true
+	}
+}
+
+// TestGetAccountTransactionsHighFanoutDoesNotHideOlder reproduces the bug where a single recent
+// transaction with many op/event rows (here: a token-transfer batch emitting 20 rows for GA in one
+// tx) could consume a per-row arm bound and make older transactions unreachable. The arm must bound
+// by DISTINCT transactions, so the fat transaction collapses to one and older history still pages.
+func TestGetAccountTransactionsHighFanoutDoesNotHideOlder(t *testing.T) {
+	db := newAccountHistoryDuckDB(t)
+	defer db.Close()
+	reader := &UnifiedDuckDBReader{db: db, hotSchema: "memory.hot", coldSchema: "memory.cold"}
+	ctx := context.Background()
+
+	// Newest ledger 100 = one transaction with 20 token-transfer rows for GA. Older ledgers 99/98
+	// are ordinary single-op transactions. With a per-row bound and limit=1 the 20 fanout rows would
+	// fill the arm and hide tx99/tx98 entirely.
+	for i := 0; i < 20; i++ {
+		stmt := fmt.Sprintf(`INSERT INTO hot.token_transfers_raw VALUES (100, TIMESTAMP '2026-01-01 00:01:40', 'tx100', true, 'GA', 'GZ', 'CC', '1', %d)`, i)
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("fanout insert: %v", err)
+		}
+	}
+	for _, s := range []string{
+		`INSERT INTO hot.enriched_history_operations VALUES (99, TIMESTAMP '2026-01-01 00:01:39', 'tx99', true, 'GA', 'GB', NULL, NULL, NULL, '100', 'none', NULL, true, false, 'payment')`,
+		`INSERT INTO hot.enriched_history_operations VALUES (98, TIMESTAMP '2026-01-01 00:01:38', 'tx98', true, 'GA', 'GB', NULL, NULL, NULL, '100', 'none', NULL, true, false, 'payment')`,
+	} {
+		if _, err := db.Exec(s); err != nil {
+			t.Fatalf("older insert: %v", err)
+		}
+	}
+
+	var seen []string
+	var cursor *HistoryCursor
+	for page := 0; page < 10; page++ {
+		txs, cur, hasMore, err := reader.GetAccountTransactions(ctx, AccountTransactionsFilters{AccountID: "GA", Limit: 1, Order: "desc", Cursor: cursor})
+		if err != nil {
+			t.Fatalf("page %d: %v", page, err)
+		}
+		for _, tx := range txs {
+			seen = append(seen, tx.TransactionHash)
+		}
+		if !hasMore {
+			break
+		}
+		cursor, err = DecodeHistoryCursor(cur)
+		if err != nil {
+			t.Fatalf("decode cursor: %v", err)
+		}
+	}
+
+	want := []string{"tx100", "tx99", "tx98"}
+	if len(seen) != len(want) {
+		t.Fatalf("walked %v, want %v (older transactions hidden by the high-fanout tx?)", seen, want)
+	}
+	for i := range want {
+		if seen[i] != want[i] {
+			t.Fatalf("order mismatch at %d: got %v want %v", i, seen, want)
+		}
 	}
 }
 

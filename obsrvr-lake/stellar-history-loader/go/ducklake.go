@@ -80,7 +80,7 @@ func (p *DuckLakePusher) Push(ctx context.Context, outputDir string) (*DuckLakeP
 	pushResult := &DuckLakePushResult{RowCounts: map[string]int64{}}
 	// Step 1: Load extensions
 	log.Println("[DuckLake] Loading extensions...")
-	if _, err := p.db.ExecContext(ctx, "INSTALL ducklake FROM core_nightly; LOAD ducklake;"); err != nil {
+	if _, err := p.db.ExecContext(ctx, "INSTALL ducklake; LOAD ducklake;"); err != nil {
 		return nil, fmt.Errorf("load extension ducklake: %w", err)
 	}
 	if _, err := p.db.ExecContext(ctx, "INSTALL httpfs; LOAD httpfs;"); err != nil {
