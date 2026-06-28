@@ -329,26 +329,71 @@ func (f *Flusher) deleteFlushedData(watermark int64, tables []string) (int64, er
 	}
 
 	for _, tableName := range tables {
-		var query string
+		var whereCol string
 		if col, ok := customWatermarkCol[tableName]; ok {
-			query = fmt.Sprintf("DELETE FROM %s WHERE %s <= $1", tableName, col)
+			whereCol = col
 		} else if snapshotTables[tableName] || eventTables[tableName] {
-			query = fmt.Sprintf("DELETE FROM %s WHERE ledger_sequence <= $1", tableName)
+			whereCol = "ledger_sequence"
 		} else {
-			query = fmt.Sprintf("DELETE FROM %s WHERE last_modified_ledger <= $1", tableName)
+			whereCol = "last_modified_ledger"
 		}
 
-		result, err := f.pgDB.Exec(query, watermark)
+		rowsDeleted, err := f.deleteInBatches(tableName, whereCol, watermark)
+		totalDeleted += rowsDeleted
 		if err != nil {
-			log.Printf("⚠️  Failed to delete from %s: %v", tableName, err)
+			log.Printf("⚠️  Failed to delete from %s (deleted %d before erroring): %v", tableName, rowsDeleted, err)
 			continue
 		}
-
-		rowsDeleted, _ := result.RowsAffected()
-		totalDeleted += rowsDeleted
 	}
 
 	return totalDeleted, nil
+}
+
+// deleteFlushBatchSize bounds each DELETE so it holds row locks only briefly. A single large delete
+// (tens of millions of rows) deadlocks against the transformer's concurrent upserts (SQLSTATE 40P01);
+// small batches shrink the deadlock window and let a transient collision be retried.
+const deleteFlushBatchSize = 20000
+
+// deleteInBatches deletes rows with whereCol <= watermark in bounded batches, retrying a batch on a
+// transient deadlock. Returns the rows deleted so far even if a later batch errors.
+func (f *Flusher) deleteInBatches(tableName, whereCol string, watermark int64) (int64, error) {
+	const maxRetries = 6
+	query := fmt.Sprintf(
+		`DELETE FROM %s WHERE ctid IN (SELECT ctid FROM %s WHERE %s <= $1 LIMIT %d)`,
+		tableName, tableName, whereCol, deleteFlushBatchSize)
+
+	var total int64
+	for {
+		var deleted int64
+		var lastErr error
+		for attempt := 1; attempt <= maxRetries; attempt++ {
+			res, err := f.pgDB.Exec(query, watermark)
+			if err == nil {
+				deleted, _ = res.RowsAffected()
+				lastErr = nil
+				break
+			}
+			lastErr = err
+			if !isDeadlock(err) {
+				break
+			}
+			log.Printf("   ↻ delete %s batch deadlocked (attempt %d/%d), retrying", tableName, attempt, maxRetries)
+			time.Sleep(time.Duration(attempt) * 250 * time.Millisecond)
+		}
+		if lastErr != nil {
+			return total, lastErr
+		}
+		total += deleted
+		if deleted < deleteFlushBatchSize {
+			return total, nil // table drained for this watermark
+		}
+	}
+}
+
+// isDeadlock reports whether err is a PostgreSQL deadlock (SQLSTATE 40P01, surfaced by lib/pq as
+// "pq: deadlock detected") — transient and safe to retry.
+func isDeadlock(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "deadlock detected")
 }
 
 // vacuumAllTables runs VACUUM ANALYZE on all tables
