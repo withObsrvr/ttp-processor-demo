@@ -24,9 +24,10 @@ func NewSilverColdReader(config DuckLakeConfig) (*SilverColdReader, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open duckdb: %w", err)
 	}
-	// Limit to single connection — DuckDB secrets and extensions are per-connection
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
+	if err := configureDuckDBForAPI(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 
 	// Install extensions
 	if _, err := db.Exec("INSTALL ducklake"); err != nil {

@@ -1,4 +1,4 @@
-FROM golang:1.24-bookworm AS builder
+FROM golang:1.25-bookworm AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -6,8 +6,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     rm -rf /var/lib/apt/lists/*
 
 # Install Go protobuf plugins
-RUN go install google.golang.org/protobuf/cmd/protoc-gen-go@latest && \
-    go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+RUN go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11 && \
+    go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
 
 WORKDIR /build
 

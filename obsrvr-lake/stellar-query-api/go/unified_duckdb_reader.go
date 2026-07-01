@@ -51,6 +51,10 @@ func NewUnifiedDuckDBReader(config UnifiedReaderConfig) (*UnifiedDuckDBReader, e
 	if err != nil {
 		return nil, fmt.Errorf("failed to open DuckDB: %w", err)
 	}
+	if err := configureDuckDBForAPI(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 
 	// Install and load required extensions
 	extensions := []struct {

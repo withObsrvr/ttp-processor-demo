@@ -36,6 +36,10 @@ func NewIndexReader(config IndexConfig) (*IndexReader, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open duckdb: %w", err)
 	}
+	if err := configureDuckDBForAPI(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 
 	// Install extensions
 	if _, err := db.Exec("INSTALL ducklake"); err != nil {

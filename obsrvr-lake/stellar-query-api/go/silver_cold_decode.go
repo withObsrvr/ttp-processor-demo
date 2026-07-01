@@ -91,6 +91,10 @@ func (r *SilverColdReader) GetTransactionForDecode(ctx context.Context, txHash s
 }
 
 func (r *SilverColdReader) enrichOperationArgumentsCold(ctx context.Context, tx *DecodedTransaction, txHash string) {
+	r.enrichOperationArgumentsColdWithLedger(ctx, tx, txHash, 0)
+}
+
+func (r *SilverColdReader) enrichOperationArgumentsColdWithLedger(ctx context.Context, tx *DecodedTransaction, txHash string, ledgerSeq int64) {
 	hasSorobanOps := false
 	for _, op := range tx.Operations {
 		if op.IsSorobanOp && op.ArgumentsJSON == nil {
@@ -101,13 +105,19 @@ func (r *SilverColdReader) enrichOperationArgumentsCold(ctx context.Context, tx 
 	if !hasSorobanOps {
 		return
 	}
+	where := "transaction_hash = ?"
+	args := []interface{}{txHash}
+	if ledgerSeq > 0 {
+		where = "ledger_sequence = ? AND transaction_hash = ?"
+		args = []interface{}{ledgerSeq, txHash}
+	}
 	query := fmt.Sprintf(`
 		SELECT operation_index, arguments_json
 		FROM %s.%s.contract_invocations_raw
-		WHERE transaction_hash = ?
+		WHERE %s
 		ORDER BY operation_index
-	`, r.catalogName, r.schemaName)
-	rows, err := r.db.QueryContext(ctx, query, txHash)
+	`, r.catalogName, r.schemaName, where)
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return
 	}
@@ -131,21 +141,31 @@ func (r *SilverColdReader) enrichOperationArgumentsCold(ctx context.Context, tx 
 }
 
 func (r *SilverColdReader) enrichTransactionFromBronzeCold(ctx context.Context, tx *DecodedTransaction, txHash string, bronzeCold *ColdReader) {
+	r.enrichTransactionFromBronzeColdWithLedger(ctx, tx, txHash, 0, bronzeCold)
+}
+
+func (r *SilverColdReader) enrichTransactionFromBronzeColdWithLedger(ctx context.Context, tx *DecodedTransaction, txHash string, ledgerSeq int64, bronzeCold *ColdReader) {
 	if bronzeCold == nil {
 		return
+	}
+	where := "transaction_hash = ?"
+	args := []interface{}{txHash}
+	if ledgerSeq > 0 {
+		where = "ledger_sequence = ? AND transaction_hash = ?"
+		args = []interface{}{ledgerSeq, txHash}
 	}
 	query := fmt.Sprintf(`
 		SELECT source_account, account_sequence, max_fee,
 		       soroban_resources_instructions, soroban_resources_read_bytes,
 		       soroban_resources_write_bytes
 		FROM %s.%s.transactions_row_v2
-		WHERE transaction_hash = ?
+		WHERE %s
 		LIMIT 1
-	`, bronzeCold.CatalogName(), bronzeCold.SchemaName())
+	`, bronzeCold.CatalogName(), bronzeCold.SchemaName(), where)
 	var sourceAccount sql.NullString
 	var accountSequence, maxFee sql.NullInt64
 	var instructions, readBytes, writeBytes sql.NullInt64
-	if err := bronzeCold.DB().QueryRowContext(ctx, query, txHash).Scan(&sourceAccount, &accountSequence, &maxFee, &instructions, &readBytes, &writeBytes); err != nil {
+	if err := bronzeCold.DB().QueryRowContext(ctx, query, args...).Scan(&sourceAccount, &accountSequence, &maxFee, &instructions, &readBytes, &writeBytes); err != nil {
 		return
 	}
 	if sourceAccount.Valid {

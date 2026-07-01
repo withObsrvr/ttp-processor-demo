@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	rawledgercore "github.com/withObsrvr/stellar-raw-ledger-origin/rawledger"
 	pb "github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/gen/raw_ledger_service"
 )
 
@@ -656,8 +657,16 @@ func (s *RawLedgerServer) handleLedgerError(err error, seq uint32) {
 }
 
 func (s *RawLedgerServer) convertLedgerToProto(lcm xdr.LedgerCloseMeta) (*pb.RawLedger, error) {
-	// Convert LedgerCloseMeta to raw bytes
-	rawBytes, err := lcm.MarshalBinary()
+	// Delegate the LedgerCloseMeta -> RawLedger conversion to the shared
+	// core (github.com/withObsrvr/stellar-raw-ledger-origin/rawledger) so
+	// this service, the nebu origin, and the flowctl source cannot drift.
+	//
+	// The shared core returns stellar.v1.RawLedger; we map it onto this
+	// service's wire type, whose fields 1 (sequence) and 2
+	// (ledger_close_meta_xdr) are identical by design. This service's proto
+	// does not carry the network passphrase, so it is passed empty and the
+	// extra shared fields (network, closed_at) are dropped here.
+	shared, err := rawledgercore.ToRawLedger(lcm, "")
 	if err != nil {
 		s.metrics.mu.Lock()
 		s.metrics.ErrorCount++
@@ -665,12 +674,12 @@ func (s *RawLedgerServer) convertLedgerToProto(lcm xdr.LedgerCloseMeta) (*pb.Raw
 		s.metrics.LastError = err
 		s.metrics.LastErrorTime = time.Now()
 		s.metrics.mu.Unlock()
-		return nil, fmt.Errorf("error marshaling ledger %d: %w", lcm.LedgerSequence(), err)
+		return nil, fmt.Errorf("error converting ledger %d: %w", lcm.LedgerSequence(), err)
 	}
 
 	return &pb.RawLedger{
-		Sequence:           lcm.LedgerSequence(),
-		LedgerCloseMetaXdr: rawBytes,
+		Sequence:           shared.GetSequence(),
+		LedgerCloseMetaXdr: shared.GetLedgerCloseMetaXdr(),
 	}, nil
 }
 

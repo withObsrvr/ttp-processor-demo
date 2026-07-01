@@ -34,6 +34,10 @@ func NewContractIndexReader(config ContractIndexConfig) (*ContractIndexReader, e
 	if err != nil {
 		return nil, fmt.Errorf("failed to open duckdb: %w", err)
 	}
+	if err := configureDuckDBForAPI(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 
 	// Install extensions
 	if _, err := db.Exec("INSTALL ducklake"); err != nil {
@@ -290,11 +294,11 @@ func (cir *ContractIndexReader) GetIndexStats(ctx context.Context) (map[string]i
 
 	return map[string]interface{}{
 		"total_contract_ledger_pairs": totalPairs,
-		"unique_contracts":             uniqueContracts,
-		"min_ledger":                   minLedger,
-		"max_ledger":                   maxLedger,
-		"ledger_coverage":              maxLedger - minLedger + 1,
-		"last_updated":                 lastUpdated.Format(time.RFC3339),
+		"unique_contracts":            uniqueContracts,
+		"min_ledger":                  minLedger,
+		"max_ledger":                  maxLedger,
+		"ledger_coverage":             maxLedger - minLedger + 1,
+		"last_updated":                lastUpdated.Format(time.RFC3339),
 	}, nil
 }
 

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -21,11 +22,12 @@ type DecodeHandlers struct {
 	bronzeCold    *ColdReader
 	silverReader  *UnifiedSilverReader
 	hotPathReader *TxHotPathReader
+	indexReader   *IndexReader
 }
 
 // NewDecodeHandlers creates new transaction decode API handlers
-func NewDecodeHandlers(hotReader *SilverHotReader, coldReader *SilverColdReader, bronzeCold *ColdReader, silverReader *UnifiedSilverReader, hotPathReader *TxHotPathReader) *DecodeHandlers {
-	return &DecodeHandlers{hotReader: hotReader, coldReader: coldReader, bronzeCold: bronzeCold, silverReader: silverReader, hotPathReader: hotPathReader}
+func NewDecodeHandlers(hotReader *SilverHotReader, coldReader *SilverColdReader, bronzeCold *ColdReader, silverReader *UnifiedSilverReader, hotPathReader *TxHotPathReader, indexReader *IndexReader) *DecodeHandlers {
+	return &DecodeHandlers{hotReader: hotReader, coldReader: coldReader, bronzeCold: bronzeCold, silverReader: silverReader, hotPathReader: hotPathReader, indexReader: indexReader}
 }
 
 // HandleDecodedTransaction returns a human-readable decoded transaction
@@ -306,6 +308,7 @@ func (h *DecodeHandlers) HandleBatchDecodedTransactions(w http.ResponseWriter, r
 
 	// If ledger param, resolve hashes from that ledger
 	fromLedger := false
+	var ledgerSeq int64
 	if len(hashes) == 0 && ledgerParam != "" {
 		seq, err := strconv.ParseInt(ledgerParam, 10, 64)
 		if err != nil {
@@ -334,6 +337,7 @@ func (h *DecodeHandlers) HandleBatchDecodedTransactions(w http.ResponseWriter, r
 		}
 		hashes = resolved
 		fromLedger = true
+		ledgerSeq = seq
 	}
 
 	if len(hashes) == 0 {
@@ -346,11 +350,8 @@ func (h *DecodeHandlers) HandleBatchDecodedTransactions(w http.ResponseWriter, r
 		return
 	}
 
-	// Decode transactions in parallel. Each GetTransactionForDecode call fans
-	// out to 4 separate DB queries, so doing them serially scales as ~4N round
-	// trips and easily exceeds the gateway HTTP timeout for large batches.
-	// Concurrency limit of 8 keeps DB pool pressure bounded while collapsing
-	// the wall-clock time to roughly ceil(N/8) sequential rounds.
+	// Decode transactions in parallel, but keep cold-storage pressure bounded.
+	// Historical ledger mode can otherwise launch many DuckDB/S3 scans at once.
 	type decodeResult struct {
 		decoded *DecodedTransaction
 		err     error
@@ -360,11 +361,15 @@ func (h *DecodeHandlers) HandleBatchDecodedTransactions(w http.ResponseWriter, r
 	// Each goroutine writes to a unique index in resultsByIndex, so no
 	// synchronization is needed beyond errgroup's Wait.
 	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(8)
+	if fromLedger {
+		g.SetLimit(2)
+	} else {
+		g.SetLimit(4)
+	}
 	for i, txHash := range hashes {
 		i, txHash := i, txHash
 		g.Go(func() error {
-			decoded, err := h.getTransactionForDecode(gctx, txHash)
+			decoded, err := h.getTransactionForDecodeWithLedgerHint(gctx, txHash, ledgerSeq)
 			resultsByIndex[i] = decodeResult{decoded: decoded, err: err}
 			// Never propagate the error to errgroup — partial failures are
 			// reported per-tx in the response, just like the old serial loop.
@@ -463,6 +468,10 @@ func (h *DecodeHandlers) resolveHashesFromLedger(ctx context.Context, ledgerSeq 
 }
 
 func (h *DecodeHandlers) getTransactionForDisplay(ctx context.Context, txHash string) (*DecodedTransaction, error) {
+	return h.getTransactionForDisplayWithLedgerHint(ctx, txHash, 0)
+}
+
+func (h *DecodeHandlers) getTransactionForDisplayWithLedgerHint(ctx context.Context, txHash string, ledgerHint int64) (*DecodedTransaction, error) {
 	requestStart := time.Now()
 	if h.hotPathReader != nil {
 		hotStart := time.Now()
@@ -480,16 +489,30 @@ func (h *DecodeHandlers) getTransactionForDisplay(ctx context.Context, txHash st
 	if h.coldReader == nil {
 		return nil, fmt.Errorf("transaction decode requires cold reader")
 	}
+	ledgerSeq := ledgerHint
+	if ledgerSeq == 0 && h.indexReader != nil {
+		indexCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		loc, err := h.indexReader.LookupTransactionHash(indexCtx, txHash)
+		cancel()
+		if err == nil && loc != nil {
+			ledgerSeq = loc.LedgerSequence
+		} else if err != nil && !errors.Is(err, context.DeadlineExceeded) {
+			log.Printf("tx_display path=index_lookup_error tx=%s duration_ms=%d err=%v", txHash, time.Since(requestStart).Milliseconds(), err)
+		}
+	}
 	coldStart := time.Now()
 	coldCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	decoded, err := h.coldReader.GetTransactionForSemanticFast(coldCtx, txHash, h.bronzeCold)
+	decoded, err := h.coldReader.GetTransactionForSemanticFastWithLedger(coldCtx, txHash, ledgerSeq, h.bronzeCold)
 	if err == nil {
-		log.Printf("tx_display path=cold_fast tx=%s duration_ms=%d total_ms=%d", txHash, time.Since(coldStart).Milliseconds(), time.Since(requestStart).Milliseconds())
+		log.Printf("tx_display path=cold_fast tx=%s ledger_hint=%d duration_ms=%d total_ms=%d", txHash, ledgerSeq, time.Since(coldStart).Milliseconds(), time.Since(requestStart).Milliseconds())
 		return decoded, nil
 	}
 	if !strings.Contains(err.Error(), ErrTxNotFound.Error()) {
-		log.Printf("tx_display path=cold_fast_fallback tx=%s duration_ms=%d err=%v", txHash, time.Since(coldStart).Milliseconds(), err)
+		log.Printf("tx_display path=cold_fast_error tx=%s ledger_hint=%d duration_ms=%d err=%v", txHash, ledgerSeq, time.Since(coldStart).Milliseconds(), err)
+	}
+	if coldCtx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || ledgerSeq > 0 {
+		return nil, err
 	}
 	legacyStart := time.Now()
 	decoded, err = h.coldReader.GetTransactionForDecode(ctx, txHash, h.bronzeCold)
@@ -503,4 +526,8 @@ func (h *DecodeHandlers) getTransactionForDisplay(ctx context.Context, txHash st
 
 func (h *DecodeHandlers) getTransactionForDecode(ctx context.Context, txHash string) (*DecodedTransaction, error) {
 	return h.getTransactionForDisplay(ctx, txHash)
+}
+
+func (h *DecodeHandlers) getTransactionForDecodeWithLedgerHint(ctx context.Context, txHash string, ledgerHint int64) (*DecodedTransaction, error) {
+	return h.getTransactionForDisplayWithLedgerHint(ctx, txHash, ledgerHint)
 }

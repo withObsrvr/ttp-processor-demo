@@ -159,8 +159,9 @@ func handleHealthWithSilverAndIndexAndContractIndex(silverEnabled, indexEnabled,
 			"reader_mode": string(readerMode),
 		}
 
-		if unifiedReader != nil {
-			ctx := r.Context()
+		if unifiedReader != nil && r.URL.Query().Get("deep") == "1" {
+			ctx, cancel := context.WithTimeout(r.Context(), 500*time.Millisecond)
+			defer cancel()
 			if healthStatus, err := unifiedReader.HealthCheck(ctx); err == nil {
 				response["unified_reader"] = healthStatus
 			} else {

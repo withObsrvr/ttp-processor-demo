@@ -2,6 +2,8 @@
 # Generated Code & Build Artifacts
 # ============================================================================
 **/gen/
+!**/vendor/**/gen/
+!**/vendor/**/gen/**
 **/dist/
 **/build/
 result
