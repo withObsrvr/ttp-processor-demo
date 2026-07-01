@@ -27,7 +27,7 @@ func (app *application) registerTokenAndDecodeRoutes(router *mux.Router) {
 	router.HandleFunc("/api/v1/silver/tokens/{contract_id}", sep41Handlers.HandleTokenMetadata).Methods("GET")
 	router.HandleFunc("/api/v1/silver/address/{addr}/token-balances", sep41Handlers.HandleAddressTokenPortfolio).Methods("GET")
 
-	decodeHandlers := NewDecodeHandlers(silverHotReader, unifiedSilverReader.cold, coldReader, unifiedSilverReader, txHotPathReader)
+	decodeHandlers := NewDecodeHandlers(silverHotReader, unifiedSilverReader.cold, coldReader, unifiedSilverReader, txHotPathReader, app.indexReader)
 	router.HandleFunc("/api/v1/silver/tx/batch/decoded", decodeHandlers.HandleBatchDecodedTransactions).Methods("GET", "POST")
 	router.HandleFunc("/api/v1/silver/tx/{hash}/decoded", decodeHandlers.HandleDecodedTransaction).Methods("GET")
 	router.HandleFunc("/api/v1/silver/tx/{hash}/semantic", decodeHandlers.HandleSemanticTransaction).Methods("GET")

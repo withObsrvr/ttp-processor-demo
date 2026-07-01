@@ -21,6 +21,10 @@ func NewColdReader(config DuckLakeConfig) (*ColdReader, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open DuckDB: %w", err)
 	}
+	if err := configureDuckDBForAPI(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 
 	reader := &ColdReader{
 		db:     db,

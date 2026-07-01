@@ -94,6 +94,7 @@ func (h *TxReceiptHandlers) HandleTxReceipt(w http.ResponseWriter, r *http.Reque
 		diffsJSON         []byte
 		eventsJSON        []byte
 		materializedAt    sql.NullTime
+		sourceVersion     sql.NullString
 	)
 
 	err := h.hotReader.db.QueryRowContext(r.Context(), q, txHash).Scan(
@@ -101,7 +102,7 @@ func (h *TxReceiptHandlers) HandleTxReceipt(w http.ResponseWriter, r *http.Reque
 		&opCount, &txType, &primaryContract,
 		pq.Array(&involvedContracts), pq.Array(&involvedAccounts),
 		&fullJSON, &semanticJSON, &effectsJSON, &diffsJSON, &eventsJSON,
-		&materializedAt, &resp.SourceVersion,
+		&materializedAt, &sourceVersion,
 	)
 	if err == sql.ErrNoRows {
 		respondError(w, "receipt not yet materialized for tx "+txHash, http.StatusNotFound)
@@ -150,6 +151,9 @@ func (h *TxReceiptHandlers) HandleTxReceipt(w http.ResponseWriter, r *http.Reque
 	}
 	if materializedAt.Valid {
 		resp.MaterializedAt = materializedAt.Time.UTC().Format(time.RFC3339)
+	}
+	if sourceVersion.Valid {
+		resp.SourceVersion = sourceVersion.String
 	}
 
 	respondJSON(w, resp)

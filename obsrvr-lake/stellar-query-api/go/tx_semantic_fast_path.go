@@ -40,15 +40,24 @@ func (h *DecodeHandlers) getTransactionForSemantic(ctx context.Context, txHash s
 		if options.DeepEnrichment {
 			coldTimeout = 6 * time.Second
 		}
+		var ledgerSeq int64
+		if h.indexReader != nil {
+			indexCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+			loc, err := h.indexReader.LookupTransactionHash(indexCtx, txHash)
+			cancel()
+			if err == nil && loc != nil {
+				ledgerSeq = loc.LedgerSequence
+			}
+		}
 		coldStart := time.Now()
 		coldCtx, cancel := context.WithTimeout(ctx, coldTimeout)
 		defer cancel()
-		decoded, err := h.coldReader.GetTransactionForSemanticFast(coldCtx, txHash, h.bronzeCold)
+		decoded, err := h.coldReader.GetTransactionForSemanticFastWithLedger(coldCtx, txHash, ledgerSeq, h.bronzeCold)
 		if err == nil {
-			log.Printf("tx_semantic path=cold_fast tx=%s duration_ms=%d total_ms=%d deep=%t", txHash, time.Since(coldStart).Milliseconds(), time.Since(requestStart).Milliseconds(), options.DeepEnrichment)
+			log.Printf("tx_semantic path=cold_fast tx=%s ledger_hint=%d duration_ms=%d total_ms=%d deep=%t", txHash, ledgerSeq, time.Since(coldStart).Milliseconds(), time.Since(requestStart).Milliseconds(), options.DeepEnrichment)
 			return decoded, nil
 		}
-		log.Printf("tx_semantic path=cold_fast_error tx=%s duration_ms=%d total_ms=%d deep=%t err=%v", txHash, time.Since(coldStart).Milliseconds(), time.Since(requestStart).Milliseconds(), options.DeepEnrichment, err)
+		log.Printf("tx_semantic path=cold_fast_error tx=%s ledger_hint=%d duration_ms=%d total_ms=%d deep=%t err=%v", txHash, ledgerSeq, time.Since(coldStart).Milliseconds(), time.Since(requestStart).Milliseconds(), options.DeepEnrichment, err)
 		return nil, err
 	}
 
@@ -56,20 +65,30 @@ func (h *DecodeHandlers) getTransactionForSemantic(ctx context.Context, txHash s
 }
 
 func (r *SilverColdReader) GetTransactionForSemanticFast(ctx context.Context, txHash string, bronzeCold *ColdReader) (*DecodedTransaction, error) {
+	return r.GetTransactionForSemanticFastWithLedger(ctx, txHash, 0, bronzeCold)
+}
+
+func (r *SilverColdReader) GetTransactionForSemanticFastWithLedger(ctx context.Context, txHash string, ledgerSeq int64, bronzeCold *ColdReader) (*DecodedTransaction, error) {
 	if r == nil || r.db == nil {
 		return nil, fmt.Errorf("silver cold reader not configured")
 	}
 
+	where := "transaction_hash = ?"
+	args := []interface{}{txHash}
+	if ledgerSeq > 0 {
+		where = "ledger_sequence = ? AND transaction_hash = ?"
+		args = []interface{}{ledgerSeq, txHash}
+	}
 	query := fmt.Sprintf(`
 		SELECT operation_index, type, source_account, contract_id, function_name,
 		       destination, asset_code, amount, is_soroban_op, tx_successful,
 		       tx_fee_charged, ledger_sequence, ledger_closed_at
 		FROM %s.%s.enriched_history_operations
-		WHERE transaction_hash = ?
+		WHERE %s
 		ORDER BY operation_index ASC
-	`, r.catalogName, r.schemaName)
+	`, r.catalogName, r.schemaName, where)
 
-	rows, err := r.db.QueryContext(ctx, query, txHash)
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("semantic cold operations query: %w", err)
 	}
@@ -134,16 +153,26 @@ func (r *SilverColdReader) GetTransactionForSemanticFast(ctx context.Context, tx
 	}
 	tx.OpCount = len(tx.Operations)
 
-	r.enrichOperationArgumentsCold(ctx, tx, txHash)
-	if events, err := r.getTransactionEventsFast(ctx, txHash); err == nil {
+	r.enrichOperationArgumentsColdWithLedger(ctx, tx, txHash, tx.LedgerSeq)
+	if events, err := r.getTransactionEventsFastWithLedger(ctx, txHash, tx.LedgerSeq); err == nil {
 		tx.Events = events
 	}
 	tx.Summary = GenerateTxSummary(tx.Operations, tx.Events)
-	r.enrichTransactionFromBronzeColdFast(ctx, tx, txHash, bronzeCold)
+	r.enrichTransactionFromBronzeColdFastWithLedger(ctx, tx, txHash, tx.LedgerSeq, bronzeCold)
 	return tx, nil
 }
 
 func (r *SilverColdReader) getTransactionEventsFast(ctx context.Context, txHash string) ([]UnifiedEvent, error) {
+	return r.getTransactionEventsFastWithLedger(ctx, txHash, 0)
+}
+
+func (r *SilverColdReader) getTransactionEventsFastWithLedger(ctx context.Context, txHash string, ledgerSeq int64) ([]UnifiedEvent, error) {
+	where := "transaction_successful = true AND transaction_hash = ?"
+	args := []interface{}{txHash}
+	if ledgerSeq > 0 {
+		where = "transaction_successful = true AND ledger_sequence = ? AND transaction_hash = ?"
+		args = []interface{}{ledgerSeq, txHash}
+	}
 	query := fmt.Sprintf(`
 		SELECT
 			timestamp,
@@ -158,13 +187,12 @@ func (r *SilverColdReader) getTransactionEventsFast(ctx context.Context, txHash 
 			token_contract_id,
 			operation_type
 		FROM %s.%s.token_transfers_raw
-		WHERE transaction_successful = true
-		  AND transaction_hash = ?
+		WHERE %s
 		ORDER BY ledger_sequence ASC, transaction_hash ASC, timestamp ASC
 		LIMIT 1000
-	`, r.catalogName, r.schemaName)
+	`, r.catalogName, r.schemaName, where)
 
-	rows, err := r.db.QueryContext(ctx, query, txHash)
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -320,24 +348,34 @@ func (r *SilverColdReader) enrichTransactionEventsFast(ctx context.Context, even
 }
 
 func (r *SilverColdReader) enrichTransactionFromBronzeColdFast(ctx context.Context, tx *DecodedTransaction, txHash string, bronzeCold *ColdReader) {
+	r.enrichTransactionFromBronzeColdFastWithLedger(ctx, tx, txHash, 0, bronzeCold)
+}
+
+func (r *SilverColdReader) enrichTransactionFromBronzeColdFastWithLedger(ctx context.Context, tx *DecodedTransaction, txHash string, ledgerSeq int64, bronzeCold *ColdReader) {
 	if bronzeCold == nil {
 		return
 	}
 	bronzeCtx, cancel := context.WithTimeout(ctx, 700*time.Millisecond)
 	defer cancel()
 
+	where := "transaction_hash = ?"
+	args := []interface{}{txHash}
+	if ledgerSeq > 0 {
+		where = "ledger_sequence = ? AND transaction_hash = ?"
+		args = []interface{}{ledgerSeq, txHash}
+	}
 	query := fmt.Sprintf(`
 		SELECT source_account, account_sequence, max_fee,
 		       soroban_resources_instructions, soroban_resources_read_bytes,
 		       soroban_resources_write_bytes
 		FROM %s.%s.transactions_row_v2
-		WHERE transaction_hash = ?
+		WHERE %s
 		LIMIT 1
-	`, bronzeCold.CatalogName(), bronzeCold.SchemaName())
+	`, bronzeCold.CatalogName(), bronzeCold.SchemaName(), where)
 	var sourceAccount sql.NullString
 	var accountSequence, maxFee sql.NullInt64
 	var instructions, readBytes, writeBytes sql.NullInt64
-	if err := bronzeCold.DB().QueryRowContext(bronzeCtx, query, txHash).Scan(&sourceAccount, &accountSequence, &maxFee, &instructions, &readBytes, &writeBytes); err != nil {
+	if err := bronzeCold.DB().QueryRowContext(bronzeCtx, query, args...).Scan(&sourceAccount, &accountSequence, &maxFee, &instructions, &readBytes, &writeBytes); err != nil {
 		return
 	}
 	if sourceAccount.Valid {
