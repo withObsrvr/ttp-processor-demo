@@ -78,6 +78,8 @@ type AssetDetailResponse struct {
 	LinkedTokens     []LinkedTokenSummary   `json:"linked_tokens,omitempty"`
 	TopPairs         []AssetPairSummary     `json:"top_pairs,omitempty"`
 	LiquidityPools   []LiquidityPoolCurrent `json:"liquidity_pools,omitempty"`
+	Partial          bool                   `json:"partial,omitempty"`
+	Warnings         []string               `json:"warnings,omitempty"`
 	GeneratedAt      string                 `json:"generated_at"`
 }
 

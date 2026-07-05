@@ -123,6 +123,14 @@ func mainWithSilver() {
 			} else {
 				defer unifiedDuckDBReader.Close()
 				log.Println("✅ UnifiedDuckDBReader initialized (DuckDB ATTACH mode)")
+				if config.Index != nil && config.Index.Enabled {
+					if err := unifiedDuckDBReader.AttachAccountLedgerIndex(*config.Index); err != nil {
+						log.Printf("⚠️  Failed to attach Account Ledger Index to unified reader: %v", err)
+						log.Println("     Account transaction history will use unpruned cold scans")
+					} else {
+						log.Println("✅ Account Ledger Index attached for account history pruning")
+					}
+				}
 			}
 		}
 

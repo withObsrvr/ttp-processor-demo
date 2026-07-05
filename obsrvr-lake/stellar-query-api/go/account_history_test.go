@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 
 	_ "github.com/duckdb/duckdb-go/v2"
@@ -171,6 +172,37 @@ func TestGetAccountTransactionsHighFanoutDoesNotHideOlder(t *testing.T) {
 	for i := range want {
 		if seen[i] != want[i] {
 			t.Fatalf("order mismatch at %d: got %v want %v", i, seen, want)
+		}
+	}
+}
+
+func TestAccountLedgerBucketIsStable(t *testing.T) {
+	const account = "GCFOH4PUYAXJH75SLBXT7NZWOT2JWXGCBI6YF3RXV6LXUHJCCKA4HH4I"
+	got := AccountLedgerBucket(account, 256)
+	if got != 203 {
+		t.Fatalf("AccountLedgerBucket(%q, 256)=%d want 203", account, got)
+	}
+	if got < 0 || got >= 256 {
+		t.Fatalf("bucket %d outside configured range", got)
+	}
+}
+
+func TestBuildAccountTransactionsQueryAddsColdLedgerRangePruning(t *testing.T) {
+	query := buildAccountTransactionsQuery("memory.hot", "memory.cold", "1=1", " AND ledger_range IN ($2, $3)", "DESC", 4)
+
+	if got := strings.Count(query, "ledger_range IN ($2, $3)"); got != 3 {
+		t.Fatalf("ledger range pruning count=%d want 3\n%s", got, query)
+	}
+	if strings.Contains(query, "memory.hot.enriched_history_operations\n\t\tWHERE (source_account = $1 OR destination = $1 OR from_account = $1 OR to_address = $1 OR address = $1) AND ledger_range") {
+		t.Fatalf("hot branch should not receive cold ledger_range pruning\n%s", query)
+	}
+	for _, want := range []string{
+		"FROM memory.cold.enriched_history_operations\n\t\tWHERE (source_account = $1 OR destination = $1) AND ledger_range IN ($2, $3)",
+		"FROM memory.cold.token_transfers_raw\n\t\tWHERE (from_account = $1 OR to_account = $1) AND ledger_range IN ($2, $3)",
+		"FROM memory.cold.contract_invocations_raw\n\t\tWHERE (source_account = $1 OR contract_id = $1) AND ledger_range IN ($2, $3)",
+	} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("missing cold pruning fragment %q\n%s", want, query)
 		}
 	}
 }

@@ -9,6 +9,7 @@ use (
 	./duckdb-consumer/go
 	./ducklake-ingestion-obsrvr-v3/go
 	./ducklake-ingestion-processor/go
+	./obsrvr-lake/account-index-transformer/go
 	./obsrvr-lake/contract-event-index-transformer/go
 	./obsrvr-lake/index-plane-transformer/go
 	./obsrvr-lake/postgres-ducklake-flusher/go

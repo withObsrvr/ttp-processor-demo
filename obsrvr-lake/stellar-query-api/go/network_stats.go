@@ -19,19 +19,19 @@ type NetworkStats struct {
 	GeneratedAt   string `json:"generated_at"`
 	DataFreshness string `json:"data_freshness"`
 
-	Accounts      AccountStats       `json:"accounts"`
-	Ledger        LedgerStats        `json:"ledger"`
-	Operations24h OperationStats     `json:"operations_24h"`
+	Accounts        AccountStats         `json:"accounts"`
+	Ledger          LedgerStats          `json:"ledger"`
+	Operations24h   OperationStats       `json:"operations_24h"`
 	Transactions24h *TransactionStats24h `json:"transactions_24h,omitempty"`
-	Fees24h       *FeeStats24h       `json:"fees_24h,omitempty"`
-	Soroban       *SorobanNetStats   `json:"soroban,omitempty"`
+	Fees24h         *FeeStats24h         `json:"fees_24h,omitempty"`
+	Soroban         *SorobanNetStats     `json:"soroban,omitempty"`
 }
 
 // AccountStats contains account-related statistics
 type AccountStats struct {
-	Total       int64 `json:"total"`
-	Active24h   int64 `json:"active_24h,omitempty"`
-	Created24h  int64 `json:"created_24h,omitempty"`
+	Total      int64 `json:"total"`
+	Active24h  int64 `json:"active_24h,omitempty"`
+	Created24h int64 `json:"created_24h,omitempty"`
 }
 
 // LedgerStats contains ledger-related statistics
@@ -43,15 +43,15 @@ type LedgerStats struct {
 
 // OperationStats contains 24-hour operation statistics
 type OperationStats struct {
-	Total            int64 `json:"total"`
-	Payments         int64 `json:"payments,omitempty"`
-	PathPayments     int64 `json:"path_payments,omitempty"`
-	CreateAccount    int64 `json:"create_account,omitempty"`
-	AccountMerge     int64 `json:"account_merge,omitempty"`
-	ChangeTrust      int64 `json:"change_trust,omitempty"`
-	ManageOffer      int64 `json:"manage_offer,omitempty"`
-	ContractInvoke   int64 `json:"contract_invoke,omitempty"`
-	Other            int64 `json:"other,omitempty"`
+	Total                  int64 `json:"total"`
+	Payments               int64 `json:"payments,omitempty"`
+	PathPayments           int64 `json:"path_payments,omitempty"`
+	CreateAccount          int64 `json:"create_account,omitempty"`
+	AccountMerge           int64 `json:"account_merge,omitempty"`
+	ChangeTrust            int64 `json:"change_trust,omitempty"`
+	ManageOffer            int64 `json:"manage_offer,omitempty"`
+	ContractInvoke         int64 `json:"contract_invoke,omitempty"`
+	Other                  int64 `json:"other,omitempty"`
 	PreviousTotal          int64 `json:"previous_total,omitempty"`
 	PreviousContractInvoke int64 `json:"previous_contract_invoke,omitempty"`
 }
@@ -311,8 +311,8 @@ func (u *UnifiedSilverReader) GetNetworkStats(ctx context.Context) (*NetworkStat
 type NetworkStatsHandler struct {
 	silverReader  *UnifiedSilverReader
 	bronzeReader  *ColdReader          // Bronze layer for accurate total account count
-	unifiedReader *UnifiedDuckDBReader  // For fee stats from bronze
-	bronzeHotPG   *sql.DB               // Direct PG handle to bronze hot, bypasses DuckDB
+	unifiedReader *UnifiedDuckDBReader // For fee stats from bronze
+	bronzeHotPG   *sql.DB              // Direct PG handle to bronze hot, bypasses DuckDB
 }
 
 // NewNetworkStatsHandler creates a new network stats handler
@@ -635,10 +635,10 @@ func (h *NetworkStatsHandler) fetchBronzeStatsFast(ctx context.Context, wantFees
 	}
 
 	var (
-		coldTx, hotTx             txAgg
-		coldOp, hotOp             opAgg
-		coldFee, hotFee           feeAgg
-		coldSoroban, hotSoroban   sorobanAgg
+		coldTx, hotTx           txAgg
+		coldOp, hotOp           opAgg
+		coldFee, hotFee         feeAgg
+		coldSoroban, hotSoroban sorobanAgg
 	)
 
 	catalog := h.bronzeReader.CatalogName()
@@ -908,7 +908,8 @@ func (h *NetworkStatsHandler) fetchBronzeStatsFast(ctx context.Context, wantFees
 // HandleBronzeNetworkStats returns headline network statistics from the bronze layer
 // GET /api/v1/bronze/stats/network
 func (h *NetworkStatsHandler) HandleBronzeNetworkStats(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, cancel := withInteractiveQueryTimeout(r.Context())
+	defer cancel()
 
 	stats := &BronzeNetworkStats{
 		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),

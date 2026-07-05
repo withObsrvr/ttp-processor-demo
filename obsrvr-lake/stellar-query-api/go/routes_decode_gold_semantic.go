@@ -13,7 +13,7 @@ func (app *application) registerTokenAndDecodeRoutes(router *mux.Router) {
 		txHotPathReader = NewTxHotPathReader(hotReader.DB(), silverHotReader.DB())
 	}
 
-	eventHandlers := NewEventHandlers(unifiedSilverReader.cold, txHotPathReader)
+	eventHandlers := NewEventHandlers(unifiedSilverReader.cold, txHotPathReader, silverHotReader)
 	router.HandleFunc("/api/v1/silver/events", eventHandlers.HandleUnifiedEvents).Methods("GET")
 	router.HandleFunc("/api/v1/silver/events/by-contract", eventHandlers.HandleContractEvents).Methods("GET")
 	router.HandleFunc("/api/v1/silver/address/{addr}/events", eventHandlers.HandleAddressEvents).Methods("GET")

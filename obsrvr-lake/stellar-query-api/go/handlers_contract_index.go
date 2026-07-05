@@ -141,9 +141,14 @@ func (h *ContractIndexHandlers) HandleContractLedgers(w http.ResponseWriter, r *
 		limit = val
 	}
 
-	// Lookup in Contract Event Index
-	ledgers, err := h.reader.GetLedgersForContract(r.Context(), contractID, startLedger, endLedger, limit)
+	ctx, cancel := withInteractiveQueryTimeout(r.Context())
+	defer cancel()
+	ledgers, err := h.reader.GetLedgersForContract(ctx, contractID, startLedger, endLedger, limit)
 	if err != nil {
+		if isQueryTimeout(err) {
+			respondQueryTimeout(w, "contract index ledgers")
+			return
+		}
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -237,9 +242,14 @@ func (h *ContractIndexHandlers) HandleContractEventSummary(w http.ResponseWriter
 		endLedger = val
 	}
 
-	// Get summary from Contract Event Index
-	summary, err := h.reader.GetContractEventSummary(r.Context(), contractID, startLedger, endLedger)
+	ctx, cancel := withInteractiveQueryTimeout(r.Context())
+	defer cancel()
+	summary, err := h.reader.GetContractEventSummary(ctx, contractID, startLedger, endLedger)
 	if err != nil {
+		if isQueryTimeout(err) {
+			respondQueryTimeout(w, "contract index summary")
+			return
+		}
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -364,8 +374,14 @@ func (h *ContractIndexHandlers) HandleBatchContractLookup(w http.ResponseWriter,
 // @Failure 500 {object} map[string]interface{} "Internal server error"
 // @Router /api/v1/index/contracts/health [get]
 func (h *ContractIndexHandlers) HandleContractIndexHealth(w http.ResponseWriter, r *http.Request) {
-	stats, err := h.reader.GetIndexStats(r.Context())
+	ctx, cancel := withInteractiveQueryTimeout(r.Context())
+	defer cancel()
+	stats, err := h.reader.GetIndexStats(ctx)
 	if err != nil {
+		if isQueryTimeout(err) {
+			respondQueryTimeout(w, "contract index health")
+			return
+		}
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

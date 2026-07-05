@@ -47,12 +47,15 @@ func TestGetUnifiedAddressBalancesComposesClassicAndSoroban(t *testing.T) {
 	reader := &UnifiedDuckDBReader{db: db, hotSchema: "main", coldSchema: "main"}
 	h := &SilverHandlers{unifiedReader: reader}
 
-	resp, err := h.GetUnifiedAddressBalances(context.Background(), addr)
+	resp, err := h.GetUnifiedAddressBalances(context.Background(), addr, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Address != addr || resp.TotalBalances != 3 {
+	if resp.Address != addr || resp.TotalBalances != 2 {
 		t.Fatalf("unexpected response: addr=%s total=%d", resp.Address, resp.TotalBalances)
+	}
+	if !resp.Partial || len(resp.Warnings) == 0 {
+		t.Fatalf("default response should mark omitted token holdings as partial: %+v", resp)
 	}
 
 	byType := map[string]UnifiedAddressBalance{}
@@ -68,6 +71,22 @@ func TestGetUnifiedAddressBalancesComposesClassicAndSoroban(t *testing.T) {
 	}
 	if got := byType["credit_alphanum4:USDC"].BalanceDisplay; got != "4.2000000" {
 		t.Fatalf("trustline display = %q", got)
+	}
+
+	resp, err = h.GetUnifiedAddressBalances(context.Background(), addr, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Address != addr || resp.TotalBalances != 3 {
+		t.Fatalf("unexpected opt-in response: addr=%s total=%d", resp.Address, resp.TotalBalances)
+	}
+	byType = map[string]UnifiedAddressBalance{}
+	for _, b := range resp.Balances {
+		if b.ContractID != nil {
+			byType["contract"] = b
+		} else {
+			byType[b.AssetType+":"+b.AssetCode] = b
+		}
 	}
 	if byType["contract"].ContractID == nil || *byType["contract"].ContractID != contractID {
 		t.Fatalf("missing soroban contract balance: %+v", byType["contract"])

@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/gorilla/mux"
 )
@@ -41,7 +43,9 @@ func (h *TxDiffHandlers) HandleTransactionDiffs(w http.ResponseWriter, r *http.R
 	var diffs *TxDiffs
 	var err error
 	if h.hotPathReader != nil {
-		diffs, err = h.hotPathReader.GetTransactionDiffs(r.Context(), txHash)
+		hotCtx, cancel := context.WithTimeout(r.Context(), 1200*time.Millisecond)
+		diffs, err = h.hotPathReader.GetTransactionDiffs(hotCtx, txHash)
+		cancel()
 		if err == nil {
 			respondJSON(w, diffs)
 			return
@@ -54,14 +58,20 @@ func (h *TxDiffHandlers) HandleTransactionDiffs(w http.ResponseWriter, r *http.R
 	// Use index to resolve tx hash → ledger_sequence for partition-pruned cold lookup.
 	// Without this, DuckLake scans ALL Parquet files looking for the hash (30s+).
 	// With the ledger hint, it reads one partition (~100ms).
+	coldCtx, cancel := withInteractiveQueryTimeout(r.Context())
+	defer cancel()
 	if h.indexReader != nil {
-		diffs, err = h.coldReader.GetTransactionDiffsWithLedgerHint(r.Context(), txHash, h.indexReader)
+		diffs, err = h.coldReader.GetTransactionDiffsWithLedgerHint(coldCtx, txHash, h.indexReader)
 	} else {
-		diffs, err = h.coldReader.GetTransactionDiffs(r.Context(), txHash)
+		diffs, err = h.coldReader.GetTransactionDiffs(coldCtx, txHash)
 	}
 	if err != nil {
 		if errors.Is(err, ErrTxNotFound) {
 			respondError(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		if isQueryTimeout(err) {
+			respondQueryTimeout(w, "transaction diffs")
 			return
 		}
 		respondError(w, err.Error(), http.StatusInternalServerError)
