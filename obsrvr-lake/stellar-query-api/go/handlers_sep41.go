@@ -219,8 +219,14 @@ func (h *SEP41Handlers) HandleAddressTokenPortfolio(w http.ResponseWriter, r *ht
 		return
 	}
 
-	holdings, err := h.reader.GetAddressTokenPortfolio(r.Context(), addr)
+	ctx, cancel := withOptionalQueryTimeout(r.Context())
+	defer cancel()
+	holdings, err := h.reader.GetAddressTokenPortfolio(ctx, addr)
 	if err != nil {
+		if isQueryTimeout(err) {
+			respondQueryTimeout(w, "address token portfolio")
+			return
+		}
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

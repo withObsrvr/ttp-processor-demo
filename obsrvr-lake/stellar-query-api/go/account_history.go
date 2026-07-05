@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -143,16 +144,22 @@ type BalanceHistoryFilters struct {
 	Order       string
 }
 
-func historyCoverage() HistoryCoverage {
-	return HistoryCoverage{Version: "v1", Includes: []string{
+func historyCoverage(accountIndexPruning bool) HistoryCoverage {
+	includes := []string{
 		"hot+cold query-layer federation with hot-over-cold de-duplication",
 		"classic operations from enriched_history_operations",
 		"Soroban token transfers from token_transfers_raw",
 		"Soroban invocations from contract_invocations_raw",
-	}, Limitations: []string{
+	}
+	limitations := []string{
 		"v1 is query-layer first; very high-cardinality accounts may require a future materialized account_transactions index",
 		"historical Soroban token balances are reconstructed from observed token_transfers_raw deltas",
-	}}
+	}
+	if accountIndexPruning {
+		includes = append(includes, "cold account transaction scans are pruned by account_ledger_index ledger ranges when index rows are available")
+		limitations = append(limitations, "account_ledger_index pruning is opportunistic while backfill is running; missing index ranges fall back to the unpruned cold query path")
+	}
+	return HistoryCoverage{Version: "v1", Includes: includes, Limitations: limitations}
 }
 
 func validAccountAddress(address string) bool {
@@ -225,12 +232,19 @@ func (h *SilverHandlers) HandleAccountTransactions(w http.ResponseWriter, r *htt
 		}
 		filters.Successful = &b
 	}
-	txs, next, hasMore, err := h.unifiedReader.GetAccountTransactions(r.Context(), filters)
+	ctx, cancel := withInteractiveQueryTimeout(r.Context())
+	defer cancel()
+	txs, next, hasMore, err := h.unifiedReader.GetAccountTransactions(ctx, filters)
 	if err != nil {
+		if isQueryTimeout(err) {
+			respondQueryTimeout(w, "account transactions")
+			return
+		}
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	respondJSON(w, AccountTransactionsResponse{AccountID: accountID, Transactions: txs, Count: len(txs), Cursor: next, HasMore: hasMore, Coverage: historyCoverage()})
+	accountIndexPruning := h.unifiedReader != nil && h.unifiedReader.accountIndex.CanPrune()
+	respondJSON(w, AccountTransactionsResponse{AccountID: accountID, Transactions: txs, Count: len(txs), Cursor: next, HasMore: hasMore, Coverage: historyCoverage(accountIndexPruning)})
 }
 
 // HandleAddressBalanceHistory returns historical balances for a classic asset or Soroban token contract.
@@ -291,7 +305,7 @@ func (h *SilverHandlers) HandleAddressBalanceHistory(w http.ResponseWriter, r *h
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	respondJSON(w, BalanceHistoryResponse{Address: addr, Asset: filters.Asset, ContractID: filters.ContractID, History: history, Count: len(history), Cursor: next, HasMore: hasMore, Coverage: historyCoverage()})
+	respondJSON(w, BalanceHistoryResponse{Address: addr, Asset: filters.Asset, ContractID: filters.ContractID, History: history, Count: len(history), Cursor: next, HasMore: hasMore, Coverage: historyCoverage(false)})
 }
 
 func (r *UnifiedDuckDBReader) GetAccountTransactions(ctx context.Context, filters AccountTransactionsFilters) ([]AccountTransaction, string, bool, error) {
@@ -336,8 +350,23 @@ func (r *UnifiedDuckDBReader) GetAccountTransactions(ctx context.Context, filter
 		args = append(args, filters.Cursor.LedgerSequence, filters.Cursor.ClosedAt, filters.Cursor.TransactionHash)
 		arg += 3
 	}
+	coldLedgerRangeClause := ""
+	if strings.TrimSpace(r.coldSchema) != "" && r.accountIndex.CanPrune() {
+		ranges, err := r.accountIndex.LookupLedgerRanges(ctx, filters.AccountID, filters.StartLedger, filters.EndLedger)
+		if err != nil {
+			log.Printf("account ledger index lookup failed account=%s err=%v; falling back to unpruned cold account history", filters.AccountID, err)
+		} else if len(ranges) > 0 {
+			placeholders := make([]string, 0, len(ranges))
+			for _, ledgerRange := range ranges {
+				placeholders = append(placeholders, fmt.Sprintf("$%d", arg))
+				args = append(args, ledgerRange)
+				arg++
+			}
+			coldLedgerRangeClause = fmt.Sprintf(" AND ledger_range IN (%s)", strings.Join(placeholders, ", "))
+		}
+	}
 	args = append(args, requestLimit) // $arg : per-arm distinct-transaction bound AND final page limit
-	query := buildAccountTransactionsQuery(r.hotSchema, r.coldSchema, strings.Join(where, " AND "), orderDir, arg)
+	query := buildAccountTransactionsQuery(r.hotSchema, r.coldSchema, strings.Join(where, " AND "), coldLedgerRangeClause, orderDir, arg)
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, "", false, fmt.Errorf("GetAccountTransactions: %w", err)
@@ -396,7 +425,7 @@ func splitCSV(s string) []string {
 	return out
 }
 
-func buildAccountTransactionsQuery(hotSchema, coldSchema, whereClause, orderDir string, limitArg int) string {
+func buildAccountTransactionsQuery(hotSchema, coldSchema, whereClause, coldLedgerRangeClause, orderDir string, limitArg int) string {
 	rows := func(schema string, rank int, isCold bool) string {
 		// Hot enriched_history_operations has all five participant columns as VARCHAR (and indexed);
 		// silver COLD typed from_account/to_address/address as int32 because the backfill left them
@@ -406,25 +435,29 @@ func buildAccountTransactionsQuery(hotSchema, coldSchema, whereClause, orderDir 
 		if isCold {
 			ehoWhere = "source_account = $1 OR destination = $1"
 		}
+		tablePrune := ""
+		if isCold {
+			tablePrune = coldLedgerRangeClause
+		}
 		return fmt.Sprintf(`
 		SELECT ledger_sequence, ledger_closed_at AS closed_at, transaction_hash, tx_successful AS successful, source_account,
 		       CAST(tx_fee_charged AS VARCHAR) AS fee_charged, tx_memo_type AS memo_type, tx_memo AS memo,
 		       CASE WHEN is_payment_op THEN 'classic_payment' WHEN is_soroban_op THEN 'soroban_operation' ELSE COALESCE(type_string, 'operation') END AS activity_type,
 		       'enriched_history_operations' AS source_table, %d AS source_rank
 		FROM %s.enriched_history_operations
-		WHERE %s
+		WHERE (%s)%s
 		UNION ALL
 		SELECT ledger_sequence, timestamp AS closed_at, transaction_hash, transaction_successful, NULL,
 		       NULL, NULL, NULL,
 		       CASE WHEN token_contract_id IS NOT NULL THEN 'soroban_token_transfer' ELSE 'token_transfer' END,
 		       'token_transfers_raw', %d
 		FROM %s.token_transfers_raw
-		WHERE from_account = $1 OR to_account = $1
+		WHERE (from_account = $1 OR to_account = $1)%s
 		UNION ALL
 		SELECT ledger_sequence, closed_at, transaction_hash, successful, source_account,
 		       NULL, NULL, NULL, 'contract_invocation', 'contract_invocations_raw', %d
 		FROM %s.contract_invocations_raw
-		WHERE source_account = $1 OR contract_id = $1`, rank, schema, ehoWhere, rank, schema, rank, schema)
+		WHERE (source_account = $1 OR contract_id = $1)%s`, rank, schema, ehoWhere, tablePrune, rank, schema, tablePrune, rank, schema, tablePrune)
 	}
 	// Bounded arm: keep only the rows of the top (limit+1) DISTINCT transactions in page order
 	// BEFORE the union/dedup/group. DENSE_RANK ties every op/event row of a transaction to one rank

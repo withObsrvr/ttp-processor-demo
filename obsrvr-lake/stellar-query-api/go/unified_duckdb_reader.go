@@ -41,6 +41,8 @@ type UnifiedDuckDBReader struct {
 	availableLedgersMu     sync.Mutex
 	availableLedgersCached *LedgerRange
 	availableLedgersAt     time.Time
+
+	accountIndex *AccountLedgerIndexReader
 }
 
 // NewUnifiedDuckDBReader creates a new unified reader that ATTACHes both
@@ -380,6 +382,27 @@ func (r *UnifiedDuckDBReader) GetAccountCreatedAt(ctx context.Context, accountID
 func (r *UnifiedDuckDBReader) GetAccountHistoryWithCursor(ctx context.Context, accountID string, limit int, cursor *AccountCursor) ([]AccountSnapshot, string, bool, error) {
 	// Request one extra to detect has_more
 	requestLimit := limit + 1
+	coldLedgerRangeClause := ""
+	args := []interface{}{accountID}
+	arg := 2
+	if strings.TrimSpace(r.coldSchema) != "" && r.accountIndex.CanPrune() {
+		var endLedger int64
+		if cursor != nil {
+			endLedger = cursor.LedgerSequence - 1
+		}
+		ranges, err := r.accountIndex.LookupLedgerRanges(ctx, accountID, 0, endLedger)
+		if err != nil {
+			log.Printf("account ledger index lookup failed account=%s err=%v; falling back to unpruned cold account snapshots", accountID, err)
+		} else if len(ranges) > 0 {
+			placeholders := make([]string, 0, len(ranges))
+			for _, ledgerRange := range ranges {
+				placeholders = append(placeholders, fmt.Sprintf("$%d", arg))
+				args = append(args, ledgerRange)
+				arg++
+			}
+			coldLedgerRangeClause = fmt.Sprintf(" AND ledger_range IN (%s)", strings.Join(placeholders, ", "))
+		}
+	}
 
 	query := fmt.Sprintf(`
 		WITH combined AS (
@@ -389,23 +412,24 @@ func (r *UnifiedDuckDBReader) GetAccountHistoryWithCursor(ctx context.Context, a
 			UNION ALL
 			SELECT account_id, balance, sequence_number, ledger_sequence,
 			       closed_at, valid_to, 2 as source
-			FROM %s.accounts_snapshot WHERE account_id = $1
+			FROM %s.accounts_snapshot WHERE account_id = $1%s
 		)
 		SELECT DISTINCT ON (ledger_sequence)
 		       account_id, balance, sequence_number, ledger_sequence,
 		       closed_at, valid_to
 		FROM combined
-		WHERE ($2::bigint IS NULL OR ledger_sequence < $2)
+		WHERE ($%d::bigint IS NULL OR ledger_sequence < $%d)
 		ORDER BY ledger_sequence DESC
-		LIMIT $3
-	`, r.hotSchema, r.coldSchema)
+		LIMIT $%d
+	`, r.hotSchema, r.coldSchema, coldLedgerRangeClause, arg, arg, arg+1)
 
 	var cursorLedger *int64
 	if cursor != nil {
 		cursorLedger = &cursor.LedgerSequence
 	}
+	args = append(args, cursorLedger, requestLimit)
 
-	rows, err := r.db.QueryContext(ctx, query, accountID, cursorLedger, requestLimit)
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, "", false, fmt.Errorf("unified GetAccountHistoryWithCursor: %w", err)
 	}

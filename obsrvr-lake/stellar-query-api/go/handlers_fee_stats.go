@@ -23,18 +23,18 @@ func NewFeeStatsHandler(reader *UnifiedDuckDBReader) *FeeStatsHandler {
 
 // FeeStatsResponse represents fee statistics for a time period
 type FeeStatsResponse struct {
-	Period       string  `json:"period"`
-	MedianFee    int64   `json:"median_fee"`
-	P75Fee       int64   `json:"p75_fee"`
-	P90Fee       int64   `json:"p90_fee"`
-	P99Fee       int64   `json:"p99_fee"`
-	MinFee       int64   `json:"min_fee"`
-	MaxFee       int64   `json:"max_fee"`
-	TotalFees    int64   `json:"total_fees"`
-	TxCount      int64   `json:"tx_count"`
-	SurgeActive  bool    `json:"surge_active"`
-	SurgePct     float64 `json:"surge_pct_of_ledgers,omitempty"`
-	GeneratedAt  string  `json:"generated_at"`
+	Period      string  `json:"period"`
+	MedianFee   int64   `json:"median_fee"`
+	P75Fee      int64   `json:"p75_fee"`
+	P90Fee      int64   `json:"p90_fee"`
+	P99Fee      int64   `json:"p99_fee"`
+	MinFee      int64   `json:"min_fee"`
+	MaxFee      int64   `json:"max_fee"`
+	TotalFees   int64   `json:"total_fees"`
+	TxCount     int64   `json:"tx_count"`
+	SurgeActive bool    `json:"surge_active"`
+	SurgePct    float64 `json:"surge_pct_of_ledgers,omitempty"`
+	GeneratedAt string  `json:"generated_at"`
 }
 
 // HandleFeeStats returns fee statistics for a given period
@@ -139,15 +139,15 @@ func (h *FeeStatsHandler) HandleFeeStats(w http.ResponseWriter, r *http.Request)
 
 // LedgerFeesResponse represents fee distribution for a single ledger
 type LedgerFeesResponse struct {
-	LedgerSequence int64           `json:"ledger_sequence"`
-	TxCount        int             `json:"tx_count"`
-	MinFee         int64           `json:"min_fee"`
-	MaxFee         int64           `json:"max_fee"`
-	MedianFee      int64           `json:"median_fee"`
-	P90Fee         int64           `json:"p90_fee"`
-	TotalFees      int64           `json:"total_fees"`
-	Histogram      []FeeBucket     `json:"histogram"`
-	GeneratedAt    string          `json:"generated_at"`
+	LedgerSequence int64       `json:"ledger_sequence"`
+	TxCount        int         `json:"tx_count"`
+	MinFee         int64       `json:"min_fee"`
+	MaxFee         int64       `json:"max_fee"`
+	MedianFee      int64       `json:"median_fee"`
+	P90Fee         int64       `json:"p90_fee"`
+	TotalFees      int64       `json:"total_fees"`
+	Histogram      []FeeBucket `json:"histogram"`
+	GeneratedAt    string      `json:"generated_at"`
 }
 
 // FeeBucket represents a fee histogram bucket
@@ -278,8 +278,8 @@ func (h *FeeStatsHandler) getBronzeSchemas() []string {
 
 // SorobanStatsHandler handles Soroban network statistics
 type SorobanStatsHandler struct {
-	reader    *UnifiedDuckDBReader
-	silverDB  *SilverHotReader
+	reader   *UnifiedDuckDBReader
+	silverDB *SilverHotReader
 }
 
 // NewSorobanStatsHandler creates a new soroban stats handler
@@ -289,10 +289,10 @@ func NewSorobanStatsHandler(reader *UnifiedDuckDBReader, silverDB *SilverHotRead
 
 // SorobanStatsResponse represents Soroban network statistics
 type SorobanStatsResponse struct {
-	Contracts   SorobanContractStats   `json:"contracts"`
-	Execution   SorobanExecutionStats  `json:"execution"`
-	State       SorobanStateStats      `json:"state"`
-	GeneratedAt string                 `json:"generated_at"`
+	Contracts   SorobanContractStats  `json:"contracts"`
+	Execution   SorobanExecutionStats `json:"execution"`
+	State       SorobanStateStats     `json:"state"`
+	GeneratedAt string                `json:"generated_at"`
 }
 
 // SorobanContractStats contains contract deployment/activity stats
@@ -326,7 +326,8 @@ type SorobanStateStats struct {
 // @Failure 500 {object} map[string]interface{} "Internal server error"
 // @Router /api/v1/silver/stats/soroban [get]
 func (h *SorobanStatsHandler) HandleSorobanStats(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, cancel := withInteractiveQueryTimeout(r.Context())
+	defer cancel()
 
 	resp := SorobanStatsResponse{
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
@@ -436,14 +437,14 @@ func (h *SorobanStatsHandler) HandleSorobanStats(w http.ResponseWriter, r *http.
 
 // LedgerSorobanResponse represents Soroban resource aggregates for a single ledger
 type LedgerSorobanResponse struct {
-	LedgerSequence  int64  `json:"ledger_sequence"`
-	SorobanTxCount  int64  `json:"soroban_tx_count"`
-	TotalCPUInsns   int64  `json:"total_cpu_insns"`
-	TotalReadBytes  int64  `json:"total_read_bytes"`
-	TotalWriteBytes int64  `json:"total_write_bytes"`
-	TotalRentCharged int64 `json:"total_rent_charged"`
-	UniqueContracts int64  `json:"unique_contracts"`
-	GeneratedAt     string `json:"generated_at"`
+	LedgerSequence   int64  `json:"ledger_sequence"`
+	SorobanTxCount   int64  `json:"soroban_tx_count"`
+	TotalCPUInsns    int64  `json:"total_cpu_insns"`
+	TotalReadBytes   int64  `json:"total_read_bytes"`
+	TotalWriteBytes  int64  `json:"total_write_bytes"`
+	TotalRentCharged int64  `json:"total_rent_charged"`
+	UniqueContracts  int64  `json:"unique_contracts"`
+	GeneratedAt      string `json:"generated_at"`
 }
 
 // HandleLedgerSoroban returns Soroban resource aggregates for a specific ledger

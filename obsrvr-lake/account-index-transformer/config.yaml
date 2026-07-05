@@ -1,0 +1,81 @@
+# Account Index Transformer Configuration
+
+service:
+  name: "account-index-transformer"
+  version: "1.0.0"
+  poll_interval_seconds: 30
+  batch_size: 10000
+  allow_retention_gap_start: false
+
+bronze_source:
+  mode: "poll"
+  endpoint: ""
+
+silver_hot:
+  host: "${PG_SILVER_HOT_HOST}"
+  port: 25060
+  database: "silver_hot"
+  user: "${PG_SILVER_HOT_USER}"
+  password: "${PG_SILVER_HOT_PASSWORD}"
+  sslmode: "require"
+
+silver_cold:
+  catalog_name: "testnet_catalog"
+  schema_name: "silver"
+  metadata_schema: "silver_meta"
+  duckdb_path: "/tmp/duckdb/account_index_silver_reader.db"
+  catalog_host: "${CATALOG_HOST}"
+  catalog_port: 25060
+  catalog_database: "${CATALOG_DB}"
+  catalog_user: "${CATALOG_USER}"
+  catalog_password: "${CATALOG_PASSWORD}"
+  catalog_sslmode: "require"
+  s3_endpoint: "s3.us-west-004.backblazeb2.com"
+  s3_region: "us-west-004"
+  s3_access_key_id: "${B2_KEY_ID}"
+  s3_secret_access_key: "${B2_KEY_SECRET}"
+  s3_bucket: "${B2_INDEX_BUCKET}"
+  data_path: "s3://${B2_INDEX_BUCKET}/"
+
+catalog:
+  host: "${CATALOG_HOST}"
+  port: 25060
+  database: "${CATALOG_DB}"
+  user: "${CATALOG_USER}"
+  password: "${CATALOG_PASSWORD}"
+  sslmode: "require"
+
+index_cold:
+  catalog_name: "testnet_catalog"
+  schema_name: "index"
+  table_name: "account_ledger_index"
+  duckdb_path: "/tmp/duckdb/account_index_writer.db"
+  catalog_host: "${CATALOG_HOST}"
+  catalog_port: 25060
+  catalog_database: "${CATALOG_DB}"
+  catalog_user: "${CATALOG_USER}"
+  catalog_password: "${CATALOG_PASSWORD}"
+  catalog_sslmode: "require"
+  s3_endpoint: "s3.us-west-004.backblazeb2.com"
+  s3_region: "us-west-004"
+  s3_access_key_id: "${B2_KEY_ID}"
+  s3_secret_access_key: "${B2_KEY_SECRET}"
+  s3_bucket: "${B2_INDEX_BUCKET}"
+  partition_size: 100000
+
+account_index:
+  account_bucket_count: 256
+
+checkpoint:
+  table: "index.account_ledger_transformer_checkpoint"
+
+backfill_checkpoint:
+  table: "index.account_ledger_backfill_checkpoint"
+
+health:
+  port: 8096
+
+maintenance:
+  enabled: true
+  every_n_writes: 100
+  max_compacted_files: 200

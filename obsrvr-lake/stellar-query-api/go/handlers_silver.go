@@ -171,12 +171,14 @@ func (h *SilverHandlers) HandleAccountHistory(w http.ResponseWriter, r *http.Req
 	var nextCursor string
 	var hasMore bool
 
+	queryCtx, cancel := withInteractiveQueryTimeout(r.Context())
+	defer cancel()
 	switch h.readerMode {
 	case ReaderModeUnified:
-		history, nextCursor, hasMore, err = h.unifiedReader.GetAccountHistoryWithCursor(r.Context(), accountID, limit, cursor)
+		history, nextCursor, hasMore, err = h.unifiedReader.GetAccountHistoryWithCursor(queryCtx, accountID, limit, cursor)
 	case ReaderModeHybrid:
-		legacyHistory, legacyNextCursor, legacyHasMore, legacyErr := h.legacyReader.GetAccountHistoryWithCursor(r.Context(), accountID, limit, cursor)
-		unifiedHistory, _, _, unifiedErr := h.unifiedReader.GetAccountHistoryWithCursor(r.Context(), accountID, limit, cursor)
+		legacyHistory, legacyNextCursor, legacyHasMore, legacyErr := h.legacyReader.GetAccountHistoryWithCursor(queryCtx, accountID, limit, cursor)
+		unifiedHistory, _, _, unifiedErr := h.unifiedReader.GetAccountHistoryWithCursor(queryCtx, accountID, limit, cursor)
 
 		if legacyErr != nil && unifiedErr != nil {
 			log.Printf("⚠️ HYBRID [HandleAccountHistory]: both failed - legacy: %v, unified: %v", legacyErr, unifiedErr)
@@ -193,10 +195,14 @@ func (h *SilverHandlers) HandleAccountHistory(w http.ResponseWriter, r *http.Req
 		}
 		history, nextCursor, hasMore, err = legacyHistory, legacyNextCursor, legacyHasMore, legacyErr
 	default: // ReaderModeLegacy
-		history, nextCursor, hasMore, err = h.legacyReader.GetAccountHistoryWithCursor(r.Context(), accountID, limit, cursor)
+		history, nextCursor, hasMore, err = h.legacyReader.GetAccountHistoryWithCursor(queryCtx, accountID, limit, cursor)
 	}
 
 	if err != nil {
+		if isQueryTimeout(err) {
+			respondQueryTimeout(w, "account history")
+			return
+		}
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -344,12 +350,14 @@ func (h *SilverHandlers) HandleListAccounts(w http.ResponseWriter, r *http.Reque
 	var nextCursor string
 	var hasMore bool
 
+	queryCtx, cancel := withInteractiveQueryTimeout(r.Context())
+	defer cancel()
 	switch h.readerMode {
 	case ReaderModeUnified:
-		accounts, nextCursor, hasMore, err = h.unifiedReader.GetAccountsListWithCursor(r.Context(), filters)
+		accounts, nextCursor, hasMore, err = h.unifiedReader.GetAccountsListWithCursor(queryCtx, filters)
 	case ReaderModeHybrid:
-		legacyAccounts, legacyNextCursor, legacyHasMore, legacyErr := h.legacyReader.GetAccountsListWithCursor(r.Context(), filters)
-		unifiedAccounts, _, _, unifiedErr := h.unifiedReader.GetAccountsListWithCursor(r.Context(), filters)
+		legacyAccounts, legacyNextCursor, legacyHasMore, legacyErr := h.legacyReader.GetAccountsListWithCursor(queryCtx, filters)
+		unifiedAccounts, _, _, unifiedErr := h.unifiedReader.GetAccountsListWithCursor(queryCtx, filters)
 
 		if legacyErr != nil && unifiedErr != nil {
 			log.Printf("⚠️ HYBRID [HandleListAccounts]: both failed - legacy: %v, unified: %v", legacyErr, unifiedErr)
@@ -366,10 +374,14 @@ func (h *SilverHandlers) HandleListAccounts(w http.ResponseWriter, r *http.Reque
 		}
 		accounts, nextCursor, hasMore, err = legacyAccounts, legacyNextCursor, legacyHasMore, legacyErr
 	default: // ReaderModeLegacy
-		accounts, nextCursor, hasMore, err = h.legacyReader.GetAccountsListWithCursor(r.Context(), filters)
+		accounts, nextCursor, hasMore, err = h.legacyReader.GetAccountsListWithCursor(queryCtx, filters)
 	}
 
 	if err != nil {
+		if isQueryTimeout(err) {
+			respondQueryTimeout(w, "accounts list")
+			return
+		}
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -560,6 +572,11 @@ func (h *SilverHandlers) HandleAssetDetail(w http.ResponseWriter, r *http.Reques
 		CanonicalSlug: ref.CanonicalSlug(),
 		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
 	}
+	includeEnrichment := strings.EqualFold(r.URL.Query().Get("include_enrichment"), "true")
+	ctx, cancel := withInteractiveQueryTimeout(r.Context())
+	defer cancel()
+	optionalCtx, optionalCancel := withOptionalQueryTimeout(r.Context())
+	defer optionalCancel()
 
 	if ref.IsContract {
 		if h.unifiedReader == nil {
@@ -567,18 +584,30 @@ func (h *SilverHandlers) HandleAssetDetail(w http.ResponseWriter, r *http.Reques
 			return
 		}
 
-		meta, err := h.unifiedReader.GetSEP41TokenMetadata(r.Context(), ref.ContractID)
+		meta, err := h.unifiedReader.GetSEP41TokenMetadata(ctx, ref.ContractID)
 		if err != nil {
+			if isQueryTimeout(err) {
+				respondQueryTimeout(w, "asset detail")
+				return
+			}
 			respondError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		stats, err := h.unifiedReader.GetSEP41TokenStats(r.Context(), ref.ContractID)
+		stats, err := h.unifiedReader.GetSEP41TokenStats(ctx, ref.ContractID)
 		if err != nil {
+			if isQueryTimeout(err) {
+				respondQueryTimeout(w, "asset detail")
+				return
+			}
 			respondError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		balances, _, _, err := h.unifiedReader.GetSEP41Balances(r.Context(), SEP41BalanceFilters{ContractID: ref.ContractID, Limit: 10, Order: "desc"})
+		balances, _, _, err := h.unifiedReader.GetSEP41Balances(ctx, SEP41BalanceFilters{ContractID: ref.ContractID, Limit: 10, Order: "desc"})
 		if err != nil {
+			if isQueryTimeout(err) {
+				respondQueryTimeout(w, "asset detail")
+				return
+			}
 			respondError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -592,7 +621,12 @@ func (h *SilverHandlers) HandleAssetDetail(w http.ResponseWriter, r *http.Reques
 		resp.Decimals = &meta.Decimals
 		resp.Stats = stats
 		resp.TopHolders = balances
-		resp.RecentTransfers, _ = h.queryRecentAssetTransfers(r.Context(), ref, 20)
+		if includeEnrichment {
+			resp.RecentTransfers, _ = h.queryRecentAssetTransfers(optionalCtx, ref, 20)
+		} else {
+			resp.Partial = true
+			resp.Warnings = append(resp.Warnings, "asset enrichment omitted; pass include_enrichment=true to request recent transfers and pair data")
+		}
 
 		if meta.AssetCode != nil {
 			classicRef := assetRef{AssetCode: *meta.AssetCode, IsNative: *meta.AssetCode == "XLM" || *meta.AssetCode == "native"}
@@ -604,8 +638,8 @@ func (h *SilverHandlers) HandleAssetDetail(w http.ResponseWriter, r *http.Reques
 				resp.Asset = ref.AssetInfo()
 				resp.LinkedTokens = []LinkedTokenSummary{{ContractID: ref.ContractID, TokenType: meta.TokenType, TokenName: meta.Name, TokenSymbol: meta.Symbol, TokenDecimals: &meta.Decimals}}
 			}
-			if meta.AssetIssuer != nil {
-				pairs, _ := h.queryTopAssetPairs(r.Context(), assetRef{AssetCode: *meta.AssetCode, AssetIssuer: *meta.AssetIssuer}, 5)
+			if includeEnrichment && meta.AssetIssuer != nil {
+				pairs, _ := h.queryTopAssetPairs(optionalCtx, assetRef{AssetCode: *meta.AssetCode, AssetIssuer: *meta.AssetIssuer}, 5)
 				resp.TopPairs = pairs
 			}
 		}
@@ -614,41 +648,54 @@ func (h *SilverHandlers) HandleAssetDetail(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	stats, err := h.getClassicAssetStats(r.Context(), ref)
+	stats, err := h.getClassicAssetStats(ctx, ref)
 	if err != nil {
+		if isQueryTimeout(err) {
+			respondQueryTimeout(w, "asset detail")
+			return
+		}
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	resp.Stats = stats
 
-	holders, err := h.getClassicAssetTopHolders(r.Context(), ref, 10)
+	holders, err := h.getClassicAssetTopHolders(ctx, ref, 10)
 	if err != nil {
+		if isQueryTimeout(err) {
+			respondQueryTimeout(w, "asset detail")
+			return
+		}
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	resp.TopHolders = holders
-	resp.RecentTransfers, _ = h.queryRecentAssetTransfers(r.Context(), ref, 20)
-	resp.Issuer, _ = h.queryIssuerMetadata(r.Context(), ref.AssetIssuer)
-	resp.LinkedTokens, _ = h.queryLinkedTokens(r.Context(), ref)
-	if len(resp.LinkedTokens) > 0 {
-		resp.LinkedContractID = &resp.LinkedTokens[0].ContractID
-		resp.TokenType = &resp.LinkedTokens[0].TokenType
-		if resp.DisplayName == nil {
-			resp.DisplayName = resp.LinkedTokens[0].TokenName
+	if includeEnrichment {
+		resp.RecentTransfers, _ = h.queryRecentAssetTransfers(optionalCtx, ref, 20)
+		resp.Issuer, _ = h.queryIssuerMetadata(optionalCtx, ref.AssetIssuer)
+		resp.LinkedTokens, _ = h.queryLinkedTokens(optionalCtx, ref)
+		if len(resp.LinkedTokens) > 0 {
+			resp.LinkedContractID = &resp.LinkedTokens[0].ContractID
+			resp.TokenType = &resp.LinkedTokens[0].TokenType
+			if resp.DisplayName == nil {
+				resp.DisplayName = resp.LinkedTokens[0].TokenName
+			}
+			if resp.Symbol == nil {
+				resp.Symbol = resp.LinkedTokens[0].TokenSymbol
+			}
+			if resp.Decimals == nil {
+				resp.Decimals = resp.LinkedTokens[0].TokenDecimals
+			}
 		}
-		if resp.Symbol == nil {
-			resp.Symbol = resp.LinkedTokens[0].TokenSymbol
+		resp.TopPairs, _ = h.queryTopAssetPairs(optionalCtx, ref, 5)
+		if h.unifiedReader != nil {
+			pools, _, _, err := h.unifiedReader.GetLiquidityPools(optionalCtx, LiquidityPoolFilters{AssetCode: ref.AssetCode, AssetIssuer: ref.AssetIssuer, Limit: 5})
+			if err == nil {
+				resp.LiquidityPools = pools
+			}
 		}
-		if resp.Decimals == nil {
-			resp.Decimals = resp.LinkedTokens[0].TokenDecimals
-		}
-	}
-	resp.TopPairs, _ = h.queryTopAssetPairs(r.Context(), ref, 5)
-	if h.unifiedReader != nil {
-		pools, _, _, err := h.unifiedReader.GetLiquidityPools(r.Context(), LiquidityPoolFilters{AssetCode: ref.AssetCode, AssetIssuer: ref.AssetIssuer, Limit: 5})
-		if err == nil {
-			resp.LiquidityPools = pools
-		}
+	} else {
+		resp.Partial = true
+		resp.Warnings = append(resp.Warnings, "asset enrichment omitted; pass include_enrichment=true to request issuer, linked token, pair, pool, and recent transfer data")
 	}
 
 	respondJSON(w, resp)
@@ -730,8 +777,22 @@ func (h *SilverHandlers) HandleAssetPairs(w http.ResponseWriter, r *http.Request
 	}
 
 	limit := parseLimit(r, 10, 100)
-	pairs, err := h.queryTopAssetPairs(r.Context(), ref, limit)
+	ctx, cancel := withOptionalQueryTimeout(r.Context())
+	defer cancel()
+	pairs, err := h.queryTopAssetPairs(ctx, ref, limit)
 	if err != nil {
+		if isQueryTimeout(err) {
+			respondJSON(w, map[string]any{
+				"asset":          ref.AssetInfo(),
+				"canonical_slug": ref.CanonicalSlug(),
+				"pairs":          []AssetPairSummary{},
+				"pair_count":     0,
+				"generated_at":   time.Now().UTC().Format(time.RFC3339),
+				"partial":        true,
+				"warnings":       []string{"asset pair query timed out"},
+			})
+			return
+		}
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -745,7 +806,7 @@ func (h *SilverHandlers) HandleAssetPairs(w http.ResponseWriter, r *http.Request
 	}
 
 	if !ref.IsContract && h.unifiedReader != nil {
-		if pools, _, _, err := h.unifiedReader.GetLiquidityPools(r.Context(), LiquidityPoolFilters{
+		if pools, _, _, err := h.unifiedReader.GetLiquidityPools(ctx, LiquidityPoolFilters{
 			AssetCode: ref.AssetCode, AssetIssuer: ref.AssetIssuer, Limit: limit,
 		}); err == nil {
 			response["liquidity_pools"] = pools
@@ -995,7 +1056,8 @@ func (h *SilverHandlers) HandleAccountContracts(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	ctx := r.Context()
+	ctx, cancel := withInteractiveQueryTimeout(r.Context())
+	defer cancel()
 	query := `
 		SELECT
 			ci.contract_id,
@@ -1141,17 +1203,24 @@ func (h *SilverHandlers) HandleEnrichedOperations(w http.ResponseWriter, r *http
 			}
 		}
 	}
+	defaulted, err := h.defaultOperationRecentWindow(r.Context(), &filters)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
 
 	var operations []EnrichedOperation
 	var nextCursor string
 	var hasMore bool
 
+	queryCtx, cancel := withInteractiveQueryTimeout(r.Context())
+	defer cancel()
 	switch h.readerMode {
 	case ReaderModeUnified:
-		operations, nextCursor, hasMore, err = h.unifiedReader.GetEnrichedOperationsWithCursor(r.Context(), filters)
+		operations, nextCursor, hasMore, err = h.unifiedReader.GetEnrichedOperationsWithCursor(queryCtx, filters)
 	case ReaderModeHybrid:
-		legacyOps, legacyNextCursor, legacyHasMore, legacyErr := h.legacyReader.GetEnrichedOperationsWithCursor(r.Context(), filters)
-		unifiedOps, _, _, unifiedErr := h.unifiedReader.GetEnrichedOperationsWithCursor(r.Context(), filters)
+		legacyOps, legacyNextCursor, legacyHasMore, legacyErr := h.legacyReader.GetEnrichedOperationsWithCursor(queryCtx, filters)
+		unifiedOps, _, _, unifiedErr := h.unifiedReader.GetEnrichedOperationsWithCursor(queryCtx, filters)
 
 		if legacyErr != nil && unifiedErr != nil {
 			log.Printf("⚠️ HYBRID [HandleEnrichedOperations]: both failed - legacy: %v, unified: %v", legacyErr, unifiedErr)
@@ -1168,10 +1237,14 @@ func (h *SilverHandlers) HandleEnrichedOperations(w http.ResponseWriter, r *http
 		}
 		operations, nextCursor, hasMore, err = legacyOps, legacyNextCursor, legacyHasMore, legacyErr
 	default: // ReaderModeLegacy
-		operations, nextCursor, hasMore, err = h.legacyReader.GetEnrichedOperationsWithCursor(r.Context(), filters)
+		operations, nextCursor, hasMore, err = h.legacyReader.GetEnrichedOperationsWithCursor(queryCtx, filters)
 	}
 
 	if err != nil {
+		if isQueryTimeout(err) {
+			respondQueryTimeout(w, "operations")
+			return
+		}
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -1190,9 +1263,11 @@ func (h *SilverHandlers) HandleEnrichedOperations(w http.ResponseWriter, r *http
 	}
 	// Get available ledgers (only if unified reader is available)
 	if h.unifiedReader != nil {
-		if availableLedgers, err := h.unifiedReader.GetAvailableLedgers(r.Context()); err == nil {
+		metaCtx, metaCancel := context.WithTimeout(r.Context(), 500*time.Millisecond)
+		if availableLedgers, err := h.unifiedReader.GetAvailableLedgers(metaCtx); err == nil {
 			meta.AvailableLedgers = availableLedgers
 		}
+		metaCancel()
 	}
 
 	response := map[string]interface{}{
@@ -1205,8 +1280,37 @@ func (h *SilverHandlers) HandleEnrichedOperations(w http.ResponseWriter, r *http
 	if nextCursor != "" {
 		response["cursor"] = nextCursor
 	}
+	if defaulted {
+		response["_coverage"] = map[string]interface{}{
+			"default_recent_window": true,
+			"start_ledger":          filters.StartLedger,
+			"end_ledger":            filters.EndLedger,
+		}
+	}
 
 	respondJSON(w, response)
+}
+
+func (h *SilverHandlers) defaultOperationRecentWindow(ctx context.Context, filters *OperationFilters) (bool, error) {
+	if filters == nil || filters.Cursor != nil || filters.TxHash != "" || filters.StartLedger > 0 || filters.EndLedger > 0 {
+		return false, nil
+	}
+	if h.legacyReader == nil || h.legacyReader.hot == nil {
+		return false, nil
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	latest, err := h.legacyReader.hot.GetServingLatestLedgerSequence(lookupCtx)
+	if err != nil || latest <= 0 {
+		if err != nil && isQueryTimeout(err) {
+			return false, err
+		}
+		return false, nil
+	}
+	start, end := defaultLedgerWindow(latest)
+	filters.StartLedger = start
+	filters.EndLedger = end
+	return true, nil
 }
 
 // HandlePayments is a convenience endpoint for payments only
@@ -1255,22 +1359,33 @@ func (h *SilverHandlers) HandlePayments(w http.ResponseWriter, r *http.Request) 
 		Cursor:       cursor,
 		Order:        order,
 	}
+	defaulted, err := h.defaultOperationRecentWindow(r.Context(), &filters)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
 
 	var operations []EnrichedOperation
 	var nextCursor string
 	var hasMore bool
 
+	queryCtx, cancel := withInteractiveQueryTimeout(r.Context())
+	defer cancel()
 	switch h.readerMode {
 	case ReaderModeUnified:
-		operations, nextCursor, hasMore, err = h.unifiedReader.GetEnrichedOperationsWithCursor(r.Context(), filters)
+		operations, nextCursor, hasMore, err = h.unifiedReader.GetEnrichedOperationsWithCursor(queryCtx, filters)
 	case ReaderModeHybrid:
 		// Use legacy for convenience endpoints in hybrid mode (primary routing is done in main handlers)
-		operations, nextCursor, hasMore, err = h.legacyReader.GetEnrichedOperationsWithCursor(r.Context(), filters)
+		operations, nextCursor, hasMore, err = h.legacyReader.GetEnrichedOperationsWithCursor(queryCtx, filters)
 	default:
-		operations, nextCursor, hasMore, err = h.legacyReader.GetEnrichedOperationsWithCursor(r.Context(), filters)
+		operations, nextCursor, hasMore, err = h.legacyReader.GetEnrichedOperationsWithCursor(queryCtx, filters)
 	}
 
 	if err != nil {
+		if isQueryTimeout(err) {
+			respondQueryTimeout(w, "payments")
+			return
+		}
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -1287,9 +1402,11 @@ func (h *SilverHandlers) HandlePayments(w http.ResponseWriter, r *http.Request) 
 		meta.ScannedLedger = &maxLedger
 	}
 	if h.unifiedReader != nil {
-		if availableLedgers, err := h.unifiedReader.GetAvailableLedgers(r.Context()); err == nil {
+		metaCtx, metaCancel := context.WithTimeout(r.Context(), 500*time.Millisecond)
+		if availableLedgers, err := h.unifiedReader.GetAvailableLedgers(metaCtx); err == nil {
 			meta.AvailableLedgers = availableLedgers
 		}
+		metaCancel()
 	}
 
 	response := map[string]interface{}{
@@ -1300,6 +1417,13 @@ func (h *SilverHandlers) HandlePayments(w http.ResponseWriter, r *http.Request) 
 	}
 	if nextCursor != "" {
 		response["cursor"] = nextCursor
+	}
+	if defaulted {
+		response["_coverage"] = map[string]interface{}{
+			"default_recent_window": true,
+			"start_ledger":          filters.StartLedger,
+			"end_ledger":            filters.EndLedger,
+		}
 	}
 
 	respondJSON(w, response)
@@ -1351,21 +1475,32 @@ func (h *SilverHandlers) HandleSorobanOperations(w http.ResponseWriter, r *http.
 		Cursor:      cursor,
 		Order:       order,
 	}
+	defaulted, err := h.defaultOperationRecentWindow(r.Context(), &filters)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
 
 	var operations []EnrichedOperation
 	var nextCursor string
 	var hasMore bool
 
+	queryCtx, cancel := withInteractiveQueryTimeout(r.Context())
+	defer cancel()
 	switch h.readerMode {
 	case ReaderModeUnified:
-		operations, nextCursor, hasMore, err = h.unifiedReader.GetEnrichedOperationsWithCursor(r.Context(), filters)
+		operations, nextCursor, hasMore, err = h.unifiedReader.GetEnrichedOperationsWithCursor(queryCtx, filters)
 	case ReaderModeHybrid:
-		operations, nextCursor, hasMore, err = h.legacyReader.GetEnrichedOperationsWithCursor(r.Context(), filters)
+		operations, nextCursor, hasMore, err = h.legacyReader.GetEnrichedOperationsWithCursor(queryCtx, filters)
 	default:
-		operations, nextCursor, hasMore, err = h.legacyReader.GetEnrichedOperationsWithCursor(r.Context(), filters)
+		operations, nextCursor, hasMore, err = h.legacyReader.GetEnrichedOperationsWithCursor(queryCtx, filters)
 	}
 
 	if err != nil {
+		if isQueryTimeout(err) {
+			respondQueryTimeout(w, "soroban operations")
+			return
+		}
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -1382,9 +1517,11 @@ func (h *SilverHandlers) HandleSorobanOperations(w http.ResponseWriter, r *http.
 		meta.ScannedLedger = &maxLedger
 	}
 	if h.unifiedReader != nil {
-		if availableLedgers, err := h.unifiedReader.GetAvailableLedgers(r.Context()); err == nil {
+		metaCtx, metaCancel := context.WithTimeout(r.Context(), 500*time.Millisecond)
+		if availableLedgers, err := h.unifiedReader.GetAvailableLedgers(metaCtx); err == nil {
 			meta.AvailableLedgers = availableLedgers
 		}
+		metaCancel()
 	}
 
 	response := map[string]interface{}{
@@ -1395,6 +1532,13 @@ func (h *SilverHandlers) HandleSorobanOperations(w http.ResponseWriter, r *http.
 	}
 	if nextCursor != "" {
 		response["cursor"] = nextCursor
+	}
+	if defaulted {
+		response["_coverage"] = map[string]interface{}{
+			"default_recent_window": true,
+			"start_ledger":          filters.StartLedger,
+			"end_ledger":            filters.EndLedger,
+		}
 	}
 
 	respondJSON(w, response)
@@ -1690,12 +1834,14 @@ func (h *SilverHandlers) HandleTokenTransferStats(w http.ResponseWriter, r *http
 	var stats []TransferStats
 	var err error
 
+	ctx, cancel := withInteractiveQueryTimeout(r.Context())
+	defer cancel()
 	switch h.readerMode {
 	case ReaderModeUnified:
-		stats, err = h.unifiedReader.GetTokenTransferStats(r.Context(), groupBy, startTime, endTime)
+		stats, err = h.unifiedReader.GetTokenTransferStats(ctx, groupBy, startTime, endTime)
 	case ReaderModeHybrid:
-		legacyStats, legacyErr := h.legacyReader.GetTokenTransferStats(r.Context(), groupBy, startTime, endTime)
-		unifiedStats, unifiedErr := h.unifiedReader.GetTokenTransferStats(r.Context(), groupBy, startTime, endTime)
+		legacyStats, legacyErr := h.legacyReader.GetTokenTransferStats(ctx, groupBy, startTime, endTime)
+		unifiedStats, unifiedErr := h.unifiedReader.GetTokenTransferStats(ctx, groupBy, startTime, endTime)
 
 		if legacyErr != nil && unifiedErr != nil {
 			log.Printf("⚠️ HYBRID [HandleTokenTransferStats]: both failed - legacy: %v, unified: %v", legacyErr, unifiedErr)
@@ -1712,10 +1858,14 @@ func (h *SilverHandlers) HandleTokenTransferStats(w http.ResponseWriter, r *http
 		}
 		stats, err = legacyStats, legacyErr
 	default: // ReaderModeLegacy
-		stats, err = h.legacyReader.GetTokenTransferStats(r.Context(), groupBy, startTime, endTime)
+		stats, err = h.legacyReader.GetTokenTransferStats(ctx, groupBy, startTime, endTime)
 	}
 
 	if err != nil {
+		if isQueryTimeout(err) {
+			respondQueryTimeout(w, "transfer stats")
+			return
+		}
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -1756,12 +1906,25 @@ func (h *SilverHandlers) HandleAccountOverview(w http.ResponseWriter, r *http.Re
 	var operations []EnrichedOperation
 	var transfersFrom, transfersTo []TokenTransfer
 	var err error
+	ctx, cancel := withInteractiveQueryTimeout(r.Context())
+	defer cancel()
 
 	// Select reader based on mode
 	switch h.readerMode {
 	case ReaderModeUnified:
-		account, err = h.unifiedReader.GetAccountCurrent(r.Context(), accountID)
+		if h.legacyReader != nil && h.legacyReader.hot != nil {
+			hotCtx, hotCancel := withOptionalQueryTimeout(r.Context())
+			account, err = h.legacyReader.hot.GetAccountCurrent(hotCtx, accountID)
+			hotCancel()
+		}
+		if account == nil && err == nil {
+			account, err = h.unifiedReader.GetAccountCurrent(ctx, accountID)
+		}
 		if err != nil {
+			if isQueryTimeout(err) {
+				respondQueryTimeout(w, "account overview")
+				return
+			}
 			respondError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -1769,31 +1932,29 @@ func (h *SilverHandlers) HandleAccountOverview(w http.ResponseWriter, r *http.Re
 			respondError(w, "account not found", http.StatusNotFound)
 			return
 		}
-		operations, err = h.unifiedReader.GetEnrichedOperations(r.Context(), OperationFilters{
+		optionalCtx, optionalCancel := withOptionalQueryTimeout(r.Context())
+		operations, _ = h.unifiedReader.GetEnrichedOperations(optionalCtx, OperationFilters{
 			AccountID: accountID,
 			Limit:     10,
 		})
-		if err != nil {
-			respondError(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		transfersFrom, _ = h.unifiedReader.GetTokenTransfers(r.Context(), TransferFilters{
+		transfersFrom, _ = h.unifiedReader.GetTokenTransfers(optionalCtx, TransferFilters{
 			FromAccount: accountID,
 			StartTime:   time.Now().Add(-7 * 24 * time.Hour),
 			EndTime:     time.Now(),
 			Limit:       10,
 		})
-		transfersTo, _ = h.unifiedReader.GetTokenTransfers(r.Context(), TransferFilters{
+		transfersTo, _ = h.unifiedReader.GetTokenTransfers(optionalCtx, TransferFilters{
 			ToAccount: accountID,
 			StartTime: time.Now().Add(-7 * 24 * time.Hour),
 			EndTime:   time.Now(),
 			Limit:     10,
 		})
+		optionalCancel()
 
 	case ReaderModeHybrid:
 		// Run both for validation, return legacy
-		legacyAccount, legacyErr := h.legacyReader.GetAccountCurrent(r.Context(), accountID)
-		unifiedAccount, unifiedErr := h.unifiedReader.GetAccountCurrent(r.Context(), accountID)
+		legacyAccount, legacyErr := h.legacyReader.GetAccountCurrent(ctx, accountID)
+		unifiedAccount, unifiedErr := h.unifiedReader.GetAccountCurrent(ctx, accountID)
 		if legacyErr == nil && unifiedErr == nil {
 			legacyNil := legacyAccount == nil
 			unifiedNil := unifiedAccount == nil
@@ -1805,6 +1966,10 @@ func (h *SilverHandlers) HandleAccountOverview(w http.ResponseWriter, r *http.Re
 		}
 		account, err = legacyAccount, legacyErr
 		if err != nil {
+			if isQueryTimeout(err) {
+				respondQueryTimeout(w, "account overview")
+				return
+			}
 			respondError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -1812,30 +1977,32 @@ func (h *SilverHandlers) HandleAccountOverview(w http.ResponseWriter, r *http.Re
 			respondError(w, "account not found", http.StatusNotFound)
 			return
 		}
-		operations, err = h.legacyReader.GetEnrichedOperations(r.Context(), OperationFilters{
+		optionalCtx, optionalCancel := withOptionalQueryTimeout(r.Context())
+		operations, _ = h.legacyReader.GetEnrichedOperations(optionalCtx, OperationFilters{
 			AccountID: accountID,
 			Limit:     10,
 		})
-		if err != nil {
-			respondError(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		transfersFrom, _ = h.legacyReader.GetTokenTransfers(r.Context(), TransferFilters{
+		transfersFrom, _ = h.legacyReader.GetTokenTransfers(optionalCtx, TransferFilters{
 			FromAccount: accountID,
 			StartTime:   time.Now().Add(-7 * 24 * time.Hour),
 			EndTime:     time.Now(),
 			Limit:       10,
 		})
-		transfersTo, _ = h.legacyReader.GetTokenTransfers(r.Context(), TransferFilters{
+		transfersTo, _ = h.legacyReader.GetTokenTransfers(optionalCtx, TransferFilters{
 			ToAccount: accountID,
 			StartTime: time.Now().Add(-7 * 24 * time.Hour),
 			EndTime:   time.Now(),
 			Limit:     10,
 		})
+		optionalCancel()
 
 	default: // ReaderModeLegacy
-		account, err = h.legacyReader.GetAccountCurrent(r.Context(), accountID)
+		account, err = h.legacyReader.GetAccountCurrent(ctx, accountID)
 		if err != nil {
+			if isQueryTimeout(err) {
+				respondQueryTimeout(w, "account overview")
+				return
+			}
 			respondError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -1843,26 +2010,24 @@ func (h *SilverHandlers) HandleAccountOverview(w http.ResponseWriter, r *http.Re
 			respondError(w, "account not found", http.StatusNotFound)
 			return
 		}
-		operations, err = h.legacyReader.GetEnrichedOperations(r.Context(), OperationFilters{
+		optionalCtx, optionalCancel := withOptionalQueryTimeout(r.Context())
+		operations, _ = h.legacyReader.GetEnrichedOperations(optionalCtx, OperationFilters{
 			AccountID: accountID,
 			Limit:     10,
 		})
-		if err != nil {
-			respondError(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		transfersFrom, _ = h.legacyReader.GetTokenTransfers(r.Context(), TransferFilters{
+		transfersFrom, _ = h.legacyReader.GetTokenTransfers(optionalCtx, TransferFilters{
 			FromAccount: accountID,
 			StartTime:   time.Now().Add(-7 * 24 * time.Hour),
 			EndTime:     time.Now(),
 			Limit:       10,
 		})
-		transfersTo, _ = h.legacyReader.GetTokenTransfers(r.Context(), TransferFilters{
+		transfersTo, _ = h.legacyReader.GetTokenTransfers(optionalCtx, TransferFilters{
 			ToAccount: accountID,
 			StartTime: time.Now().Add(-7 * 24 * time.Hour),
 			EndTime:   time.Now(),
 			Limit:     10,
 		})
+		optionalCancel()
 	}
 
 	// Combine transfers
@@ -1870,15 +2035,17 @@ func (h *SilverHandlers) HandleAccountOverview(w http.ResponseWriter, r *http.Re
 
 	// Fetch created_at (best-effort, non-blocking)
 	if account.CreatedAt == nil {
+		createdAtCtx, createdAtCancel := withOptionalQueryTimeout(r.Context())
+		defer createdAtCancel()
 		switch h.readerMode {
 		case ReaderModeUnified:
 			if h.unifiedReader != nil {
-				createdAt, _ := h.unifiedReader.GetAccountCreatedAt(r.Context(), accountID)
+				createdAt, _ := h.unifiedReader.GetAccountCreatedAt(createdAtCtx, accountID)
 				account.CreatedAt = createdAt
 			}
 		default:
 			if h.legacyReader != nil {
-				createdAt, _ := h.legacyReader.hot.GetAccountCreatedAt(r.Context(), accountID)
+				createdAt, _ := h.legacyReader.hot.GetAccountCreatedAt(createdAtCtx, accountID)
 				account.CreatedAt = createdAt
 			}
 		}
@@ -1932,8 +2099,14 @@ func (h *SilverHandlers) HandleAccountOffers(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	offers, nextCursor, hasMore, err := h.unifiedReader.GetOffers(r.Context(), filters)
+	ctx, cancel := withInteractiveQueryTimeout(r.Context())
+	defer cancel()
+	offers, nextCursor, hasMore, err := h.unifiedReader.GetOffers(ctx, filters)
 	if err != nil {
+		if isQueryTimeout(err) {
+			respondQueryTimeout(w, "account offers")
+			return
+		}
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -3813,7 +3986,8 @@ func (h *SilverHandlers) HandleTransactionSummaries(w http.ResponseWriter, r *ht
 		return
 	}
 
-	ctx := r.Context()
+	ctx, cancel := withInteractiveQueryTimeout(r.Context())
+	defer cancel()
 	hashesStr := r.URL.Query().Get("hashes")
 	ledgerStr := r.URL.Query().Get("ledger")
 
@@ -4006,7 +4180,8 @@ func (h *SilverHandlers) HandleContractStorage(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	ctx := r.Context()
+	ctx, cancel := withInteractiveQueryTimeout(r.Context())
+	defer cancel()
 
 	conditions := []string{"cd.contract_id = $1"}
 	args := []interface{}{contractID}
@@ -4090,6 +4265,10 @@ func (h *SilverHandlers) HandleContractStorage(w http.ResponseWriter, r *http.Re
 	}
 	if err != nil {
 		errStr := err.Error()
+		if isQueryTimeout(err) {
+			respondQueryTimeout(w, "contract storage")
+			return
+		}
 		if strings.Contains(errStr, "does not exist") || strings.Contains(errStr, "not found") ||
 			strings.Contains(errStr, "contract_data_current") || strings.Contains(errStr, "ttl_current") {
 			hotOnlyQuery := fmt.Sprintf(`
@@ -4105,6 +4284,10 @@ func (h *SilverHandlers) HandleContractStorage(w http.ResponseWriter, r *http.Re
 			rows, err = h.unifiedReader.db.QueryContext(ctx, hotOnlyQuery, args...)
 		}
 		if err != nil {
+			if isQueryTimeout(err) {
+				respondQueryTimeout(w, "contract storage")
+				return
+			}
 			respondError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

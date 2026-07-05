@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gorilla/mux"
 )
@@ -12,6 +14,7 @@ import (
 type EventHandlers struct {
 	reader        *SilverColdReader
 	hotPathReader *TxHotPathReader
+	hotReader     *SilverHotReader
 }
 
 type EventAPICoverage struct {
@@ -53,8 +56,8 @@ func genericEventCoverage() EventAPICoverage {
 }
 
 // NewEventHandlers creates new CAP-67 event API handlers
-func NewEventHandlers(reader *SilverColdReader, hotPathReader *TxHotPathReader) *EventHandlers {
-	return &EventHandlers{reader: reader, hotPathReader: hotPathReader}
+func NewEventHandlers(reader *SilverColdReader, hotPathReader *TxHotPathReader, hotReader *SilverHotReader) *EventHandlers {
+	return &EventHandlers{reader: reader, hotPathReader: hotPathReader, hotReader: hotReader}
 }
 
 // HandleUnifiedEvents returns the unified CAP-67 event stream with filters
@@ -82,19 +85,63 @@ func (h *EventHandlers) HandleUnifiedEvents(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	events, nextCursor, hasMore, err := h.reader.GetUnifiedEvents(r.Context(), filters)
+	defaulted, err := h.defaultRecentWindow(r.Context(), &filters)
 	if err != nil {
+		respondError(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+
+	ctx, cancel := withInteractiveQueryTimeout(r.Context())
+	defer cancel()
+	events, nextCursor, hasMore, err := h.reader.GetUnifiedEvents(ctx, filters)
+	if err != nil {
+		if isQueryTimeout(err) {
+			respondQueryTimeout(w, "events")
+			return
+		}
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	respondJSON(w, map[string]interface{}{
+	coverage := unifiedEventCoverage()
+	response := map[string]interface{}{
 		"events":      events,
 		"count":       len(events),
 		"has_more":    hasMore,
 		"next_cursor": nextCursor,
-		"coverage":    unifiedEventCoverage(),
-	})
+		"coverage":    coverage,
+	}
+	if defaulted {
+		response["_meta"] = map[string]interface{}{
+			"default_recent_window": true,
+			"start_ledger":          filters.StartLedger,
+			"end_ledger":            filters.EndLedger,
+		}
+	}
+
+	respondJSON(w, response)
+}
+
+func (h *EventHandlers) defaultRecentWindow(ctx context.Context, filters *UnifiedEventFilters) (bool, error) {
+	if filters == nil || filters.StartLedger > 0 || filters.EndLedger > 0 || filters.Cursor != nil {
+		return false, nil
+	}
+	if h.hotReader == nil {
+		return false, nil
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	latest, err := h.hotReader.GetServingLatestLedgerSequence(lookupCtx)
+	if err != nil || latest <= 0 {
+		if err != nil && isQueryTimeout(err) {
+			return false, err
+		}
+		return false, nil
+	}
+	start, end := defaultLedgerWindow(latest)
+	filters.StartLedger = start
+	filters.EndLedger = end
+	return true, nil
 }
 
 // HandleContractEvents returns events for a specific contract
@@ -127,8 +174,14 @@ func (h *EventHandlers) HandleContractEvents(w http.ResponseWriter, r *http.Requ
 	}
 	filters.ContractID = contractID
 
-	events, nextCursor, hasMore, err := h.reader.GetUnifiedEvents(r.Context(), filters)
+	ctx, cancel := withInteractiveQueryTimeout(r.Context())
+	defer cancel()
+	events, nextCursor, hasMore, err := h.reader.GetUnifiedEvents(ctx, filters)
 	if err != nil {
+		if isQueryTimeout(err) {
+			respondQueryTimeout(w, "contract events")
+			return
+		}
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -173,8 +226,14 @@ func (h *EventHandlers) HandleAddressEvents(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	events, nextCursor, hasMore, err := h.reader.GetAddressEvents(r.Context(), addr, filters)
+	ctx, cancel := withInteractiveQueryTimeout(r.Context())
+	defer cancel()
+	events, nextCursor, hasMore, err := h.reader.GetAddressEvents(ctx, addr, filters)
 	if err != nil {
+		if isQueryTimeout(err) {
+			respondQueryTimeout(w, "address events")
+			return
+		}
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -211,12 +270,20 @@ func (h *EventHandlers) HandleTransactionEvents(w http.ResponseWriter, r *http.R
 	var events []UnifiedEvent
 	var err error
 	if h.hotPathReader != nil {
-		events, err = h.hotPathReader.GetTransactionEvents(r.Context(), txHash)
+		hotCtx, cancel := context.WithTimeout(r.Context(), 1200*time.Millisecond)
+		events, err = h.hotPathReader.GetTransactionEvents(hotCtx, txHash)
+		cancel()
 	}
 	if err != nil || len(events) == 0 {
-		events, err = h.reader.GetTransactionEvents(r.Context(), txHash)
+		coldCtx, cancel := withInteractiveQueryTimeout(r.Context())
+		events, err = h.reader.GetTransactionEvents(coldCtx, txHash)
+		cancel()
 	}
 	if err != nil {
+		if isQueryTimeout(err) {
+			respondQueryTimeout(w, "transaction events")
+			return
+		}
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

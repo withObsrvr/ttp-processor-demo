@@ -66,7 +66,8 @@ func (h *SilverHandlers) HandleUnifiedAddressBalances(w http.ResponseWriter, r *
 		return
 	}
 
-	resp, err := h.GetUnifiedAddressBalances(r.Context(), addr)
+	includeTokens := strings.EqualFold(r.URL.Query().Get("include_tokens"), "true")
+	resp, err := h.GetUnifiedAddressBalances(r.Context(), addr, includeTokens)
 	if err != nil {
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -74,7 +75,7 @@ func (h *SilverHandlers) HandleUnifiedAddressBalances(w http.ResponseWriter, r *
 	respondJSON(w, resp)
 }
 
-func (h *SilverHandlers) GetUnifiedAddressBalances(ctx context.Context, addr string) (*UnifiedAddressBalancesResponse, error) {
+func (h *SilverHandlers) GetUnifiedAddressBalances(ctx context.Context, addr string, includeTokens bool) (*UnifiedAddressBalancesResponse, error) {
 	resp := &UnifiedAddressBalancesResponse{Address: addr}
 	byKey := make(map[string]UnifiedAddressBalance)
 	sourceSet := make(map[string]bool)
@@ -143,9 +144,18 @@ func (h *SilverHandlers) GetUnifiedAddressBalances(ctx context.Context, addr str
 		resp.Warnings = append(resp.Warnings, "classic balances unavailable: "+classicErr.Error())
 	}
 
-	// Add arbitrary Soroban token holdings derived from token transfer history.
-	if h.unifiedReader != nil {
-		holdings, err := h.unifiedReader.GetAddressTokenPortfolio(ctx, addr)
+	// Add arbitrary Soroban token holdings derived from token transfer history
+	// only when explicitly requested. The transfer-history portfolio scan is a
+	// bridge until state-based balance serving tables are available; default
+	// balances must stay backed by current account/trustline state.
+	if includeTokens && h.unifiedReader != nil {
+		// This transfer-history portfolio scan is a bridge until state-based
+		// balance serving tables are available. Keep it optional so balances
+		// backed by current account/trustline state do not inherit a full-history
+		// DuckDB scan timeout.
+		portfolioCtx, cancel := withOptionalQueryTimeout(ctx)
+		holdings, err := h.unifiedReader.GetAddressTokenPortfolio(portfolioCtx, addr)
+		cancel()
 		if err == nil {
 			for _, holding := range holdings {
 				assetCode := derefOrDefault(holding.AssetCode, derefOrDefault(holding.Symbol, ""))
@@ -171,9 +181,16 @@ func (h *SilverHandlers) GetUnifiedAddressBalances(ctx context.Context, addr str
 			}
 		} else {
 			resp.Partial = true
-			resp.Warnings = append(resp.Warnings, "soroban token balances unavailable: "+err.Error())
+			if isQueryTimeout(err) {
+				resp.Warnings = append(resp.Warnings, "soroban token holdings unavailable: portfolio query timed out")
+			} else {
+				resp.Warnings = append(resp.Warnings, "soroban token balances unavailable: "+err.Error())
+			}
 		}
-	} else if len(byKey) == 0 {
+	} else if !includeTokens {
+		resp.Partial = true
+		resp.Warnings = append(resp.Warnings, "soroban token holdings omitted; pass include_tokens=true to request transfer-history portfolio data")
+	} else {
 		resp.Partial = true
 		resp.Warnings = append(resp.Warnings, "soroban token balances unavailable: unified reader not configured")
 	}

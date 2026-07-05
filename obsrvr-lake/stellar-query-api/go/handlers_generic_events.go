@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gorilla/mux"
 )
@@ -46,33 +48,91 @@ func (h *GenericEventHandlers) HandleGenericEvents(w http.ResponseWriter, r *htt
 		return
 	}
 
+	defaulted, err := h.defaultRecentWindow(r.Context(), &filters)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+
 	if h.hotReader != nil {
-		events, nextCursor, hasMore, err := h.hotReader.GetServingGenericEvents(r.Context(), filters)
+		ctx, cancel := withInteractiveQueryTimeout(r.Context())
+		events, nextCursor, hasMore, err := h.hotReader.GetServingGenericEvents(ctx, filters)
+		cancel()
 		if err == nil && len(events) > 0 {
-			respondJSON(w, map[string]interface{}{
+			response := map[string]interface{}{
 				"events":      events,
 				"count":       len(events),
 				"has_more":    hasMore,
 				"next_cursor": nextCursor,
 				"coverage":    genericEventCoverage(),
-			})
+			}
+			if defaulted {
+				response["_meta"] = genericDefaultWindowMeta(filters)
+			}
+			respondJSON(w, response)
+			return
+		} else if err != nil && isQueryTimeout(err) {
+			respondQueryTimeout(w, "generic events")
 			return
 		}
 	}
 
-	events, nextCursor, hasMore, err := h.reader.GetGenericEvents(r.Context(), filters)
+	ctx, cancel := withInteractiveQueryTimeout(r.Context())
+	defer cancel()
+	events, nextCursor, hasMore, err := h.reader.GetGenericEvents(ctx, filters)
 	if err != nil {
+		if isQueryTimeout(err) {
+			respondQueryTimeout(w, "generic events")
+			return
+		}
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	respondJSON(w, map[string]interface{}{
+	response := map[string]interface{}{
 		"events":      events,
 		"count":       len(events),
 		"has_more":    hasMore,
 		"next_cursor": nextCursor,
 		"coverage":    genericEventCoverage(),
-	})
+	}
+	if defaulted {
+		response["_meta"] = genericDefaultWindowMeta(filters)
+	}
+	respondJSON(w, response)
+}
+
+func (h *GenericEventHandlers) defaultRecentWindow(ctx context.Context, filters *GenericEventFilters) (bool, error) {
+	if filters == nil || filters.StartLedger != nil || filters.EndLedger != nil || filters.Cursor != nil {
+		return false, nil
+	}
+	if h.hotReader == nil {
+		return false, nil
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	latest, err := h.hotReader.GetServingLatestLedgerSequence(lookupCtx)
+	if err != nil || latest <= 0 {
+		if err != nil && isQueryTimeout(err) {
+			return false, err
+		}
+		return false, nil
+	}
+	start, end := defaultLedgerWindow(latest)
+	filters.StartLedger = &start
+	filters.EndLedger = &end
+	return true, nil
+}
+
+func genericDefaultWindowMeta(filters GenericEventFilters) map[string]interface{} {
+	meta := map[string]interface{}{"default_recent_window": true}
+	if filters.StartLedger != nil {
+		meta["start_ledger"] = *filters.StartLedger
+	}
+	if filters.EndLedger != nil {
+		meta["end_ledger"] = *filters.EndLedger
+	}
+	return meta
 }
 
 // HandleContractGenericEvents returns events for a specific contract
@@ -105,7 +165,9 @@ func (h *GenericEventHandlers) HandleContractGenericEvents(w http.ResponseWriter
 
 	filters.ContractID = &contractID
 	if h.hotReader != nil {
-		events, nextCursor, hasMore, err := h.hotReader.GetServingGenericEvents(r.Context(), filters)
+		ctx, cancel := withInteractiveQueryTimeout(r.Context())
+		events, nextCursor, hasMore, err := h.hotReader.GetServingGenericEvents(ctx, filters)
+		cancel()
 		if err == nil && len(events) > 0 {
 			respondJSON(w, map[string]interface{}{
 				"contract_id": contractID,
@@ -116,11 +178,20 @@ func (h *GenericEventHandlers) HandleContractGenericEvents(w http.ResponseWriter
 				"coverage":    genericEventCoverage(),
 			})
 			return
+		} else if err != nil && isQueryTimeout(err) {
+			respondQueryTimeout(w, "contract generic events")
+			return
 		}
 	}
 
-	events, nextCursor, hasMore, err := h.reader.GetContractGenericEvents(r.Context(), contractID, filters)
+	ctx, cancel := withInteractiveQueryTimeout(r.Context())
+	defer cancel()
+	events, nextCursor, hasMore, err := h.reader.GetContractGenericEvents(ctx, contractID, filters)
 	if err != nil {
+		if isQueryTimeout(err) {
+			respondQueryTimeout(w, "contract generic events")
+			return
+		}
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

@@ -50,9 +50,14 @@ func (h *IndexHandlers) HandleTransactionLookup(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// Lookup in Index Plane
-	location, err := h.reader.LookupTransactionHash(r.Context(), txHash)
+	ctx, cancel := withInteractiveQueryTimeout(r.Context())
+	defer cancel()
+	location, err := h.reader.LookupTransactionHash(ctx, txHash)
 	if err != nil {
+		if isQueryTimeout(err) {
+			respondQueryTimeout(w, "transaction index lookup")
+			return
+		}
 		internalError(w, err.Error())
 		return
 	}
@@ -102,9 +107,14 @@ func (h *IndexHandlers) HandleBatchTransactionLookup(w http.ResponseWriter, r *h
 		return
 	}
 
-	// Batch lookup
-	locations, err := h.reader.LookupTransactionHashes(r.Context(), request.Hashes)
+	ctx, cancel := withInteractiveQueryTimeout(r.Context())
+	defer cancel()
+	locations, err := h.reader.LookupTransactionHashes(ctx, request.Hashes)
 	if err != nil {
+		if isQueryTimeout(err) {
+			respondQueryTimeout(w, "transaction index batch lookup")
+			return
+		}
 		internalError(w, err.Error())
 		return
 	}
@@ -156,8 +166,14 @@ func (h *IndexHandlers) HandleBatchTransactionLookup(w http.ResponseWriter, r *h
 // @Failure 500 {object} map[string]interface{} "Internal server error"
 // @Router /api/v1/index/health [get]
 func (h *IndexHandlers) HandleIndexHealth(w http.ResponseWriter, r *http.Request) {
-	stats, err := h.reader.GetIndexStats(r.Context())
+	ctx, cancel := withInteractiveQueryTimeout(r.Context())
+	defer cancel()
+	stats, err := h.reader.GetIndexStats(ctx)
 	if err != nil {
+		if isQueryTimeout(err) {
+			respondQueryTimeout(w, "index health")
+			return
+		}
 		internalError(w, err.Error())
 		return
 	}
