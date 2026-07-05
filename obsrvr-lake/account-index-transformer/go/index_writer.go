@@ -17,6 +17,8 @@ type IndexWriter struct {
 	config *IndexColdConfig
 }
 
+const accountLedgerInsertChunkSize = 1000
+
 // NewIndexWriter creates a new Index writer
 func NewIndexWriter(config *IndexColdConfig, catalogDB *sql.DB) (*IndexWriter, error) {
 	// Open DuckDB connection for writing to Index Plane
@@ -261,9 +263,15 @@ func (iw *IndexWriter) WriteAccountLedgerRanges(ctx context.Context, rows []Acco
 		return 0, nil
 	}
 
-	insertTempSQL := fmt.Sprintf("INSERT INTO temp_account_ledger_index VALUES %s", strings.Join(values, ", "))
-	if _, err := iw.db.ExecContext(ctx, insertTempSQL); err != nil {
-		return 0, fmt.Errorf("failed to insert account temp rows: %w", err)
+	for start := 0; start < len(values); start += accountLedgerInsertChunkSize {
+		end := start + accountLedgerInsertChunkSize
+		if end > len(values) {
+			end = len(values)
+		}
+		insertTempSQL := fmt.Sprintf("INSERT INTO temp_account_ledger_index VALUES %s", strings.Join(values[start:end], ", "))
+		if _, err := iw.db.ExecContext(ctx, insertTempSQL); err != nil {
+			return 0, fmt.Errorf("failed to insert account temp rows %d-%d: %w", start, end, err)
+		}
 	}
 
 	copySQL := fmt.Sprintf("INSERT INTO %s SELECT * FROM temp_account_ledger_index", fullTableName)

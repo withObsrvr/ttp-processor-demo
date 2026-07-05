@@ -243,7 +243,7 @@ func (h *SilverHandlers) HandleAccountTransactions(w http.ResponseWriter, r *htt
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	accountIndexPruning := h.unifiedReader != nil && h.unifiedReader.accountIndex != nil
+	accountIndexPruning := h.unifiedReader != nil && h.unifiedReader.accountIndex.CanPrune()
 	respondJSON(w, AccountTransactionsResponse{AccountID: accountID, Transactions: txs, Count: len(txs), Cursor: next, HasMore: hasMore, Coverage: historyCoverage(accountIndexPruning)})
 }
 
@@ -351,7 +351,7 @@ func (r *UnifiedDuckDBReader) GetAccountTransactions(ctx context.Context, filter
 		arg += 3
 	}
 	coldLedgerRangeClause := ""
-	if strings.TrimSpace(r.coldSchema) != "" && r.accountIndex != nil {
+	if strings.TrimSpace(r.coldSchema) != "" && r.accountIndex.CanPrune() {
 		ranges, err := r.accountIndex.LookupLedgerRanges(ctx, filters.AccountID, filters.StartLedger, filters.EndLedger)
 		if err != nil {
 			log.Printf("account ledger index lookup failed account=%s err=%v; falling back to unpruned cold account history", filters.AccountID, err)

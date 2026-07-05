@@ -190,7 +190,7 @@ func (h *SilverHandlers) GetUnifiedAddressBalances(ctx context.Context, addr str
 	} else if !includeTokens {
 		resp.Partial = true
 		resp.Warnings = append(resp.Warnings, "soroban token holdings omitted; pass include_tokens=true to request transfer-history portfolio data")
-	} else if len(byKey) == 0 {
+	} else {
 		resp.Partial = true
 		resp.Warnings = append(resp.Warnings, "soroban token balances unavailable: unified reader not configured")
 	}

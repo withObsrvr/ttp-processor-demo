@@ -19,6 +19,19 @@ class Endpoint:
     path: str
 
 
+CSV_FIELDNAMES = [
+    "category",
+    "name",
+    "path",
+    "run",
+    "status",
+    "total_ms",
+    "bytes",
+    "error",
+    "class",
+]
+
+
 def fetch(base, path, timeout, headers=None):
     url = base.rstrip("/") + path
     req = urllib.request.Request(url, headers=headers or {})
@@ -211,7 +224,7 @@ def main():
 
     out = Path(args.out)
     with out.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer = csv.DictWriter(f, fieldnames=CSV_FIELDNAMES)
         writer.writeheader()
         writer.writerows(rows)
 

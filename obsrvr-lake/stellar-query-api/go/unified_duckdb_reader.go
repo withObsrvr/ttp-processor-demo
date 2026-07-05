@@ -385,7 +385,7 @@ func (r *UnifiedDuckDBReader) GetAccountHistoryWithCursor(ctx context.Context, a
 	coldLedgerRangeClause := ""
 	args := []interface{}{accountID}
 	arg := 2
-	if strings.TrimSpace(r.coldSchema) != "" && r.accountIndex != nil {
+	if strings.TrimSpace(r.coldSchema) != "" && r.accountIndex.CanPrune() {
 		var endLedger int64
 		if cursor != nil {
 			endLedger = cursor.LedgerSequence - 1
