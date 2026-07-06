@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
+
+	sqlmock "github.com/DATA-DOG/go-sqlmock"
 )
 
 func TestAccountBucketDeterministic(t *testing.T) {
@@ -52,6 +55,27 @@ index_cold:
 	if cfg.AccountBucketCount() != 256 {
 		t.Fatalf("unexpected bucket count: %d", cfg.AccountBucketCount())
 	}
+	if cfg.ServingFeed.Enabled {
+		t.Fatalf("serving feed should default disabled")
+	}
+	if cfg.ServingFeed.TransactionsTable != "sv_transactions_by_account" {
+		t.Fatalf("unexpected serving feed tx table: %s", cfg.ServingFeed.TransactionsTable)
+	}
+	if cfg.ServingFeed.ConsumerTable != "ops.consumers" {
+		t.Fatalf("unexpected serving feed consumer table: %s", cfg.ServingFeed.ConsumerTable)
+	}
+	if cfg.IndexPostgres.Enabled {
+		t.Fatalf("Postgres index sink should default disabled")
+	}
+	if cfg.IndexPostgres.Mode != "mirror" {
+		t.Fatalf("unexpected Postgres index mode: %s", cfg.IndexPostgres.Mode)
+	}
+	if cfg.IndexPostgres.Table != "account_ledger_index" {
+		t.Fatalf("unexpected Postgres index table: %s", cfg.IndexPostgres.Table)
+	}
+	if cfg.IndexPostgres.CheckpointTable != "index.account_ledger_postgres_checkpoint" {
+		t.Fatalf("unexpected Postgres index checkpoint: %s", cfg.IndexPostgres.CheckpointTable)
+	}
 }
 
 func TestConfigCanOverrideAccountIndexSettings(t *testing.T) {
@@ -71,6 +95,12 @@ checkpoint:
   table: index.custom_account_checkpoint
 account_index:
   account_bucket_count: 512
+index_postgres:
+  enabled: true
+  mode: primary
+  schema: index_v2
+  table: account_ledger_index_pg
+  checkpoint_table: index_v2.account_checkpoint
 `)
 
 	cfg, err := LoadConfig(path)
@@ -89,6 +119,111 @@ account_index:
 	}
 	if accountIndex.TableKind != "account_ledger" {
 		t.Fatalf("unexpected account table kind: %s", accountIndex.TableKind)
+	}
+	if !cfg.IndexPostgres.Enabled {
+		t.Fatalf("Postgres index sink should be enabled")
+	}
+	if cfg.IndexPostgres.Mode != "primary" {
+		t.Fatalf("unexpected Postgres index mode: %s", cfg.IndexPostgres.Mode)
+	}
+	if cfg.IndexPostgres.Schema != "index_v2" {
+		t.Fatalf("unexpected Postgres index schema: %s", cfg.IndexPostgres.Schema)
+	}
+	if cfg.IndexPostgres.Table != "account_ledger_index_pg" {
+		t.Fatalf("unexpected Postgres index table: %s", cfg.IndexPostgres.Table)
+	}
+	if cfg.IndexPostgres.CheckpointTable != "index_v2.account_checkpoint" {
+		t.Fatalf("unexpected Postgres index checkpoint: %s", cfg.IndexPostgres.CheckpointTable)
+	}
+}
+
+func TestAccountLedgerRangeBounds(t *testing.T) {
+	from, to := AccountLedgerRangeBounds(34, 100000)
+	if from != 3400000 || to != 3499999 {
+		t.Fatalf("range 34 bounds = %d-%d, want 3400000-3499999", from, to)
+	}
+	from, to = AccountLedgerRangeBounds(3, 50000)
+	if from != 150000 || to != 199999 {
+		t.Fatalf("range 3 bounds = %d-%d, want 150000-199999", from, to)
+	}
+}
+
+func TestResolveBackfillStart(t *testing.T) {
+	tests := []struct {
+		name       string
+		opts       BackfillOptions
+		checkpoint int64
+		want       int64
+	}{
+		{
+			name:       "default resumes after checkpoint",
+			opts:       BackfillOptions{},
+			checkpoint: 100,
+			want:       101,
+		},
+		{
+			name:       "explicit older start resumes unless forced",
+			opts:       BackfillOptions{StartLedger: 3},
+			checkpoint: 100,
+			want:       101,
+		},
+		{
+			name:       "force restart honors explicit start",
+			opts:       BackfillOptions{StartLedger: 3, ForceRestart: true},
+			checkpoint: 100,
+			want:       3,
+		},
+		{
+			name:       "explicit newer start is honored",
+			opts:       BackfillOptions{StartLedger: 200},
+			checkpoint: 100,
+			want:       200,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := resolveBackfillStart(tt.opts, tt.checkpoint); got != tt.want {
+				t.Fatalf("resolveBackfillStart=%d want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPostgresIndexWriterLoadCheckpoint(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	writer := NewPostgresIndexWriter(db, IndexPostgresConfig{
+		Schema:          "index",
+		Table:           "account_ledger_index",
+		CheckpointTable: "index.account_ledger_postgres_checkpoint",
+	}, 100000)
+	mock.ExpectExec("CREATE SCHEMA IF NOT EXISTS").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`CREATE TABLE IF NOT EXISTS "index"\."account_ledger_index"`).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`CREATE INDEX IF NOT EXISTS "account_ledger_index_bucket_account_range_idx"`).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`CREATE INDEX IF NOT EXISTS "account_ledger_index_account_ledger_to_idx"`).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("CREATE TABLE IF NOT EXISTS index.account_ledger_postgres_checkpoint").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT checkpoint").
+		WithArgs("index.account_ledger_index").
+		WillReturnRows(sqlmock.NewRows([]string{"checkpoint"}).AddRow(int64(3466943)))
+
+	got, err := writer.LoadCheckpoint(context.Background())
+	if err != nil {
+		t.Fatalf("LoadCheckpoint: %v", err)
+	}
+	if got != 3466943 {
+		t.Fatalf("checkpoint=%d want 3466943", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
 	}
 }
 
@@ -126,6 +261,27 @@ func TestAccountLedgerHotParticipantQueryShape(t *testing.T) {
 	} {
 		if !strings.Contains(query, want) {
 			t.Fatalf("query missing %q:\n%s", want, query)
+		}
+	}
+}
+
+func TestAccountFeedHotQueryShape(t *testing.T) {
+	query := buildAccountFeedRowsQuery()
+	for _, want := range []string{
+		"e.transaction_id IS NOT NULL",
+		"e.operation_id IS NOT NULL",
+		"transaction_id AS toid",
+		"operation_id AS operation_toid",
+		"SELECT source_account AS account_id",
+		"SELECT destination AS account_id",
+		"SELECT from_account AS account_id",
+		"SELECT to_address AS account_id",
+		"SELECT address AS account_id",
+		"SELECT into_account AS account_id",
+		"COALESCE(tx_successful, transaction_successful, false) AS successful",
+	} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("feed query missing %q:\n%s", want, query)
 		}
 	}
 }

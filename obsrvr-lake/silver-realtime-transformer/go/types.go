@@ -25,6 +25,8 @@ type EnrichedOperationRow struct {
 	OperationResultCode   *string
 	OperationTraceCode    *string
 	LedgerRange           *int64
+	TransactionID         *int64
+	OperationID           *int64
 
 	// Asset fields
 	SourceAccountMuxed *string
@@ -662,6 +664,7 @@ func (row *EnrichedOperationRow) Values() []interface{} {
 		row.TransactionHash, row.OperationIndex, row.LedgerSequence, row.SourceAccount,
 		row.Type, row.TypeString, row.CreatedAt, row.TransactionSuccessful,
 		row.OperationResultCode, row.OperationTraceCode, row.LedgerRange,
+		row.TransactionID, row.OperationID,
 		row.SourceAccountMuxed, row.Asset, row.AssetType, row.AssetCode, row.AssetIssuer,
 		row.SourceAsset, row.SourceAssetType, row.SourceAssetCode, row.SourceAssetIssuer,
 		row.Destination, row.DestinationMuxed, row.Amount, row.SourceAmount,

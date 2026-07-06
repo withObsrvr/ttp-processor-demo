@@ -20,6 +20,7 @@ var Version = "dev"
 
 const componentID = "serving-cold-backfill"
 const progressInterval = 15 * time.Second
+const toidOperationMask int64 = 0xFFF
 
 type FailureClass string
 
@@ -43,27 +44,31 @@ type Config struct {
 	Resume        bool
 	Status        bool
 
-	BronzeCatalog  string
-	BronzeData     string
-	BronzeAlias    string
-	BronzeSchema   string
-	BronzeMeta     string
-	SilverCatalog  string
-	SilverData     string
-	SilverAlias    string
-	SilverSchema   string
-	SilverMeta     string
-	TargetPostgres string
-	ServingCatalog string
-	MemoryLimit    string
-	TempDirectory  string
-	ServingSchema  string
-	ManifestPath   string
-	SummaryPath    string
-	S3KeyID        string
-	S3Secret       string
-	S3Region       string
-	S3Endpoint     string
+	BronzeCatalog      string
+	BronzeData         string
+	BronzeAlias        string
+	BronzeSchema       string
+	BronzeMeta         string
+	SilverCatalog      string
+	SilverData         string
+	SilverAlias        string
+	SilverSchema       string
+	SilverMeta         string
+	TargetPostgres     string
+	ServingCatalog     string
+	MemoryLimit        string
+	TempDirectory      string
+	ServingSchema      string
+	ManifestPath       string
+	SummaryPath        string
+	S3KeyID            string
+	S3Secret           string
+	S3Region           string
+	S3Endpoint         string
+	FeedProjections    string
+	CurrentProjections string
+	SkipCurrent        bool
+	VerifyDuplicates   bool
 
 	FlowctlEnabled   bool
 	FlowctlEndpoint  string
@@ -165,6 +170,14 @@ type CurrentProjection struct {
 	PostgresNative bool
 }
 
+func transactionTOID(ledgerSequence, transactionOrder int64) int64 {
+	return (ledgerSequence << 32) | (transactionOrder << 12)
+}
+
+func operationTOID(ledgerSequence, transactionOrder, operationOrder int64) int64 {
+	return transactionTOID(ledgerSequence, transactionOrder) | (operationOrder & toidOperationMask)
+}
+
 func main() {
 	ctx := context.Background()
 	cfg, err := parseConfig(os.Args[1:])
@@ -219,6 +232,10 @@ func parseConfig(args []string) (Config, error) {
 	fs.StringVar(&cfg.S3Secret, "s3-secret", getenv("S3_SECRET", getenv("B2_KEY_SECRET", "")), "S3/B2 secret access key")
 	fs.StringVar(&cfg.S3Region, "s3-region", getenv("S3_REGION", getenv("B2_REGION", "us-west-004")), "S3/B2 region")
 	fs.StringVar(&cfg.S3Endpoint, "s3-endpoint", getenv("S3_ENDPOINT", getenv("B2_ENDPOINT", "")), "S3/B2 endpoint")
+	fs.StringVar(&cfg.FeedProjections, "feed-projections", getenv("FEED_PROJECTIONS", ""), "optional comma-separated feed projection names to run")
+	fs.StringVar(&cfg.CurrentProjections, "current-projections", getenv("CURRENT_PROJECTIONS", ""), "optional comma-separated current projection names to run")
+	fs.BoolVar(&cfg.SkipCurrent, "skip-current", getenv("SKIP_CURRENT", "") == "true", "skip current-state projections")
+	fs.BoolVar(&cfg.VerifyDuplicates, "verify-duplicates", getenv("VERIFY_DUPLICATES", "") == "true", "run expensive full-table duplicate verification after loading; normally redundant with target unique constraints")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -309,9 +326,11 @@ func NewBackfiller(ctx context.Context, cfg Config) (*Backfiller, error) {
 		db.Close()
 		return nil, err
 	}
-	if err := b.attach(ctx, cfg.SilverAlias, cfg.SilverCatalog, cfg.SilverData, cfg.SilverMeta); err != nil {
-		db.Close()
-		return nil, err
+	if cfg.SilverAlias != cfg.BronzeAlias {
+		if err := b.attach(ctx, cfg.SilverAlias, cfg.SilverCatalog, cfg.SilverData, cfg.SilverMeta); err != nil {
+			db.Close()
+			return nil, err
+		}
 	}
 	if err := b.attachTargetPostgres(ctx); err != nil {
 		db.Close()
@@ -385,8 +404,17 @@ func (b *Backfiller) attach(ctx context.Context, alias, catalog, data, meta stri
 func (b *Backfiller) Run(ctx context.Context, out io.Writer) error {
 	cfg := b.cfg
 	chunks := cfg.PlannedChunks()
-	feed := feedProjections()
-	current := currentProjections()
+	feed, err := selectFeedProjections(feedProjections(), cfg.FeedProjections)
+	if err != nil {
+		return err
+	}
+	current := []CurrentProjection{}
+	if !cfg.SkipCurrent {
+		current, err = selectCurrentProjections(currentProjections(), cfg.CurrentProjections)
+		if err != nil {
+			return err
+		}
+	}
 	emit(out, Event{EventType: "component.run_started", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, Status: "running", FlowctlEndpoint: safeEndpoint(cfg.FlowctlEndpoint), Metadata: map[string]interface{}{"version": Version, "range_start": cfg.Start, "range_end": cfg.End, "chunk_count": len(chunks), "retention_days": cfg.RetentionDays, "capabilities": []string{"feed-cold-backfill", "current-state-backfill", "deterministic-chunk-inputs", "chunk-delete-insert", "current-replace", "resume-manifest", "typed-failures", "checkpoint-handoff"}}})
 	for _, chunk := range chunks {
 		if cfg.Resume {
@@ -450,6 +478,8 @@ func requiredProjections(schema string) []Projection {
 		{Name: "sv_explorer_events_recent", TargetTable: table("sv_explorer_events_recent"), Source: "bronze.contract_events_stream_v1 + classifier rules", Mode: "recent_range_replace", Checkpoint: false, Required: true, InitialClass: "blocked_source_mapping", Rationale: "required by the broader serving contract, but classifier/source mapping is not enabled yet"},
 		{Name: "sv_contract_calls_recent", TargetTable: table("sv_contract_calls_recent"), Source: "silver.contract_invocations_raw", Mode: "recent_range_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_tx_receipts", TargetTable: table("sv_tx_receipts"), Source: "bronze transactions/operations/effects + silver enriched rows", Mode: "recent_range_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
+		{Name: "sv_transactions_by_account", TargetTable: table("sv_transactions_by_account"), Source: "silver.enriched_history_operations + bronze operations_row_v2 TOID", Mode: "full_history_chunk_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
+		{Name: "sv_operations_by_account", TargetTable: table("sv_operations_by_account"), Source: "silver.enriched_history_operations + bronze operations_row_v2 TOID", Mode: "full_history_chunk_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_accounts_current", TargetTable: table("sv_accounts_current"), Source: "silver.accounts_current", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_account_balances_current", TargetTable: table("sv_account_balances_current"), Source: "silver.address_balances_current / silver.native_balances_current", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_network_stats_current", TargetTable: table("sv_network_stats_current"), Source: "silver.enriched_ledgers + aggregate counts", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
@@ -501,6 +531,8 @@ func feedProjections() []FeedProjection {
 		{Name: "sv_operations_recent", TargetTable: "sv_operations_recent", RangeCol: "ledger_sequence", KeyExprs: []string{"operation_id"}, SelectSQL: selectOperationsRecent},
 		{Name: "sv_contract_calls_recent", TargetTable: "sv_contract_calls_recent", RangeCol: "ledger_sequence", KeyExprs: []string{"call_id"}, SelectSQL: selectContractCallsRecent},
 		{Name: "sv_tx_receipts", TargetTable: "sv_tx_receipts", RangeCol: "ledger_sequence", KeyExprs: []string{"tx_hash"}, SelectSQL: selectTxReceipts},
+		{Name: "sv_transactions_by_account", TargetTable: "sv_transactions_by_account", RangeCol: "ledger_sequence", KeyExprs: []string{"account_id", "toid"}, SelectSQL: selectTransactionsByAccount},
+		{Name: "sv_operations_by_account", TargetTable: "sv_operations_by_account", RangeCol: "ledger_sequence", KeyExprs: []string{"account_id", "operation_toid"}, SelectSQL: selectOperationsByAccount},
 	}
 }
 
@@ -515,6 +547,66 @@ func currentProjections() []CurrentProjection {
 		{Name: "sv_contract_stats_current", TargetTable: "sv_contract_stats_current", KeyExprs: []string{"contract_id"}, SelectSQL: selectContractStatsCurrent},
 		{Name: "sv_contract_function_stats_current", TargetTable: "sv_contract_function_stats_current", KeyExprs: []string{"contract_id", "function_name"}, SelectSQL: selectContractFunctionStatsCurrent},
 	}
+}
+
+func selectFeedProjections(all []FeedProjection, csv string) ([]FeedProjection, error) {
+	if strings.TrimSpace(csv) == "" {
+		return all, nil
+	}
+	wanted := projectionSet(csv)
+	selected := make([]FeedProjection, 0, len(wanted))
+	for _, p := range all {
+		if wanted[p.Name] {
+			selected = append(selected, p)
+			delete(wanted, p.Name)
+		}
+	}
+	if len(wanted) > 0 {
+		return nil, fmt.Errorf("unknown feed projection(s): %s", strings.Join(sortedKeys(wanted), ","))
+	}
+	return selected, nil
+}
+
+func selectCurrentProjections(all []CurrentProjection, csv string) ([]CurrentProjection, error) {
+	if strings.TrimSpace(csv) == "" {
+		return all, nil
+	}
+	wanted := projectionSet(csv)
+	selected := make([]CurrentProjection, 0, len(wanted))
+	for _, p := range all {
+		if wanted[p.Name] {
+			selected = append(selected, p)
+			delete(wanted, p.Name)
+		}
+	}
+	if len(wanted) > 0 {
+		return nil, fmt.Errorf("unknown current projection(s): %s", strings.Join(sortedKeys(wanted), ","))
+	}
+	return selected, nil
+}
+
+func projectionSet(csv string) map[string]bool {
+	out := map[string]bool{}
+	for _, raw := range strings.Split(csv, ",") {
+		name := strings.TrimSpace(raw)
+		if name != "" {
+			out[name] = true
+		}
+	}
+	return out
+}
+
+func sortedKeys(m map[string]bool) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	for i := 1; i < len(keys); i++ {
+		for j := i; j > 0 && keys[j] < keys[j-1]; j-- {
+			keys[j], keys[j-1] = keys[j-1], keys[j]
+		}
+	}
+	return keys
 }
 
 func (b *Backfiller) replaceFeedProjection(ctx context.Context, chunk Chunk, projection FeedProjection) (int64, error) {
@@ -638,6 +730,36 @@ func (b *Backfiller) ensureTargetTable(ctx context.Context, projection FeedProje
 	if _, err := b.db.ExecContext(ctx, stmt); err != nil {
 		return fmt.Errorf("create %s: %w", projection.Name, err)
 	}
+	if err := b.ensureTargetIndexes(ctx, projection.TargetTable); err != nil {
+		return fmt.Errorf("create indexes %s: %w", projection.Name, err)
+	}
+	return nil
+}
+
+func (b *Backfiller) ensureTargetIndexes(ctx context.Context, targetTable string) error {
+	table := b.servingTable(targetTable)
+	statements := []string{}
+	switch targetTable {
+	case "sv_transactions_by_account":
+		statements = []string{
+			fmt.Sprintf("CREATE UNIQUE INDEX IF NOT EXISTS sv_transactions_by_account_uq ON %s (account_id, toid)", table),
+			fmt.Sprintf("CREATE INDEX IF NOT EXISTS sv_transactions_by_account_page_idx ON %s (account_id, toid DESC)", table),
+			fmt.Sprintf("CREATE INDEX IF NOT EXISTS sv_transactions_by_account_ledger_idx ON %s (ledger_sequence)", table),
+			fmt.Sprintf("CREATE INDEX IF NOT EXISTS sv_transactions_by_account_tx_idx ON %s (tx_hash)", table),
+		}
+	case "sv_operations_by_account":
+		statements = []string{
+			fmt.Sprintf("CREATE UNIQUE INDEX IF NOT EXISTS sv_operations_by_account_uq ON %s (account_id, operation_toid)", table),
+			fmt.Sprintf("CREATE INDEX IF NOT EXISTS sv_operations_by_account_page_idx ON %s (account_id, operation_toid DESC)", table),
+			fmt.Sprintf("CREATE INDEX IF NOT EXISTS sv_operations_by_account_tx_idx ON %s (tx_hash, op_index)", table),
+			fmt.Sprintf("CREATE INDEX IF NOT EXISTS sv_operations_by_account_ledger_idx ON %s (ledger_sequence)", table),
+		}
+	}
+	for _, stmt := range statements {
+		if _, err := b.db.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -686,9 +808,19 @@ func (b *Backfiller) servingSchemaRef() string {
 	return ident(b.cfg.ServingSchema)
 }
 
+func (b *Backfiller) opsSchemaRef() string {
+	if b.cfg.ServingCatalog != "" {
+		return fmt.Sprintf("%s.%s", ident(b.cfg.ServingCatalog), ident("ops"))
+	}
+	return ident("ops")
+}
+
 func (b *Backfiller) ensureServingSchema(ctx context.Context) error {
 	if _, err := b.db.ExecContext(ctx, "CREATE SCHEMA IF NOT EXISTS "+b.servingSchemaRef()); err != nil {
 		return fmt.Errorf("create serving schema: %w", err)
+	}
+	if _, err := b.db.ExecContext(ctx, "CREATE SCHEMA IF NOT EXISTS "+b.opsSchemaRef()); err != nil {
+		return fmt.Errorf("create ops schema: %w", err)
 	}
 	return nil
 }
@@ -718,6 +850,26 @@ func (b *Backfiller) ensureManifest(ctx context.Context) error {
 	)`, b.servingTable("sv_projection_checkpoints"))
 	if _, err := b.db.ExecContext(ctx, checkpoints); err != nil {
 		return fmt.Errorf("create sv_projection_checkpoints: %w", err)
+	}
+	watermarks := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+		table_name VARCHAR PRIMARY KEY,
+		status VARCHAR NOT NULL,
+		complete_from BIGINT NOT NULL,
+		complete_thru BIGINT NOT NULL,
+		updated_at TIMESTAMP NOT NULL
+	)`, b.servingTable("sv_watermarks"))
+	if _, err := b.db.ExecContext(ctx, watermarks); err != nil {
+		return fmt.Errorf("create sv_watermarks: %w", err)
+	}
+	consumers := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+		pipeline VARCHAR NOT NULL,
+		source_table VARCHAR NOT NULL,
+		checkpoint BIGINT NOT NULL,
+		updated_at TIMESTAMP NOT NULL,
+		PRIMARY KEY (pipeline, source_table)
+	)`, fmt.Sprintf("%s.%s", b.opsSchemaRef(), ident("consumers")))
+	if _, err := b.db.ExecContext(ctx, consumers); err != nil {
+		return fmt.Errorf("create ops.consumers: %w", err)
 	}
 	return nil
 }
@@ -749,8 +901,10 @@ func (b *Backfiller) chunkComplete(ctx context.Context, chunk Chunk) (bool, erro
 
 func (b *Backfiller) verifyEnabledProjections(ctx context.Context, chunks []Chunk, feed []FeedProjection, current []CurrentProjection) error {
 	for _, projection := range feed {
-		if err := b.verifyNoDuplicates(ctx, projection.Name, projection.TargetTable, projection.KeyExprs); err != nil {
-			return err
+		if b.cfg.VerifyDuplicates {
+			if err := b.verifyNoDuplicates(ctx, projection.Name, projection.TargetTable, projection.KeyExprs); err != nil {
+				return err
+			}
 		}
 		for _, chunk := range chunks {
 			var manifestRows int64
@@ -765,8 +919,10 @@ func (b *Backfiller) verifyEnabledProjections(ctx context.Context, chunks []Chun
 	}
 	currentChunk := Chunk{Start: b.cfg.Start, End: b.cfg.End}
 	for _, projection := range current {
-		if err := b.verifyNoDuplicates(ctx, projection.Name, projection.TargetTable, projection.KeyExprs); err != nil {
-			return err
+		if b.cfg.VerifyDuplicates {
+			if err := b.verifyNoDuplicates(ctx, projection.Name, projection.TargetTable, projection.KeyExprs); err != nil {
+				return err
+			}
 		}
 		if projection.MaxLedgerCol != "" {
 			if err := b.verifyMaxLedger(ctx, projection.Name, projection.TargetTable, projection.MaxLedgerCol); err != nil {
@@ -841,6 +997,24 @@ func (b *Backfiller) writeProjectionCheckpoints(ctx context.Context, projectionN
 		if _, err := tx.ExecContext(ctx, stmt); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("insert checkpoint %s: %w", name, err)
+		}
+		tableName := b.cfg.ServingSchema + "." + name
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE table_name=%s", b.servingTable("sv_watermarks"), q(tableName))); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("delete watermark %s: %w", name, err)
+		}
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s VALUES (%s, 'complete', %d, %d, current_timestamp)", b.servingTable("sv_watermarks"), q(tableName), b.cfg.Start, b.cfg.End)); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("insert watermark %s: %w", name, err)
+		}
+		consumerTable := fmt.Sprintf("%s.%s", b.opsSchemaRef(), ident("consumers"))
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE pipeline=%s AND source_table=%s", consumerTable, q(b.cfg.Component()), q(tableName))); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("delete consumer checkpoint %s: %w", name, err)
+		}
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s VALUES (%s, %s, %d, current_timestamp)", consumerTable, q(b.cfg.Component()), q(tableName), b.cfg.End)); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("insert consumer checkpoint %s: %w", name, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -948,6 +1122,110 @@ func selectTxReceipts(b *Backfiller, chunk Chunk) string {
 		LEFT JOIN ops o ON o.transaction_hash = t.transaction_hash
 		WHERE t.ledger_sequence BETWEEN %d AND %d AND %s`,
 		b.silverTable("enriched_history_operations"), q(b.cfg.Network), chunk.Start, chunk.End, b.retentionPredicate("created_at"), b.bronzeTable("transactions_row_v2"), chunk.Start, chunk.End, b.retentionPredicate("t.created_at"))
+}
+
+func selectTransactionsByAccount(b *Backfiller, chunk Chunk) string {
+	return fmt.Sprintf(`WITH participants AS (
+			SELECT source_account AS account_id, transaction_hash, ledger_sequence, operation_index,
+				created_at, tx_successful, type_string, contract_id, source_account, destination
+			FROM %s
+			WHERE ledger_sequence BETWEEN %d AND %d AND source_account IS NOT NULL AND source_account <> ''
+			UNION
+			SELECT destination AS account_id, transaction_hash, ledger_sequence, operation_index,
+				created_at, tx_successful, type_string, contract_id, source_account, destination
+			FROM %s
+			WHERE ledger_sequence BETWEEN %d AND %d AND destination IS NOT NULL AND destination <> ''
+		), candidates AS (
+			SELECT p.account_id,
+				bo.transaction_id AS toid,
+				p.transaction_hash AS tx_hash,
+				p.ledger_sequence,
+				COALESCE(bt.created_at, p.created_at) AS closed_at,
+				COALESCE(bt.successful, p.tx_successful, false) AS successful,
+				CASE WHEN p.contract_id IS NOT NULL THEN 'contract_call'
+					WHEN p.type_string IN ('payment', 'path_payment_strict_receive', 'path_payment_strict_send') THEN 'payment'
+					ELSE COALESCE(p.type_string, 'operation')
+				END AS activity_type,
+				p.source_account,
+				p.destination AS destination_account,
+				p.contract_id AS primary_contract_id,
+				COALESCE(bt.operation_count, 1) AS operation_count,
+				bt.fee_charged AS fee_charged_stroops,
+				bt.memo_type,
+				bt.memo AS memo_value,
+				p.operation_index
+			FROM participants p
+			LEFT JOIN %s bo ON bo.ledger_sequence = p.ledger_sequence
+				AND bo.transaction_hash = p.transaction_hash
+				AND bo.operation_index = p.operation_index
+			LEFT JOIN %s bt ON bt.ledger_sequence = p.ledger_sequence
+				AND bt.transaction_hash = p.transaction_hash
+		), ranked AS (
+			SELECT *, row_number() OVER (PARTITION BY account_id, toid ORDER BY operation_index ASC) AS rn
+			FROM candidates
+			WHERE toid IS NOT NULL
+		)
+		SELECT account_id, toid, tx_hash, ledger_sequence, closed_at, successful, activity_type,
+			source_account, destination_account, primary_contract_id, operation_count,
+			fee_charged_stroops, memo_type, memo_value, 1::SMALLINT AS source_mask,
+			current_timestamp AS materialized_at
+		FROM ranked WHERE rn = 1`,
+		b.silverTable("enriched_history_operations"), chunk.Start, chunk.End,
+		b.silverTable("enriched_history_operations"), chunk.Start, chunk.End,
+		b.bronzeTable("operations_row_v2"), b.bronzeTable("transactions_row_v2"))
+}
+
+func selectOperationsByAccount(b *Backfiller, chunk Chunk) string {
+	return fmt.Sprintf(`WITH participants AS (
+			SELECT source_account AS account_id, transaction_hash, ledger_sequence, operation_index,
+				created_at, type, type_string, source_account, destination, asset, amount, contract_id,
+				function_name, tx_successful, is_payment_op, is_soroban_op
+			FROM %s
+			WHERE ledger_sequence BETWEEN %d AND %d AND source_account IS NOT NULL AND source_account <> ''
+			UNION
+			SELECT destination AS account_id, transaction_hash, ledger_sequence, operation_index,
+				created_at, type, type_string, source_account, destination, asset, amount, contract_id,
+				function_name, tx_successful, is_payment_op, is_soroban_op
+			FROM %s
+			WHERE ledger_sequence BETWEEN %d AND %d AND destination IS NOT NULL AND destination <> ''
+		), candidates AS (
+		SELECT p.account_id,
+			bo.operation_id AS operation_toid,
+			bo.transaction_id AS tx_toid,
+			p.transaction_hash AS tx_hash,
+			p.ledger_sequence,
+			p.created_at AS closed_at,
+			p.operation_index AS op_index,
+			p.type AS type_code,
+			p.type_string AS type_name,
+			p.source_account,
+			p.destination AS destination_account,
+			CASE WHEN p.asset IS NULL OR p.asset='native' THEN 'native:XLM' ELSE p.asset END AS asset_key,
+			TRY_CAST(p.amount AS BIGINT) AS amount_stroops,
+			p.contract_id,
+			p.function_name,
+			COALESCE(p.tx_successful, false) AS successful,
+			COALESCE(p.is_payment_op, false) AS is_payment_op,
+			COALESCE(p.is_soroban_op, false) AS is_soroban_op,
+			1::SMALLINT AS source_mask,
+			current_timestamp AS materialized_at
+		FROM participants p
+		LEFT JOIN %s bo ON bo.ledger_sequence = p.ledger_sequence
+			AND bo.transaction_hash = p.transaction_hash
+			AND bo.operation_index = p.operation_index
+		WHERE operation_toid IS NOT NULL
+		), ranked AS (
+			SELECT *, row_number() OVER (PARTITION BY account_id, operation_toid ORDER BY operation_toid) AS rn
+			FROM candidates
+		)
+		SELECT account_id, operation_toid, tx_toid, tx_hash, ledger_sequence, closed_at, op_index,
+			type_code, type_name, source_account, destination_account, asset_key, amount_stroops,
+			contract_id, function_name, successful, is_payment_op, is_soroban_op, source_mask,
+			materialized_at
+		FROM ranked WHERE rn = 1`,
+		b.silverTable("enriched_history_operations"), chunk.Start, chunk.End,
+		b.silverTable("enriched_history_operations"), chunk.Start, chunk.End,
+		b.bronzeTable("operations_row_v2"))
 }
 
 func selectAccountsCurrent(b *Backfiller) string {

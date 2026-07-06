@@ -61,10 +61,35 @@ index_cold:
   s3_access_key_id: "${B2_KEY_ID}"
   s3_secret_access_key: "${B2_KEY_SECRET}"
   s3_bucket: "${B2_INDEX_BUCKET}"
+  # Must match query-api ACCOUNT_LEDGER_INDEX_PARTITION_SIZE.
+  # Changing this requires a full account_ledger_index rebuild.
   partition_size: 100000
 
 account_index:
+  # Changing account_bucket_count requires a full account_ledger_index rebuild.
   account_bucket_count: 256
+
+index_postgres:
+  # Dark mirror for the Postgres index-plane relocation. DuckLake remains
+  # authoritative until query-api has a Postgres reader and parity checks pass.
+  enabled: false
+  # mirror = log failures without blocking DuckLake; primary = fail the cycle.
+  mode: "mirror"
+  schema: "index"
+  table: "account_ledger_index"
+  checkpoint_table: "index.account_ledger_postgres_checkpoint"
+
+serving_feed:
+  # Dark incremental sink for serving.sv_transactions_by_account and
+  # serving.sv_operations_by_account. Enable after the cold backfill has created
+  # complete watermarks for the serving feed tables.
+  enabled: false
+  schema: "serving"
+  transactions_table: "sv_transactions_by_account"
+  operations_table: "sv_operations_by_account"
+  watermark_table: "serving.sv_watermarks"
+  consumer_table: "ops.consumers"
+  pipeline: "account-index-transformer.account-feed"
 
 checkpoint:
   table: "index.account_ledger_transformer_checkpoint"

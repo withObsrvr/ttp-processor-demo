@@ -22,6 +22,8 @@ CREATE TABLE IF NOT EXISTS enriched_history_operations (
     operation_result_code VARCHAR(50),
     operation_trace_code VARCHAR(50),
     ledger_range BIGINT,
+    transaction_id BIGINT,
+    operation_id BIGINT,
 
     -- Asset fields (various operations)
     source_account_muxed VARCHAR(100),

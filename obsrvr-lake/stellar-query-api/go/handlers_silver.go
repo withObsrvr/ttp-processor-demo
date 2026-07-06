@@ -170,12 +170,15 @@ func (h *SilverHandlers) HandleAccountHistory(w http.ResponseWriter, r *http.Req
 	var history []AccountSnapshot
 	var nextCursor string
 	var hasMore bool
+	var accountIndexCoverage *AccountLedgerIndexCoverage
 
 	queryCtx, cancel := withInteractiveQueryTimeout(r.Context())
 	defer cancel()
 	switch h.readerMode {
 	case ReaderModeUnified:
-		history, nextCursor, hasMore, err = h.unifiedReader.GetAccountHistoryWithCursor(queryCtx, accountID, limit, cursor)
+		var coverage AccountLedgerIndexCoverage
+		history, nextCursor, hasMore, coverage, err = h.unifiedReader.GetAccountHistoryWithCursorAndCoverage(queryCtx, accountID, limit, cursor)
+		accountIndexCoverage = &coverage
 	case ReaderModeHybrid:
 		legacyHistory, legacyNextCursor, legacyHasMore, legacyErr := h.legacyReader.GetAccountHistoryWithCursor(queryCtx, accountID, limit, cursor)
 		unifiedHistory, _, _, unifiedErr := h.unifiedReader.GetAccountHistoryWithCursor(queryCtx, accountID, limit, cursor)
@@ -213,11 +216,30 @@ func (h *SilverHandlers) HandleAccountHistory(w http.ResponseWriter, r *http.Req
 		"count":      len(history),
 		"has_more":   hasMore,
 	}
+	if accountIndexCoverage != nil {
+		response["coverage"] = map[string]interface{}{"account_index": accountIndexCoverage}
+		if accountIndexCoverage.Uncovered {
+			response["partial"] = true
+			response["warnings"] = []string{"account_ledger_index coverage does not cover the full queried span; cold account history used the timeout-bounded unpruned path"}
+		}
+		if accountIndexCoverage.LookupFailed {
+			response["partial"] = true
+			response["warnings"] = append(warningsFromResponse(response), "account_ledger_index lookup timed out or failed; cold account history was skipped to avoid an unpruned cold scan")
+		}
+	}
 	if nextCursor != "" {
 		response["cursor"] = nextCursor
 	}
 
 	respondJSON(w, response)
+}
+
+func warningsFromResponse(response map[string]interface{}) []string {
+	existing, ok := response["warnings"].([]string)
+	if !ok {
+		return nil
+	}
+	return existing
 }
 
 // HandleTopAccounts returns top accounts by balance (for leaderboards)
@@ -1906,6 +1928,8 @@ func (h *SilverHandlers) HandleAccountOverview(w http.ResponseWriter, r *http.Re
 	var operations []EnrichedOperation
 	var transfersFrom, transfersTo []TokenTransfer
 	var err error
+	partial := false
+	warnings := []string{}
 	ctx, cancel := withInteractiveQueryTimeout(r.Context())
 	defer cancel()
 
@@ -1918,25 +1942,30 @@ func (h *SilverHandlers) HandleAccountOverview(w http.ResponseWriter, r *http.Re
 			hotCancel()
 		}
 		if account == nil && err == nil {
-			account, err = h.unifiedReader.GetAccountCurrent(ctx, accountID)
+			accountCtx, accountCancel := withOptionalQueryTimeout(r.Context())
+			account, err = h.unifiedReader.GetAccountCurrent(accountCtx, accountID)
+			accountCancel()
 		}
 		if err != nil {
 			if isQueryTimeout(err) {
-				respondQueryTimeout(w, "account overview")
+				partial = true
+				warnings = append(warnings, "account current lookup timed out; rendering account activity shell")
+				err = nil
+			} else {
+				respondError(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-			respondError(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if account == nil {
-			respondError(w, "account not found", http.StatusNotFound)
-			return
 		}
 		optionalCtx, optionalCancel := withOptionalQueryTimeout(r.Context())
-		operations, _ = h.unifiedReader.GetEnrichedOperations(optionalCtx, OperationFilters{
-			AccountID: accountID,
-			Limit:     10,
-		})
+		feedOps, feedOK := h.getAccountOverviewFeedOperations(optionalCtx, accountID, 10)
+		if feedOK {
+			operations = feedOps
+		} else {
+			operations, _ = h.unifiedReader.GetEnrichedOperations(optionalCtx, OperationFilters{
+				AccountID: accountID,
+				Limit:     10,
+			})
+		}
 		transfersFrom, _ = h.unifiedReader.GetTokenTransfers(optionalCtx, TransferFilters{
 			FromAccount: accountID,
 			StartTime:   time.Now().Add(-7 * 24 * time.Hour),
@@ -1950,6 +1979,14 @@ func (h *SilverHandlers) HandleAccountOverview(w http.ResponseWriter, r *http.Re
 			Limit:     10,
 		})
 		optionalCancel()
+		if account == nil && len(operations) == 0 && len(transfersFrom) == 0 && len(transfersTo) == 0 {
+			respondError(w, "account not found", http.StatusNotFound)
+			return
+		}
+		if account == nil {
+			partial = true
+			warnings = append(warnings, "account current state not available; recent activity returned from serving feed")
+		}
 
 	case ReaderModeHybrid:
 		// Run both for validation, return legacy
@@ -2034,7 +2071,7 @@ func (h *SilverHandlers) HandleAccountOverview(w http.ResponseWriter, r *http.Re
 	transfers := append(transfersFrom, transfersTo...)
 
 	// Fetch created_at (best-effort, non-blocking)
-	if account.CreatedAt == nil {
+	if account != nil && account.CreatedAt == nil {
 		createdAtCtx, createdAtCancel := withOptionalQueryTimeout(r.Context())
 		defer createdAtCancel()
 		switch h.readerMode {
@@ -2051,13 +2088,61 @@ func (h *SilverHandlers) HandleAccountOverview(w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	respondJSON(w, map[string]interface{}{
+	resp := map[string]interface{}{
 		"account":           account,
 		"recent_operations": operations,
 		"recent_transfers":  transfers,
 		"operations_count":  len(operations),
 		"transfers_count":   len(transfers),
+	}
+	if partial {
+		resp["partial"] = true
+		resp["warnings"] = warnings
+	}
+	respondJSON(w, resp)
+}
+
+func (h *SilverHandlers) getAccountOverviewFeedOperations(ctx context.Context, accountID string, limit int) ([]EnrichedOperation, bool) {
+	if !accountTransactionFeedEnabled() || h.legacyReader == nil || h.legacyReader.hot == nil {
+		return nil, false
+	}
+	txs, _, _, covered, err := h.legacyReader.hot.GetServingAccountTransactions(ctx, AccountTransactionsFilters{
+		AccountID: accountID,
+		Limit:     limit,
+		Order:     "desc",
 	})
+	if err != nil || !covered {
+		return nil, false
+	}
+	ops := make([]EnrichedOperation, 0, len(txs))
+	for _, tx := range txs {
+		typeName := "transaction"
+		if len(tx.ActivityTypes) > 0 && tx.ActivityTypes[0] != "" {
+			typeName = tx.ActivityTypes[0]
+		}
+		source := ""
+		if tx.SourceAccount != nil {
+			source = *tx.SourceAccount
+		}
+		successful := false
+		if tx.Successful != nil {
+			successful = *tx.Successful
+		}
+		var fee int64
+		if tx.FeeCharged != nil {
+			fee, _ = strconv.ParseInt(*tx.FeeCharged, 10, 64)
+		}
+		ops = append(ops, EnrichedOperation{
+			TransactionHash: tx.TransactionHash,
+			LedgerSequence:  tx.LedgerSequence,
+			LedgerClosedAt:  tx.ClosedAt,
+			SourceAccount:   source,
+			TypeName:        typeName,
+			TxSuccessful:    successful,
+			TxFeeCharged:    fee,
+		})
+	}
+	return ops, true
 }
 
 // HandleAccountOffers returns offers for a specific account

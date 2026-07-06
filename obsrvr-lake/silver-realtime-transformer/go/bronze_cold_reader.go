@@ -194,6 +194,11 @@ func (r *BronzeColdReader) QueryEnrichedOperations(ctx context.Context, startLed
 			o.operation_result_code,
 			NULL AS operation_trace_code,
 			o.ledger_range,
+			t.transaction_id,
+			CASE
+				WHEN t.transaction_id IS NULL THEN NULL
+				ELSE (t.transaction_id | ((o.operation_index + 1)::BIGINT & 4095))
+			END AS operation_id,
 			o.source_account_muxed,
 
 			-- Asset fields (loader writes both canonical asset column and split columns)
