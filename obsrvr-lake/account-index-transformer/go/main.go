@@ -19,6 +19,8 @@ func main() {
 	backfillStart := flag.Int64("start-ledger", 0, "Backfill start ledger, inclusive (0 = resume from checkpoint)")
 	backfillEnd := flag.Int64("end-ledger", 0, "Backfill end ledger, inclusive (0 = cold Silver max ledger)")
 	backfillBatch := flag.Int64("batch-ledgers", 0, "Backfill batch size in ledgers (0 = index partition size)")
+	backfillForceRestart := flag.Bool("force-restart", false, "Backfill from --start-ledger even when checkpoint is already ahead")
+	backfillPostgresOnly := flag.Bool("postgres-only", false, "Backfill only the Postgres account index mirror without touching the DuckLake index/checkpoint")
 	flag.Parse()
 
 	// Load configuration
@@ -63,6 +65,8 @@ func main() {
 			StartLedger:  *backfillStart,
 			EndLedger:    *backfillEnd,
 			BatchLedgers: *backfillBatch,
+			ForceRestart: *backfillForceRestart,
+			PostgresOnly: *backfillPostgresOnly,
 		}
 		if err := validateBackfillOptions(opts); err != nil {
 			log.Fatalf("Invalid backfill options: %v", err)

@@ -20,12 +20,13 @@ type IndexWriter struct {
 const accountLedgerInsertChunkSize = 1000
 
 // NewIndexWriter creates a new Index writer
-func NewIndexWriter(config *IndexColdConfig, catalogDB *sql.DB) (*IndexWriter, error) {
+func NewIndexWriter(config *IndexColdConfig) (*IndexWriter, error) {
 	// Open DuckDB connection for writing to Index Plane
 	db, err := sql.Open("duckdb", config.DuckDBPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open DuckDB: %w", err)
 	}
+	db.SetMaxOpenConns(1)
 
 	writer := &IndexWriter{
 		db:     db,
@@ -545,4 +546,14 @@ func (iw *IndexWriter) Close() error {
 		return iw.db.Close()
 	}
 	return nil
+}
+
+func IsFatalDuckDBWriterError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "database has been invalidated") ||
+		strings.Contains(msg, "current transaction is aborted") ||
+		strings.Contains(msg, "attempted to access index 0 within vector of size 0")
 }

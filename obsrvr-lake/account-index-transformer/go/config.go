@@ -10,17 +10,19 @@ import (
 
 // Config represents the transformer configuration
 type Config struct {
-	Service      ServiceConfig      `yaml:"service"`
-	BronzeSource BronzeSourceConfig `yaml:"bronze_source"`
-	SilverHot    DatabaseConfig     `yaml:"silver_hot"`
-	SilverCold   SilverColdConfig   `yaml:"silver_cold"`
-	Catalog      DatabaseConfig     `yaml:"catalog"`
-	IndexCold    IndexColdConfig    `yaml:"index_cold"`
-	Account      AccountIndexConfig `yaml:"account_index"`
-	Checkpoint   CheckpointConfig   `yaml:"checkpoint"`
-	Backfill     CheckpointConfig   `yaml:"backfill_checkpoint"`
-	Maintenance  MaintenanceConfig  `yaml:"maintenance"`
-	Health       HealthConfig       `yaml:"health"`
+	Service       ServiceConfig       `yaml:"service"`
+	BronzeSource  BronzeSourceConfig  `yaml:"bronze_source"`
+	SilverHot     DatabaseConfig      `yaml:"silver_hot"`
+	SilverCold    SilverColdConfig    `yaml:"silver_cold"`
+	Catalog       DatabaseConfig      `yaml:"catalog"`
+	IndexCold     IndexColdConfig     `yaml:"index_cold"`
+	IndexPostgres IndexPostgresConfig `yaml:"index_postgres"`
+	Account       AccountIndexConfig  `yaml:"account_index"`
+	ServingFeed   ServingFeedConfig   `yaml:"serving_feed"`
+	Checkpoint    CheckpointConfig    `yaml:"checkpoint"`
+	Backfill      CheckpointConfig    `yaml:"backfill_checkpoint"`
+	Maintenance   MaintenanceConfig   `yaml:"maintenance"`
+	Health        HealthConfig        `yaml:"health"`
 }
 
 // BronzeSourceConfig configures the gRPC connection to the bronze ingester's SourceService.
@@ -69,6 +71,16 @@ type IndexColdConfig struct {
 	TableKind         string `yaml:"table_kind"`
 }
 
+// IndexPostgresConfig controls the optional Postgres mirror of the account
+// ledger index. This is a dark sink while DuckLake remains authoritative.
+type IndexPostgresConfig struct {
+	Enabled         bool   `yaml:"enabled"`
+	Mode            string `yaml:"mode"`
+	Schema          string `yaml:"schema"`
+	Table           string `yaml:"table"`
+	CheckpointTable string `yaml:"checkpoint_table"`
+}
+
 type SilverColdConfig struct {
 	CatalogName       string `yaml:"catalog_name"`
 	SchemaName        string `yaml:"schema_name"`
@@ -90,6 +102,17 @@ type SilverColdConfig struct {
 
 type AccountIndexConfig struct {
 	AccountBucketCount int `yaml:"account_bucket_count"`
+}
+
+// ServingFeedConfig controls the optional Postgres serving feed sink.
+type ServingFeedConfig struct {
+	Enabled           bool   `yaml:"enabled"`
+	Schema            string `yaml:"schema"`
+	TransactionsTable string `yaml:"transactions_table"`
+	OperationsTable   string `yaml:"operations_table"`
+	WatermarkTable    string `yaml:"watermark_table"`
+	ConsumerTable     string `yaml:"consumer_table"`
+	Pipeline          string `yaml:"pipeline"`
 }
 
 // CheckpointConfig contains PostgreSQL checkpoint configuration
@@ -159,10 +182,12 @@ func LoadConfig(path string) (*Config, error) {
 		config.IndexCold.TableName = "account_ledger_index"
 	}
 	config.IndexCold.TableKind = "account_ledger"
+	config.applyIndexPostgresDefaults()
 	config.applySilverColdDefaults()
 	if config.Account.AccountBucketCount == 0 {
 		config.Account.AccountBucketCount = defaultAccountIndexBuckets
 	}
+	config.applyServingFeedDefaults()
 	if config.Maintenance.EveryNWrites == 0 {
 		config.Maintenance.EveryNWrites = 100
 	}
@@ -182,6 +207,42 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	return &config, nil
+}
+
+func (c *Config) applyServingFeedDefaults() {
+	if c.ServingFeed.Schema == "" {
+		c.ServingFeed.Schema = "serving"
+	}
+	if c.ServingFeed.TransactionsTable == "" {
+		c.ServingFeed.TransactionsTable = "sv_transactions_by_account"
+	}
+	if c.ServingFeed.OperationsTable == "" {
+		c.ServingFeed.OperationsTable = "sv_operations_by_account"
+	}
+	if c.ServingFeed.WatermarkTable == "" {
+		c.ServingFeed.WatermarkTable = "serving.sv_watermarks"
+	}
+	if c.ServingFeed.ConsumerTable == "" {
+		c.ServingFeed.ConsumerTable = "ops.consumers"
+	}
+	if c.ServingFeed.Pipeline == "" {
+		c.ServingFeed.Pipeline = "account-index-transformer.account-feed"
+	}
+}
+
+func (c *Config) applyIndexPostgresDefaults() {
+	if c.IndexPostgres.Mode == "" {
+		c.IndexPostgres.Mode = "mirror"
+	}
+	if c.IndexPostgres.Schema == "" {
+		c.IndexPostgres.Schema = "index"
+	}
+	if c.IndexPostgres.Table == "" {
+		c.IndexPostgres.Table = "account_ledger_index"
+	}
+	if c.IndexPostgres.CheckpointTable == "" {
+		c.IndexPostgres.CheckpointTable = "index.account_ledger_postgres_checkpoint"
+	}
 }
 
 func (c *Config) applySilverColdDefaults() {

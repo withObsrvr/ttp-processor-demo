@@ -642,6 +642,141 @@ func (h *SilverHotReader) GetServingRecentTransactions(ctx context.Context, limi
 	return latestSequence, out, nil
 }
 
+// GetServingAccountTransactions serves account transaction pages from the materialized
+// by-account feed when its watermark covers the requested ledger span.
+func (h *SilverHotReader) GetServingAccountTransactions(ctx context.Context, filters AccountTransactionsFilters) ([]AccountTransaction, string, bool, bool, error) {
+	var status string
+	var completeFrom, completeThru int64
+	err := h.db.QueryRowContext(ctx, `
+		SELECT status, complete_from, complete_thru
+		FROM serving.sv_watermarks
+		WHERE table_name = 'serving.sv_transactions_by_account'
+	`).Scan(&status, &completeFrom, &completeThru)
+	if err == sql.ErrNoRows {
+		return nil, "", false, false, nil
+	}
+	if err != nil {
+		return nil, "", false, false, fmt.Errorf("serving account transactions watermark: %w", err)
+	}
+	if status != "complete" {
+		return nil, "", false, false, nil
+	}
+
+	startLedger := filters.StartLedger
+	if startLedger == 0 {
+		startLedger = completeFrom
+	}
+	endLedger := filters.EndLedger
+	if endLedger == 0 {
+		endLedger = completeThru
+	}
+	if completeFrom > startLedger || completeThru < endLedger {
+		return nil, "", false, false, nil
+	}
+
+	requestLimit := filters.Limit + 1
+	orderDir, cursorOp := "DESC", "<"
+	if filters.Order == "asc" {
+		orderDir, cursorOp = "ASC", ">"
+	}
+
+	where := []string{"account_id = $1", "ledger_sequence BETWEEN $2 AND $3"}
+	args := []interface{}{filters.AccountID, startLedger, endLedger}
+	arg := 4
+	if filters.StartTime != "" {
+		where = append(where, fmt.Sprintf("closed_at >= $%d::timestamptz", arg))
+		args = append(args, filters.StartTime)
+		arg++
+	}
+	if filters.EndTime != "" {
+		where = append(where, fmt.Sprintf("closed_at <= $%d::timestamptz", arg))
+		args = append(args, filters.EndTime)
+		arg++
+	}
+	if filters.Successful != nil {
+		where = append(where, fmt.Sprintf("successful = $%d", arg))
+		args = append(args, *filters.Successful)
+		arg++
+	}
+	if filters.Cursor != nil {
+		toid, err := strconv.ParseInt(filters.Cursor.TieBreaker, 10, 64)
+		if err != nil {
+			// Feed pages are ordered by TOID; a cursor without a numeric TOID
+			// tie-breaker came from the federated path (or is corrupt), and
+			// paginating it here by (ledger_sequence, tx_hash) would skip or
+			// duplicate rows within a ledger. Report not-covered so the handler
+			// falls back to the federated reader, whose ordering matches that
+			// cursor shape.
+			return nil, "", false, false, nil
+		}
+		where = append(where, fmt.Sprintf("toid %s $%d", cursorOp, arg))
+		args = append(args, toid)
+		arg++
+	}
+	args = append(args, requestLimit)
+
+	query := fmt.Sprintf(`
+		SELECT ledger_sequence, closed_at, tx_hash, toid, successful, source_account,
+		       CAST(fee_charged_stroops AS TEXT) AS fee_charged, memo_type, memo_value,
+		       activity_type, 'sv_transactions_by_account' AS source_table,
+		       'Observed account transaction from serving feed' AS summary
+		FROM serving.sv_transactions_by_account
+		WHERE %s
+		ORDER BY toid %s
+		LIMIT $%d`, strings.Join(where, " AND "), orderDir, arg)
+	rows, err := h.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, "", false, true, fmt.Errorf("serving account transactions: %w", err)
+	}
+	defer rows.Close()
+
+	type rowWithTOID struct {
+		tx   AccountTransaction
+		toid int64
+	}
+	var rowsOut []rowWithTOID
+	for rows.Next() {
+		var item rowWithTOID
+		var closed time.Time
+		var successful sql.NullBool
+		var source, fee, memoType, memo sql.NullString
+		var activityType, sourceTable string
+		if err := rows.Scan(&item.tx.LedgerSequence, &closed, &item.tx.TransactionHash, &item.toid, &successful, &source, &fee, &memoType, &memo, &activityType, &sourceTable, &item.tx.Summary); err != nil {
+			return nil, "", false, true, err
+		}
+		item.tx.ClosedAt = closed.UTC().Format(time.RFC3339Nano)
+		if successful.Valid {
+			item.tx.Successful = &successful.Bool
+		}
+		item.tx.SourceAccount = nullStringPtr(source)
+		item.tx.FeeCharged = nullStringPtr(fee)
+		item.tx.MemoType = nullStringPtr(memoType)
+		item.tx.Memo = nullStringPtr(memo)
+		item.tx.ActivityTypes = []string{activityType}
+		item.tx.SourceTables = []string{sourceTable}
+		rowsOut = append(rowsOut, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", false, true, err
+	}
+
+	hasMore := len(rowsOut) > filters.Limit
+	if hasMore {
+		rowsOut = rowsOut[:filters.Limit]
+	}
+	out := make([]AccountTransaction, 0, len(rowsOut))
+	for _, row := range rowsOut {
+		out = append(out, row.tx)
+	}
+	next := ""
+	if hasMore && len(rowsOut) > 0 {
+		last := rowsOut[len(rowsOut)-1]
+		ts, _ := time.Parse(time.RFC3339Nano, last.tx.ClosedAt)
+		next = HistoryCursor{LedgerSequence: last.tx.LedgerSequence, ClosedAt: ts, TransactionHash: last.tx.TransactionHash, TieBreaker: strconv.FormatInt(last.toid, 10), Order: filters.Order}.Encode()
+	}
+	return out, next, hasMore, true, nil
+}
+
 func buildFallbackRecentTxSummary(txType, summaryText string, primaryContract sql.NullString) TxSummary {
 	summary := TxSummary{Type: txType, Description: summaryText}
 	if summary.Type == "" {

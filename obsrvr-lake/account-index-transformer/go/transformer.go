@@ -11,16 +11,18 @@ import (
 
 // Transformer manages the Index Plane transformation pipeline
 type Transformer struct {
-	config       *Config
-	silverReader *SilverHotReader
-	indexWriter  *IndexWriter
-	checkpoint   *CheckpointManager
-	advisoryLock *AdvisoryLock
-	healthServer *HealthServer
-	stats        TransformerStats
-	mu           sync.RWMutex
-	stopChan     chan struct{}
-	writeCount   int
+	config        *Config
+	silverReader  *SilverHotReader
+	indexWriter   *IndexWriter
+	pgIndexWriter *PostgresIndexWriter
+	feedWriter    *ServingFeedWriter
+	checkpoint    *CheckpointManager
+	advisoryLock  *AdvisoryLock
+	healthServer  *HealthServer
+	stats         TransformerStats
+	mu            sync.RWMutex
+	stopChan      chan struct{}
+	writeCount    int
 }
 
 // NewTransformer creates a new Index Plane transformer
@@ -31,9 +33,17 @@ func NewTransformer(config *Config, silverDB *sql.DB, catalogDB *sql.DB) (*Trans
 	silverReader := NewSilverHotReader(silverDB)
 
 	indexConfig := config.IndexConfig()
-	indexWriter, err := NewIndexWriter(&indexConfig, catalogDB)
+	indexWriter, err := NewIndexWriter(&indexConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create account Index writer: %w", err)
+	}
+	var pgIndexWriter *PostgresIndexWriter
+	if config.IndexPostgres.Enabled {
+		pgIndexWriter = NewPostgresIndexWriter(catalogDB, config.IndexPostgres, config.IndexCold.PartitionSize)
+	}
+	var feedWriter *ServingFeedWriter
+	if config.ServingFeed.Enabled {
+		feedWriter = NewServingFeedWriter(silverDB, config.ServingFeed)
 	}
 
 	checkpoint, err := NewCheckpointManager(catalogDB, &config.Checkpoint)
@@ -49,13 +59,15 @@ func NewTransformer(config *Config, silverDB *sql.DB, catalogDB *sql.DB) (*Trans
 	healthServer := NewHealthServer(config.Health.Port)
 
 	return &Transformer{
-		config:       config,
-		silverReader: silverReader,
-		indexWriter:  indexWriter,
-		checkpoint:   checkpoint,
-		advisoryLock: advisoryLock,
-		healthServer: healthServer,
-		stopChan:     make(chan struct{}),
+		config:        config,
+		silverReader:  silverReader,
+		indexWriter:   indexWriter,
+		pgIndexWriter: pgIndexWriter,
+		feedWriter:    feedWriter,
+		checkpoint:    checkpoint,
+		advisoryLock:  advisoryLock,
+		healthServer:  healthServer,
+		stopChan:      make(chan struct{}),
 	}, nil
 }
 
@@ -66,6 +78,12 @@ func (t *Transformer) Start() error {
 	log.Printf("Batch Size: %d ledgers", t.config.Service.BatchSize)
 	log.Printf("Account buckets: %d", t.config.AccountBucketCount())
 	log.Println("Target: Index Plane (DuckLake)")
+	if t.pgIndexWriter != nil {
+		log.Printf("Postgres account index sink: enabled mode=%s (%s.%s)", t.config.IndexPostgres.Mode, t.config.IndexPostgres.Schema, t.config.IndexPostgres.Table)
+	}
+	if t.feedWriter != nil {
+		log.Printf("Serving feed sink: enabled (%s.%s)", t.config.ServingFeed.Schema, t.config.ServingFeed.TransactionsTable)
+	}
 
 	ctx := context.Background()
 
@@ -217,7 +235,11 @@ func (t *Transformer) startGRPC() error {
 // runTransformationCycle executes one transformation cycle
 func (t *Transformer) runTransformationCycle() error {
 	ctx := context.Background()
-	return t.runAccountLedgerCycle(ctx)
+	err := t.runAccountLedgerCycle(ctx)
+	if t.feedWriter != nil {
+		t.runServingFeedCycle(ctx)
+	}
+	return err
 }
 
 func (t *Transformer) runAccountLedgerCycle(ctx context.Context) error {
@@ -259,11 +281,17 @@ func (t *Transformer) runAccountLedgerCycle(ctx context.Context) error {
 		return fmt.Errorf("failed to read account ledger ranges: %w", err)
 	}
 	if len(rows) > 0 {
-		rowsWritten, err := t.indexWriter.WriteAccountLedgerRanges(ctx, rows)
+		rowsWritten, err := t.writeAccountLedgerRangesWithRecovery(ctx, rows)
 		if err != nil {
 			return fmt.Errorf("failed to write account ledger ranges: %w", err)
 		}
 		log.Printf("✅ Indexed %d account ledger-range rows (ledgers %d→%d)", rowsWritten, lastLedger+1, endLedger)
+		if err := t.writePostgresAccountIndex(ctx, rows, endLedger); err != nil {
+			if t.config.IndexPostgres.Mode == "primary" {
+				return err
+			}
+			log.Printf("⚠️  Postgres account index mirror skipped: %v", err)
+		}
 		t.writeCount++
 		if t.config.Maintenance.Enabled && t.writeCount >= t.config.Maintenance.EveryNWrites {
 			log.Printf("🔧 Account index flush + maintenance (write #%d)...", t.writeCount)
@@ -283,6 +311,89 @@ func (t *Transformer) runAccountLedgerCycle(ctx context.Context) error {
 	t.updateStats(endLedger, minLedger, maxLedger, retentionGapDetected, retentionGapMessage, time.Now(), duration)
 	t.incrementTotal()
 	log.Printf("✅ Account ledger cycle completed in %s", duration.Round(time.Millisecond))
+	return nil
+}
+
+func (t *Transformer) writePostgresAccountIndex(ctx context.Context, rows []AccountLedgerIndex, endLedger int64) error {
+	if t.pgIndexWriter == nil {
+		return nil
+	}
+	written, err := t.pgIndexWriter.WriteAccountLedgerRanges(ctx, rows, endLedger)
+	if err != nil {
+		return fmt.Errorf("failed to write Postgres account index mirror: %w", err)
+	}
+	log.Printf("✅ Mirrored %d account ledger-range rows to Postgres index (through ledger %d)", written, endLedger)
+	return nil
+}
+
+func (t *Transformer) runServingFeedCycle(ctx context.Context) {
+	minLedger, maxLedger, err := t.silverReader.GetLedgerBounds(ctx)
+	if err != nil {
+		log.Printf("⚠️  Serving feed skipped: failed to get Silver Hot bounds: %v", err)
+		return
+	}
+	if maxLedger == 0 {
+		return
+	}
+	fallback := int64(0)
+	if minLedger > 1 {
+		fallback = minLedger - 1
+	}
+	lastLedger, err := t.feedWriter.LoadCheckpoint(ctx, fallback)
+	if err != nil {
+		log.Printf("⚠️  Serving feed skipped: failed to load checkpoint: %v", err)
+		return
+	}
+	if lastLedger < fallback {
+		lastLedger = fallback
+	}
+	if maxLedger <= lastLedger {
+		return
+	}
+	endLedger := lastLedger + t.config.Service.BatchSize
+	if endLedger > maxLedger {
+		endLedger = maxLedger
+	}
+	rows, err := t.silverReader.ReadAccountFeedRows(ctx, lastLedger, endLedger)
+	if err != nil {
+		log.Printf("⚠️  Serving feed skipped: failed to read rows for ledgers %d-%d: %v", lastLedger+1, endLedger, err)
+		return
+	}
+	written, err := t.feedWriter.Write(ctx, rows, lastLedger+1, endLedger)
+	if err != nil {
+		log.Printf("⚠️  Serving feed skipped: failed to write rows for ledgers %d-%d: %v", lastLedger+1, endLedger, err)
+		return
+	}
+	log.Printf("✅ Serving feed wrote %d account operation rows (ledgers %d→%d)", written, lastLedger+1, endLedger)
+}
+
+func (t *Transformer) writeAccountLedgerRangesWithRecovery(ctx context.Context, rows []AccountLedgerIndex) (int64, error) {
+	rowsWritten, err := t.indexWriter.WriteAccountLedgerRanges(ctx, rows)
+	if err == nil || !IsFatalDuckDBWriterError(err) {
+		return rowsWritten, err
+	}
+
+	log.Printf("⚠️  Account index writer hit fatal DuckDB state; reopening writer and retrying batch once: %v", err)
+	if reopenErr := t.reopenIndexWriter(); reopenErr != nil {
+		return 0, fmt.Errorf("%w; additionally failed to reopen account index writer: %v", err, reopenErr)
+	}
+	return t.indexWriter.WriteAccountLedgerRanges(ctx, rows)
+}
+
+func (t *Transformer) reopenIndexWriter() error {
+	if t.indexWriter != nil {
+		if err := t.indexWriter.Close(); err != nil {
+			log.Printf("⚠️  Failed to close poisoned account index writer: %v", err)
+		}
+	}
+
+	indexConfig := t.config.IndexConfig()
+	writer, err := NewIndexWriter(&indexConfig)
+	if err != nil {
+		return err
+	}
+	t.indexWriter = writer
+	t.healthServer.SetIndexWriter(writer)
 	return nil
 }
 

@@ -181,6 +181,9 @@ func NewUnifiedDuckDBReader(config UnifiedReaderConfig) (*UnifiedDuckDBReader, e
 
 // Close closes the DuckDB connection (which detaches all databases)
 func (r *UnifiedDuckDBReader) Close() error {
+	if r.accountIndex != nil && r.accountIndex.catalogDB != nil {
+		_ = r.accountIndex.catalogDB.Close()
+	}
 	if r.db != nil {
 		return r.db.Close()
 	}
@@ -380,27 +383,50 @@ func (r *UnifiedDuckDBReader) GetAccountCreatedAt(ctx context.Context, accountID
 // Merges hot and cold data via SQL UNION with deduplication
 // Returns: snapshots, nextCursor, hasMore, error (matching UnifiedSilverReader interface)
 func (r *UnifiedDuckDBReader) GetAccountHistoryWithCursor(ctx context.Context, accountID string, limit int, cursor *AccountCursor) ([]AccountSnapshot, string, bool, error) {
+	snapshots, nextCursor, hasMore, _, err := r.GetAccountHistoryWithCursorAndCoverage(ctx, accountID, limit, cursor)
+	return snapshots, nextCursor, hasMore, err
+}
+
+func (r *UnifiedDuckDBReader) GetAccountHistoryWithCursorAndCoverage(ctx context.Context, accountID string, limit int, cursor *AccountCursor) ([]AccountSnapshot, string, bool, AccountLedgerIndexCoverage, error) {
 	// Request one extra to detect has_more
 	requestLimit := limit + 1
 	coldLedgerRangeClause := ""
 	args := []interface{}{accountID}
 	arg := 2
+	accountIndexCoverage := initialAccountIndexCoverage(r.accountIndex)
 	if strings.TrimSpace(r.coldSchema) != "" && r.accountIndex.CanPrune() {
 		var endLedger int64
 		if cursor != nil {
 			endLedger = cursor.LedgerSequence - 1
 		}
-		ranges, err := r.accountIndex.LookupLedgerRanges(ctx, accountID, 0, endLedger)
-		if err != nil {
-			log.Printf("account ledger index lookup failed account=%s err=%v; falling back to unpruned cold account snapshots", accountID, err)
-		} else if len(ranges) > 0 {
-			placeholders := make([]string, 0, len(ranges))
-			for _, ledgerRange := range ranges {
-				placeholders = append(placeholders, fmt.Sprintf("$%d", arg))
-				args = append(args, ledgerRange)
-				arg++
+		accountIndexCoverage = r.accountIndex.LoadCoverage(ctx)
+		if accountIndexCoverage.Covers(0, endLedger) {
+			lookupCtx, cancel := context.WithTimeout(ctx, accountLedgerIndexLookupTimeout())
+			ranges, err := r.accountIndex.LookupLedgerRanges(lookupCtx, accountID, 0, endLedger)
+			cancel()
+			if err != nil {
+				log.Printf("account ledger index lookup failed account=%s err=%v; skipping cold account snapshot scan to avoid unpruned fallback", accountID, err)
+				coldLedgerRangeClause = " AND false"
+				accountIndexCoverage.Used = true
+				accountIndexCoverage.SkippedCold = true
+				accountIndexCoverage.LookupFailed = true
+			} else if len(ranges) > 0 {
+				placeholders := make([]string, 0, len(ranges))
+				for _, ledgerRange := range ranges {
+					placeholders = append(placeholders, fmt.Sprintf("$%d", arg))
+					args = append(args, ledgerRange)
+					arg++
+				}
+				coldLedgerRangeClause = fmt.Sprintf(" AND ledger_range IN (%s)", strings.Join(placeholders, ", "))
+				accountIndexCoverage.Used = true
+				accountIndexCoverage.PrunedRanges = ranges
+			} else {
+				coldLedgerRangeClause = " AND false"
+				accountIndexCoverage.Used = true
+				accountIndexCoverage.SkippedCold = true
 			}
-			coldLedgerRangeClause = fmt.Sprintf(" AND ledger_range IN (%s)", strings.Join(placeholders, ", "))
+		} else {
+			accountIndexCoverage.Uncovered = true
 		}
 	}
 
@@ -431,7 +457,7 @@ func (r *UnifiedDuckDBReader) GetAccountHistoryWithCursor(ctx context.Context, a
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, "", false, fmt.Errorf("unified GetAccountHistoryWithCursor: %w", err)
+		return nil, "", false, accountIndexCoverage, fmt.Errorf("unified GetAccountHistoryWithCursor: %w", err)
 	}
 	defer rows.Close()
 
@@ -440,7 +466,7 @@ func (r *UnifiedDuckDBReader) GetAccountHistoryWithCursor(ctx context.Context, a
 		var snap AccountSnapshot
 		if err := rows.Scan(&snap.AccountID, &snap.Balance, &snap.SequenceNumber,
 			&snap.LedgerSequence, &snap.ClosedAt, &snap.ValidTo); err != nil {
-			return nil, "", false, err
+			return nil, "", false, accountIndexCoverage, err
 		}
 		snapshots = append(snapshots, snap)
 	}
@@ -459,7 +485,7 @@ func (r *UnifiedDuckDBReader) GetAccountHistoryWithCursor(ctx context.Context, a
 		nextCursor = c.Encode()
 	}
 
-	return snapshots, nextCursor, hasMore, nil
+	return snapshots, nextCursor, hasMore, accountIndexCoverage, nil
 }
 
 // GetAccountBalances returns all balances (XLM + trustlines) for an account

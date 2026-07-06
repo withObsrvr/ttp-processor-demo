@@ -127,6 +127,7 @@ var enrichedOpColumns = []string{
 	"transaction_hash", "operation_index", "ledger_sequence", "source_account",
 	"type", "type_string", "created_at", "transaction_successful",
 	"operation_result_code", "operation_trace_code", "ledger_range",
+	"transaction_id", "operation_id",
 	"source_account_muxed", "asset", "asset_type", "asset_code", "asset_issuer",
 	"source_asset", "source_asset_type", "source_asset_code", "source_asset_issuer",
 	"destination", "destination_muxed", "amount", "source_amount",
@@ -155,8 +156,14 @@ var enrichedOpColumns = []string{
 	"is_payment_op", "is_soroban_op",
 }
 
-const enrichedOpConflict = `ON CONFLICT (transaction_hash, operation_index) DO NOTHING`
-const enrichedOpSorobanConflict = `ON CONFLICT (transaction_hash, operation_index) DO NOTHING`
+const enrichedOpConflict = `ON CONFLICT (transaction_hash, operation_index) DO UPDATE SET
+	transaction_id = COALESCE(enriched_history_operations.transaction_id, EXCLUDED.transaction_id),
+	operation_id = COALESCE(enriched_history_operations.operation_id, EXCLUDED.operation_id)
+	WHERE enriched_history_operations.transaction_id IS NULL OR enriched_history_operations.operation_id IS NULL`
+const enrichedOpSorobanConflict = `ON CONFLICT (transaction_hash, operation_index) DO UPDATE SET
+	transaction_id = COALESCE(enriched_history_operations_soroban.transaction_id, EXCLUDED.transaction_id),
+	operation_id = COALESCE(enriched_history_operations_soroban.operation_id, EXCLUDED.operation_id)
+	WHERE enriched_history_operations_soroban.transaction_id IS NULL OR enriched_history_operations_soroban.operation_id IS NULL`
 
 var tokenTransferColumns = []string{
 	"timestamp", "transaction_hash", "ledger_sequence", "source_type",

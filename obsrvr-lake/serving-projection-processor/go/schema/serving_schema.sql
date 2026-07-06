@@ -11,6 +11,7 @@
 --   - Numeric display columns are optional; they exist to avoid repeated formatting in API handlers
 
 create schema if not exists serving;
+create schema if not exists ops;
 
 create extension if not exists pg_trgm;
 
@@ -577,6 +578,22 @@ create table if not exists serving.sv_projection_checkpoints (
     primary key (projection_name, network)
 );
 
+create table if not exists serving.sv_watermarks (
+    table_name                  text primary key,
+    status                      text not null check (status in ('backfilling', 'complete', 'rebuilding')),
+    complete_from               bigint not null,
+    complete_thru               bigint not null,
+    updated_at                  timestamptz not null
+);
+
+create table if not exists ops.consumers (
+    pipeline                    text not null,
+    source_table                text not null,
+    checkpoint                  bigint not null,
+    updated_at                  timestamptz not null,
+    primary key (pipeline, source_table)
+);
+
 
 create table if not exists serving.sv_rebuild_jobs (
     job_id                      uuid primary key,
@@ -975,6 +992,70 @@ create index if not exists sv_tx_receipts_accounts_gin_idx
     on serving.sv_tx_receipts using gin (involved_accounts);
 
 -- ============================================================
+-- ACCOUNT HISTORY SERVING FEEDS
+-- ============================================================
+
+create table if not exists serving.sv_transactions_by_account (
+    account_id                  text not null,
+    toid                        bigint not null,
+    tx_hash                     text not null,
+    ledger_sequence             bigint not null,
+    closed_at                   timestamptz not null,
+    successful                  boolean not null,
+    activity_type               text not null,
+    source_account              text,
+    destination_account         text,
+    primary_contract_id         text,
+    operation_count             integer,
+    fee_charged_stroops         bigint,
+    memo_type                   text,
+    memo_value                  text,
+    source_mask                 smallint not null default 1,
+    materialized_at             timestamptz not null default now(),
+    primary key (account_id, toid)
+);
+
+create index if not exists sv_transactions_by_account_page_idx
+    on serving.sv_transactions_by_account (account_id, toid desc);
+create index if not exists sv_transactions_by_account_ledger_idx
+    on serving.sv_transactions_by_account (ledger_sequence);
+create index if not exists sv_transactions_by_account_tx_idx
+    on serving.sv_transactions_by_account (tx_hash);
+
+create table if not exists serving.sv_operations_by_account (
+    account_id                  text not null,
+    operation_toid              bigint not null,
+    tx_toid                     bigint not null,
+    tx_hash                     text not null,
+    ledger_sequence             bigint not null,
+    closed_at                   timestamptz not null,
+    op_index                    integer not null,
+    type_code                   integer,
+    type_name                   text,
+    source_account              text,
+    destination_account         text,
+    asset_key                   text,
+    amount_stroops              bigint,
+    contract_id                 text,
+    function_name               text,
+    successful                  boolean not null,
+    is_payment_op               boolean not null default false,
+    is_soroban_op               boolean not null default false,
+    source_mask                 smallint not null default 1,
+    materialized_at             timestamptz not null default now(),
+    primary key (account_id, operation_toid)
+);
+
+create index if not exists sv_operations_by_account_page_idx
+    on serving.sv_operations_by_account (account_id, operation_toid desc);
+create index if not exists sv_operations_by_account_tx_idx
+    on serving.sv_operations_by_account (tx_hash, op_index);
+create index if not exists sv_operations_by_account_ledger_idx
+    on serving.sv_operations_by_account (ledger_sequence);
+create index if not exists sv_operations_by_account_contract_idx
+    on serving.sv_operations_by_account (contract_id, operation_toid desc) where contract_id is not null;
+
+-- ============================================================
 -- SELF-HEAL: ensure ON CONFLICT unique indexes exist
 -- ============================================================
 -- Every serving table above declares its PRIMARY KEY inline, which is the unique
@@ -994,12 +1075,15 @@ begin
   for r in
     select * from (values
       ('serving.sv_projection_checkpoints', 'sv_projection_checkpoints_pn_uq',   'projection_name, network'),
+      ('serving.sv_watermarks',             'sv_watermarks_table_uq',            'table_name'),
       ('serving.sv_accounts_current',       'sv_accounts_current_account_id_uq', 'account_id'),
       ('serving.sv_network_stats_current',  'sv_network_stats_current_net_uq',   'network'),
       ('serving.sv_ledger_stats_recent',    'sv_ledger_stats_recent_ls_uq',      'ledger_sequence'),
       ('serving.sv_operations_recent',      'sv_operations_recent_op_uq',        'operation_id'),
       ('serving.sv_transactions_recent',    'sv_transactions_recent_tx_uq',      'tx_hash'),
       ('serving.sv_tx_receipts',            'sv_tx_receipts_tx_uq',              'tx_hash'),
+      ('serving.sv_transactions_by_account','sv_transactions_by_account_uq',     'account_id, toid'),
+      ('serving.sv_operations_by_account',  'sv_operations_by_account_uq',       'account_id, operation_toid'),
       ('serving.sv_contract_calls_recent',  'sv_contract_calls_recent_cc_uq',    'call_id'),
       ('serving.sv_events_recent',          'sv_events_recent_ev_uq',            'event_id'),
       ('serving.sv_explorer_events_recent', 'sv_explorer_events_recent_ev_uq',   'event_id')

@@ -26,8 +26,8 @@ func TestPlanChunksDeterministic(t *testing.T) {
 
 func TestRequiredProjectionContractIncludesCheckpointTargets(t *testing.T) {
 	got := requiredProjections("serving")
-	if len(got) != 15 {
-		t.Fatalf("required projection count = %d, want 15", len(got))
+	if len(got) != 17 {
+		t.Fatalf("required projection count = %d, want 17", len(got))
 	}
 	checkpointed := 0
 	for _, p := range got {
@@ -41,8 +41,20 @@ func TestRequiredProjectionContractIncludesCheckpointTargets(t *testing.T) {
 			t.Fatalf("%s checkpoint=%v class=%s, want false/blocked_source_mapping", p.Name, p.Checkpoint, p.InitialClass)
 		}
 	}
-	if checkpointed != 13 {
-		t.Fatalf("checkpointed projection count = %d, want 13", checkpointed)
+	if checkpointed != 15 {
+		t.Fatalf("checkpointed projection count = %d, want 15", checkpointed)
+	}
+}
+
+func TestTOIDHelpersMatchSEP35Packing(t *testing.T) {
+	if got, want := transactionTOID(3, 1), int64(12884905984); got != want {
+		t.Fatalf("transactionTOID(3,1) = %d, want %d", got, want)
+	}
+	if got, want := operationTOID(3, 1, 1), int64(12884905985); got != want {
+		t.Fatalf("operationTOID(3,1,1) = %d, want %d", got, want)
+	}
+	if got := operationTOID(3, 1, 1) & toidOperationMask; got != 1 {
+		t.Fatalf("operation bits = %d, want 1", got)
 	}
 }
 
@@ -112,6 +124,8 @@ func TestFeedBackfillRerunResumeNoDuplicates(t *testing.T) {
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_operations_recent`, 4)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_contract_calls_recent`, 2)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_tx_receipts`, 3)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_transactions_by_account`, 6)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_operations_by_account`, 7)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_accounts_current`, 2)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_account_balances_current`, 3)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_network_stats_current`, 1)
@@ -120,10 +134,17 @@ func TestFeedBackfillRerunResumeNoDuplicates(t *testing.T) {
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_contracts_current`, 1)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_contract_stats_current`, 1)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_contract_function_stats_current`, 1)
-	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_backfill_manifest WHERE status='completed'`, 18)
-	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_projection_checkpoints WHERE last_ledger_sequence=6`, 13)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_backfill_manifest WHERE status='completed'`, 22)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_projection_checkpoints WHERE last_ledger_sequence=6`, 15)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_watermarks WHERE status='complete' AND complete_thru=6`, 15)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM ops.consumers WHERE pipeline='serving-cold-backfill' AND checkpoint=6`, 15)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM (SELECT tx_hash, COUNT(*) n FROM serving.sv_transactions_recent GROUP BY tx_hash HAVING COUNT(*) > 1)`, 0)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM (SELECT operation_id, COUNT(*) n FROM serving.sv_operations_recent GROUP BY operation_id HAVING COUNT(*) > 1)`, 0)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM (SELECT account_id, toid, COUNT(*) n FROM serving.sv_transactions_by_account GROUP BY account_id, toid HAVING COUNT(*) > 1)`, 0)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM (SELECT account_id, operation_toid, COUNT(*) n FROM serving.sv_operations_by_account GROUP BY account_id, operation_toid HAVING COUNT(*) > 1)`, 0)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM duckdb_indexes() WHERE index_name IN ('sv_transactions_by_account_page_idx', 'sv_operations_by_account_page_idx')`, 2)
+	assertBackfillCount(t, db, `SELECT toid FROM serving.sv_transactions_by_account WHERE account_id='GA1' AND tx_hash='tx3'`, transactionTOID(3, 1))
+	assertBackfillCount(t, db, `SELECT operation_toid FROM serving.sv_operations_by_account WHERE account_id='GA1' AND tx_hash='tx3'`, operationTOID(3, 1, 1))
 	assertBackfillString(t, db, `SELECT typeof(involved_accounts) FROM serving.sv_tx_receipts LIMIT 1`, "VARCHAR[]")
 	assertBackfillCount(t, db, `SELECT total_calls_24h FROM serving.sv_contract_stats_current WHERE contract_id='CC1'`, 1)
 	assertBackfillCount(t, db, `SELECT total_calls_7d FROM serving.sv_contract_stats_current WHERE contract_id='CC1'`, 2)
@@ -141,8 +162,57 @@ func TestFeedBackfillRerunResumeNoDuplicates(t *testing.T) {
 		t.Fatalf("resume skipped chunks = %d, want 2\n%s", got, out.String())
 	}
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_transactions_recent`, 3)
-	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_backfill_manifest WHERE status='completed'`, 18)
-	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_projection_checkpoints WHERE last_ledger_sequence=6`, 13)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_backfill_manifest WHERE status='completed'`, 22)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_projection_checkpoints WHERE last_ledger_sequence=6`, 15)
+}
+
+func TestByAccountOnlyProjectionSelection(t *testing.T) {
+	ctx := context.Background()
+	db := openBackfillFixtureDB(t)
+	defer db.Close()
+	loadBackfillFixture(t, ctx, db)
+
+	cfg := Config{
+		Network:         "mainnet",
+		Start:           3,
+		End:             6,
+		Chunk:           4,
+		RetentionDays:   30,
+		BronzeSchema:    "bronze",
+		SilverSchema:    "silver",
+		ServingSchema:   "serving",
+		FeedProjections: "sv_transactions_by_account,sv_operations_by_account",
+		SkipCurrent:     true,
+	}
+	backfiller := NewBackfillerWithDB(db, cfg)
+	if err := backfiller.ensureServingSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := backfiller.ensureManifest(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if err := backfiller.Run(ctx, &out); err != nil {
+		t.Fatalf("by-account run: %v\n%s", err, out.String())
+	}
+
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_transactions_by_account`, 6)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_operations_by_account`, 7)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_backfill_manifest WHERE status='completed'`, 2)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_projection_checkpoints WHERE last_ledger_sequence=6`, 2)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_watermarks WHERE status='complete' AND complete_thru=6`, 2)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM ops.consumers WHERE pipeline='serving-cold-backfill' AND checkpoint=6`, 2)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM duckdb_tables() WHERE schema_name='serving' AND table_name='sv_transactions_recent'`, 0)
+}
+
+func TestUnknownProjectionSelectionFails(t *testing.T) {
+	if _, err := selectFeedProjections(feedProjections(), "sv_transactions_by_account,missing_projection"); err == nil {
+		t.Fatal("expected unknown feed projection error")
+	}
+	if _, err := selectCurrentProjections(currentProjections(), "missing_projection"); err == nil {
+		t.Fatal("expected unknown current projection error")
+	}
 }
 
 func TestCheckpointHandoffRequiresCurrentProjectionSuccess(t *testing.T) {
@@ -204,6 +274,10 @@ func loadBackfillFixture(t *testing.T, ctx context.Context, db *sql.DB) {
 			soroban_contract_id VARCHAR, memo_type VARCHAR, memo VARCHAR, account_sequence BIGINT,
 			soroban_resources_instructions BIGINT, soroban_resources_read_bytes BIGINT, soroban_resources_write_bytes BIGINT
 		)`,
+		`CREATE TABLE bronze.operations_row_v2 (
+			transaction_hash VARCHAR, ledger_sequence BIGINT, operation_index INTEGER,
+			transaction_index INTEGER, transaction_id BIGINT, operation_id BIGINT
+		)`,
 		`CREATE TABLE silver.enriched_history_operations (
 			network VARCHAR, transaction_hash VARCHAR, operation_index INTEGER, ledger_sequence BIGINT,
 			created_at TIMESTAMP, type INTEGER, type_string VARCHAR, source_account VARCHAR,
@@ -243,6 +317,11 @@ func loadBackfillFixture(t *testing.T, ctx context.Context, db *sql.DB) {
 			('tx3',3,'2026-01-01 00:00:03','GA1',100,200,true,1,NULL,'none',NULL,10,NULL,NULL,NULL),
 			('tx4',4,'2026-01-01 00:00:04','GA2',101,201,true,2,'CC1','text','memo',11,1000,10,20),
 			('tx5',5,'2026-01-01 00:00:05','GA3',102,202,false,1,NULL,'none',NULL,12,NULL,NULL,NULL)`,
+		`INSERT INTO bronze.operations_row_v2 VALUES
+			('tx3',3,0,1,12884905984,12884905985),
+			('tx4',4,0,1,17179873280,17179873281),
+			('tx4',4,1,1,17179873280,17179873282),
+			('tx5',5,0,1,21474840576,21474840577)`,
 		`INSERT INTO silver.enriched_history_operations VALUES
 			('mainnet','tx3',0,3,'2026-01-01 00:00:03',1,'payment','GA1','GB1','native','100',NULL,NULL,true,true,false),
 			('mainnet','tx4',0,4,'2026-01-01 00:00:04',24,'invoke_host_function','GA2',NULL,NULL,NULL,'CC1','transfer',true,false,true),
