@@ -379,7 +379,7 @@ func (r *UnifiedDuckDBReader) GetAccountTransactions(ctx context.Context, filter
 	if strings.TrimSpace(r.hotSchema) == "" && strings.TrimSpace(r.coldSchema) == "" {
 		return nil, "", false, AccountLedgerIndexCoverage{}, fmt.Errorf("GetAccountTransactions: no hot or cold schema configured")
 	}
-	accountIndexCoverage := AccountLedgerIndexCoverage{Enabled: r.accountIndex != nil, PruningEnabled: r.accountIndex.CanPrune(), Status: "not_used"}
+	accountIndexCoverage := initialAccountIndexCoverage(r.accountIndex)
 	requestLimit := filters.Limit + 1
 	orderDir, cursorOp := "DESC", "<"
 	if filters.Order == "asc" {

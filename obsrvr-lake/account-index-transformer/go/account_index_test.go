@@ -279,10 +279,103 @@ func TestAccountFeedHotQueryShape(t *testing.T) {
 		"SELECT address AS account_id",
 		"SELECT into_account AS account_id",
 		"COALESCE(tx_successful, transaction_successful, false) AS successful",
+		// Roles must be OR-merged, not deduplicated: an account that is both
+		// source and destination of the same operation keeps both mask bits.
+		"BIT_OR(source_mask)::SMALLINT AS source_mask",
+		"GROUP BY 1, 3",
 	} {
 		if !strings.Contains(query, want) {
 			t.Fatalf("feed query missing %q:\n%s", want, query)
 		}
+	}
+	if strings.Contains(query, "DISTINCT ON") {
+		t.Fatalf("feed query must not dedupe participant roles with DISTINCT ON:\n%s", query)
+	}
+}
+
+// servingSchemaColumnDefs parses the canonical serving schema (owned by
+// serving-projection-processor) and returns column -> definition for a table.
+func servingSchemaColumnDefs(t *testing.T, table string) map[string]string {
+	t.Helper()
+	raw, err := os.ReadFile("../../serving-projection-processor/go/schema/serving_schema.sql")
+	if err != nil {
+		t.Fatalf("read serving schema: %v", err)
+	}
+	marker := "create table if not exists " + table + " ("
+	idx := strings.Index(string(raw), marker)
+	if idx < 0 {
+		t.Fatalf("table %s not found in serving schema", table)
+	}
+	body := string(raw)[idx+len(marker):]
+	end := strings.Index(body, ");")
+	if end < 0 {
+		t.Fatalf("unterminated definition for %s", table)
+	}
+	cols := map[string]string{}
+	for _, line := range strings.Split(body[:end], "\n") {
+		line = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(line), ","))
+		if line == "" || strings.HasPrefix(line, "primary key") {
+			continue
+		}
+		cols[strings.Fields(line)[0]] = strings.ToLower(line)
+	}
+	return cols
+}
+
+func TestServingFeedWriterColumnsMatchServingSchema(t *testing.T) {
+	for table, insertCols := range map[string][]string{
+		"serving.sv_transactions_by_account": servingFeedTxInsertColumns,
+		"serving.sv_operations_by_account":   servingFeedOpInsertColumns,
+	} {
+		schemaCols := servingSchemaColumnDefs(t, table)
+		inserted := map[string]bool{}
+		for _, col := range insertCols {
+			inserted[col] = true
+			if _, ok := schemaCols[col]; !ok {
+				t.Errorf("%s: insert column %q does not exist in serving_schema.sql", table, col)
+			}
+		}
+		for col, def := range schemaCols {
+			if strings.Contains(def, "not null") && !strings.Contains(def, "default") && !inserted[col] {
+				t.Errorf("%s: NOT NULL column %q without default is not supplied by the feed insert", table, col)
+			}
+		}
+	}
+}
+
+func TestServingFeedWriterSaveCheckpointCoversBothTables(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	writer := NewServingFeedWriter(db, ServingFeedConfig{
+		Schema:            "serving",
+		TransactionsTable: "sv_transactions_by_account",
+		OperationsTable:   "sv_operations_by_account",
+		WatermarkTable:    "serving.sv_watermarks",
+		ConsumerTable:     "ops.consumers",
+		Pipeline:          "account-feed",
+	})
+
+	mock.ExpectBegin()
+	mock.ExpectExec("INSERT INTO ops.consumers").
+		WithArgs("account-feed", "serving.sv_transactions_by_account", int64(77)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO ops.consumers").
+		WithArgs("account-feed", "serving.sv_operations_by_account", int64(77)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if err := writer.saveCheckpoint(context.Background(), tx, 77); err != nil {
+		t.Fatalf("saveCheckpoint: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
 	}
 }
 

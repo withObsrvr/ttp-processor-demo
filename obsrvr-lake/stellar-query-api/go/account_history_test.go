@@ -430,6 +430,39 @@ func TestGetServingAccountTransactionsUsesWatermarkAndTOIDCursor(t *testing.T) {
 	}
 }
 
+func TestGetServingAccountTransactionsFallsBackForNonTOIDCursor(t *testing.T) {
+	for name, tieBreaker := range map[string]string{
+		"federated cursor without tie-breaker": "",
+		"non-numeric tie-breaker":              "42|token_transfers_raw|deadbeef|0",
+	} {
+		t.Run(name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("sqlmock.New: %v", err)
+			}
+			defer db.Close()
+
+			hot := &SilverHotReader{db: db, network: "testnet"}
+			mock.ExpectQuery("SELECT status, complete_from, complete_thru").
+				WillReturnRows(sqlmock.NewRows([]string{"status", "complete_from", "complete_thru"}).AddRow("complete", int64(1), int64(10)))
+
+			cursor := &HistoryCursor{LedgerSequence: 5, TransactionHash: "tx5", TieBreaker: tieBreaker}
+			got, next, hasMore, covered, err := hot.GetServingAccountTransactions(context.Background(), AccountTransactionsFilters{
+				AccountID: "GA", StartLedger: 1, EndLedger: 10, Limit: 5, Order: "desc", Cursor: cursor,
+			})
+			if err != nil {
+				t.Fatalf("GetServingAccountTransactions: %v", err)
+			}
+			if covered || hasMore || next != "" || len(got) != 0 {
+				t.Fatalf("expected fallback to federated path, got covered=%v hasMore=%v next=%q rows=%d", covered, hasMore, next, len(got))
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatalf("unmet expectations: %v", err)
+			}
+		})
+	}
+}
+
 func TestGetAccountTransactionsAccountIndexSkipsColdWhenCoveredAndNoRanges(t *testing.T) {
 	db := newAccountHistoryDuckDB(t)
 	defer db.Close()

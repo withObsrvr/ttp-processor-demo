@@ -174,9 +174,9 @@ func buildAccountFeedRowsQuery() string {
 			SELECT into_account AS account_id, 32::SMALLINT AS source_mask, * FROM enriched
 			WHERE into_account IS NOT NULL AND into_account <> ''
 		)
-		SELECT DISTINCT ON (account_id, transaction_hash, operation_index)
+		SELECT
 			account_id,
-			source_mask,
+			BIT_OR(source_mask)::SMALLINT AS source_mask,
 			transaction_id AS toid,
 			operation_id AS operation_toid,
 			transaction_hash,
@@ -206,7 +206,8 @@ func buildAccountFeedRowsQuery() string {
 			COALESCE(is_payment_op, false) AS is_payment_op,
 			COALESCE(is_soroban_op, false) AS is_soroban_op
 		FROM participants
-		ORDER BY account_id, transaction_hash, operation_index, source_mask
+		GROUP BY 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25
+		ORDER BY account_id, transaction_hash, operation_index
 	`
 }
 

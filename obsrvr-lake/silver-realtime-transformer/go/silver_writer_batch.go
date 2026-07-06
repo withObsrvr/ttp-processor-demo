@@ -158,10 +158,12 @@ var enrichedOpColumns = []string{
 
 const enrichedOpConflict = `ON CONFLICT (transaction_hash, operation_index) DO UPDATE SET
 	transaction_id = COALESCE(enriched_history_operations.transaction_id, EXCLUDED.transaction_id),
-	operation_id = COALESCE(enriched_history_operations.operation_id, EXCLUDED.operation_id)`
+	operation_id = COALESCE(enriched_history_operations.operation_id, EXCLUDED.operation_id)
+	WHERE enriched_history_operations.transaction_id IS NULL OR enriched_history_operations.operation_id IS NULL`
 const enrichedOpSorobanConflict = `ON CONFLICT (transaction_hash, operation_index) DO UPDATE SET
 	transaction_id = COALESCE(enriched_history_operations_soroban.transaction_id, EXCLUDED.transaction_id),
-	operation_id = COALESCE(enriched_history_operations_soroban.operation_id, EXCLUDED.operation_id)`
+	operation_id = COALESCE(enriched_history_operations_soroban.operation_id, EXCLUDED.operation_id)
+	WHERE enriched_history_operations_soroban.transaction_id IS NULL OR enriched_history_operations_soroban.operation_id IS NULL`
 
 var tokenTransferColumns = []string{
 	"timestamp", "transaction_hash", "ledger_sequence", "source_type",

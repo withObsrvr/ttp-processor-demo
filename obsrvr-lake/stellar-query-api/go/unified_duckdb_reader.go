@@ -393,7 +393,7 @@ func (r *UnifiedDuckDBReader) GetAccountHistoryWithCursorAndCoverage(ctx context
 	coldLedgerRangeClause := ""
 	args := []interface{}{accountID}
 	arg := 2
-	accountIndexCoverage := AccountLedgerIndexCoverage{Enabled: r.accountIndex != nil, PruningEnabled: r.accountIndex.CanPrune(), Status: "not_used"}
+	accountIndexCoverage := initialAccountIndexCoverage(r.accountIndex)
 	if strings.TrimSpace(r.coldSchema) != "" && r.accountIndex.CanPrune() {
 		var endLedger int64
 		if cursor != nil {

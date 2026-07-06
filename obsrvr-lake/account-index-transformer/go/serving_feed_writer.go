@@ -16,6 +16,31 @@ func NewServingFeedWriter(db *sql.DB, config ServingFeedConfig) *ServingFeedWrit
 	return &ServingFeedWriter{db: db, config: config}
 }
 
+// Column lists for the by-account feed tables. These MUST stay in lockstep with
+// serving-projection-processor/go/schema/serving_schema.sql (sv_transactions_by_account
+// and sv_operations_by_account): the serving schema init or serving-cold-backfill
+// usually creates these tables first, and CREATE TABLE IF NOT EXISTS will not
+// reconcile drift — a mismatched column name fails at prepare time and stalls the feed.
+var servingFeedTxInsertColumns = []string{
+	"account_id", "source_mask", "toid", "tx_hash", "ledger_sequence", "closed_at",
+	"successful", "activity_type", "source_account", "destination_account", "primary_contract_id",
+	"operation_count", "fee_charged_stroops", "memo_type", "memo_value",
+}
+
+var servingFeedOpInsertColumns = []string{
+	"account_id", "source_mask", "tx_toid", "operation_toid", "tx_hash", "ledger_sequence", "closed_at",
+	"op_index", "type_code", "type_name", "source_account", "destination_account", "asset_key",
+	"amount_stroops", "contract_id", "function_name", "successful", "is_payment_op", "is_soroban_op",
+}
+
+func placeholders(n int) string {
+	parts := make([]string, n)
+	for i := range parts {
+		parts[i] = fmt.Sprintf("$%d", i+1)
+	}
+	return strings.Join(parts, ",")
+}
+
 func (w *ServingFeedWriter) Ensure(ctx context.Context) error {
 	for _, stmt := range []string{
 		`CREATE SCHEMA IF NOT EXISTS ` + ident(w.config.Schema),
@@ -36,7 +61,6 @@ func (w *ServingFeedWriter) Ensure(ctx context.Context) error {
 		)`, w.config.ConsumerTable),
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
 			account_id text not null,
-			source_mask smallint not null,
 			toid bigint not null,
 			tx_hash text not null,
 			ledger_sequence bigint not null,
@@ -47,30 +71,34 @@ func (w *ServingFeedWriter) Ensure(ctx context.Context) error {
 			destination_account text,
 			primary_contract_id text,
 			operation_count integer,
-			fee_charged bigint,
+			fee_charged_stroops bigint,
 			memo_type text,
 			memo_value text,
-			inserted_at timestamptz not null default now(),
+			source_mask smallint not null default 1,
+			materialized_at timestamptz not null default now(),
 			primary key (account_id, toid)
 		)`, w.txTable()),
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
 			account_id text not null,
-			source_mask smallint not null,
-			toid bigint not null,
 			operation_toid bigint not null,
+			tx_toid bigint not null,
 			tx_hash text not null,
 			ledger_sequence bigint not null,
 			closed_at timestamptz not null,
-			operation_index integer not null,
-			operation_type integer,
-			operation_type_name text,
+			op_index integer not null,
+			type_code integer,
+			type_name text,
+			source_account text,
+			destination_account text,
 			asset_key text,
 			amount_stroops bigint,
 			contract_id text,
 			function_name text,
+			successful boolean not null,
 			is_payment_op boolean not null default false,
 			is_soroban_op boolean not null default false,
-			inserted_at timestamptz not null default now(),
+			source_mask smallint not null default 1,
+			materialized_at timestamptz not null default now(),
 			primary key (account_id, operation_toid)
 		)`, w.opsTable()),
 		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s (account_id, toid DESC)`, ident(w.config.TransactionsTable+"_page_idx"), w.txTable()),
@@ -124,42 +152,40 @@ func (w *ServingFeedWriter) Write(ctx context.Context, rows []AccountFeedRow, st
 	defer tx.Rollback()
 
 	txStmt, err := tx.PrepareContext(ctx, fmt.Sprintf(`
-		INSERT INTO %s (
-			account_id, source_mask, toid, tx_hash, ledger_sequence, closed_at,
-			successful, activity_type, source_account, destination_account, primary_contract_id,
-			operation_count, fee_charged, memo_type, memo_value
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+		INSERT INTO %s (%s) VALUES (%s)
 		ON CONFLICT (account_id, toid) DO UPDATE SET
 			source_mask = (source_mask | EXCLUDED.source_mask)::SMALLINT,
 			successful = EXCLUDED.successful,
 			activity_type = EXCLUDED.activity_type,
+			source_account = COALESCE(source_account, EXCLUDED.source_account),
+			destination_account = COALESCE(destination_account, EXCLUDED.destination_account),
+			primary_contract_id = COALESCE(primary_contract_id, EXCLUDED.primary_contract_id),
 			operation_count = EXCLUDED.operation_count,
-			fee_charged = EXCLUDED.fee_charged,
+			fee_charged_stroops = EXCLUDED.fee_charged_stroops,
 			memo_type = EXCLUDED.memo_type,
 			memo_value = EXCLUDED.memo_value
-	`, w.txTable()))
+	`, w.txTable(), strings.Join(servingFeedTxInsertColumns, ", "), placeholders(len(servingFeedTxInsertColumns))))
 	if err != nil {
 		return 0, err
 	}
 	defer txStmt.Close()
 
 	opStmt, err := tx.PrepareContext(ctx, fmt.Sprintf(`
-		INSERT INTO %s (
-			account_id, source_mask, toid, operation_toid, tx_hash, ledger_sequence, closed_at,
-			operation_index, operation_type, operation_type_name, asset_key, amount_stroops,
-			contract_id, function_name, is_payment_op, is_soroban_op
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+		INSERT INTO %s (%s) VALUES (%s)
 		ON CONFLICT (account_id, operation_toid) DO UPDATE SET
 			source_mask = (source_mask | EXCLUDED.source_mask)::SMALLINT,
-			operation_type = EXCLUDED.operation_type,
-			operation_type_name = EXCLUDED.operation_type_name,
+			type_code = EXCLUDED.type_code,
+			type_name = EXCLUDED.type_name,
+			source_account = COALESCE(source_account, EXCLUDED.source_account),
+			destination_account = COALESCE(destination_account, EXCLUDED.destination_account),
 			asset_key = EXCLUDED.asset_key,
 			amount_stroops = EXCLUDED.amount_stroops,
 			contract_id = EXCLUDED.contract_id,
 			function_name = EXCLUDED.function_name,
+			successful = EXCLUDED.successful,
 			is_payment_op = EXCLUDED.is_payment_op,
 			is_soroban_op = EXCLUDED.is_soroban_op
-	`, w.opsTable()))
+	`, w.opsTable(), strings.Join(servingFeedOpInsertColumns, ", "), placeholders(len(servingFeedOpInsertColumns))))
 	if err != nil {
 		return 0, err
 	}
@@ -176,8 +202,8 @@ func (w *ServingFeedWriter) Write(ctx context.Context, rows []AccountFeedRow, st
 		}
 		if _, err := opStmt.ExecContext(ctx,
 			row.AccountID, row.SourceMask, row.TOID, row.OperationTOID, row.TxHash, row.LedgerSequence, row.LedgerClosedAt,
-			row.OperationIndex, nullableInt(row.OperationType), nullableString(row.OperationTypeName), nullableString(row.AssetKey), nullableInt(row.AmountStroops),
-			nullableString(row.ContractID), nullableString(row.FunctionName), row.IsPaymentOp, row.IsSorobanOp,
+			row.OperationIndex, nullableInt(row.OperationType), nullableString(row.OperationTypeName), nullableString(row.SourceAccount), nullableString(row.DestinationAccount), nullableString(row.AssetKey),
+			nullableInt(row.AmountStroops), nullableString(row.ContractID), nullableString(row.FunctionName), row.Successful, row.IsPaymentOp, row.IsSorobanOp,
 		); err != nil {
 			return 0, err
 		}
@@ -209,14 +235,18 @@ func (w *ServingFeedWriter) extendWatermarks(ctx context.Context, tx *sql.Tx, st
 }
 
 func (w *ServingFeedWriter) saveCheckpoint(ctx context.Context, tx *sql.Tx, ledger int64) error {
-	_, err := tx.ExecContext(ctx, fmt.Sprintf(`
-		INSERT INTO %s (pipeline, source_table, checkpoint, updated_at)
-		VALUES ($1, $2, $3, now())
-		ON CONFLICT (pipeline, source_table) DO UPDATE SET
-			checkpoint = GREATEST(%s.checkpoint, EXCLUDED.checkpoint),
-			updated_at = EXCLUDED.updated_at
-	`, w.config.ConsumerTable, w.config.ConsumerTable), w.config.Pipeline, w.txTableName(), ledger)
-	return err
+	for _, tableName := range []string{w.txTableName(), w.opsTableName()} {
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+			INSERT INTO %s (pipeline, source_table, checkpoint, updated_at)
+			VALUES ($1, $2, $3, now())
+			ON CONFLICT (pipeline, source_table) DO UPDATE SET
+				checkpoint = GREATEST(%s.checkpoint, EXCLUDED.checkpoint),
+				updated_at = EXCLUDED.updated_at
+		`, w.config.ConsumerTable, w.config.ConsumerTable), w.config.Pipeline, tableName, ledger); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (w *ServingFeedWriter) txTable() string {

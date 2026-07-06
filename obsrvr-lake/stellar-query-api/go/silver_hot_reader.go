@@ -699,17 +699,19 @@ func (h *SilverHotReader) GetServingAccountTransactions(ctx context.Context, fil
 		arg++
 	}
 	if filters.Cursor != nil {
-		if filters.Cursor.TieBreaker != "" {
-			if toid, err := strconv.ParseInt(filters.Cursor.TieBreaker, 10, 64); err == nil {
-				where = append(where, fmt.Sprintf("toid %s $%d", cursorOp, arg))
-				args = append(args, toid)
-				arg++
-			}
-		} else {
-			where = append(where, fmt.Sprintf("(ledger_sequence %s $%d OR (ledger_sequence = $%d AND tx_hash %s $%d))", cursorOp, arg, arg, cursorOp, arg+1))
-			args = append(args, filters.Cursor.LedgerSequence, filters.Cursor.TransactionHash)
-			arg += 2
+		toid, err := strconv.ParseInt(filters.Cursor.TieBreaker, 10, 64)
+		if err != nil {
+			// Feed pages are ordered by TOID; a cursor without a numeric TOID
+			// tie-breaker came from the federated path (or is corrupt), and
+			// paginating it here by (ledger_sequence, tx_hash) would skip or
+			// duplicate rows within a ledger. Report not-covered so the handler
+			// falls back to the federated reader, whose ordering matches that
+			// cursor shape.
+			return nil, "", false, false, nil
 		}
+		where = append(where, fmt.Sprintf("toid %s $%d", cursorOp, arg))
+		args = append(args, toid)
+		arg++
 	}
 	args = append(args, requestLimit)
 

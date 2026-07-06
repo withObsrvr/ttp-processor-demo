@@ -48,6 +48,10 @@ def get_json(url: str, headers: dict[str, str], timeout: float) -> tuple[int, di
         except json.JSONDecodeError:
             body = {"error": raw}
         return exc.code, body
+    except urllib.error.URLError as exc:
+        return 0, {"error": f"network error: {exc.reason}"}
+    except OSError as exc:
+        return 0, {"error": f"network error: {exc}"}
 
 
 def fetch_account(base_url: str, account: str, source: str, limit: int, timeout: float, headers: dict[str, str]) -> Result:

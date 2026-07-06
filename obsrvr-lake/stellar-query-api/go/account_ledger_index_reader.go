@@ -174,6 +174,16 @@ func (air *AccountLedgerIndexReader) CanPrune() bool {
 	return air != nil && air.canPrune
 }
 
+// initialAccountIndexCoverage seeds per-request coverage metadata before any
+// index lookup runs, distinguishing "index not configured" from "configured
+// but not consulted for this request".
+func initialAccountIndexCoverage(idx *AccountLedgerIndexReader) AccountLedgerIndexCoverage {
+	if idx == nil {
+		return AccountLedgerIndexCoverage{Status: "not_configured"}
+	}
+	return AccountLedgerIndexCoverage{Enabled: true, PruningEnabled: idx.CanPrune(), Status: "not_used"}
+}
+
 func accountLedgerIndexPartitionSize() int64 {
 	// Must match account-index-transformer index_cold.partition_size.
 	// Divergence silently maps ledgers to the wrong ledger_range buckets.
