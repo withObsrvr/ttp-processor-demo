@@ -37,6 +37,34 @@ func TestUnifiedGetContractDataLiveOnlyFiltersExpiredAcrossHotAndCold(t *testing
 	}
 }
 
+func TestUnifiedGetContractDataDedupesBeforeLiveFilter(t *testing.T) {
+	db, err := sql.Open("duckdb", "")
+	if err != nil {
+		t.Fatalf("open duckdb: %v", err)
+	}
+	defer db.Close()
+	createContractDataCurrentTable(t, db, "hot", true)
+	createContractDataCurrentTable(t, db, "cold", true)
+
+	insertContractDataCurrentValue(t, db, "memory.cold", "C1", "same-key", "cold-old", 100, 100, 400, false, 100, 300)
+	insertContractDataCurrentValue(t, db, "memory.hot", "C1", "same-key", "hot-new", 200, 200, 400, false, 200, 300)
+	insertContractDataCurrentValue(t, db, "memory.cold", "C1", "ttl-versioned", "xdr", 100, 100, 150, false, 100, 300)
+	insertTTLCurrent(t, db, "memory.hot", "ttl-versioned", 400, false, 200, 300)
+
+	reader := &UnifiedDuckDBReader{db: db, hotSchema: "memory.hot", coldSchema: "memory.cold"}
+	data, _, _, err := reader.GetContractData(t.Context(), ContractDataFilters{ContractID: "C1", LiveOnly: true, Limit: 10})
+	if err != nil {
+		t.Fatalf("GetContractData live_only: %v", err)
+	}
+
+	if got, want := contractDataKeys(data), []string{"same-key", "ttl-versioned"}; !equalStringSlices(got, want) {
+		t.Fatalf("deduped keys: got %#v want %#v", got, want)
+	}
+	if data[0].DataValueXDR == nil || *data[0].DataValueXDR != "hot-new" {
+		t.Fatalf("same-key should use newest hot value, got %#v", data[0].DataValueXDR)
+	}
+}
+
 func TestUnifiedGetContractDataKeepsColdRowsWhenColdTTLTableMissing(t *testing.T) {
 	db, err := sql.Open("duckdb", "")
 	if err != nil {
@@ -123,6 +151,7 @@ func createContractDataCurrentTable(t *testing.T, db *sql.DB, schema string, wit
 		asset_code VARCHAR,
 		asset_issuer VARCHAR,
 		last_modified_ledger BIGINT,
+		ledger_sequence BIGINT,
 		closed_at VARCHAR
 	)`); err != nil {
 		t.Fatalf("create contract_data_current %s: %v", schema, err)
@@ -134,7 +163,9 @@ func createContractDataCurrentTable(t *testing.T, db *sql.DB, schema string, wit
 		key_hash VARCHAR,
 		live_until_ledger_seq BIGINT,
 		ttl_remaining INTEGER,
-		expired BOOLEAN
+		expired BOOLEAN,
+		last_modified_ledger BIGINT,
+		ledger_sequence BIGINT
 	)`); err != nil {
 		t.Fatalf("create ttl_current %s: %v", schema, err)
 	}
@@ -142,17 +173,31 @@ func createContractDataCurrentTable(t *testing.T, db *sql.DB, schema string, wit
 
 func insertContractDataCurrent(t *testing.T, db *sql.DB, schema, contractID, keyHash string, expired bool) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO `+schema+`.contract_data_current VALUES (?, ?, 'persistent', 'xdr', NULL, NULL, NULL, 100, '2026-01-01T00:00:00Z')`, contractID, keyHash); err != nil {
+	liveUntil := int64(400)
+	if expired {
+		liveUntil = 150
+	}
+	insertContractDataCurrentValue(t, db, schema, contractID, keyHash, "xdr", 100, 100, liveUntil, false, 100, 300)
+}
+
+func insertContractDataCurrentValue(t *testing.T, db *sql.DB, schema, contractID, keyHash, value string, cdLastModified, cdLedger, liveUntil int64, expired bool, ttlLastModified, ttlLedger int64) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO `+schema+`.contract_data_current VALUES (?, ?, 'persistent', ?, NULL, NULL, NULL, ?, ?, '2026-01-01T00:00:00Z')`, contractID, keyHash, value, cdLastModified, cdLedger); err != nil {
 		t.Fatalf("insert contract_data_current: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO `+schema+`.ttl_current VALUES (?, 200, 100, ?)`, keyHash, expired); err != nil {
+	insertTTLCurrent(t, db, schema, keyHash, liveUntil, expired, ttlLastModified, ttlLedger)
+}
+
+func insertTTLCurrent(t *testing.T, db *sql.DB, schema, keyHash string, liveUntil int64, expired bool, lastModified, ledgerSequence int64) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO `+schema+`.ttl_current VALUES (?, ?, ?, ?, ?, ?)`, keyHash, liveUntil, liveUntil-300, expired, lastModified, ledgerSequence); err != nil {
 		t.Fatalf("insert ttl_current: %v", err)
 	}
 }
 
 func insertContractDataCurrentWithoutTTL(t *testing.T, db *sql.DB, schema, contractID, keyHash string) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO `+schema+`.contract_data_current VALUES (?, ?, 'persistent', 'xdr', NULL, NULL, NULL, 100, '2026-01-01T00:00:00Z')`, contractID, keyHash); err != nil {
+	if _, err := db.Exec(`INSERT INTO `+schema+`.contract_data_current VALUES (?, ?, 'persistent', 'xdr', NULL, NULL, NULL, 100, 100, '2026-01-01T00:00:00Z')`, contractID, keyHash); err != nil {
 		t.Fatalf("insert contract_data_current without ttl: %v", err)
 	}
 }

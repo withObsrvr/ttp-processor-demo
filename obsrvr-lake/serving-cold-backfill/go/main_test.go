@@ -26,8 +26,8 @@ func TestPlanChunksDeterministic(t *testing.T) {
 
 func TestRequiredProjectionContractIncludesCheckpointTargets(t *testing.T) {
 	got := requiredProjections("serving")
-	if len(got) != 17 {
-		t.Fatalf("required projection count = %d, want 17", len(got))
+	if len(got) != 18 {
+		t.Fatalf("required projection count = %d, want 18", len(got))
 	}
 	checkpointed := 0
 	for _, p := range got {
@@ -41,8 +41,8 @@ func TestRequiredProjectionContractIncludesCheckpointTargets(t *testing.T) {
 			t.Fatalf("%s checkpoint=%v class=%s, want false/blocked_source_mapping", p.Name, p.Checkpoint, p.InitialClass)
 		}
 	}
-	if checkpointed != 15 {
-		t.Fatalf("checkpointed projection count = %d, want 15", checkpointed)
+	if checkpointed != 16 {
+		t.Fatalf("checkpointed projection count = %d, want 16", checkpointed)
 	}
 }
 
@@ -132,12 +132,16 @@ func TestFeedBackfillRerunResumeNoDuplicates(t *testing.T) {
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_assets_current`, 2)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_asset_stats_current`, 2)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_contracts_current`, 1)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_contract_storage_current`, 2)
+	assertBackfillString(t, db, `SELECT type FROM serving.sv_contract_storage_current WHERE key_hash='K2'`, "instance")
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_contract_storage_current WHERE key_hash='K1' AND ttl_remaining=4 AND expired=false`, 1)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_contract_storage_current WHERE key_hash='K2' AND ttl_remaining=-1 AND expired=true`, 1)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_contract_stats_current`, 1)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_contract_function_stats_current`, 1)
-	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_backfill_manifest WHERE status='completed'`, 22)
-	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_projection_checkpoints WHERE last_ledger_sequence=6`, 15)
-	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_watermarks WHERE status='complete' AND complete_thru=6`, 15)
-	assertBackfillCount(t, db, `SELECT COUNT(*) FROM ops.consumers WHERE pipeline='serving-cold-backfill' AND checkpoint=6`, 15)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_backfill_manifest WHERE status='completed'`, 23)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_projection_checkpoints WHERE last_ledger_sequence=6`, 16)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_watermarks WHERE status='complete' AND complete_thru=6`, 16)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM ops.consumers WHERE pipeline='serving-cold-backfill' AND checkpoint=6`, 16)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM (SELECT tx_hash, COUNT(*) n FROM serving.sv_transactions_recent GROUP BY tx_hash HAVING COUNT(*) > 1)`, 0)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM (SELECT operation_id, COUNT(*) n FROM serving.sv_operations_recent GROUP BY operation_id HAVING COUNT(*) > 1)`, 0)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM (SELECT account_id, toid, COUNT(*) n FROM serving.sv_transactions_by_account GROUP BY account_id, toid HAVING COUNT(*) > 1)`, 0)
@@ -162,8 +166,8 @@ func TestFeedBackfillRerunResumeNoDuplicates(t *testing.T) {
 		t.Fatalf("resume skipped chunks = %d, want 2\n%s", got, out.String())
 	}
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_transactions_recent`, 3)
-	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_backfill_manifest WHERE status='completed'`, 22)
-	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_projection_checkpoints WHERE last_ledger_sequence=6`, 15)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_backfill_manifest WHERE status='completed'`, 23)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_projection_checkpoints WHERE last_ledger_sequence=6`, 16)
 }
 
 func TestByAccountOnlyProjectionSelection(t *testing.T) {
@@ -306,7 +310,15 @@ func loadBackfillFixture(t *testing.T, ctx context.Context, db *sql.DB) {
 		)`,
 		`CREATE TABLE silver.contract_data_current (
 			network VARCHAR, contract_id VARCHAR, key_hash VARCHAR, durability VARCHAR,
-			updated_at TIMESTAMP
+			asset_type VARCHAR, asset_code VARCHAR, asset_issuer VARCHAR, data_value VARCHAR,
+			last_modified_ledger BIGINT, ledger_sequence BIGINT, closed_at TIMESTAMP,
+			created_at TIMESTAMP, ledger_range BIGINT, updated_at TIMESTAMP
+		)`,
+		`CREATE TABLE silver.ttl_current (
+			network VARCHAR, key_hash VARCHAR, live_until_ledger_seq BIGINT,
+			ttl_remaining BIGINT, expired BOOLEAN, last_modified_ledger BIGINT,
+			ledger_sequence BIGINT, closed_at TIMESTAMP, created_at TIMESTAMP,
+			ledger_range BIGINT, updated_at TIMESTAMP
 		)`,
 		`INSERT INTO silver.enriched_ledgers VALUES
 			('mainnet',3,'2026-01-01 00:00:03','h3','h2',23,100,1,0,1),
@@ -343,8 +355,13 @@ func loadBackfillFixture(t *testing.T, ctx context.Context, db *sql.DB) {
 			('mainnet','CC1','GA2','wasm1',4,'2026-01-01 00:00:04'),
 			('mainnet','CC2','GA3','wasm2',8,'2026-01-01 00:00:08')`,
 		`INSERT INTO silver.contract_data_current VALUES
-			('mainnet','CC1','K1','persistent','2026-01-01 00:00:04'),
-			('mainnet','CC1','K2','instance','2026-01-01 00:00:04')`,
+			('mainnet','CC1','K1','persistent',NULL,NULL,NULL,'AAAA',4,4,'2026-01-01 00:00:04','2026-01-01 00:00:04',4,'2026-01-01 00:00:04'),
+			('mainnet','CC1','K2','instance',NULL,NULL,NULL,'BBBBBB',5,5,'2026-01-01 00:00:05','2026-01-01 00:00:05',5,'2026-01-01 00:00:05'),
+			('mainnet','CC2','K3','persistent',NULL,NULL,NULL,'CCCC',8,8,'2026-01-01 00:00:08','2026-01-01 00:00:08',8,'2026-01-01 00:00:08')`,
+		`INSERT INTO silver.ttl_current VALUES
+			('mainnet','K1',10,4,false,4,4,'2026-01-01 00:00:04','2026-01-01 00:00:04',4,'2026-01-01 00:00:04'),
+			('mainnet','K2',5,-1,true,5,5,'2026-01-01 00:00:05','2026-01-01 00:00:05',5,'2026-01-01 00:00:05'),
+			('mainnet','K3',20,14,false,8,8,'2026-01-01 00:00:08','2026-01-01 00:00:08',8,'2026-01-01 00:00:08')`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {

@@ -36,7 +36,7 @@ func normalizeTTLEntryForCurrentLedger(entry *TTLEntry, currentLedger int64) {
 		return
 	}
 	entry.LedgersRemaining = entry.LiveUntilLedger - currentLedger
-	entry.Expired = entry.LedgersRemaining <= 0
+	entry.Expired = entry.LedgersRemaining < 0
 }
 
 func normalizeTTLEntriesForCurrentLedger(entries []TTLEntry, currentLedger int64) {
@@ -4245,11 +4245,6 @@ func (h *SilverHandlers) HandleContractStorage(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	if h.unifiedReader == nil {
-		respondError(w, "contract storage requires unified reader", http.StatusInternalServerError)
-		return
-	}
-
 	limit := parseLimit(r, 100, 1000)
 	offsetStr := r.URL.Query().Get("offset")
 	offset := 0
@@ -4268,6 +4263,39 @@ func (h *SilverHandlers) HandleContractStorage(w http.ResponseWriter, r *http.Re
 	ctx, cancel := withInteractiveQueryTimeout(r.Context())
 	defer cancel()
 
+	if h.legacyReader != nil && h.legacyReader.hot != nil {
+		entries, err := h.legacyReader.hot.GetServingContractStorage(ctx, contractID, durability, liveOnly, limit, offset)
+		if err == nil {
+			respondJSON(w, map[string]interface{}{
+				"contract_id": contractID,
+				"entries":     entries,
+				"count":       len(entries),
+				"limit":       limit,
+				"offset":      offset,
+				"live_only":   liveOnly,
+				"source":      "serving.sv_contract_storage_current",
+			})
+			return
+		}
+		if isQueryTimeout(err) {
+			respondQueryTimeout(w, "contract storage")
+			return
+		}
+		log.Printf("Warning: contract storage serving fast path unavailable: %v", err)
+	}
+
+	if h.unifiedReader == nil {
+		respondError(w, "contract storage requires unified reader", http.StatusInternalServerError)
+		return
+	}
+
+	currentLedger := int64(0)
+	if ledger, err := h.unifiedReader.CurrentLedgerForTTL(ctx); err == nil {
+		currentLedger = ledger
+	} else {
+		log.Printf("Warning: failed to resolve current ledger for contract storage TTL fields: %v", err)
+	}
+
 	conditions := []string{"cd.contract_id = $1"}
 	args := []interface{}{contractID}
 	argIdx := 2
@@ -4278,74 +4306,115 @@ func (h *SilverHandlers) HandleContractStorage(w http.ResponseWriter, r *http.Re
 		argIdx++
 	}
 	baseWhereClause := strings.Join(conditions, " AND ")
-	ttlWhereClause := baseWhereClause
-	if liveOnly {
-		ttlWhereClause += " AND COALESCE(t.expired, false) = false"
-	}
-
-	ttlNullSelect := "CAST(NULL AS BIGINT) AS live_until_ledger_seq, CAST(NULL AS INTEGER) AS ttl_remaining, CAST(NULL AS BOOLEAN) AS expired"
-	hotJoin := ""
-	hotTTLSelect := ttlNullSelect
-	hotWhere := baseWhereClause
-	coldJoin := ""
-	coldTTLSelect := ttlNullSelect
-	coldWhere := baseWhereClause
-	if liveOnly {
-		hotJoin = fmt.Sprintf("LEFT JOIN %s.ttl_current t ON cd.key_hash = t.key_hash", h.unifiedReader.hotSchema)
-		hotTTLSelect = "t.live_until_ledger_seq, t.ttl_remaining, t.expired"
-		hotWhere = ttlWhereClause
-		coldJoin = fmt.Sprintf("LEFT JOIN %s.ttl_current t ON cd.key_hash = t.key_hash", h.unifiedReader.coldSchema)
-		coldTTLSelect = "t.live_until_ledger_seq, t.ttl_remaining, t.expired"
-		coldWhere = ttlWhereClause
-	}
 
 	query := fmt.Sprintf(`
-		SELECT contract_id, key_hash, durability, size_bytes, data_value,
-		       last_modified_ledger, closed_at, live_until_ledger_seq, ttl_remaining, expired
-		FROM (
-			SELECT cd.contract_id, cd.key_hash, cd.durability,
-			       LENGTH(cd.data_value) AS size_bytes, cd.data_value, cd.last_modified_ledger, cd.closed_at,
-			       %s
-			FROM %s.contract_data_current cd
-			%s
-			WHERE %s
-			UNION ALL
-			SELECT cd.contract_id, cd.key_hash, cd.durability,
-			       LENGTH(cd.data_value) AS size_bytes, cd.data_value, cd.last_modified_ledger, cd.closed_at,
-			       %s
-			FROM %s.contract_data_current cd
-			%s
-			WHERE %s
-		) combined
-		ORDER BY key_hash
-		LIMIT $%d OFFSET $%d
-	`, hotTTLSelect, h.unifiedReader.hotSchema, hotJoin, hotWhere,
-		coldTTLSelect, h.unifiedReader.coldSchema, coldJoin, coldWhere, argIdx, argIdx+1)
-	args = append(args, limit, offset)
-
-	rows, err := h.unifiedReader.db.QueryContext(ctx, query, args...)
-	if err != nil && liveOnly && strings.Contains(err.Error(), "ttl_current") {
-		queryWithoutColdTTL := fmt.Sprintf(`
-			SELECT contract_id, key_hash, durability, size_bytes, data_value,
-			       last_modified_ledger, closed_at, live_until_ledger_seq, ttl_remaining, expired
+		WITH cd_ranked AS (
+			SELECT *,
+			       ROW_NUMBER() OVER (
+			         PARTITION BY contract_id, key_hash
+			         ORDER BY last_modified_ledger DESC, ledger_sequence DESC, source ASC
+			       ) AS rn
 			FROM (
 				SELECT cd.contract_id, cd.key_hash, cd.durability,
 				       LENGTH(cd.data_value) AS size_bytes, cd.data_value, cd.last_modified_ledger, cd.closed_at,
-				       %s
+				       cd.ledger_sequence, 1 AS source
 				FROM %s.contract_data_current cd
-				%s
 				WHERE %s
 				UNION ALL
 				SELECT cd.contract_id, cd.key_hash, cd.durability,
 				       LENGTH(cd.data_value) AS size_bytes, cd.data_value, cd.last_modified_ledger, cd.closed_at,
-				       %s
+				       cd.ledger_sequence, 2 AS source
 				FROM %s.contract_data_current cd
 				WHERE %s
-			) combined
-			ORDER BY key_hash
+			) cd_all
+		), cd_keys AS (
+			SELECT DISTINCT key_hash FROM cd_ranked
+		), ttl_ranked AS (
+			SELECT *,
+			       ROW_NUMBER() OVER (
+			         PARTITION BY key_hash
+			         ORDER BY last_modified_ledger DESC, ledger_sequence DESC, source ASC
+			       ) AS rn
+			FROM (
+				SELECT t.key_hash, t.live_until_ledger_seq, t.expired,
+				       t.last_modified_ledger, t.ledger_sequence, 1 AS source
+				FROM %s.ttl_current t
+				JOIN cd_keys k ON k.key_hash = t.key_hash
+				UNION ALL
+				SELECT t.key_hash, t.live_until_ledger_seq, t.expired,
+				       t.last_modified_ledger, t.ledger_sequence, 2 AS source
+				FROM %s.ttl_current t
+				JOIN cd_keys k ON k.key_hash = t.key_hash
+			) ttl_all
+		)
+		SELECT cd.contract_id, cd.key_hash, cd.durability, cd.size_bytes, cd.data_value,
+		       cd.last_modified_ledger, cd.closed_at, ttl.live_until_ledger_seq, ttl.expired
+		FROM cd_ranked cd
+		LEFT JOIN ttl_ranked ttl ON ttl.key_hash = cd.key_hash AND ttl.rn = 1
+		WHERE cd.rn = 1
+		  AND (
+		    NOT $%d
+		    OR ttl.live_until_ledger_seq IS NULL
+		    OR (COALESCE(ttl.expired, false) = false AND ($%d = 0 OR ttl.live_until_ledger_seq >= $%d))
+		  )
+		ORDER BY cd.key_hash
+		LIMIT $%d OFFSET $%d
+	`, h.unifiedReader.hotSchema, baseWhereClause, h.unifiedReader.coldSchema, baseWhereClause,
+		h.unifiedReader.hotSchema, h.unifiedReader.coldSchema, argIdx, argIdx+1, argIdx+1, argIdx+2, argIdx+3)
+	args = append(args, liveOnly, currentLedger, limit, offset)
+	argIdx += 4
+
+	rows, err := h.unifiedReader.db.QueryContext(ctx, query, args...)
+	if err != nil && liveOnly && strings.Contains(err.Error(), "ttl_current") {
+		queryWithoutColdTTL := fmt.Sprintf(`
+			WITH cd_ranked AS (
+				SELECT *,
+				       ROW_NUMBER() OVER (
+				         PARTITION BY contract_id, key_hash
+				         ORDER BY last_modified_ledger DESC, ledger_sequence DESC, source ASC
+				       ) AS rn
+				FROM (
+					SELECT cd.contract_id, cd.key_hash, cd.durability,
+					       LENGTH(cd.data_value) AS size_bytes, cd.data_value, cd.last_modified_ledger, cd.closed_at,
+					       cd.ledger_sequence, 1 AS source
+					FROM %s.contract_data_current cd
+					WHERE %s
+					UNION ALL
+					SELECT cd.contract_id, cd.key_hash, cd.durability,
+					       LENGTH(cd.data_value) AS size_bytes, cd.data_value, cd.last_modified_ledger, cd.closed_at,
+					       cd.ledger_sequence, 2 AS source
+					FROM %s.contract_data_current cd
+					WHERE %s
+				) cd_all
+			), cd_keys AS (
+				SELECT DISTINCT key_hash FROM cd_ranked
+			), ttl_ranked AS (
+				SELECT *,
+				       ROW_NUMBER() OVER (
+				         PARTITION BY key_hash
+				         ORDER BY last_modified_ledger DESC, ledger_sequence DESC, source ASC
+				       ) AS rn
+				FROM (
+					SELECT t.key_hash, t.live_until_ledger_seq, t.expired,
+					       t.last_modified_ledger, t.ledger_sequence, 1 AS source
+					FROM %s.ttl_current t
+				JOIN cd_keys k ON k.key_hash = t.key_hash
+				) ttl_all
+			)
+			SELECT cd.contract_id, cd.key_hash, cd.durability, cd.size_bytes, cd.data_value,
+			       cd.last_modified_ledger, cd.closed_at, ttl.live_until_ledger_seq, ttl.expired
+			FROM cd_ranked cd
+			LEFT JOIN ttl_ranked ttl ON ttl.key_hash = cd.key_hash AND ttl.rn = 1
+			WHERE cd.rn = 1
+			  AND (
+			    NOT $%d
+			    OR ttl.live_until_ledger_seq IS NULL
+			    OR (COALESCE(ttl.expired, false) = false AND ($%d = 0 OR ttl.live_until_ledger_seq >= $%d))
+			  )
+			ORDER BY cd.key_hash
 			LIMIT $%d OFFSET $%d
-		`, hotTTLSelect, h.unifiedReader.hotSchema, hotJoin, hotWhere,
-			ttlNullSelect, h.unifiedReader.coldSchema, baseWhereClause, argIdx, argIdx+1)
+		`, h.unifiedReader.hotSchema, baseWhereClause, h.unifiedReader.coldSchema, baseWhereClause,
+			h.unifiedReader.hotSchema, argIdx-4, argIdx-3, argIdx-3, argIdx-2, argIdx-1)
 		rows, err = h.unifiedReader.db.QueryContext(ctx, queryWithoutColdTTL, args...)
 	}
 	if err != nil {
@@ -4357,15 +4426,42 @@ func (h *SilverHandlers) HandleContractStorage(w http.ResponseWriter, r *http.Re
 		if strings.Contains(errStr, "does not exist") || strings.Contains(errStr, "not found") ||
 			strings.Contains(errStr, "contract_data_current") || strings.Contains(errStr, "ttl_current") {
 			hotOnlyQuery := fmt.Sprintf(`
+				WITH cd_ranked AS (
+					SELECT cd.contract_id, cd.key_hash, cd.durability,
+					       LENGTH(cd.data_value) AS size_bytes, cd.data_value, cd.last_modified_ledger, cd.closed_at,
+					       cd.ledger_sequence,
+					       ROW_NUMBER() OVER (
+					         PARTITION BY cd.contract_id, cd.key_hash
+					         ORDER BY cd.last_modified_ledger DESC, cd.ledger_sequence DESC
+					       ) AS rn
+					FROM %s.contract_data_current cd
+					WHERE %s
+				), cd_keys AS (
+			SELECT DISTINCT key_hash FROM cd_ranked
+		), ttl_ranked AS (
+					SELECT t.key_hash, t.live_until_ledger_seq, t.expired,
+					       ROW_NUMBER() OVER (
+					         PARTITION BY t.key_hash
+					         ORDER BY t.last_modified_ledger DESC, t.ledger_sequence DESC
+					       ) AS rn
+					FROM %s.ttl_current t
+				JOIN cd_keys k ON k.key_hash = t.key_hash
+				)
 				SELECT cd.contract_id, cd.key_hash, cd.durability,
-				       LENGTH(cd.data_value), cd.data_value, cd.last_modified_ledger, cd.closed_at,
-				       %s
-				FROM %s.contract_data_current cd
-				%s
-				WHERE %s
+				       cd.size_bytes, cd.data_value, cd.last_modified_ledger, cd.closed_at,
+				       ttl.live_until_ledger_seq, ttl.expired
+				FROM cd_ranked cd
+				LEFT JOIN ttl_ranked ttl ON ttl.key_hash = cd.key_hash AND ttl.rn = 1
+				WHERE cd.rn = 1
+				  AND (
+				    NOT $%d
+				    OR ttl.live_until_ledger_seq IS NULL
+				    OR (COALESCE(ttl.expired, false) = false AND ($%d = 0 OR ttl.live_until_ledger_seq >= $%d))
+				  )
 				ORDER BY cd.key_hash
 				LIMIT $%d OFFSET $%d
-			`, hotTTLSelect, h.unifiedReader.hotSchema, hotJoin, hotWhere, argIdx, argIdx+1)
+			`, h.unifiedReader.hotSchema, baseWhereClause, h.unifiedReader.hotSchema,
+				argIdx-4, argIdx-3, argIdx-3, argIdx-2, argIdx-1)
 			rows, err = h.unifiedReader.db.QueryContext(ctx, hotOnlyQuery, args...)
 		}
 		if err != nil {
@@ -4386,13 +4482,12 @@ func (h *SilverHandlers) HandleContractStorage(w http.ResponseWriter, r *http.Re
 		var dataValue sql.NullString
 		var closedAt sql.NullString
 		var liveUntil sql.NullInt64
-		var ttlRemaining sql.NullInt32
 		var expired sql.NullBool
 
 		if err := rows.Scan(
 			&entry.ContractID, &entry.KeyHash, &entry.Durability,
 			&sizeBytes, &dataValue, &entry.LastModifiedLedger, &closedAt,
-			&liveUntil, &ttlRemaining, &expired,
+			&liveUntil, &expired,
 		); err != nil {
 			respondError(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -4412,13 +4507,13 @@ func (h *SilverHandlers) HandleContractStorage(w http.ResponseWriter, r *http.Re
 		}
 		if liveUntil.Valid {
 			entry.LiveUntilLedgerSeq = &liveUntil.Int64
-		}
-		if ttlRemaining.Valid {
-			rem := int(ttlRemaining.Int32)
+			rem := int(liveUntil.Int64 - currentLedger)
 			entry.TTLRemaining = &rem
-		}
-		if expired.Valid {
-			entry.Expired = &expired.Bool
+			isExpired := rem < 0
+			if expired.Valid && expired.Bool {
+				isExpired = true
+			}
+			entry.Expired = &isExpired
 		}
 		applyDecodedContractStorageFields(&entry)
 

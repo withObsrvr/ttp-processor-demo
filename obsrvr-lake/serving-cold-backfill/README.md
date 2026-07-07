@@ -88,6 +88,7 @@ sv_network_stats_current
 sv_assets_current
 sv_asset_stats_current
 sv_contracts_current
+sv_contract_storage_current
 sv_contract_stats_current
 sv_contract_function_stats_current
 ```

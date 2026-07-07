@@ -77,6 +77,80 @@ func (h *SilverHotReader) DB() *sql.DB {
 	return h.db
 }
 
+func (h *SilverHotReader) GetServingContractStorage(ctx context.Context, contractID, durability string, liveOnly bool, limit, offset int) ([]ContractStorageEntry, error) {
+	conditions := []string{"contract_id = $1"}
+	args := []interface{}{contractID}
+	arg := 2
+	if durability != "" {
+		conditions = append(conditions, fmt.Sprintf("durability = $%d", arg))
+		args = append(args, durability)
+		arg++
+	}
+	if liveOnly {
+		conditions = append(conditions, "expired = false")
+	}
+	args = append(args, limit, offset)
+
+	query := fmt.Sprintf(`
+		SELECT contract_id, key, key_hash, type, durability, size_bytes, data_value,
+		       last_modified_ledger, closed_at, live_until_ledger_seq, ttl_remaining, expired
+		FROM serving.sv_contract_storage_current
+		WHERE %s
+		ORDER BY key_hash
+		LIMIT $%d OFFSET $%d
+	`, strings.Join(conditions, " AND "), arg, arg+1)
+
+	rows, err := h.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	entries := make([]ContractStorageEntry, 0, limit)
+	for rows.Next() {
+		var entry ContractStorageEntry
+		var sizeBytes sql.NullInt32
+		var dataValue sql.NullString
+		var closedAt sql.NullTime
+		var liveUntil sql.NullInt64
+		var ttlRemaining sql.NullInt32
+		var expired sql.NullBool
+		if err := rows.Scan(
+			&entry.ContractID, &entry.Key, &entry.KeyHash, &entry.Type, &entry.Durability,
+			&sizeBytes, &dataValue, &entry.LastModifiedLedger, &closedAt, &liveUntil,
+			&ttlRemaining, &expired,
+		); err != nil {
+			return nil, err
+		}
+		if sizeBytes.Valid {
+			sz := int(sizeBytes.Int32)
+			entry.SizeBytes = &sz
+		}
+		if dataValue.Valid {
+			entry.DataValue = &dataValue.String
+		}
+		if closedAt.Valid {
+			entry.ClosedAt = closedAt.Time.Format(time.RFC3339)
+		}
+		if liveUntil.Valid {
+			entry.LiveUntilLedgerSeq = &liveUntil.Int64
+		}
+		if ttlRemaining.Valid {
+			rem := int(ttlRemaining.Int32)
+			entry.TTLRemaining = &rem
+		}
+		if expired.Valid {
+			entry.Expired = &expired.Bool
+		}
+		applyDecodedContractStorageFields(&entry)
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
 // GetServingAccountCurrent returns current account state from serving schema.
 // This is faster than the legacy/unified paths because it reads the compact
 // serving projection instead of federating or scanning broader silver tables.

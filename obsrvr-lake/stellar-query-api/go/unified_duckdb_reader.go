@@ -42,6 +42,10 @@ type UnifiedDuckDBReader struct {
 	availableLedgersCached *LedgerRange
 	availableLedgersAt     time.Time
 
+	currentLedgerMu     sync.Mutex
+	currentLedgerCached int64
+	currentLedgerAt     time.Time
+
 	accountIndex *AccountLedgerIndexReader
 }
 
@@ -3704,70 +3708,130 @@ func (r *UnifiedDuckDBReader) GetContractData(ctx context.Context, filters Contr
 	if len(conditions) > 0 {
 		baseWhereClause = strings.Join(conditions, " AND ")
 	}
-	ttlWhereClause := baseWhereClause
-	if filters.LiveOnly {
-		ttlWhereClause += " AND COALESCE(t.expired, false) = false"
-	}
-
 	limit := filters.Limit
 	if limit <= 0 {
 		limit = 100
 	}
 
-	hotJoin := ""
-	hotWhere := baseWhereClause
-	coldJoin := ""
-	coldWhere := baseWhereClause
+	currentLedger := int64(0)
 	if filters.LiveOnly {
-		hotJoin = fmt.Sprintf("LEFT JOIN %s.ttl_current t ON cd.key_hash = t.key_hash", r.hotSchema)
-		hotWhere = ttlWhereClause
-		coldJoin = fmt.Sprintf("LEFT JOIN %s.ttl_current t ON cd.key_hash = t.key_hash", r.coldSchema)
-		coldWhere = ttlWhereClause
+		if ledger, err := r.CurrentLedgerForTTL(ctx); err == nil {
+			currentLedger = ledger
+		} else {
+			log.Printf("Warning: failed to resolve current ledger for contract-data TTL filtering: %v", err)
+		}
 	}
 
 	query := fmt.Sprintf(`
-		SELECT contract_id, key_hash, durability, data_value,
-			   asset_type, asset_code, asset_issuer, last_modified_ledger
-		FROM (
-			SELECT cd.contract_id, cd.key_hash, cd.durability, cd.data_value,
-				   cd.asset_type, cd.asset_code, cd.asset_issuer, cd.last_modified_ledger
-			FROM %s.contract_data_current cd
-			%s
-			WHERE %s
-			UNION ALL
-			SELECT cd.contract_id, cd.key_hash, cd.durability, cd.data_value,
-				   cd.asset_type, cd.asset_code, cd.asset_issuer, cd.last_modified_ledger
-			FROM %s.contract_data_current cd
-			%s
-			WHERE %s
-		) combined
-		ORDER BY contract_id ASC, key_hash ASC
+		WITH cd_ranked AS (
+			SELECT *,
+			       ROW_NUMBER() OVER (
+			         PARTITION BY contract_id, key_hash
+			         ORDER BY last_modified_ledger DESC, ledger_sequence DESC, source ASC
+			       ) AS rn
+			FROM (
+				SELECT cd.contract_id, cd.key_hash, cd.durability, cd.data_value,
+				       cd.asset_type, cd.asset_code, cd.asset_issuer, cd.last_modified_ledger,
+				       cd.ledger_sequence, 1 AS source
+				FROM %s.contract_data_current cd
+				WHERE %s
+				UNION ALL
+				SELECT cd.contract_id, cd.key_hash, cd.durability, cd.data_value,
+				       cd.asset_type, cd.asset_code, cd.asset_issuer, cd.last_modified_ledger,
+				       cd.ledger_sequence, 2 AS source
+				FROM %s.contract_data_current cd
+				WHERE %s
+			) cd_all
+		), cd_keys AS (
+			SELECT DISTINCT key_hash FROM cd_ranked
+		), ttl_ranked AS (
+			SELECT *,
+			       ROW_NUMBER() OVER (
+			         PARTITION BY key_hash
+			         ORDER BY last_modified_ledger DESC, ledger_sequence DESC, source ASC
+			       ) AS rn
+			FROM (
+				SELECT t.key_hash, t.live_until_ledger_seq, t.expired,
+				       t.last_modified_ledger, t.ledger_sequence, 1 AS source
+				FROM %s.ttl_current t
+				JOIN cd_keys k ON k.key_hash = t.key_hash
+				UNION ALL
+				SELECT t.key_hash, t.live_until_ledger_seq, t.expired,
+				       t.last_modified_ledger, t.ledger_sequence, 2 AS source
+				FROM %s.ttl_current t
+				JOIN cd_keys k ON k.key_hash = t.key_hash
+			) ttl_all
+		)
+		SELECT cd.contract_id, cd.key_hash, cd.durability, cd.data_value,
+			   cd.asset_type, cd.asset_code, cd.asset_issuer, cd.last_modified_ledger
+		FROM cd_ranked cd
+		LEFT JOIN ttl_ranked ttl ON ttl.key_hash = cd.key_hash AND ttl.rn = 1
+		WHERE cd.rn = 1
+		  AND (
+		    NOT $%d
+		    OR ttl.live_until_ledger_seq IS NULL
+		    OR (COALESCE(ttl.expired, false) = false AND ($%d = 0 OR ttl.live_until_ledger_seq >= $%d))
+		  )
+		ORDER BY cd.contract_id ASC, cd.key_hash ASC
 		LIMIT $%d
-	`, r.hotSchema, hotJoin, hotWhere, r.coldSchema, coldJoin, coldWhere, argNum)
-	args = append(args, limit+1)
+	`, r.hotSchema, baseWhereClause, r.coldSchema, baseWhereClause,
+		r.hotSchema, r.coldSchema, argNum, argNum+1, argNum+1, argNum+2)
+	args = append(args, filters.LiveOnly, currentLedger, limit+1)
+	argNum += 3
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil && filters.LiveOnly && strings.Contains(err.Error(), "ttl_current") {
 		// Cold ttl_current can lag contract_data_current during current-state rollout.
 		// Keep cold contract data available, but only TTL-filter schemas that have TTL.
 		queryWithoutColdTTL := fmt.Sprintf(`
-			SELECT contract_id, key_hash, durability, data_value,
-				   asset_type, asset_code, asset_issuer, last_modified_ledger
-			FROM (
-				SELECT cd.contract_id, cd.key_hash, cd.durability, cd.data_value,
-					   cd.asset_type, cd.asset_code, cd.asset_issuer, cd.last_modified_ledger
-				FROM %s.contract_data_current cd
-				%s
-				WHERE %s
-				UNION ALL
-				SELECT cd.contract_id, cd.key_hash, cd.durability, cd.data_value,
-					   cd.asset_type, cd.asset_code, cd.asset_issuer, cd.last_modified_ledger
-				FROM %s.contract_data_current cd
-				WHERE %s
-			) combined
-			ORDER BY contract_id ASC, key_hash ASC
+			WITH cd_ranked AS (
+				SELECT *,
+				       ROW_NUMBER() OVER (
+				         PARTITION BY contract_id, key_hash
+				         ORDER BY last_modified_ledger DESC, ledger_sequence DESC, source ASC
+				       ) AS rn
+				FROM (
+					SELECT cd.contract_id, cd.key_hash, cd.durability, cd.data_value,
+					       cd.asset_type, cd.asset_code, cd.asset_issuer, cd.last_modified_ledger,
+					       cd.ledger_sequence, 1 AS source
+					FROM %s.contract_data_current cd
+					WHERE %s
+					UNION ALL
+					SELECT cd.contract_id, cd.key_hash, cd.durability, cd.data_value,
+					       cd.asset_type, cd.asset_code, cd.asset_issuer, cd.last_modified_ledger,
+					       cd.ledger_sequence, 2 AS source
+					FROM %s.contract_data_current cd
+					WHERE %s
+				) cd_all
+			), cd_keys AS (
+				SELECT DISTINCT key_hash FROM cd_ranked
+			), ttl_ranked AS (
+				SELECT *,
+				       ROW_NUMBER() OVER (
+				         PARTITION BY key_hash
+				         ORDER BY last_modified_ledger DESC, ledger_sequence DESC, source ASC
+				       ) AS rn
+				FROM (
+					SELECT t.key_hash, t.live_until_ledger_seq, t.expired,
+					       t.last_modified_ledger, t.ledger_sequence, 1 AS source
+					FROM %s.ttl_current t
+				JOIN cd_keys k ON k.key_hash = t.key_hash
+				) ttl_all
+			)
+			SELECT cd.contract_id, cd.key_hash, cd.durability, cd.data_value,
+				   cd.asset_type, cd.asset_code, cd.asset_issuer, cd.last_modified_ledger
+			FROM cd_ranked cd
+			LEFT JOIN ttl_ranked ttl ON ttl.key_hash = cd.key_hash AND ttl.rn = 1
+			WHERE cd.rn = 1
+			  AND (
+			    NOT $%d
+			    OR ttl.live_until_ledger_seq IS NULL
+			    OR (COALESCE(ttl.expired, false) = false AND ($%d = 0 OR ttl.live_until_ledger_seq >= $%d))
+			  )
+			ORDER BY cd.contract_id ASC, cd.key_hash ASC
 			LIMIT $%d
-		`, r.hotSchema, hotJoin, hotWhere, r.coldSchema, baseWhereClause, argNum)
+		`, r.hotSchema, baseWhereClause, r.coldSchema, baseWhereClause, r.hotSchema,
+			argNum-3, argNum-2, argNum-2, argNum-1)
 		rows, err = r.db.QueryContext(ctx, queryWithoutColdTTL, args...)
 	}
 	if err != nil {
@@ -3778,14 +3842,40 @@ func (r *UnifiedDuckDBReader) GetContractData(ctx context.Context, filters Contr
 			strings.Contains(errStr, "contract_data") ||
 			strings.Contains(errStr, "ttl_current") {
 			hotOnlyQuery := fmt.Sprintf(`
+				WITH cd_ranked AS (
+					SELECT cd.contract_id, cd.key_hash, cd.durability, cd.data_value,
+					       cd.asset_type, cd.asset_code, cd.asset_issuer, cd.last_modified_ledger,
+					       cd.ledger_sequence,
+					       ROW_NUMBER() OVER (
+					         PARTITION BY cd.contract_id, cd.key_hash
+					         ORDER BY cd.last_modified_ledger DESC, cd.ledger_sequence DESC
+					       ) AS rn
+					FROM %s.contract_data_current cd
+					WHERE %s
+				), cd_keys AS (
+			SELECT DISTINCT key_hash FROM cd_ranked
+		), ttl_ranked AS (
+					SELECT t.key_hash, t.live_until_ledger_seq, t.expired,
+					       ROW_NUMBER() OVER (
+					         PARTITION BY t.key_hash
+					         ORDER BY t.last_modified_ledger DESC, t.ledger_sequence DESC
+					       ) AS rn
+					FROM %s.ttl_current t
+				JOIN cd_keys k ON k.key_hash = t.key_hash
+				)
 				SELECT cd.contract_id, cd.key_hash, cd.durability, cd.data_value,
-					   cd.asset_type, cd.asset_code, cd.asset_issuer, cd.last_modified_ledger
-				FROM %s.contract_data_current cd
-				%s
-				WHERE %s
+				       cd.asset_type, cd.asset_code, cd.asset_issuer, cd.last_modified_ledger
+				FROM cd_ranked cd
+				LEFT JOIN ttl_ranked ttl ON ttl.key_hash = cd.key_hash AND ttl.rn = 1
+				WHERE cd.rn = 1
+				  AND (
+				    NOT $%d
+				    OR ttl.live_until_ledger_seq IS NULL
+				    OR (COALESCE(ttl.expired, false) = false AND ($%d = 0 OR ttl.live_until_ledger_seq >= $%d))
+				  )
 				ORDER BY cd.contract_id ASC, cd.key_hash ASC
 				LIMIT $%d
-			`, r.hotSchema, hotJoin, hotWhere, argNum)
+			`, r.hotSchema, baseWhereClause, r.hotSchema, argNum-3, argNum-2, argNum-2, argNum-1)
 			rows, err = r.db.QueryContext(ctx, hotOnlyQuery, args...)
 			if err != nil {
 				return nil, "", false, fmt.Errorf("unified GetContractData (hot-only): %w", err)
@@ -3848,6 +3938,41 @@ func (r *UnifiedDuckDBReader) GetCurrentLedger(ctx context.Context) (int64, erro
 	if err != nil {
 		return 0, err
 	}
+	return ledger.Int64, nil
+}
+
+// CurrentLedgerForTTL returns the ledger to use for live TTL calculations. It
+// prefers the serving ledger projection because it advances even when no TTL row
+// changes, then falls back to the older TTL-based source.
+func (r *UnifiedDuckDBReader) CurrentLedgerForTTL(ctx context.Context) (int64, error) {
+	r.currentLedgerMu.Lock()
+	if time.Since(r.currentLedgerAt) < 2*time.Second && r.currentLedgerCached > 0 {
+		ledger := r.currentLedgerCached
+		r.currentLedgerMu.Unlock()
+		return ledger, nil
+	}
+	r.currentLedgerMu.Unlock()
+
+	hotDB := strings.SplitN(r.hotSchema, ".", 2)[0]
+	query := fmt.Sprintf(`SELECT COALESCE(MAX(ledger_sequence), 0) FROM %s.serving.sv_ledger_stats_recent`, hotDB)
+	var ledger sql.NullInt64
+	if err := r.db.QueryRowContext(ctx, query).Scan(&ledger); err != nil || !ledger.Valid || ledger.Int64 == 0 {
+		fallback, fallbackErr := r.GetCurrentLedger(ctx)
+		if fallbackErr != nil {
+			if err != nil {
+				return 0, err
+			}
+			return 0, fallbackErr
+		}
+		ledger.Int64 = fallback
+		ledger.Valid = true
+	}
+
+	r.currentLedgerMu.Lock()
+	r.currentLedgerCached = ledger.Int64
+	r.currentLedgerAt = time.Now()
+	r.currentLedgerMu.Unlock()
+
 	return ledger.Int64, nil
 }
 

@@ -49,8 +49,14 @@ type Config struct {
 	SilverAlias   string
 	SilverSchema  string
 	SilverMeta    string
+	BronzeCatalog string
+	BronzeData    string
+	BronzeAlias   string
+	BronzeSchema  string
+	BronzeMeta    string
 	ManifestPath  string
 	SummaryPath   string
+	Projections   string
 	S3KeyID       string
 	S3Secret      string
 	S3Region      string
@@ -190,8 +196,14 @@ func parseConfig(args []string) (Config, error) {
 	fs.StringVar(&cfg.SilverAlias, "silver-catalog-name", getenv("SILVER_CATALOG_NAME", "silver_catalog"), "DuckDB alias for Silver catalog")
 	fs.StringVar(&cfg.SilverSchema, "silver-schema", getenv("SILVER_SCHEMA", "silver"), "Silver schema name")
 	fs.StringVar(&cfg.SilverMeta, "silver-metadata-schema", getenv("SILVER_DUCKLAKE_METADATA_SCHEMA", "silver_meta"), "Silver DuckLake metadata schema")
+	fs.StringVar(&cfg.BronzeCatalog, "bronze-ducklake-catalog", getenv("BRONZE_DUCKLAKE_CATALOG", ""), "Bronze DuckLake catalog DSN/path; defaults to silver catalog when empty")
+	fs.StringVar(&cfg.BronzeData, "bronze-data-path", getenv("BRONZE_DATA_PATH", ""), "Bronze DuckLake data path; defaults to silver data path when empty")
+	fs.StringVar(&cfg.BronzeAlias, "bronze-catalog-name", getenv("BRONZE_CATALOG_NAME", "bronze_catalog"), "DuckDB alias for Bronze catalog")
+	fs.StringVar(&cfg.BronzeSchema, "bronze-schema", getenv("BRONZE_SCHEMA", "bronze"), "Bronze schema name")
+	fs.StringVar(&cfg.BronzeMeta, "bronze-metadata-schema", getenv("BRONZE_DUCKLAKE_METADATA_SCHEMA", "bronze_meta"), "Bronze DuckLake metadata schema")
 	fs.StringVar(&cfg.ManifestPath, "manifest-path", getenv("MANIFEST_PATH", ""), "JSONL manifest path for batch-local durable status")
 	fs.StringVar(&cfg.SummaryPath, "summary-path", getenv("SUMMARY_PATH", ""), "optional JSON summary output path")
+	fs.StringVar(&cfg.Projections, "projections", getenv("PROJECTIONS", ""), "optional comma-separated current projection names to run")
 	fs.StringVar(&cfg.S3KeyID, "s3-key-id", getenv("S3_KEY_ID", getenv("B2_KEY_ID", "")), "S3/B2 access key ID")
 	fs.StringVar(&cfg.S3Secret, "s3-secret", getenv("S3_SECRET", getenv("B2_KEY_SECRET", "")), "S3/B2 secret access key")
 	fs.StringVar(&cfg.S3Region, "s3-region", getenv("S3_REGION", getenv("B2_REGION", "us-west-004")), "S3/B2 region")
@@ -280,6 +292,10 @@ func NewProjector(ctx context.Context, cfg Config) (*Projector, error) {
 		return nil, err
 	}
 	if err := p.attachSilver(ctx); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := p.attachBronze(ctx); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -382,9 +398,31 @@ func (p *Projector) attachSilver(ctx context.Context) error {
 	return nil
 }
 
+func (p *Projector) attachBronze(ctx context.Context) error {
+	if p.cfg.BronzeCatalog == "" {
+		return nil
+	}
+	dataPath := p.cfg.BronzeData
+	if dataPath == "" {
+		dataPath = p.cfg.SilverData
+	}
+	stmt := fmt.Sprintf("ATTACH %s AS %s (DATA_PATH %s, METADATA_SCHEMA %s, AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE)", q(p.cfg.BronzeCatalog), ident(p.cfg.BronzeAlias), q(dataPath), q(p.cfg.BronzeMeta))
+	if _, err := p.db.ExecContext(ctx, stmt); err != nil {
+		fallback := fmt.Sprintf("ATTACH %s AS %s (TYPE ducklake, DATA_PATH %s, METADATA_SCHEMA %s, AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE)", q(p.cfg.BronzeCatalog), ident(p.cfg.BronzeAlias), q(dataPath), q(p.cfg.BronzeMeta))
+		if _, fallbackErr := p.db.ExecContext(ctx, fallback); fallbackErr != nil {
+			return fmt.Errorf("attach bronze ducklake: %w (fallback with TYPE ducklake also failed: %v)", err, fallbackErr)
+		}
+	}
+	return nil
+}
+
 func (p *Projector) Run(ctx context.Context, out io.Writer) error {
 	cfg := p.cfg
 	chunks := cfg.PlannedChunks()
+	projections, err := selectCurrentProjections(executableCurrentProjections(), cfg.Projections)
+	if err != nil {
+		return err
+	}
 	ledgerWindowStart, ledgerWindowEnd := cfg.Start, cfg.End
 	if len(chunks) > 0 {
 		ledgerWindowStart, ledgerWindowEnd = chunks[0].Start, chunks[0].End
@@ -410,7 +448,7 @@ func (p *Projector) Run(ctx context.Context, out io.Writer) error {
 			}
 		}
 		emit(out, Event{EventType: "component.chunk_started", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, Status: "running"})
-		for _, projection := range executableCurrentProjections() {
+		for _, projection := range projections {
 			if cfg.Resume {
 				done, err := p.projectionComplete(ctx, chunk.Start, chunk.End, projection.Name)
 				if err != nil {
@@ -434,7 +472,7 @@ func (p *Projector) Run(ctx context.Context, out io.Writer) error {
 		}
 		emit(out, Event{EventType: "component.chunk_completed", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, Status: "completed"})
 	}
-	emit(out, Event{EventType: "component.run_completed", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, Status: "completed", Metadata: map[string]interface{}{"projection_count": len(executableCurrentProjections()), "checkpoint_contract": "current-state tables are replace-as-of end-ledger; no serving handoff checkpoint is advanced by this component"}})
+	emit(out, Event{EventType: "component.run_completed", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, Status: "completed", Metadata: map[string]interface{}{"projection_count": len(projections), "checkpoint_contract": "current-state tables are replace-as-of end-ledger; no serving handoff checkpoint is advanced by this component"}})
 	return writeSummary(cfg, chunks, silverCurrentProjections())
 }
 
@@ -446,8 +484,8 @@ func silverCurrentProjections() []Projection {
 		{Name: "contract_data_current", TargetTable: "silver.contract_data_current", Source: "silver.contract_data_changes", Mode: "replace_as_of", Required: true, Status: "implemented"},
 		{Name: "native_balances_current", TargetTable: "silver.native_balances_current", Source: "silver.balance_changes", Mode: "replace_as_of", Required: true, Status: "implemented"},
 		{Name: "address_balances_current", TargetTable: "silver.address_balances_current", Source: "silver.balance_changes", Mode: "replace_as_of", Required: true, Status: "implemented"},
+		{Name: "ttl_current", TargetTable: "silver.ttl_current", Source: "bronze.ttl_snapshot_v1", Mode: "replace_as_of", Required: true, Status: "implemented"},
 		{Name: "claimable_balances_current", TargetTable: "silver.claimable_balances_current", Source: "source mapping open", Mode: "replace_as_of", Required: true, Status: "blocked_source_mapping", Gap: "design asks for explicit implementation/source mapping before production completion"},
-		{Name: "ttl_current", TargetTable: "silver.ttl_current", Source: "source mapping open", Mode: "replace_as_of", Required: true, Status: "blocked_source_mapping", Gap: "TTL authoritative source not yet identified in cold Silver tables"},
 		{Name: "token_registry", TargetTable: "silver.token_registry", Source: "source mapping open", Mode: "replace_as_of", Required: true, Status: "blocked_source_mapping", Gap: "registry bootstrap/source of truth not yet specified"},
 	}
 }
@@ -459,9 +497,52 @@ func executableCurrentProjections() []CurrentProjection {
 		{Name: "trustlines_current", TargetTable: "trustlines_current", Source: "trustlines_snapshot", SourceLedgerCol: "ledger_sequence", PartitionExpr: "concat(account_id, ':', COALESCE(asset_type, ''), ':', COALESCE(asset_code, ''), ':', COALESCE(asset_issuer, ''))", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"account_id", "asset_type", "asset_code", "asset_issuer", "liquidity_pool_id"}, SelectSQL: selectTrustlinesCurrent, KeySQL: selectTrustlinesCurrentKeys},
 		{Name: "offers_current", TargetTable: "offers_current", Source: "offers_snapshot", SourceLedgerCol: "ledger_sequence", PartitionExpr: "offer_id", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"offer_id"}, SelectSQL: selectOffersCurrent, KeySQL: selectOffersCurrentKeys},
 		{Name: "contract_data_current", TargetTable: "contract_data_current", Source: "contract_data_changes", SourceLedgerCol: "ledger_sequence", PartitionExpr: "concat(contract_id, ':', key_hash)", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"contract_id", "key_hash"}, SelectSQL: selectContractDataCurrent, KeySQL: selectContractDataCurrentKeys},
+		{Name: "ttl_current", TargetTable: "ttl_current", Source: "ttl_snapshot_v1", SourceLedgerCol: "ledger_sequence", PartitionExpr: "key_hash", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"key_hash"}, SelectSQL: selectTTLCurrent, KeySQL: selectTTLCurrentKeys},
 		{Name: "native_balances_current", TargetTable: "native_balances_current", Source: "balance_changes", SourceLedgerCol: "ledger_sequence", SourceFilter: "(asset_type = 'native' OR asset_code = 'XLM')", PartitionExpr: "address", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"account_id"}, SelectSQL: selectNativeBalancesCurrent, KeySQL: selectNativeBalancesCurrentKeys},
 		{Name: "address_balances_current", TargetTable: "address_balances_current", Source: "balance_changes", SourceLedgerCol: "ledger_sequence", PartitionExpr: "concat(address, ':', " + assetKey + ")", MaxLedgerCol: "last_updated_ledger", KeyExprs: []string{"owner_address", "asset_key"}, SelectSQL: selectAddressBalancesCurrent, KeySQL: selectAddressBalancesCurrentKeys},
 	}
+}
+
+func selectCurrentProjections(all []CurrentProjection, csv string) ([]CurrentProjection, error) {
+	if strings.TrimSpace(csv) == "" {
+		return all, nil
+	}
+	wanted := projectionSet(csv)
+	selected := make([]CurrentProjection, 0, len(wanted))
+	for _, p := range all {
+		if wanted[p.Name] {
+			selected = append(selected, p)
+			delete(wanted, p.Name)
+		}
+	}
+	if len(wanted) > 0 {
+		return nil, fmt.Errorf("unknown projection(s): %s", strings.Join(sortedKeys(wanted), ","))
+	}
+	return selected, nil
+}
+
+func projectionSet(csv string) map[string]bool {
+	out := map[string]bool{}
+	for _, raw := range strings.Split(csv, ",") {
+		name := strings.TrimSpace(raw)
+		if name != "" {
+			out[name] = true
+		}
+	}
+	return out
+}
+
+func sortedKeys(m map[string]bool) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	for i := 1; i < len(keys); i++ {
+		for j := i; j > 0 && keys[j] < keys[j-1]; j-- {
+			keys[j], keys[j-1] = keys[j-1], keys[j]
+		}
+	}
+	return keys
 }
 
 func (p *Projector) replaceProjection(ctx context.Context, out io.Writer, chunk Chunk, projection CurrentProjection) (int64, error) {
@@ -545,6 +626,35 @@ func (p *Projector) ensureTargetTable(ctx context.Context, projection CurrentPro
 	if _, err := p.db.ExecContext(ctx, stmt); err != nil {
 		return fmt.Errorf("create %s: %w", projection.Name, err)
 	}
+	if err := p.ensureTargetColumns(ctx, projection); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (p *Projector) ensureTargetColumns(ctx context.Context, projection CurrentProjection) error {
+	if projection.Name != "ttl_current" {
+		return nil
+	}
+	target := p.table(projection.TargetTable)
+	columns := []string{
+		"network VARCHAR",
+		"key_hash VARCHAR",
+		"live_until_ledger_seq BIGINT",
+		"ttl_remaining INTEGER",
+		"expired BOOLEAN",
+		"last_modified_ledger BIGINT",
+		"ledger_sequence BIGINT",
+		"closed_at TIMESTAMP",
+		"created_at TIMESTAMP",
+		"ledger_range BIGINT",
+		"updated_at TIMESTAMP",
+	}
+	for _, column := range columns {
+		if _, err := p.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s", target, column)); err != nil {
+			return fmt.Errorf("migrate %s add column %s: %w", projection.Name, column, err)
+		}
+	}
 	return nil
 }
 
@@ -601,6 +711,17 @@ func (p *Projector) sourceFilter(projection CurrentProjection, start int64, end 
 	return strings.Join(parts, " AND ")
 }
 
+func (p *Projector) sourceLedgerFilter(projection CurrentProjection, start int64, end int64) string {
+	parts := []string{
+		fmt.Sprintf("%s >= %d", ident(projection.SourceLedgerCol), start),
+		fmt.Sprintf("%s <= %d", ident(projection.SourceLedgerCol), end),
+	}
+	if projection.SourceFilter != "" {
+		parts = append(parts, fmt.Sprintf("(%s)", projection.SourceFilter))
+	}
+	return strings.Join(parts, " AND ")
+}
+
 func (p *Projector) deleteSeenKeysSQL(staging, keys string, projection CurrentProjection) string {
 	parts := make([]string, 0, len(projection.KeyExprs))
 	for _, key := range projection.KeyExprs {
@@ -623,7 +744,7 @@ func (p *Projector) publishProjection(ctx context.Context, out io.Writer, chunk 
 	bexpr := bucketExpr(projection, n)
 	for i := 0; i < n; i++ {
 		if p.cfg.Resume {
-			done, err := p.bucketComplete(ctx, chunk, projection.Name, i)
+			done, err := p.bucketComplete(ctx, chunk, projection.Name, i, n)
 			if err != nil {
 				return err
 			}
@@ -640,7 +761,7 @@ func (p *Projector) publishProjection(ctx context.Context, out io.Writer, chunk 
 			_ = tx.Rollback()
 			return fmt.Errorf("publish delete %s bucket %d: %w", projection.Name, i, err)
 		}
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s SELECT * FROM %s WHERE (%s) = %d", target, staging, bexpr, i)); err != nil {
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s BY NAME SELECT * FROM %s WHERE (%s) = %d", target, staging, bexpr, i)); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("publish insert %s bucket %d: %w", projection.Name, i, err)
 		}
@@ -667,10 +788,10 @@ func bucketExpr(projection CurrentProjection, n int) string {
 	return fmt.Sprintf("CAST(hash(concat_ws('|', %s)) %% %d AS INTEGER)", strings.Join(parts, ", "), n)
 }
 
-func (p *Projector) bucketComplete(ctx context.Context, chunk Chunk, projection string, bucket int) (bool, error) {
+func (p *Projector) bucketComplete(ctx context.Context, chunk Chunk, projection string, bucket int, bucketCount int) (bool, error) {
 	var count int64
-	query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE run_id=%s AND component_id=%s AND network=%s AND start_ledger=%d AND end_ledger=%d AND projection_name=%s AND bucket=%d AND status='completed'",
-		p.table("silver_current_projector_publish_manifest"), q(p.cfg.RunID()), q(p.cfg.Component()), q(p.cfg.Network), chunk.Start, chunk.End, q(projection), bucket)
+	query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE run_id=%s AND component_id=%s AND network=%s AND start_ledger=%d AND end_ledger=%d AND projection_name=%s AND bucket=%d AND bucket_count=%d AND status='completed'",
+		p.table("silver_current_projector_publish_manifest"), q(p.cfg.RunID()), q(p.cfg.Component()), q(p.cfg.Network), chunk.Start, chunk.End, q(projection), bucket, bucketCount)
 	if err := p.db.QueryRowContext(ctx, query).Scan(&count); err != nil {
 		return false, err
 	}
@@ -678,13 +799,28 @@ func (p *Projector) bucketComplete(ctx context.Context, chunk Chunk, projection 
 }
 
 func (p *Projector) markBucketComplete(ctx context.Context, chunk Chunk, projection string, bucket int) error {
+	n := p.cfg.PublishBuckets
+	if n < 1 {
+		n = 1
+	}
 	table := p.table("silver_current_projector_publish_manifest")
-	if _, err := p.db.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE run_id=%s AND component_id=%s AND network=%s AND start_ledger=%d AND end_ledger=%d AND projection_name=%s AND bucket=%d",
-		table, q(p.cfg.RunID()), q(p.cfg.Component()), q(p.cfg.Network), chunk.Start, chunk.End, q(projection), bucket)); err != nil {
+	if _, err := p.db.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE run_id=%s AND component_id=%s AND network=%s AND start_ledger=%d AND end_ledger=%d AND projection_name=%s AND bucket=%d AND bucket_count=%d",
+		table, q(p.cfg.RunID()), q(p.cfg.Component()), q(p.cfg.Network), chunk.Start, chunk.End, q(projection), bucket, n)); err != nil {
 		return err
 	}
-	_, err := p.db.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s VALUES (%s, %s, %s, %s, %d, %d, %d, 'completed', current_timestamp)",
-		table, q(p.cfg.RunID()), q(p.cfg.Component()), q(projection), q(p.cfg.Network), chunk.Start, chunk.End, bucket))
+	_, err := p.db.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (
+		run_id,
+		component_id,
+		projection_name,
+		network,
+		start_ledger,
+		end_ledger,
+		bucket,
+		bucket_count,
+		status,
+		updated_at
+	) VALUES (%s, %s, %s, %s, %d, %d, %d, %d, 'completed', current_timestamp)`,
+		table, q(p.cfg.RunID()), q(p.cfg.Component()), q(projection), q(p.cfg.Network), chunk.Start, chunk.End, bucket, n))
 	return err
 }
 
@@ -720,11 +856,15 @@ func (p *Projector) ensureManifest(ctx context.Context) error {
 		start_ledger BIGINT,
 		end_ledger BIGINT,
 		bucket INTEGER,
+		bucket_count INTEGER,
 		status VARCHAR,
 		updated_at TIMESTAMP
 	)`, p.table("silver_current_projector_publish_manifest"))
 	if _, err := p.db.ExecContext(ctx, pubStmt); err != nil {
 		return fmt.Errorf("create publish manifest: %w", err)
+	}
+	if _, err := p.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS bucket_count INTEGER", p.table("silver_current_projector_publish_manifest"))); err != nil {
+		return fmt.Errorf("migrate publish manifest bucket_count: %w", err)
 	}
 	return nil
 }
@@ -883,6 +1023,31 @@ func selectContractDataCurrentKeys(p *Projector, start, end int64) string {
 		) WHERE rn = 1`, p.table("contract_data_changes"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
 }
 
+func selectTTLCurrent(p *Projector, start, end int64) string {
+	return fmt.Sprintf(`SELECT %s AS network, key_hash, live_until_ledger_seq,
+		TRY_CAST(live_until_ledger_seq - %d AS INTEGER) AS ttl_remaining,
+		(live_until_ledger_seq < %d) AS expired,
+		last_modified_ledger, ledger_sequence, closed_at, created_at, ledger_range,
+		current_timestamp AS updated_at
+		FROM (
+			SELECT r.* FROM (
+				SELECT arg_max(s, ROW(s.ledger_sequence, s.last_modified_ledger, s.closed_at)) AS r
+				FROM %s s WHERE %s GROUP BY key_hash
+			)
+		) WHERE COALESCE(deleted, false) = false`, q(p.cfg.Network), end, end, p.bronzeTable("ttl_snapshot_v1"), p.sourceLedgerFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
+}
+
+func selectTTLCurrentKeys(p *Projector, start, end int64) string {
+	return fmt.Sprintf(`SELECT key_hash FROM (
+			SELECT key_hash, row_number() OVER (
+				PARTITION BY key_hash
+				ORDER BY ledger_sequence DESC, last_modified_ledger DESC NULLS LAST, closed_at DESC NULLS LAST
+			) AS rn
+			FROM %s
+			WHERE %s
+		) WHERE rn = 1`, p.bronzeTable("ttl_snapshot_v1"), p.sourceLedgerFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
+}
+
 func selectNativeBalancesCurrent(p *Projector, start, end int64) string {
 	return fmt.Sprintf(`SELECT network, address AS account_id, TRY_CAST(balance AS BIGINT) AS balance,
 		0::BIGINT AS buying_liabilities, 0::BIGINT AS selling_liabilities,
@@ -975,6 +1140,13 @@ func (c Config) PlannedChunks() []Chunk {
 
 func (p *Projector) table(table string) string {
 	return fmt.Sprintf("%s.%s", p.schema(), ident(table))
+}
+
+func (p *Projector) bronzeTable(table string) string {
+	if p.cfg.BronzeCatalog == "" {
+		return p.table(table)
+	}
+	return fmt.Sprintf("%s.%s.%s", ident(p.cfg.BronzeAlias), ident(p.cfg.BronzeSchema), ident(table))
 }
 
 func (p *Projector) schema() string {
