@@ -293,6 +293,71 @@ func (rt *RealtimeTransformer) RunColdReplay(ctx context.Context, startLedger, e
 	}
 }
 
+// RunSmartAccountReplay rebuilds only smart-account state and semantic wallet
+// classification for a bounded ledger range. It intentionally does not reset or
+// advance realtime_transformer_checkpoint.
+func (rt *RealtimeTransformer) RunSmartAccountReplay(ctx context.Context, startLedger, endLedger, batchSize int64, useCold bool) error {
+	if startLedger <= 0 || endLedger < startLedger {
+		return fmt.Errorf("invalid smart-account replay range %d-%d", startLedger, endLedger)
+	}
+	if batchSize <= 0 {
+		batchSize = 1000
+	}
+	if useCold {
+		rt.sourceManager.ForceBackfillMode(endLedger)
+		log.Printf("🔄 SMART-ACCOUNT REPLAY: reading bronze cold ledgers %d → %d (batch size: %d)", startLedger, endLedger, batchSize)
+	} else {
+		rt.sourceManager.ForceHotMode()
+		log.Printf("🔄 SMART-ACCOUNT REPLAY: reading bronze hot ledgers %d → %d (batch size: %d)", startLedger, endLedger, batchSize)
+	}
+
+	totalStateRows := int64(0)
+	totalClassifiedRows := int64(0)
+	started := time.Now()
+
+	for batchStart := startLedger; batchStart <= endLedger; batchStart += batchSize {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		batchEnd := batchStart + batchSize - 1
+		if batchEnd > endLedger {
+			batchEnd = endLedger
+		}
+
+		tx, err := rt.silverDB.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("smart-account replay begin tx %d-%d: %w", batchStart, batchEnd, err)
+		}
+
+		stateRows, err := rt.transformSmartAccountState(ctx, tx, batchStart, batchEnd)
+		if err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("smart-account state replay %d-%d: %w", batchStart, batchEnd, err)
+		}
+		classifiedRows, err := rt.transformSmartAccountWalletClassification(ctx, tx, batchStart, batchEnd)
+		if err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("smart-account classification replay %d-%d: %w", batchStart, batchEnd, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("smart-account replay commit %d-%d: %w", batchStart, batchEnd, err)
+		}
+
+		totalStateRows += stateRows
+		totalClassifiedRows += classifiedRows
+		if useCold {
+			rt.sourceManager.ForceBackfillMode(endLedger)
+		}
+		log.Printf("✅ SMART-ACCOUNT REPLAY batch %d-%d: events=%d classified=%d", batchStart, batchEnd, stateRows, classifiedRows)
+	}
+
+	log.Printf("✅ SMART-ACCOUNT REPLAY COMPLETE: events=%d classified=%d elapsed=%s", totalStateRows, totalClassifiedRows, time.Since(started).Round(time.Second))
+	return nil
+}
+
 // migrateHexContractIDs converts existing 64-char hex contract IDs to 56-char C-encoded strkey
 // in token_transfers_raw, evicted_keys, and restored_keys tables. Runs once on startup.
 func (rt *RealtimeTransformer) migrateHexContractIDs() {
@@ -896,6 +961,7 @@ func (rt *RealtimeTransformer) runTransformationCycle() error {
 		{"contract_invocations", rt.transformContractInvocations},
 		{"contract_metadata", rt.transformContractMetadata},
 		{"contract_calls", rt.transformContractCalls},
+		{"smart_account_state", rt.transformSmartAccountState},
 		{"liquidity_pools_current", rt.transformLiquidityPoolsCurrent},
 		{"claimable_balances_current", rt.transformClaimableBalancesCurrent},
 		{"native_balances_current", rt.transformNativeBalancesCurrent},
@@ -2930,6 +2996,11 @@ func (rt *RealtimeTransformer) transformSemanticEntities(ctx context.Context, tx
 // observed_functions and classifies wallet type using the detector registry.
 // This runs as a post-processing step after transformSemanticEntities.
 func (rt *RealtimeTransformer) transformWalletClassification(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	eventClassified, err := rt.transformSmartAccountWalletClassification(ctx, tx, startLedger, endLedger)
+	if err != nil {
+		return 0, err
+	}
+
 	// Find contracts active in this batch that have wallet-like evidence but no
 	// wallet_type yet. Besides __check_auth, allow known wallet implementation
 	// hashes so hash-classified wallets are materialized even if auth events or
@@ -3017,7 +3088,75 @@ func (rt *RealtimeTransformer) transformWalletClassification(ctx context.Context
 		classified++
 	}
 
-	return classified, nil
+	return classified + eventClassified, nil
+}
+
+func (rt *RealtimeTransformer) transformSmartAccountWalletClassification(ctx context.Context, tx *sql.Tx, startLedger, endLedger int64) (int64, error) {
+	query := `
+		WITH changed_contracts AS (
+			SELECT contract_id FROM smart_account_context_rules WHERE last_modified_ledger BETWEEN $1 AND $2
+			UNION
+			SELECT contract_id FROM smart_account_signers WHERE last_modified_ledger BETWEEN $1 AND $2
+			UNION
+			SELECT contract_id FROM smart_account_policies WHERE last_modified_ledger BETWEEN $1 AND $2
+		), active_signers AS (
+			SELECT
+				s.contract_id,
+				COALESCE(s.credential_id, reg.credential_id, s.signer_address, reg.signer_address, s.signer_key) AS id,
+				LOWER(COALESCE(s.signer_type, reg.signer_type, 'unknown')) AS key_type
+			FROM smart_account_signers s
+			JOIN smart_account_context_rules r
+			  ON r.contract_id = s.contract_id
+			 AND r.context_rule_id = s.context_rule_id
+			 AND r.active = TRUE
+			LEFT JOIN smart_account_signers reg
+			  ON reg.contract_id = s.contract_id
+			 AND reg.scope = 'registry'
+			 AND reg.signer_id = s.signer_id
+			 AND reg.active = TRUE
+			WHERE s.scope = 'rule'
+			  AND s.active = TRUE
+			  AND s.contract_id IN (SELECT contract_id FROM changed_contracts)
+		), signer_json AS (
+			SELECT
+				contract_id,
+				jsonb_agg(DISTINCT jsonb_build_object('id', id, 'key_type', key_type)) FILTER (WHERE id IS NOT NULL) AS wallet_signers
+			FROM active_signers
+			GROUP BY contract_id
+		)
+		INSERT INTO semantic_entities_contracts (
+			contract_id, contract_type, wallet_type, wallet_signers,
+			total_invocations, unique_callers, observed_functions, created_at, updated_at
+		)
+		SELECT
+			cc.contract_id,
+			'smart_wallet',
+			'openzeppelin',
+			sj.wallet_signers,
+			0,
+			0,
+			ARRAY['smart_account_event'],
+			NOW(),
+			NOW()
+		FROM changed_contracts cc
+		LEFT JOIN signer_json sj ON sj.contract_id = cc.contract_id
+		ON CONFLICT (contract_id) DO UPDATE SET
+			contract_type = 'smart_wallet',
+			wallet_type = 'openzeppelin',
+			wallet_signers = COALESCE(EXCLUDED.wallet_signers, semantic_entities_contracts.wallet_signers),
+			observed_functions = (
+				SELECT ARRAY(SELECT DISTINCT f FROM unnest(
+					COALESCE(semantic_entities_contracts.observed_functions, ARRAY[]::text[]) || ARRAY['smart_account_event']
+				) AS f WHERE f IS NOT NULL)
+			),
+			updated_at = NOW()
+	`
+	result, err := tx.ExecContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return 0, fmt.Errorf("smart account wallet classification: %w", err)
+	}
+	count, _ := result.RowsAffected()
+	return count, nil
 }
 
 // Lightweight wallet detection types for the transformer (avoids importing query-api types)
@@ -3064,17 +3203,29 @@ func (r *transformerWalletRegistry) detect(evidence transformerWalletEvidence) *
 		}
 	}
 
-	// OpenZeppelin: signer management functions
-	ozFuncs := map[string]bool{"add_signer": true, "remove_signer": true, "set_signer": true, "add_guardian": true, "recover": true}
+	// OpenZeppelin: signer/context-rule/policy management functions
+	ozFuncs := map[string]bool{
+		"add_signer":                      true,
+		"remove_signer":                   true,
+		"set_signer":                      true,
+		"get_signers":                     true,
+		"add_context_rule":                true,
+		"update_context_rule":             true,
+		"update_context_rule_name":        true,
+		"update_context_rule_valid_until": true,
+		"remove_context_rule":             true,
+		"add_policy":                      true,
+		"remove_policy":                   true,
+	}
 	for _, fn := range evidence.observedFunctions {
 		if ozFuncs[fn] {
 			return &transformerWalletResult{walletType: twOpenZeppelin}
 		}
 	}
-	// OZ: owner/guardian storage without Crossmint tags
+	// OZ: weak owner/signer storage fallback without Crossmint tags.
 	for _, entry := range evidence.instanceStorage {
 		lower := strings.ToLower(entry.dataValue)
-		if (strings.Contains(lower, "owner") || strings.Contains(lower, "guardian")) &&
+		if (strings.Contains(lower, "owner") || strings.Contains(lower, "signer")) &&
 			!strings.Contains(lower, "ed25519") && !strings.Contains(lower, "secp256") {
 			return &transformerWalletResult{walletType: twOpenZeppelin}
 		}

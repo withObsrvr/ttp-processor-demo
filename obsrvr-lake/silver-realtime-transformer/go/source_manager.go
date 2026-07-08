@@ -347,6 +347,21 @@ func (sm *SourceManager) QueryUnmatchedTokenLikeContractEvents(ctx context.Conte
 	return nil, fmt.Errorf("unknown source mode: %s", mode)
 }
 
+// QuerySmartAccountEvents delegates to the appropriate reader.
+func (sm *SourceManager) QuerySmartAccountEvents(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
+	sm.mu.RLock()
+	mode := sm.mode
+	sm.mu.RUnlock()
+
+	switch mode {
+	case SourceModeHot:
+		return sm.hotReader.QuerySmartAccountEvents(ctx, startLedger, endLedger)
+	case SourceModeBackfill:
+		return sm.coldReader.QuerySmartAccountEvents(ctx, startLedger, endLedger)
+	}
+	return nil, fmt.Errorf("unknown source mode: %s", mode)
+}
+
 // QueryAccountsSnapshot delegates to the appropriate reader
 func (sm *SourceManager) QueryAccountsSnapshot(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
 	sm.mu.RLock()

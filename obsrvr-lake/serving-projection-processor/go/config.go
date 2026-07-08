@@ -62,6 +62,7 @@ type ProjectorsConfig struct {
 	AssetStats           ProjectorConfig `yaml:"asset_stats"`
 	ContractsCurrent     ProjectorConfig `yaml:"contracts_current"`
 	ContractStorage      ProjectorConfig `yaml:"contract_storage"`
+	SmartAccounts        ProjectorConfig `yaml:"smart_accounts"`
 	ContractStats        ProjectorConfig `yaml:"contract_stats"`
 	OperationsRecent     ProjectorConfig `yaml:"operations_recent"`
 	EventsRecent         ProjectorConfig `yaml:"events_recent"`
@@ -119,6 +120,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.Projectors.ContractStorage.BatchSize <= 0 {
 		cfg.Projectors.ContractStorage.BatchSize = 1
+	}
+	if cfg.Projectors.SmartAccounts.BatchSize <= 0 {
+		cfg.Projectors.SmartAccounts.BatchSize = 1
 	}
 	if cfg.Projectors.ContractStats.BatchSize <= 0 {
 		cfg.Projectors.ContractStats.BatchSize = 1

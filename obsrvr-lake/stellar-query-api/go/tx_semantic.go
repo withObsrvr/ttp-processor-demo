@@ -763,8 +763,9 @@ func inferSmartWalletIntent(decoded *DecodedTransaction, nonWalletProtocol bool)
 func isSmartWalletPolicyFunction(fn string) bool {
 	switch fn {
 	case "allow_signing_key", "add_signer", "remove_signer", "set_signer", "update_signer",
-		"set_policy", "update_policy", "set_threshold", "set_limits", "set_spend_limit",
-		"set_admin", "upgrade", "set_guardian", "set_owner", "set_recovery", "rotate_key",
+		"add_context_rule", "update_context_rule", "update_context_rule_name", "update_context_rule_valid_until", "remove_context_rule", "add_policy", "remove_policy",
+		"set_policy", "update_policy", "set_limits", "set_spend_limit",
+		"set_admin", "upgrade", "set_owner", "rotate_key",
 		"set_hook", "remove_hook", "set_timelock", "set_daily_limit", "set_session_key":
 		return true
 	default:
@@ -785,7 +786,7 @@ func containsWalletPolicyHint(args string) bool {
 	if args == "" {
 		return false
 	}
-	hints := []string{"signer", "threshold", "policy", "guardian", "owner", "recovery", "weight", "spend_limit", "signing_key", "session_key", "timelock", "daily_limit", "admin"}
+	hints := []string{"signer", "signer_id", "credential", "passkey", "context_rule", "policy", "policy_id", "weight", "spend_limit", "signing_key", "session_key", "timelock", "daily_limit", "admin"}
 	for _, hint := range hints {
 		if strings.Contains(args, hint) {
 			return true

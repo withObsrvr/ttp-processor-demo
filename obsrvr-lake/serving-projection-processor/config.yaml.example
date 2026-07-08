@@ -66,6 +66,9 @@ projectors:
   contract_storage:
     enabled: true
     batch_size: 1
+  smart_accounts:
+    enabled: true
+    batch_size: 1
   contract_stats:
     enabled: true
     batch_size: 1

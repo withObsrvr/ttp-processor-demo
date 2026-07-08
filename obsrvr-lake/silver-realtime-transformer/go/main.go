@@ -37,6 +37,11 @@ func main() {
 	replayStart := flag.Int64("replay-start", 0, "Start ledger for cold replay (0 = auto-detect from checkpoint)")
 	replayEnd := flag.Int64("replay-end", 0, "End ledger for cold replay (0 = auto-detect from bronze cold MAX)")
 	replayBatchSize := flag.Int64("replay-batch-size", 500, "Ledgers per batch during cold replay")
+	smartAccountReplay := flag.Bool("smart-account-replay", false, "Run one-shot smart-account state replay without moving the realtime checkpoint")
+	smartAccountReplayStart := flag.Int64("smart-account-replay-start", 0, "Start ledger for smart-account replay")
+	smartAccountReplayEnd := flag.Int64("smart-account-replay-end", 0, "End ledger for smart-account replay")
+	smartAccountReplayBatchSize := flag.Int64("smart-account-replay-batch-size", 1000, "Ledgers per batch during smart-account replay")
+	smartAccountReplayCold := flag.Bool("smart-account-replay-cold", true, "Read smart-account replay from bronze cold DuckLake instead of bronze hot")
 	flag.Parse()
 
 	log.Println("🔧 Loading configuration from", *configPath)
@@ -145,6 +150,31 @@ func main() {
 			}
 		}()
 		defer grpcServer.GracefulStop()
+	}
+
+	// Smart-account replay mode: targeted state rebuild that does not reset or
+	// advance the shared realtime_transformer_checkpoint. This is intended for
+	// introducing the smart-account state tables on an already-running network.
+	if *smartAccountReplay {
+		if *smartAccountReplayStart <= 0 || *smartAccountReplayEnd <= 0 || *smartAccountReplayStart > *smartAccountReplayEnd {
+			log.Fatalf("❌ Smart-account replay requires valid --smart-account-replay-start and --smart-account-replay-end")
+		}
+		if *smartAccountReplayCold && bronzeColdReader == nil {
+			log.Fatalf("❌ Smart-account cold replay requires bronze_cold and s3 configuration. Enable fallback and configure bronze_cold + s3.")
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+		go func() {
+			<-sigChan
+			log.Println("🛑 Shutdown signal received, stopping smart-account replay...")
+			cancel()
+		}()
+		if err := transformer.RunSmartAccountReplay(ctx, *smartAccountReplayStart, *smartAccountReplayEnd, *smartAccountReplayBatchSize, *smartAccountReplayCold); err != nil {
+			log.Fatalf("Smart-account replay failed: %v", err)
+		}
+		log.Println("👋 Smart-account replay complete")
+		return
 	}
 
 	// Cold replay mode: one-shot batch processing from bronze cold → silver hot

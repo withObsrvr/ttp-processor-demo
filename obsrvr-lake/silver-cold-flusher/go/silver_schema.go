@@ -201,6 +201,20 @@ func (c *DuckDBClient) applySilverMigrations() error {
 				c.config.CatalogName, c.config.SchemaName,
 			),
 		},
+		{
+			name: "semantic_entities_contracts.wallet_type",
+			sql: fmt.Sprintf(
+				`ALTER TABLE %s.%s.semantic_entities_contracts ADD COLUMN IF NOT EXISTS wallet_type VARCHAR`,
+				c.config.CatalogName, c.config.SchemaName,
+			),
+		},
+		{
+			name: "semantic_entities_contracts.wallet_signers",
+			sql: fmt.Sprintf(
+				`ALTER TABLE %s.%s.semantic_entities_contracts ADD COLUMN IF NOT EXISTS wallet_signers VARCHAR`,
+				c.config.CatalogName, c.config.SchemaName,
+			),
+		},
 	}
 
 	for _, m := range migrations {

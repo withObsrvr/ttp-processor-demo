@@ -41,6 +41,9 @@ var SilverTables = []string{
 	// Semantic layer tables
 	"semantic_activities",
 	"semantic_entities_contracts",
+	"smart_account_context_rules",
+	"smart_account_signers",
+	"smart_account_policies",
 	"semantic_flows_value",
 
 	// Semantic layer phase 2 tables (UPSERT, hot-only)

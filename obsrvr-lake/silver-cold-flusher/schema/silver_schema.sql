@@ -503,6 +503,69 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.semantic_entities_contracts (
     last_activity TIMESTAMP,
     unique_callers BIGINT,
     observed_functions VARCHAR,
+    wallet_type VARCHAR,
+    wallet_signers VARCHAR,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS testnet_catalog.silver.smart_account_context_rules (
+    contract_id VARCHAR,
+    context_rule_id BIGINT,
+    active BOOLEAN,
+    metadata VARCHAR,
+    event_type VARCHAR,
+    ledger_sequence BIGINT,
+    last_modified_ledger BIGINT,
+    transaction_hash VARCHAR,
+    operation_index INTEGER,
+    event_index INTEGER,
+    event_order BIGINT,
+    closed_at TIMESTAMP,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS testnet_catalog.silver.smart_account_signers (
+    contract_id VARCHAR,
+    scope VARCHAR,
+    context_rule_id BIGINT,
+    signer_key VARCHAR,
+    signer_id BIGINT,
+    signer_type VARCHAR,
+    signer_address VARCHAR,
+    credential_id VARCHAR,
+    raw_bytes VARCHAR,
+    active BOOLEAN,
+    event_type VARCHAR,
+    ledger_sequence BIGINT,
+    last_modified_ledger BIGINT,
+    transaction_hash VARCHAR,
+    operation_index INTEGER,
+    event_index INTEGER,
+    event_order BIGINT,
+    closed_at TIMESTAMP,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS testnet_catalog.silver.smart_account_policies (
+    contract_id VARCHAR,
+    scope VARCHAR,
+    context_rule_id BIGINT,
+    policy_key VARCHAR,
+    policy_id BIGINT,
+    policy_address VARCHAR,
+    install_params VARCHAR,
+    active BOOLEAN,
+    event_type VARCHAR,
+    ledger_sequence BIGINT,
+    last_modified_ledger BIGINT,
+    transaction_hash VARCHAR,
+    operation_index INTEGER,
+    event_index INTEGER,
+    event_order BIGINT,
+    closed_at TIMESTAMP,
     created_at TIMESTAMP,
     updated_at TIMESTAMP
 );
@@ -716,4 +779,3 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.address_balances_current (
     last_updated_at TIMESTAMP,
     updated_at TIMESTAMP
 );
-

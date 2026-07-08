@@ -19,8 +19,8 @@ type Config struct {
 
 // ServiceConfig holds service-level configuration
 type ServiceConfig struct {
-	Name              string `yaml:"name"`
-	HealthPort        string `yaml:"health_port"`
+	Name               string `yaml:"name"`
+	HealthPort         string `yaml:"health_port"`
 	FlushIntervalHours int    `yaml:"flush_interval_hours"`
 }
 
@@ -131,9 +131,13 @@ func GetTablesToFlush() []string {
 		"contract_invocations_raw",
 		"contract_metadata",
 
-		// Semantic layer tables (event/append tables only; entities_contracts is UPSERT-only, not flushed)
+		// Semantic layer tables. semantic_entities_contracts remains hot-only
+		// UPSERT state; smart-account current tables flush by last_modified_ledger.
 		"semantic_activities",
 		"semantic_flows_value",
+		"smart_account_context_rules",
+		"smart_account_signers",
+		"smart_account_policies",
 
 		// High-volume append-only historical tables — MUST be retained in this
 		// list or hot PG will grow unbounded. Previous to April 2026 these

@@ -53,10 +53,13 @@ var adminFuncsOZ = []string{
 	"remove_signer",
 	"set_signer",
 	"get_signers",
-	"add_guardian",
-	"remove_guardian",
-	"recover",
-	"set_threshold",
+	"add_context_rule",
+	"update_context_rule",
+	"update_context_rule_name",
+	"update_context_rule_valid_until",
+	"remove_context_rule",
+	"add_policy",
+	"remove_policy",
 }
 
 // dappBackendFuncs are observed_functions that rule a contract out — these

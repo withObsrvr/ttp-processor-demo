@@ -856,6 +856,42 @@ func (br *BronzeReader) QueryContractCallGraphs(ctx context.Context, startLedger
 	return rows, nil
 }
 
+// QuerySmartAccountEvents reads OpenZeppelin smart-account authorization events
+// from Bronze Hot. The payload is parsed by the transformer against Obsrvr's
+// normalized data_decoded JSON shape.
+func (br *BronzeReader) QuerySmartAccountEvents(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
+	query := fmt.Sprintf(`
+		SELECT
+			e.event_id,
+			e.contract_id,
+			e.ledger_sequence,
+			e.transaction_hash,
+			e.closed_at,
+			e.topic0_decoded AS event_name,
+			e.topic1_decoded AS topic1,
+			e.data_decoded,
+			e.operation_index,
+			e.event_index,
+			t.transaction_id
+		FROM contract_events_stream_v1 e
+		LEFT JOIN transactions_row_v2 t
+			ON t.ledger_sequence = e.ledger_sequence
+			AND t.transaction_hash = e.transaction_hash
+		WHERE e.ledger_sequence BETWEEN $1 AND $2
+		  AND e.event_type = 'contract'
+		  AND COALESCE(e.successful, e.in_successful_contract_call) = true
+		  AND e.topic0_decoded IN (%s)
+		ORDER BY e.ledger_sequence, COALESCE(t.transaction_id, 0), e.transaction_hash, e.operation_index, e.event_index
+	`, smartAccountEventSQLList())
+
+	rows, err := br.db.QueryContext(ctx, query, startLedger, endLedger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query smart account events: %w", err)
+	}
+
+	return rows, nil
+}
+
 // QueryLiquidityPoolsSnapshot reads liquidity pool snapshots (deduplicated by liquidity_pool_id)
 // Used for liquidity_pools_current upsert
 func (br *BronzeReader) QueryLiquidityPoolsSnapshot(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {

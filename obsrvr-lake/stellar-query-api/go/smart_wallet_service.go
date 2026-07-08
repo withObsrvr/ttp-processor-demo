@@ -8,6 +8,9 @@ import (
 )
 
 func (h *SmartWalletHandlers) GetSmartWalletInfo(ctx context.Context, contractID string) (*SmartWalletInfo, error) {
+	if info, err := h.getSmartWalletFromSmartAccountState(ctx, contractID); err == nil && info.IsSmartWallet {
+		return info, nil
+	}
 	if info, err := h.getSmartWalletFromSemantic(ctx, contractID); err == nil && info.IsSmartWallet {
 		return info, nil
 	}

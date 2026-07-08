@@ -330,6 +330,14 @@ func (h *SmartWalletHandlers) GetSmartWalletDetail(ctx context.Context, contract
 
 func (h *SmartWalletHandlers) detectWalletDetail(ctx context.Context, contractID string) (*SmartWalletInfo, *WalletEvidence, string, []string, []string) {
 	var sources []string
+	if info, err := h.getSmartWalletFromSmartAccountState(ctx, contractID); err == nil && info.IsSmartWallet {
+		sources = append(sources, "smart_account_state")
+		evidence := []string{"authorization state materialized from smart-account events"}
+		if info.SignerCount > 0 {
+			evidence = append(evidence, fmt.Sprintf("%d active signer(s)", info.SignerCount))
+		}
+		return info, nil, "smart_account_state", evidence, sources
+	}
 	if info, err := h.getSmartWalletFromSemantic(ctx, contractID); err == nil && info.IsSmartWallet {
 		sources = append(sources, "semantic")
 		evidence := []string{"wallet_type materialized in semantic_entities_contracts"}
@@ -829,9 +837,15 @@ func classifyWalletTimeline(call ContractCallRecord, txSummary smartWalletTxSumm
 	case fn == "remove_signer" || fn == "revoke_signer":
 		item.Type = "policy_update"
 		item.Subtype = "signer_removed"
-	case fn == "set_threshold" || fn == "update_signer":
+	case fn == "update_signer" || fn == "set_signer":
 		item.Type = "policy_update"
-		item.Subtype = "threshold_changed"
+		item.Subtype = "signer_updated"
+	case fn == "add_context_rule" || fn == "update_context_rule" || fn == "update_context_rule_name" || fn == "update_context_rule_valid_until" || fn == "remove_context_rule":
+		item.Type = "policy_update"
+		item.Subtype = "context_rule_updated"
+	case fn == "add_policy" || fn == "remove_policy":
+		item.Type = "policy_update"
+		item.Subtype = "policy_updated"
 	case isApprovalFunction(fn):
 		item.Type = "approval"
 		item.Subtype = "multisig_approval"
@@ -855,8 +869,16 @@ func humanizeWalletFunctionTitle(fn string) string {
 		return "Action approved"
 	case "execute":
 		return "Wallet execution"
-	case "set_threshold":
-		return "Threshold updated"
+	case "add_context_rule":
+		return "Context rule added"
+	case "update_context_rule", "update_context_rule_name", "update_context_rule_valid_until":
+		return "Context rule updated"
+	case "remove_context_rule":
+		return "Context rule removed"
+	case "add_policy":
+		return "Policy added"
+	case "remove_policy":
+		return "Policy removed"
 	default:
 		if fn == "" {
 			return "Wallet activity"
@@ -875,8 +897,16 @@ func humanizeWalletFunctionDescription(fn string) string {
 		return "A signer approved a pending wallet action"
 	case "execute":
 		return "The wallet executed a contract action"
-	case "set_threshold":
-		return "The wallet approval threshold was updated"
+	case "add_context_rule":
+		return "Added a context rule to the wallet"
+	case "update_context_rule", "update_context_rule_name", "update_context_rule_valid_until":
+		return "Updated a wallet context rule"
+	case "remove_context_rule":
+		return "Removed a context rule from the wallet"
+	case "add_policy":
+		return "Added a policy to a context rule"
+	case "remove_policy":
+		return "Removed a policy from a context rule"
 	default:
 		if fn == "" {
 			return "Observed wallet-related contract activity"
@@ -942,8 +972,10 @@ func filterWalletFunctions(functions []string) []string {
 	allowed := map[string]struct{}{
 		"add_signer": {}, "remove_signer": {}, "set_signer": {}, "get_signers": {},
 		"update_signer": {}, "revoke_signer": {}, "approve": {}, "execute": {},
-		"set_threshold": {}, "install_plugin": {}, "uninstall_plugin": {},
-		"add_context_rule": {}, "remove_guardian": {}, "add_guardian": {}, "recover": {},
+		"install_plugin": {}, "uninstall_plugin": {},
+		"add_context_rule": {}, "update_context_rule": {}, "remove_context_rule": {},
+		"update_context_rule_name": {}, "update_context_rule_valid_until": {},
+		"add_policy": {}, "remove_policy": {},
 	}
 	out := []string{}
 	for _, fn := range functions {
@@ -969,7 +1001,11 @@ func isApprovalFunction(fn string) bool {
 
 func isPolicyUpdateFunction(fn string) bool {
 	switch fn {
-	case "add_signer", "remove_signer", "set_signer", "update_signer", "revoke_signer", "set_threshold", "install_plugin", "uninstall_plugin", "add_context_rule", "remove_guardian", "add_guardian", "recover":
+	case "add_signer", "remove_signer", "set_signer", "update_signer", "revoke_signer",
+		"install_plugin", "uninstall_plugin",
+		"add_context_rule", "update_context_rule", "remove_context_rule",
+		"update_context_rule_name", "update_context_rule_valid_until",
+		"add_policy", "remove_policy":
 		return true
 	default:
 		return false
@@ -1062,8 +1098,16 @@ func humanizePolicyTitle(fn string) string {
 		return "Signer added"
 	case "remove_signer", "revoke_signer":
 		return "Signer removed"
-	case "set_threshold":
-		return "Threshold changed"
+	case "add_context_rule":
+		return "Context rule added"
+	case "update_context_rule", "update_context_rule_name", "update_context_rule_valid_until":
+		return "Context rule updated"
+	case "remove_context_rule":
+		return "Context rule removed"
+	case "add_policy":
+		return "Policy added"
+	case "remove_policy":
+		return "Policy removed"
 	default:
 		return "Wallet policy updated"
 	}
@@ -1075,8 +1119,16 @@ func humanizePolicyDescription(fn string) string {
 		return "Added a new signer to the wallet"
 	case "remove_signer", "revoke_signer":
 		return "Removed a signer from the wallet"
-	case "set_threshold":
-		return "Changed the wallet approval threshold"
+	case "add_context_rule":
+		return "Added a context rule to the wallet"
+	case "update_context_rule", "update_context_rule_name", "update_context_rule_valid_until":
+		return "Updated a wallet context rule"
+	case "remove_context_rule":
+		return "Removed a context rule from the wallet"
+	case "add_policy":
+		return "Added a policy to a context rule"
+	case "remove_policy":
+		return "Removed a policy from a context rule"
 	default:
 		return "Updated the wallet policy configuration"
 	}

@@ -4,13 +4,14 @@ import "strings"
 
 // OpenZeppelinDetector identifies OpenZeppelin stellar-contracts AccountContract wallets.
 //
-// OpenZeppelin smart accounts use structured signer management with functions like
-// add_signer, remove_signer, and guardians-based recovery. Instance storage may
-// contain "owner", "guardian", "signer" keys in a different format than Crossmint.
+// Current OpenZeppelin smart accounts use context rules, signer registries, and
+// policy registries. Older guardian/recovery-era names can still appear in
+// historical contracts, but they are not the primary signal for the current kit
+// account interface.
 //
 // Detection signals (any one is sufficient):
-//   - Observed functions include signer management (add_signer, remove_signer, etc.)
-//   - Instance storage contains owner/guardian patterns without Crossmint type tags
+//   - Observed functions include signer/context-rule/policy management
+//   - Instance storage contains signer/owner patterns without Crossmint type tags
 //   - __check_auth events present (strongest signal, boosts confidence)
 //
 // Rationale: __check_auth is a host-dispatched callback — it never appears as a
@@ -27,22 +28,23 @@ func (d *OpenZeppelinDetector) Type() WalletType { return WalletTypeOpenZeppelin
 
 // ozSignerFunctions are function names that indicate OpenZeppelin-style signer management
 var ozSignerFunctions = map[string]bool{
-	"add_signer":     true,
-	"remove_signer":  true,
-	"set_signer":     true,
-	"get_signers":    true,
-	"add_guardian":   true,
-	"remove_guardian": true,
-	"recover":        true,
-	"set_threshold":  true,
+	"add_signer":                      true,
+	"remove_signer":                   true,
+	"set_signer":                      true,
+	"get_signers":                     true,
+	"add_context_rule":                true,
+	"update_context_rule":             true,
+	"update_context_rule_name":        true,
+	"update_context_rule_valid_until": true,
+	"remove_context_rule":             true,
+	"add_policy":                      true,
+	"remove_policy":                   true,
 }
 
-// ozStoragePatterns are instance storage patterns specific to OpenZeppelin
+// ozStoragePatterns are weak instance-storage fallback patterns.
 var ozStoragePatterns = []string{
 	"owner",
-	"guardian",
-	"threshold",
-	"recovery",
+	"signer",
 }
 
 func (d *OpenZeppelinDetector) Match(evidence WalletEvidence) bool {
@@ -69,7 +71,7 @@ func (d *OpenZeppelinDetector) Match(evidence WalletEvidence) bool {
 func (d *OpenZeppelinDetector) Extract(evidence WalletEvidence) *WalletDetectionResult {
 	result := &WalletDetectionResult{
 		WalletType: WalletTypeOpenZeppelin,
-		Confidence: 0.75, // admin-function signature alone
+		Confidence: 0.6, // storage fallback alone
 	}
 
 	// Boost confidence when admin functions are present
@@ -87,12 +89,12 @@ func (d *OpenZeppelinDetector) Extract(evidence WalletEvidence) *WalletDetection
 	// Extract signer info from storage entries
 	for _, entry := range evidence.InstanceStorage {
 		lower := strings.ToLower(entry.DataValue)
-		if strings.Contains(lower, "signer") || strings.Contains(lower, "owner") || strings.Contains(lower, "guardian") {
+		if strings.Contains(lower, "signer") || strings.Contains(lower, "owner") {
 			signerType := "unknown"
 			if strings.Contains(lower, "owner") {
 				signerType = "owner"
-			} else if strings.Contains(lower, "guardian") {
-				signerType = "guardian"
+			} else if strings.Contains(lower, "signer") {
+				signerType = "signer"
 			}
 			result.Signers = append(result.Signers, WalletSignerInfo{
 				ID:       entry.KeyHash,
