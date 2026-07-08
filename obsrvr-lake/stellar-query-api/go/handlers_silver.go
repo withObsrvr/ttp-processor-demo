@@ -4263,7 +4263,7 @@ func (h *SilverHandlers) HandleContractStorage(w http.ResponseWriter, r *http.Re
 	ctx, cancel := withInteractiveQueryTimeout(r.Context())
 	defer cancel()
 
-	if h.legacyReader != nil && h.legacyReader.hot != nil {
+	if !liveOnly && h.legacyReader != nil && h.legacyReader.hot != nil {
 		entries, err := h.legacyReader.hot.GetServingContractStorage(ctx, contractID, durability, liveOnly, limit, offset)
 		if err == nil {
 			respondJSON(w, map[string]interface{}{
@@ -4290,8 +4290,10 @@ func (h *SilverHandlers) HandleContractStorage(w http.ResponseWriter, r *http.Re
 	}
 
 	currentLedger := int64(0)
+	currentLedgerKnown := false
 	if ledger, err := h.unifiedReader.CurrentLedgerForTTL(ctx); err == nil {
 		currentLedger = ledger
+		currentLedgerKnown = ledger > 0
 	} else {
 		log.Printf("Warning: failed to resolve current ledger for contract storage TTL fields: %v", err)
 	}
@@ -4328,7 +4330,7 @@ func (h *SilverHandlers) HandleContractStorage(w http.ResponseWriter, r *http.Re
 				WHERE %s
 			) cd_all
 		), cd_keys AS (
-			SELECT DISTINCT key_hash FROM cd_ranked
+			SELECT DISTINCT key_hash FROM cd_ranked WHERE rn = 1
 		), ttl_ranked AS (
 			SELECT *,
 			       ROW_NUMBER() OVER (
@@ -4387,7 +4389,7 @@ func (h *SilverHandlers) HandleContractStorage(w http.ResponseWriter, r *http.Re
 					WHERE %s
 				) cd_all
 			), cd_keys AS (
-				SELECT DISTINCT key_hash FROM cd_ranked
+				SELECT DISTINCT key_hash FROM cd_ranked WHERE rn = 1
 			), ttl_ranked AS (
 				SELECT *,
 				       ROW_NUMBER() OVER (
@@ -4437,7 +4439,7 @@ func (h *SilverHandlers) HandleContractStorage(w http.ResponseWriter, r *http.Re
 					FROM %s.contract_data_current cd
 					WHERE %s
 				), cd_keys AS (
-			SELECT DISTINCT key_hash FROM cd_ranked
+			SELECT DISTINCT key_hash FROM cd_ranked WHERE rn = 1
 		), ttl_ranked AS (
 					SELECT t.key_hash, t.live_until_ledger_seq, t.expired,
 					       ROW_NUMBER() OVER (
@@ -4507,13 +4509,19 @@ func (h *SilverHandlers) HandleContractStorage(w http.ResponseWriter, r *http.Re
 		}
 		if liveUntil.Valid {
 			entry.LiveUntilLedgerSeq = &liveUntil.Int64
-			rem := int(liveUntil.Int64 - currentLedger)
-			entry.TTLRemaining = &rem
-			isExpired := rem < 0
-			if expired.Valid && expired.Bool {
-				isExpired = true
+			if currentLedgerKnown {
+				rem := int(liveUntil.Int64 - currentLedger)
+				entry.TTLRemaining = &rem
+				isExpired := rem < 0
+				if expired.Valid && expired.Bool {
+					isExpired = true
+				}
+				entry.Expired = &isExpired
+			} else if expired.Valid {
+				entry.Expired = &expired.Bool
 			}
-			entry.Expired = &isExpired
+		} else if expired.Valid {
+			entry.Expired = &expired.Bool
 		}
 		applyDecodedContractStorageFields(&entry)
 

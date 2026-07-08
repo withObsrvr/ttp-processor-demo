@@ -247,6 +247,20 @@ func (c Config) Validate() error {
 	return nil
 }
 
+func (c Config) effectiveBronzeCatalog() string {
+	if c.BronzeCatalog != "" {
+		return c.BronzeCatalog
+	}
+	return c.SilverCatalog
+}
+
+func (c Config) effectiveBronzeData() string {
+	if c.BronzeData != "" {
+		return c.BronzeData
+	}
+	return c.SilverData
+}
+
 func (c Config) RunID() string {
 	if c.FlowctlRunID != "" {
 		return c.FlowctlRunID
@@ -399,16 +413,14 @@ func (p *Projector) attachSilver(ctx context.Context) error {
 }
 
 func (p *Projector) attachBronze(ctx context.Context) error {
-	if p.cfg.BronzeCatalog == "" {
+	catalog := p.cfg.effectiveBronzeCatalog()
+	if catalog == "" {
 		return nil
 	}
-	dataPath := p.cfg.BronzeData
-	if dataPath == "" {
-		dataPath = p.cfg.SilverData
-	}
-	stmt := fmt.Sprintf("ATTACH %s AS %s (DATA_PATH %s, METADATA_SCHEMA %s, AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE)", q(p.cfg.BronzeCatalog), ident(p.cfg.BronzeAlias), q(dataPath), q(p.cfg.BronzeMeta))
+	dataPath := p.cfg.effectiveBronzeData()
+	stmt := fmt.Sprintf("ATTACH %s AS %s (DATA_PATH %s, METADATA_SCHEMA %s, AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE)", q(catalog), ident(p.cfg.BronzeAlias), q(dataPath), q(p.cfg.BronzeMeta))
 	if _, err := p.db.ExecContext(ctx, stmt); err != nil {
-		fallback := fmt.Sprintf("ATTACH %s AS %s (TYPE ducklake, DATA_PATH %s, METADATA_SCHEMA %s, AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE)", q(p.cfg.BronzeCatalog), ident(p.cfg.BronzeAlias), q(dataPath), q(p.cfg.BronzeMeta))
+		fallback := fmt.Sprintf("ATTACH %s AS %s (TYPE ducklake, DATA_PATH %s, METADATA_SCHEMA %s, AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE)", q(catalog), ident(p.cfg.BronzeAlias), q(dataPath), q(p.cfg.BronzeMeta))
 		if _, fallbackErr := p.db.ExecContext(ctx, fallback); fallbackErr != nil {
 			return fmt.Errorf("attach bronze ducklake: %w (fallback with TYPE ducklake also failed: %v)", err, fallbackErr)
 		}
@@ -1143,7 +1155,7 @@ func (p *Projector) table(table string) string {
 }
 
 func (p *Projector) bronzeTable(table string) string {
-	if p.cfg.BronzeCatalog == "" {
+	if p.cfg.effectiveBronzeCatalog() == "" {
 		return p.table(table)
 	}
 	return fmt.Sprintf("%s.%s.%s", ident(p.cfg.BronzeAlias), ident(p.cfg.BronzeSchema), ident(table))

@@ -3743,7 +3743,7 @@ func (r *UnifiedDuckDBReader) GetContractData(ctx context.Context, filters Contr
 				WHERE %s
 			) cd_all
 		), cd_keys AS (
-			SELECT DISTINCT key_hash FROM cd_ranked
+			SELECT DISTINCT key_hash FROM cd_ranked WHERE rn = 1
 		), ttl_ranked AS (
 			SELECT *,
 			       ROW_NUMBER() OVER (
@@ -3804,7 +3804,7 @@ func (r *UnifiedDuckDBReader) GetContractData(ctx context.Context, filters Contr
 					WHERE %s
 				) cd_all
 			), cd_keys AS (
-				SELECT DISTINCT key_hash FROM cd_ranked
+				SELECT DISTINCT key_hash FROM cd_ranked WHERE rn = 1
 			), ttl_ranked AS (
 				SELECT *,
 				       ROW_NUMBER() OVER (
@@ -3853,7 +3853,7 @@ func (r *UnifiedDuckDBReader) GetContractData(ctx context.Context, filters Contr
 					FROM %s.contract_data_current cd
 					WHERE %s
 				), cd_keys AS (
-			SELECT DISTINCT key_hash FROM cd_ranked
+			SELECT DISTINCT key_hash FROM cd_ranked WHERE rn = 1
 		), ttl_ranked AS (
 					SELECT t.key_hash, t.live_until_ledger_seq, t.expired,
 					       ROW_NUMBER() OVER (
