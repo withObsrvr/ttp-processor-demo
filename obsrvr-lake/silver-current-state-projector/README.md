@@ -60,6 +60,7 @@ silver.accounts_current
 silver.trustlines_current
 silver.offers_current
 silver.contract_data_current
+silver.ttl_current
 silver.native_balances_current
 silver.address_balances_current
 ```
@@ -80,12 +81,12 @@ Production blockers that remain explicit in status output:
 
 ```text
 silver.claimable_balances_current
-silver.ttl_current
 silver.token_registry
 ```
 
-These remain classified as `blocked_source_mapping` until authoritative cold
-source mappings are documented and implemented.
+`silver.ttl_current` is derived from Bronze cold `ttl_snapshot_v1`, so
+production runs must provide the Bronze DuckLake catalog/data inputs in addition
+to the Silver catalog/data inputs.
 
 ## Status
 

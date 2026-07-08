@@ -132,6 +132,30 @@ create index if not exists sv_contracts_current_creator_idx
 create index if not exists sv_contracts_current_last_seen_idx
     on serving.sv_contracts_current (last_seen_at desc);
 
+create table if not exists serving.sv_contract_storage_current (
+    contract_id             text not null,
+    key_hash                text not null,
+    key                     text not null,
+    durability              text not null,
+    type                    text not null,
+    size_bytes              integer,
+    data_value              text,
+    last_modified_ledger    bigint not null,
+    closed_at               timestamptz,
+    live_until_ledger_seq   bigint,
+    ttl_remaining           integer,
+    expired                 boolean not null default false,
+    updated_at              timestamptz not null,
+    primary key (contract_id, key_hash)
+);
+
+create index if not exists sv_contract_storage_current_contract_idx
+    on serving.sv_contract_storage_current (contract_id, expired, durability, key_hash);
+create index if not exists sv_contract_storage_current_ttl_idx
+    on serving.sv_contract_storage_current (expired, live_until_ledger_seq);
+create index if not exists sv_contract_storage_current_modified_idx
+    on serving.sv_contract_storage_current (last_modified_ledger desc);
+
 
 create table if not exists serving.sv_offers_current (
     offer_id                  bigint primary key,

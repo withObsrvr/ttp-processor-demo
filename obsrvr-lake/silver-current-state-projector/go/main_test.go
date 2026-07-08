@@ -90,9 +90,10 @@ func TestProjectorDerivesCurrentTablesFromSilverFixture(t *testing.T) {
 	assertCount(t, db, `SELECT COUNT(*) FROM silver.trustlines_current WHERE network='mainnet'`, 2)
 	assertCount(t, db, `SELECT COUNT(*) FROM silver.offers_current WHERE network='mainnet'`, 1)
 	assertCount(t, db, `SELECT COUNT(*) FROM silver.contract_data_current WHERE network='mainnet'`, 1)
+	assertCount(t, db, `SELECT COUNT(*) FROM silver.ttl_current WHERE network='mainnet'`, 2)
 	assertCount(t, db, `SELECT COUNT(*) FROM silver.native_balances_current WHERE network='mainnet'`, 2)
 	assertCount(t, db, `SELECT COUNT(*) FROM silver.address_balances_current WHERE network='mainnet'`, 4)
-	assertCount(t, db, `SELECT COUNT(*) FROM silver.silver_current_projector_manifest WHERE status='completed'`, 6)
+	assertCount(t, db, `SELECT COUNT(*) FROM silver.silver_current_projector_manifest WHERE status='completed'`, 7)
 
 	var accountBalance string
 	if err := db.QueryRow(`SELECT balance FROM silver.accounts_current WHERE account_id='GA1'`).Scan(&accountBalance); err != nil {
@@ -122,6 +123,21 @@ func TestProjectorDerivesCurrentTablesFromSilverFixture(t *testing.T) {
 	if contractCount != 0 {
 		t.Fatalf("deleted latest contract key survived projection")
 	}
+	var ttlRemaining int32
+	var ttlExpired bool
+	if err := db.QueryRow(`SELECT ttl_remaining, expired FROM silver.ttl_current WHERE key_hash='TK1'`).Scan(&ttlRemaining, &ttlExpired); err != nil {
+		t.Fatal(err)
+	}
+	if ttlRemaining != 5 || ttlExpired {
+		t.Fatalf("TK1 ttl remaining/expired = %d/%v, want 5/false", ttlRemaining, ttlExpired)
+	}
+	if err := db.QueryRow(`SELECT ttl_remaining, expired FROM silver.ttl_current WHERE key_hash='TK2'`).Scan(&ttlRemaining, &ttlExpired); err != nil {
+		t.Fatal(err)
+	}
+	if ttlRemaining != -1 || !ttlExpired {
+		t.Fatalf("TK2 ttl remaining/expired = %d/%v, want -1/true", ttlRemaining, ttlExpired)
+	}
+	assertCount(t, db, `SELECT COUNT(*) FROM silver.ttl_current WHERE key_hash='TK3'`, 0)
 	var futureRows int64
 	if err := db.QueryRow(`SELECT COUNT(*) FROM silver.accounts_current WHERE last_modified_ledger > 5`).Scan(&futureRows); err != nil {
 		t.Fatal(err)
@@ -311,13 +327,13 @@ func TestResumeSkipsCompletedProjectionsAcrossRunIDs(t *testing.T) {
 	}
 
 	// Simulate a partial state: one projection not yet completed (so the chunk isn't skipped
-	// wholesale). Drop its manifest rows; the other five remain completed.
+	// wholesale). Drop its manifest rows; the other projections remain completed.
 	if _, err := db.Exec(`DELETE FROM silver.silver_current_projector_manifest WHERE projection_name='trustlines_current'`); err != nil {
 		t.Fatal(err)
 	}
 
 	// Re-dispatch with a NEW run id (the wrapper stamps a fresh timestamp each time) + resume.
-	// The five completed projections must be skipped despite the differing run id; only the
+	// The completed projections must be skipped despite the differing run id; only the
 	// incomplete one re-runs.
 	projector.cfg.Resume = true
 	projector.cfg.FlowctlRunID = "redispatch-with-a-different-run-id"
@@ -325,8 +341,8 @@ func TestResumeSkipsCompletedProjectionsAcrossRunIDs(t *testing.T) {
 	if err := projector.Run(ctx, &out); err != nil {
 		t.Fatalf("resume run: %v\n%s", err, out.String())
 	}
-	if got := strings.Count(out.String(), "component.projection_skipped"); got != 5 {
-		t.Fatalf("expected 5 projection_skipped events on resume, got %d:\n%s", got, out.String())
+	if got := strings.Count(out.String(), "component.projection_skipped"); got != 6 {
+		t.Fatalf("expected 6 projection_skipped events on resume, got %d:\n%s", got, out.String())
 	}
 	if got := strings.Count(out.String(), `"event_type":"component.staging_started"`); got != 1 {
 		t.Fatalf("expected exactly 1 projection (trustlines) to re-run, got %d staging_started", got)
@@ -447,6 +463,12 @@ func loadCurrentProjectorFixture(t *testing.T, ctx context.Context, db *sql.DB) 
 			balance_holder VARCHAR, balance VARCHAR, data_value VARCHAR, last_modified_ledger BIGINT,
 			ledger_sequence BIGINT, closed_at TIMESTAMP, deleted BOOLEAN, ledger_range BIGINT
 		)`,
+		`CREATE TABLE silver.ttl_snapshot_v1 (
+			key_hash VARCHAR, live_until_ledger_seq BIGINT, last_modified_ledger BIGINT,
+			ledger_entry_change INTEGER, deleted BOOLEAN, closed_at TIMESTAMP,
+			ledger_sequence BIGINT, created_at TIMESTAMP, ledger_range BIGINT,
+			era_id VARCHAR, version_label VARCHAR
+		)`,
 		`CREATE TABLE silver.balance_changes (
 			network VARCHAR, address VARCHAR, asset_type VARCHAR, asset_code VARCHAR, asset_issuer VARCHAR,
 			balance VARCHAR, ledger_sequence BIGINT, ledger_closed_at TIMESTAMP, deleted BOOLEAN, ledger_range BIGINT
@@ -470,6 +492,13 @@ func loadCurrentProjectorFixture(t *testing.T, ctx context.Context, db *sql.DB) 
 			('mainnet','CC1','K2','instance','persistent','credit_alphanum4','USD','ISSUER','GA1','20','old',4,4,'2026-01-01 00:00:04',false,4),
 			('mainnet','CC1','K2','instance','persistent','credit_alphanum4','USD','ISSER','GA1','20','deleted',5,5,'2026-01-01 00:00:05',true,5),
 			('mainnet','CC2','K1','instance','persistent','credit_alphanum4','EUR','ISSUER2','GA2','20','future',8,8,'2026-01-01 00:00:08',false,8)`,
+		`INSERT INTO silver.ttl_snapshot_v1 VALUES
+			('TK1',8,3,0,false,'2026-01-01 00:00:03',3,'2026-01-01 00:00:03',3,'era','v1'),
+			('TK1',10,4,0,false,'2026-01-01 00:00:04',4,'2026-01-01 00:00:04',4,'era','v1'),
+			('TK2',4,4,0,false,'2026-01-01 00:00:04',4,'2026-01-01 00:00:04',4,'era','v1'),
+			('TK3',9,4,0,false,'2026-01-01 00:00:04',4,'2026-01-01 00:00:04',4,'era','v1'),
+			('TK3',11,5,0,true,'2026-01-01 00:00:05',5,'2026-01-01 00:00:05',5,'era','v1'),
+			('TK4',20,8,0,false,'2026-01-01 00:00:08',8,'2026-01-01 00:00:08',8,'era','v1')`,
 		`INSERT INTO silver.balance_changes VALUES
 			('mainnet','GA1','native','XLM',NULL,'100',3,'2026-01-01 00:00:03',false,3),
 			('mainnet','GA1','native','XLM',NULL,'999',4,'2026-01-01 00:00:04',false,4),

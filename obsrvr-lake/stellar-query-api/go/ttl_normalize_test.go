@@ -30,4 +30,18 @@ func TestNormalizeTTLEntryForCurrentLedger(t *testing.T) {
 			t.Fatalf("expected expired=false")
 		}
 	})
+
+	t.Run("not expired at live_until boundary", func(t *testing.T) {
+		entry := &TTLEntry{
+			LiveUntilLedger: 150,
+			Expired:         true,
+		}
+		normalizeTTLEntryForCurrentLedger(entry, 150)
+		if entry.LedgersRemaining != 0 {
+			t.Fatalf("expected ledgers_remaining=0, got %d", entry.LedgersRemaining)
+		}
+		if entry.Expired {
+			t.Fatalf("expected expired=false at boundary")
+		}
+	})
 }

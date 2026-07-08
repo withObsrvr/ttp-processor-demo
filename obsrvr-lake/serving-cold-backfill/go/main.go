@@ -44,31 +44,33 @@ type Config struct {
 	Resume        bool
 	Status        bool
 
-	BronzeCatalog      string
-	BronzeData         string
-	BronzeAlias        string
-	BronzeSchema       string
-	BronzeMeta         string
-	SilverCatalog      string
-	SilverData         string
-	SilverAlias        string
-	SilverSchema       string
-	SilverMeta         string
-	TargetPostgres     string
-	ServingCatalog     string
-	MemoryLimit        string
-	TempDirectory      string
-	ServingSchema      string
-	ManifestPath       string
-	SummaryPath        string
-	S3KeyID            string
-	S3Secret           string
-	S3Region           string
-	S3Endpoint         string
-	FeedProjections    string
-	CurrentProjections string
-	SkipCurrent        bool
-	VerifyDuplicates   bool
+	BronzeCatalog         string
+	BronzeData            string
+	BronzeAlias           string
+	BronzeSchema          string
+	BronzeMeta            string
+	SilverCatalog         string
+	SilverData            string
+	SilverAlias           string
+	SilverSchema          string
+	SilverMeta            string
+	TargetPostgres        string
+	ServingCatalog        string
+	MemoryLimit           string
+	TempDirectory         string
+	ServingSchema         string
+	ManifestPath          string
+	SummaryPath           string
+	S3KeyID               string
+	S3Secret              string
+	S3Region              string
+	S3Endpoint            string
+	FeedProjections       string
+	CurrentProjections    string
+	CurrentPublishBuckets int
+	SkipFeed              bool
+	SkipCurrent           bool
+	VerifyDuplicates      bool
 
 	FlowctlEnabled   bool
 	FlowctlEndpoint  string
@@ -234,6 +236,8 @@ func parseConfig(args []string) (Config, error) {
 	fs.StringVar(&cfg.S3Endpoint, "s3-endpoint", getenv("S3_ENDPOINT", getenv("B2_ENDPOINT", "")), "S3/B2 endpoint")
 	fs.StringVar(&cfg.FeedProjections, "feed-projections", getenv("FEED_PROJECTIONS", ""), "optional comma-separated feed projection names to run")
 	fs.StringVar(&cfg.CurrentProjections, "current-projections", getenv("CURRENT_PROJECTIONS", ""), "optional comma-separated current projection names to run")
+	fs.IntVar(&cfg.CurrentPublishBuckets, "current-publish-buckets", envInt("CURRENT_PUBLISH_BUCKETS", 16), "hash buckets for large DuckDB-to-Postgres current projection replacement")
+	fs.BoolVar(&cfg.SkipFeed, "skip-feed", getenv("SKIP_FEED", "") == "true", "skip feed projections")
 	fs.BoolVar(&cfg.SkipCurrent, "skip-current", getenv("SKIP_CURRENT", "") == "true", "skip current-state projections")
 	fs.BoolVar(&cfg.VerifyDuplicates, "verify-duplicates", getenv("VERIFY_DUPLICATES", "") == "true", "run expensive full-table duplicate verification after loading; normally redundant with target unique constraints")
 	if err := fs.Parse(args); err != nil {
@@ -404,9 +408,13 @@ func (b *Backfiller) attach(ctx context.Context, alias, catalog, data, meta stri
 func (b *Backfiller) Run(ctx context.Context, out io.Writer) error {
 	cfg := b.cfg
 	chunks := cfg.PlannedChunks()
-	feed, err := selectFeedProjections(feedProjections(), cfg.FeedProjections)
-	if err != nil {
-		return err
+	feed := []FeedProjection{}
+	var err error
+	if !cfg.SkipFeed {
+		feed, err = selectFeedProjections(feedProjections(), cfg.FeedProjections)
+		if err != nil {
+			return err
+		}
 	}
 	current := []CurrentProjection{}
 	if !cfg.SkipCurrent {
@@ -446,7 +454,7 @@ func (b *Backfiller) Run(ctx context.Context, out io.Writer) error {
 	for _, p := range current {
 		emit(out, Event{EventType: "component.projection_started", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: currentChunk.Start, ChunkEnd: currentChunk.End, ProjectionName: p.Name, TargetTable: b.servingTable(p.TargetTable), Phase: "current_replace", Status: "running"})
 		stopProgress := startProgressHeartbeat(out, Event{ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: currentChunk.Start, ChunkEnd: currentChunk.End, ProjectionName: p.Name, TargetTable: b.servingTable(p.TargetTable), Phase: "current_replace", Status: "running"}, map[string]interface{}{"mode": "current_replace"})
-		rows, err := b.replaceCurrentProjection(ctx, currentChunk, p)
+		rows, err := b.replaceCurrentProjection(ctx, out, currentChunk, p)
 		stopProgress()
 		if err != nil {
 			_ = b.markManifest(ctx, currentChunk, p.Name, "failed", 0, err.Error())
@@ -486,6 +494,7 @@ func requiredProjections(schema string) []Projection {
 		{Name: "sv_assets_current", TargetTable: table("sv_assets_current"), Source: "sv_account_balances_current aggregates", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_asset_stats_current", TargetTable: table("sv_asset_stats_current"), Source: "sv_account_balances_current aggregates", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_contracts_current", TargetTable: table("sv_contracts_current"), Source: "silver.contract_metadata + silver.contract_data_current", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
+		{Name: "sv_contract_storage_current", TargetTable: table("sv_contract_storage_current"), Source: "silver.contract_data_current + silver.ttl_current", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_contract_stats_current", TargetTable: table("sv_contract_stats_current"), Source: "silver.contract_invocations_raw / contract events", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_contract_function_stats_current", TargetTable: table("sv_contract_function_stats_current"), Source: "silver.contract_invocations_raw grouped by contract/function", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 	}
@@ -544,6 +553,7 @@ func currentProjections() []CurrentProjection {
 		{Name: "sv_assets_current", TargetTable: "sv_assets_current", KeyExprs: []string{"asset_key"}, SelectSQL: selectAssetsCurrent, PostgresNative: true},
 		{Name: "sv_asset_stats_current", TargetTable: "sv_asset_stats_current", KeyExprs: []string{"asset_key"}, SelectSQL: selectAssetStatsCurrent, PostgresNative: true},
 		{Name: "sv_contracts_current", TargetTable: "sv_contracts_current", MaxLedgerCol: "deploy_ledger", KeyExprs: []string{"contract_id"}, SelectSQL: selectContractsCurrent},
+		{Name: "sv_contract_storage_current", TargetTable: "sv_contract_storage_current", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"contract_id", "key_hash"}, SelectSQL: selectContractStorageCurrent},
 		{Name: "sv_contract_stats_current", TargetTable: "sv_contract_stats_current", KeyExprs: []string{"contract_id"}, SelectSQL: selectContractStatsCurrent},
 		{Name: "sv_contract_function_stats_current", TargetTable: "sv_contract_function_stats_current", KeyExprs: []string{"contract_id", "function_name"}, SelectSQL: selectContractFunctionStatsCurrent},
 	}
@@ -689,12 +699,15 @@ func (b *Backfiller) replaceCurrentProjectionPG(ctx context.Context, chunk Chunk
 	return rows, nil
 }
 
-func (b *Backfiller) replaceCurrentProjection(ctx context.Context, chunk Chunk, projection CurrentProjection) (int64, error) {
+func (b *Backfiller) replaceCurrentProjection(ctx context.Context, out io.Writer, chunk Chunk, projection CurrentProjection) (int64, error) {
 	if err := b.markManifest(ctx, chunk, projection.Name, "running", 0, ""); err != nil {
 		return 0, err
 	}
 	if projection.PostgresNative && b.cfg.ServingCatalog != "" {
 		return b.replaceCurrentProjectionPG(ctx, chunk, projection)
+	}
+	if b.cfg.ServingCatalog != "" && b.cfg.CurrentPublishBuckets > 1 && projection.Name == "sv_contract_storage_current" {
+		return b.replaceCurrentProjectionBucketed(ctx, out, chunk, projection)
 	}
 	if err := b.ensureCurrentTargetTable(ctx, projection); err != nil {
 		return 0, err
@@ -723,6 +736,69 @@ func (b *Backfiller) replaceCurrentProjection(ctx context.Context, chunk Chunk, 
 		return 0, err
 	}
 	return rows, nil
+}
+
+func (b *Backfiller) replaceCurrentProjectionBucketed(ctx context.Context, out io.Writer, chunk Chunk, projection CurrentProjection) (int64, error) {
+	n := b.cfg.CurrentPublishBuckets
+	if n < 1 {
+		n = 1
+	}
+
+	target := b.servingTable(projection.TargetTable)
+	if err := b.ensureCurrentTargetTable(ctx, projection); err != nil {
+		return 0, fmt.Errorf("create %s: %w", projection.Name, err)
+	}
+	bexpr := currentBucketExpr(projection, n)
+	source := projection.SelectSQL(b)
+	for i := 0; i < n; i++ {
+		stage := fmt.Sprintf("temp_%s_bucket_%d", projection.TargetTable, i)
+		emit(out, Event{EventType: "component.current_stage_bucket_started", ComponentID: b.cfg.Component(), RunID: b.cfg.RunID(), Network: b.cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, Phase: "current_replace", Status: "running", Metadata: map[string]interface{}{"bucket": i, "bucket_count": n}})
+		if _, err := b.db.ExecContext(ctx, fmt.Sprintf("CREATE OR REPLACE TEMP TABLE %s AS SELECT * FROM (%s) src WHERE (%s) = %d", ident(stage), source, bexpr, i)); err != nil {
+			return 0, fmt.Errorf("stage %s bucket %d: %w", projection.Name, i, err)
+		}
+		var stagedRows int64
+		if err := b.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+ident(stage)).Scan(&stagedRows); err != nil {
+			return 0, fmt.Errorf("count staged %s bucket %d: %w", projection.Name, i, err)
+		}
+		emit(out, Event{EventType: "component.current_stage_bucket_completed", ComponentID: b.cfg.Component(), RunID: b.cfg.RunID(), Network: b.cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, Phase: "current_replace", Status: "running", Metadata: map[string]interface{}{"bucket": i, "bucket_count": n, "row_count": stagedRows}})
+		emit(out, Event{EventType: "component.current_publish_bucket_started", ComponentID: b.cfg.Component(), RunID: b.cfg.RunID(), Network: b.cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: target, Phase: "current_replace", Status: "running", Metadata: map[string]interface{}{"bucket": i, "bucket_count": n, "row_count": stagedRows}})
+		tx, err := b.db.BeginTx(ctx, nil)
+		if err != nil {
+			return 0, fmt.Errorf("begin %s bucket %d: %w", projection.Name, i, err)
+		}
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE (%s) = %d", target, bexpr, i)); err != nil {
+			_ = tx.Rollback()
+			return 0, fmt.Errorf("delete %s bucket %d: %w", projection.Name, i, err)
+		}
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s SELECT * FROM %s", target, ident(stage))); err != nil {
+			_ = tx.Rollback()
+			return 0, fmt.Errorf("insert %s bucket %d: %w", projection.Name, i, err)
+		}
+		if err := tx.Commit(); err != nil {
+			_ = tx.Rollback()
+			return 0, fmt.Errorf("commit %s bucket %d: %w", projection.Name, i, err)
+		}
+		emit(out, Event{EventType: "component.current_publish_bucket_completed", ComponentID: b.cfg.Component(), RunID: b.cfg.RunID(), Network: b.cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: target, Phase: "current_replace", Status: "running", Metadata: map[string]interface{}{"bucket": i, "bucket_count": n}})
+		if _, err := b.db.ExecContext(ctx, "DROP TABLE IF EXISTS "+ident(stage)); err != nil {
+			return 0, fmt.Errorf("drop stage %s bucket %d: %w", projection.Name, i, err)
+		}
+	}
+	rows, err := b.countCurrentRows(ctx, projection)
+	if err != nil {
+		return 0, err
+	}
+	if err := b.markManifest(ctx, chunk, projection.Name, "completed", rows, ""); err != nil {
+		return 0, err
+	}
+	return rows, nil
+}
+
+func currentBucketExpr(projection CurrentProjection, n int) string {
+	parts := make([]string, 0, len(projection.KeyExprs))
+	for _, key := range projection.KeyExprs {
+		parts = append(parts, fmt.Sprintf("COALESCE(CAST(%s AS VARCHAR), '')", ident(key)))
+	}
+	return fmt.Sprintf("CAST(hash(concat_ws('|', %s)) %% %d AS INTEGER)", strings.Join(parts, ", "), n)
 }
 
 func (b *Backfiller) ensureTargetTable(ctx context.Context, projection FeedProjection, chunk Chunk) error {
@@ -1345,6 +1421,56 @@ func selectContractsCurrent(b *Backfiller) string {
 			QUALIFY row_number() OVER (PARTITION BY contract_id ORDER BY created_ledger DESC NULLS LAST) = 1
 		) m LEFT JOIN storage s ON s.contract_id=m.contract_id`,
 		b.silverTable("contract_data_current"), q(b.cfg.Network), b.silverTable("contract_metadata"), q(b.cfg.Network), b.cfg.End)
+}
+
+func selectContractStorageCurrent(b *Backfiller) string {
+	return fmt.Sprintf(`WITH cd_current AS (
+			SELECT *
+			FROM %s
+			WHERE contract_id IS NOT NULL AND last_modified_ledger <= %d
+			QUALIFY row_number() OVER (
+				PARTITION BY contract_id, key_hash
+				ORDER BY last_modified_ledger DESC NULLS LAST, closed_at DESC NULLS LAST
+			) = 1
+		), ttl_deduped AS (
+			SELECT *
+			FROM %s
+			WHERE network=%s
+			QUALIFY row_number() OVER (
+				PARTITION BY key_hash
+				ORDER BY ledger_sequence DESC NULLS LAST, last_modified_ledger DESC NULLS LAST, live_until_ledger_seq DESC NULLS LAST
+			) = 1
+		)
+		SELECT
+			cd.contract_id,
+			cd.key_hash,
+			cd.key_hash AS key,
+			cd.durability,
+			CASE
+				WHEN lower(cd.durability) LIKE '%%instance%%' THEN 'instance'
+				WHEN lower(cd.durability) LIKE '%%temporary%%' THEN 'temporary'
+				WHEN lower(cd.durability) LIKE '%%persistent%%' THEN 'persistent'
+				ELSE lower(cd.durability)
+			END AS type,
+			LENGTH(cd.data_value)::INTEGER AS size_bytes,
+			cd.data_value,
+			cd.last_modified_ledger,
+			cd.closed_at,
+			ttl.live_until_ledger_seq,
+			CASE
+				WHEN ttl.live_until_ledger_seq IS NULL THEN NULL
+				ELSE (ttl.live_until_ledger_seq - %d)::INTEGER
+			END AS ttl_remaining,
+			CASE
+				WHEN ttl.key_hash IS NULL THEN false
+				WHEN ttl.expired THEN true
+				WHEN ttl.live_until_ledger_seq < %d THEN true
+				ELSE false
+			END AS expired,
+			current_timestamp AS updated_at
+		FROM cd_current cd
+		LEFT JOIN ttl_deduped ttl ON ttl.key_hash = cd.key_hash`,
+		b.silverTable("contract_data_current"), b.cfg.End, b.silverTable("ttl_current"), q(b.cfg.Network), b.cfg.End, b.cfg.End)
 }
 
 func selectContractStatsCurrent(b *Backfiller) string {
