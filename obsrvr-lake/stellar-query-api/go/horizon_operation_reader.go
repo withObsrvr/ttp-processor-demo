@@ -50,24 +50,19 @@ func (r *HorizonOperationReader) GetEnrichedOperationsWithCursor(ctx context.Con
 		nextArg += 2
 	}
 
+	arms := make([]string, 0, 2)
+	if r.schemaHasOperationTOIDs(ctx, r.hotSchema) {
+		arms = append(arms, horizonOperationArm(r.hotSchema, whereClause, 1))
+	}
+	if r.schemaHasOperationTOIDs(ctx, r.coldSchema) {
+		arms = append(arms, horizonOperationArm(r.coldSchema, whereClause, 2))
+	}
+	if len(arms) == 0 {
+		return nil, "", false, fmt.Errorf("horizon operation reader requires transaction_id and operation_id columns")
+	}
+
 	query := fmt.Sprintf(`
 		WITH combined AS (
-			SELECT transaction_hash, transaction_id, operation_id, operation_index, ledger_sequence,
-			       ledger_closed_at, source_account, type, destination,
-			       asset_code, asset_issuer, amount, tx_successful,
-			       tx_fee_charged, is_payment_op, is_soroban_op,
-			       contract_id, function_name, parameters,
-			       1 as source
-			FROM %s.enriched_history_operations
-			%s
-			UNION ALL
-			SELECT transaction_hash, transaction_id, operation_id, operation_index, ledger_sequence,
-			       ledger_closed_at, source_account, type, destination,
-			       asset_code, asset_issuer, amount, tx_successful,
-			       tx_fee_charged, is_payment_op, is_soroban_op,
-			       contract_id, function_name, parameters,
-			       2 as source
-			FROM %s.enriched_history_operations
 			%s
 		), ranked AS (
 			SELECT *,
@@ -86,7 +81,7 @@ func (r *HorizonOperationReader) GetEnrichedOperationsWithCursor(ctx context.Con
 		WHERE rn = 1
 		ORDER BY ledger_sequence %s, operation_id %s
 		LIMIT $%d
-	`, r.hotSchema, whereClause, r.coldSchema, whereClause, cursorClause, orderDir, orderDir, nextArg)
+	`, strings.Join(arms, "\nUNION ALL\n"), cursorClause, orderDir, orderDir, nextArg)
 	args = append(args, limit+1)
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
@@ -128,6 +123,31 @@ func (r *HorizonOperationReader) GetEnrichedOperationsWithCursor(ctx context.Con
 	}
 
 	return ops, nextCursor, hasMore, nil
+}
+
+func (r *HorizonOperationReader) schemaHasOperationTOIDs(ctx context.Context, schema string) bool {
+	if strings.TrimSpace(schema) == "" {
+		return false
+	}
+	rows, err := r.db.QueryContext(ctx, fmt.Sprintf(
+		"SELECT transaction_id, operation_id FROM %s.enriched_history_operations LIMIT 0", schema))
+	if err != nil {
+		return false
+	}
+	_ = rows.Close()
+	return true
+}
+
+func horizonOperationArm(schema, whereClause string, source int) string {
+	return fmt.Sprintf(`
+			SELECT transaction_hash, transaction_id, operation_id, operation_index, ledger_sequence,
+			       ledger_closed_at, source_account, type, destination,
+			       asset_code, asset_issuer, amount, tx_successful,
+			       tx_fee_charged, is_payment_op, is_soroban_op,
+			       contract_id, function_name, parameters,
+			       %d as source
+			FROM %s.enriched_history_operations
+			%s`, source, schema, whereClause)
 }
 
 func horizonOperationWhereClause(filters OperationFilters, startArg int) (string, []interface{}, int) {
