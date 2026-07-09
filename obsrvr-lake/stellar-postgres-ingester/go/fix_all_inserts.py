@@ -21,7 +21,7 @@ BRONZE_SCHEMAS = {
         'transaction_hash', 'ledger_sequence', 'application_order',
         'account', 'account_muxed', 'account_sequence', 'max_fee',
         'operation_count', 'tx_envelope', 'tx_result', 'tx_meta',
-        'tx_fee_meta', 'successful', 'closed_at', 'created_at',
+        'tx_fee_meta', 'tx_signers', 'successful', 'closed_at', 'created_at',
         'ledger_range', 'era_id', 'version_label'
     ],
     'operations_row_v2': [

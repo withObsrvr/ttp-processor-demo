@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.enriched_history_operations (
     operation_result_code VARCHAR,
     operation_trace_code VARCHAR,
     ledger_range BIGINT,
+    transaction_id BIGINT,
+    operation_id BIGINT,
 
     -- Asset fields
     source_account_muxed VARCHAR,

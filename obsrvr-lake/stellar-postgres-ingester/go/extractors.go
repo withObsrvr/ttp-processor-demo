@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -78,6 +79,9 @@ func (w *Writer) extractTransactions(rawLedger *pb.RawLedger) ([]TransactionData
 			LedgerRange:           (ledgerSeq / 10000) * 10000,
 			SignaturesCount:       len(tx.Envelope.Signatures()),
 			NewAccount:            false,
+		}
+		if err := populateTransactionXDRFields(tx, &txData); err != nil {
+			return nil, fmt.Errorf("failed to marshal transaction XDR for ledger %d tx %s: %w", ledgerSeq, txData.TransactionHash, err)
 		}
 
 		// Extract memo
@@ -158,6 +162,48 @@ func (w *Writer) extractTransactions(rawLedger *pb.RawLedger) ([]TransactionData
 	}
 
 	return transactions, nil
+}
+
+func populateTransactionXDRFields(tx ingest.LedgerTransaction, txData *TransactionData) error {
+	envelopeBase64, err := xdr.MarshalBase64(tx.Envelope)
+	if err != nil {
+		return err
+	}
+	resultBase64, err := xdr.MarshalBase64(&tx.Result.Result)
+	if err != nil {
+		return err
+	}
+	metaBase64, err := xdr.MarshalBase64(tx.UnsafeMeta)
+	if err != nil {
+		return err
+	}
+	feeMetaBase64, err := xdr.MarshalBase64(tx.FeeChanges)
+	if err != nil {
+		return err
+	}
+	signersJSON, err := marshalDecoratedSignatures(tx.Envelope.Signatures())
+	if err != nil {
+		return err
+	}
+
+	txData.TxEnvelope = &envelopeBase64
+	txData.TxResult = &resultBase64
+	txData.TxMeta = &metaBase64
+	txData.TxFeeMeta = &feeMetaBase64
+	txData.TxSigners = &signersJSON
+	return nil
+}
+
+func marshalDecoratedSignatures(signatures []xdr.DecoratedSignature) (string, error) {
+	out := make([]string, len(signatures))
+	for i, sig := range signatures {
+		out[i] = base64.StdEncoding.EncodeToString(sig.Signature)
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
 }
 
 // extractOperations extracts operation data from raw ledger

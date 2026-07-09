@@ -500,15 +500,15 @@ func (w *Worker) extractLedger(meta LedgerMeta) (*LedgerData, error) {
 	libInput.LedgerRange = lr
 	libInput.EraID = meta.EraID
 
-	// Fan out to all 21 extractors using the shared library
+	// Fan out to all extractors. Transactions use the local extractor because it
+	// carries Horizon XDR/signature fields not yet exposed by stellar-extract.
 	launch("transactions", func() (*LedgerData, error) {
-		libRows, err := extract.ExtractTransactions(libInput)
+		rows, err := extractTransactions(meta.LCM, w.config.NetworkPassphrase, meta.LedgerSequence, meta.ClosedAt, meta.LedgerRange)
 		if err != nil {
 			return nil, err
 		}
-		rows := make([]TransactionData, len(libRows))
-		for i, r := range libRows {
-			rows[i] = TransactionData(r)
+		for i := range rows {
+			rows[i].EraID = meta.EraID
 			sanitizeTransactionMemo(&rows[i])
 		}
 		return &LedgerData{Transactions: rows}, nil

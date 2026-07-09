@@ -58,6 +58,11 @@ type TransactionData struct {
 	AccountSequence       int64
 	LedgerRange           uint32
 	SignaturesCount       int
+	TxEnvelope            *string
+	TxResult              *string
+	TxMeta                *string
+	TxFeeMeta             *string
+	TxSigners             *string
 	NewAccount            bool
 	TimeboundsMinTime     *int64
 	TimeboundsMaxTime     *int64

@@ -143,6 +143,11 @@ type ParquetTransaction struct {
 	AccountSequence              int64   `parquet:"account_sequence"`
 	LedgerRange                  uint32  `parquet:"ledger_range"`
 	SignaturesCount              int32   `parquet:"signatures_count"`
+	TxEnvelope                   *string `parquet:"tx_envelope,optional"`
+	TxResult                     *string `parquet:"tx_result,optional"`
+	TxMeta                       *string `parquet:"tx_meta,optional"`
+	TxFeeMeta                    *string `parquet:"tx_fee_meta,optional"`
+	TxSigners                    *string `parquet:"tx_signers,optional"`
 	NewAccount                   bool    `parquet:"new_account"`
 	TimeboundsMinTime            *int64  `parquet:"timebounds_min_time,optional"`
 	TimeboundsMaxTime            *int64  `parquet:"timebounds_max_time,optional"`
@@ -696,6 +701,11 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 				AccountSequence:              t.AccountSequence,
 				LedgerRange:                  t.LedgerRange,
 				SignaturesCount:              int32(t.SignaturesCount),
+				TxEnvelope:                   t.TxEnvelope,
+				TxResult:                     t.TxResult,
+				TxMeta:                       t.TxMeta,
+				TxFeeMeta:                    t.TxFeeMeta,
+				TxSigners:                    t.TxSigners,
 				NewAccount:                   t.NewAccount,
 				TimeboundsMinTime:            t.TimeboundsMinTime,
 				TimeboundsMaxTime:            t.TimeboundsMaxTime,

@@ -187,6 +187,8 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.enriched_history_operations (
      operation_result_code VARCHAR,
      operation_trace_code VARCHAR,
      ledger_range BIGINT,
+     transaction_id BIGINT,
+     operation_id BIGINT,
      source_account_muxed VARCHAR,
      asset VARCHAR,
      asset_type VARCHAR,
@@ -406,4 +408,3 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.ttl_current (
      era_id TEXT,
      version_label TEXT
 );
-

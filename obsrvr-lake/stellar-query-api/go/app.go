@@ -96,6 +96,8 @@ func (app *application) routes() http.Handler {
 		log.Println("  ✓ /api/v1/index/contracts/health - Contract index statistics")
 	}
 
+	app.registerHorizonCompatRoutes(router)
+
 	return chainMiddleware(
 		router,
 		recoverPanicMiddleware,
