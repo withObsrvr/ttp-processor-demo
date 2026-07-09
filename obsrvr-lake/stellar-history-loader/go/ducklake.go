@@ -38,6 +38,7 @@ type DuckLakeConfig struct {
 	BronzeSchemaSQL string // Path to v3_bronze_schema.sql (optional, embedded fallback)
 	StartLedger     uint32 // Requested push start; used for idempotent full-chunk deletes
 	EndLedger       uint32 // Requested push end; used for idempotent full-chunk deletes
+	SkipTables      map[string]bool
 }
 
 // DuckLakePusher pushes local Parquet files into DuckLake.
@@ -156,6 +157,10 @@ func (p *DuckLakePusher) Push(ctx context.Context, outputDir string) (*DuckLakeP
 		duckTableName := mapToDuckLakeTable(tableName)
 		if duckTableName == "" {
 			log.Printf("[DuckLake] Skipping unmapped table: %s", tableName)
+			continue
+		}
+		if p.shouldSkipTable(tableName, duckTableName) {
+			log.Printf("[DuckLake] Skipping configured table: %s (%s)", tableName, duckTableName)
 			continue
 		}
 
@@ -281,6 +286,13 @@ func (p *DuckLakePusher) Push(ctx context.Context, outputDir string) (*DuckLakeP
 	pushResult.TotalRows = totalRows
 	log.Printf("[DuckLake] Push complete: %d total rows", totalRows)
 	return pushResult, nil
+}
+
+func (p *DuckLakePusher) shouldSkipTable(sourceName, duckTableName string) bool {
+	if len(p.config.SkipTables) == 0 {
+		return false
+	}
+	return p.config.SkipTables[sourceName] || p.config.SkipTables[duckTableName]
 }
 
 // describeColumns runs a DESCRIBE-style query and returns the column names. It

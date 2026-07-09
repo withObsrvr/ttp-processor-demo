@@ -34,6 +34,7 @@ func main() {
 	dlDataPath := flag.String("ducklake-data-path", "", "S3/B2 bucket path (e.g., s3://obsrvr-lake-testnet/)")
 	dlMetaSchema := flag.String("ducklake-metadata-schema", "bronze_meta", "DuckLake metadata schema")
 	dlSchemaSQL := flag.String("ducklake-schema-sql", "", "Path to v3_bronze_schema.sql (optional)")
+	dlSkipTables := flag.String("ducklake-skip-tables", "", "Comma-separated source or DuckLake table names to skip during push")
 	b2KeyID := flag.String("b2-key-id", "", "B2/S3 access key ID")
 	b2KeySecret := flag.String("b2-key-secret", "", "B2/S3 secret access key")
 	b2Endpoint := flag.String("b2-endpoint", "s3.us-west-004.backblazeb2.com", "B2/S3 endpoint")
@@ -226,6 +227,7 @@ func main() {
 			BronzeSchemaSQL: *dlSchemaSQL,
 			StartLedger:     startLedger,
 			EndLedger:       endLedger,
+			SkipTables:      parseCSVSet(*dlSkipTables),
 		})
 		if err != nil {
 			fatalChunk("ducklake_setup", err, "retry_chunk")
@@ -290,6 +292,17 @@ func main() {
 			log.Printf("Flowctl completion report failed: %v", err)
 		}
 	}
+}
+
+func parseCSVSet(value string) map[string]bool {
+	result := map[string]bool{}
+	for _, part := range strings.Split(value, ",") {
+		item := strings.TrimSpace(part)
+		if item != "" {
+			result[item] = true
+		}
+	}
+	return result
 }
 
 func classifyFlowctlFailure(err error) flowctlpb.FailureClass {
