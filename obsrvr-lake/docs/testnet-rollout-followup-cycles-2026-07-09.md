@@ -102,7 +102,7 @@ Verification:
 
 ## Cycle 5B Implementation Status - 2026-07-10
 
-Implemented locally across serving and `stellar-query-api`:
+Implemented and deployed across serving and `stellar-query-api`:
 
 - `serving.sv_transactions_recent` now carries the Horizon transaction resource fields needed to hydrate account transaction pages without re-scanning Bronze: `transaction_id`, `tx_envelope`, `tx_result`, `tx_meta`, `tx_fee_meta`, and `tx_signers`.
 - The live transactions serving projector reads those fields from Bronze `transactions_row_v2` and preserves existing XDR values during upserts when an incoming row is partial.
@@ -116,19 +116,35 @@ Verification:
 - `go test -count=1 ./...` in `obsrvr-lake/serving-projection-processor/go` passes locally.
 - `GOWORK=off GOCACHE=/tmp/go-build-cache go test -count=1 ./...` in `obsrvr-lake/serving-cold-backfill/go` passes locally.
 
-Rollout requirements:
+Rollout result:
 
-- Apply the updated serving schema before deploying the query API path that prefers `sv_transactions_recent`.
-- Rebuild or incrementally populate `serving.sv_transactions_recent` after the schema change so historical rows have the new XDR fields.
-- Deploy the serving projection processor, serving cold backfill image, and `stellar-query-api` image from the same source revision.
-- Public smoke should verify `/api/v1/horizon-compat/accounts/{id}/transactions?limit=1&order=desc` returns `envelope_xdr`, `result_xdr`, `result_meta_xdr`, and `fee_meta_xdr`.
+- Source commit: `d934f3d` (`Fix transaction recent backfill retention source`).
+- Deployed tag: `cycle5b-horizon-d934f3d-202607101527`.
+- `serving-projection-processor-fast` deployed successfully.
+- `serving-projection-processor` deployed successfully.
+- `serving-cold-backfill-transactions-recent-cycle5b` completed successfully for `sv_transactions_recent`.
+  - Replay range: `3000000..3534034`.
+  - Chunk copy counts: `606,097`, `778,758`, `854,683`, `762,011`, `1,029,022`, and `392,004` rows.
+  - Serving checkpoint: `sv_transactions_recent|testnet|3534034`, updated `2026-07-10 15:54:13Z`.
+  - Table verification for the replay window returned `4,397,958` unique rows spanning `3018954..3534034`; the lower bound reflects the table retention predicate and rows present in `transactions_row_v2`.
+- `stellar-query-api` deployed successfully as Nomad job version `59`, deployment `93a29b93`, allocation `ec86e36e`.
 
-Public smoke attempt on current testnet deployment:
+Pre-rollout public smoke:
 
 - `2026-07-10`: `GET /health`, `/api/v1/horizon-compat/fee_stats`, `/api/v1/horizon-compat/ledgers?limit=1&order=desc`, and `/api/v1/horizon-compat/accounts/{id}` all returned `200`.
 - `GET /api/v1/horizon-compat/accounts/GBTHMMFWTAPFAHRGS33LKETZYJKBTNEENRN47EDZMZPT2BNCJO47GVQG/transactions?limit=1&order=desc` returned `200`, but the transaction record had empty `envelope_xdr`, empty `result_xdr`, empty `fee_meta_xdr`, missing `result_meta_xdr`, and `signatures: null`.
 - `GET /api/v1/horizon-compat/transactions/366bc4543a8fe66e09c021af35377c78df6e90e57f85582a0aad1617fcc027e8` did not complete within roughly 60 seconds and was cancelled locally.
-- Conclusion: the current public deployment is still pre-Cycle-5B for account transaction hydration. Do not treat this as a Cycle 5B pass until the schema/backfill/query-api rollout above is completed.
+
+Post-rollout public smoke:
+
+- `GET /health` -> `200` in `0.128s`.
+- `GET /api/v1/horizon-compat/fee_stats` -> `200` in `0.120s`.
+- `GET /api/v1/horizon-compat/ledgers?limit=1&order=desc` -> `200` in `0.384s`.
+- `GET /api/v1/horizon-compat/accounts/GBTHMMFWTAPFAHRGS33LKETZYJKBTNEENRN47EDZMZPT2BNCJO47GVQG` -> `200` in `0.110s`.
+- `GET /api/v1/horizon-compat/accounts/GBTHMMFWTAPFAHRGS33LKETZYJKBTNEENRN47EDZMZPT2BNCJO47GVQG/transactions?limit=1&order=desc` -> `200` in `0.144s`.
+- `GET /api/v1/horizon-compat/transactions/366bc4543a8fe66e09c021af35377c78df6e90e57f85582a0aad1617fcc027e8` -> `200` in `0.104s`.
+- Both transaction responses returned hash `366bc4543a8fe66e09c021af35377c78df6e90e57f85582a0aad1617fcc027e8`, ledger `3177525`, paging token `13647365957242880`, non-empty `envelope_xdr`, `result_xdr`, `result_meta_xdr`, `fee_meta_xdr`, and one signature.
+- Conclusion: Cycle 5B is deployed and the account transaction hydration acceptance check passes on public testnet.
 
 ## Scope Line
 
