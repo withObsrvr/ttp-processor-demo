@@ -20,6 +20,7 @@ type AccountTransaction struct {
 	LedgerSequence  int64    `json:"ledger_sequence"`
 	ClosedAt        string   `json:"closed_at"`
 	TransactionHash string   `json:"transaction_hash"`
+	PagingToken     string   `json:"-"`
 	Successful      *bool    `json:"successful,omitempty"`
 	SourceAccount   *string  `json:"source_account,omitempty"`
 	FeeCharged      *string  `json:"fee_charged,omitempty"`

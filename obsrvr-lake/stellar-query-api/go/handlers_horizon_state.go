@@ -263,6 +263,9 @@ func decodeHorizonHistoryCursor(raw string) (*HistoryCursor, error) {
 }
 
 func horizonAccountTransactionPagingToken(tx AccountTransaction, order string) string {
+	if tx.PagingToken != "" {
+		return tx.PagingToken
+	}
 	ts, _ := time.Parse(time.RFC3339Nano, tx.ClosedAt)
 	if ts.IsZero() {
 		ts = parseHorizonTimestamp(tx.ClosedAt)
