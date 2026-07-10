@@ -349,7 +349,7 @@ func horizonOperationWhereClause(filters OperationFilters, startArg int) (string
 		arg++
 	}
 	if filters.PaymentsOnly {
-		conditions = append(conditions, "is_payment_op = true")
+		conditions = append(conditions, horizonPaymentOperationPredicate)
 	}
 	if filters.SorobanOnly {
 		conditions = append(conditions, "is_soroban_op = true")

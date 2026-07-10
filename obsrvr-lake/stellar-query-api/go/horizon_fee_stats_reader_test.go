@@ -23,7 +23,7 @@ func TestHorizonFeeStatsUsesPerOperationFeesAndRoundedCapacity(t *testing.T) {
 			(2,100,1,50),
 			(3,100,2,50),
 			(4,100,16,50),
-			(5,100,0,50),
+			(5,100,50,50),
 			(6,100,3,50)`,
 		`INSERT INTO transactions_row_v2 VALUES
 			(2,100,200,1),

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,6 +16,8 @@ import (
 	"github.com/stellar/go-stellar-sdk/toid"
 	"github.com/stellar/go-stellar-sdk/xdr"
 )
+
+const horizonInvokeContractHostFunction = "HostFunctionTypeHostFunctionTypeInvokeContract"
 
 func (h *HorizonCompatHandlers) HandleOperations(w http.ResponseWriter, r *http.Request) {
 	h.handleOperationCollection(w, r, OperationFilters{})
@@ -195,6 +198,7 @@ func (h *HorizonCompatHandlers) handleEffectCollection(w http.ResponseWriter, r 
 	filters.Limit = int(page.Limit)
 	filters.Order = page.Order
 	filters.Cursor = cursor
+	filters.HorizonOrder = true
 
 	ctx, cancel := withInteractiveQueryTimeout(r.Context())
 	defer cancel()
@@ -252,7 +256,36 @@ func decodeHorizonEffectCursor(raw string) (*EffectCursor, error) {
 	if raw == "now" {
 		return nil, nil
 	}
+	if op, idx, ok, err := parseHorizonEffectPair(raw); ok || err != nil {
+		if err != nil {
+			return nil, err
+		}
+		effectIndex := int(idx) - 1
+		if effectIndex < 0 {
+			effectIndex = -1
+		}
+		return &EffectCursor{OperationID: &op, EffectIndex: effectIndex}, nil
+	}
 	return DecodeEffectCursor(raw)
+}
+
+func parseHorizonEffectPair(raw string) (int64, int64, bool, error) {
+	opRaw, idxRaw, found := strings.Cut(raw, "-")
+	if !found || opRaw == "" || idxRaw == "" || strings.Contains(idxRaw, "-") {
+		return 0, 0, false, nil
+	}
+	op, err := strconv.ParseInt(opRaw, 10, 64)
+	if err != nil {
+		return 0, 0, false, nil
+	}
+	idx, err := strconv.ParseInt(idxRaw, 10, 64)
+	if err != nil {
+		return 0, 0, true, err
+	}
+	if op <= 0 {
+		return 0, 0, true, errors.New("effect cursor operation id must be positive")
+	}
+	return op, idx, true, nil
 }
 
 func horizonOperationRecord(r *http.Request, op EnrichedOperation, order string) hoperations.Operation {
@@ -270,13 +303,20 @@ func horizonOperationRecord(r *http.Request, op EnrichedOperation, order string)
 	if op.Type == int32(xdr.OperationTypeInvokeHostFunction) {
 		return hoperations.InvokeHostFunction{
 			Base:                base,
-			Function:            derefString(op.SorobanFunction),
+			Function:            horizonHostFunctionName(op),
 			Parameters:          horizonHostFunctionParameters(op.SorobanArgsJSON),
-			Address:             derefString(op.SorobanContractID),
+			Address:             "",
 			AssetBalanceChanges: []hoperations.AssetContractBalanceChange{},
 		}
 	}
 	return base
+}
+
+func horizonHostFunctionName(op EnrichedOperation) string {
+	if op.SorobanContractID != nil || op.SorobanFunction != nil {
+		return horizonInvokeContractHostFunction
+	}
+	return ""
 }
 
 func horizonHostFunctionParameters(raw *string) []hoperations.HostFunctionParameter {
@@ -363,6 +403,9 @@ func horizonOperationPagingToken(op EnrichedOperation, order string) string {
 }
 
 func horizonEffectPagingToken(effect SilverEffect, order string) string {
+	if effect.OperationID != nil {
+		return fmt.Sprintf("%d-%d", *effect.OperationID, horizonEffectOrder(effect))
+	}
 	return EffectCursor{
 		LedgerSequence:  effect.LedgerSequence,
 		TransactionHash: effect.TransactionHash,
@@ -374,10 +417,14 @@ func horizonEffectPagingToken(effect SilverEffect, order string) string {
 
 func horizonEffectID(effect SilverEffect) string {
 	if effect.OperationID != nil {
-		return strconv.FormatInt(*effect.OperationID, 10) + "-" + strconv.Itoa(effect.EffectIndex)
+		return fmt.Sprintf("%019d-%010d", *effect.OperationID, horizonEffectOrder(effect))
 	}
 	return strconv.FormatInt(effect.LedgerSequence, 10) + "-" + effect.TransactionHash + "-" +
 		strconv.Itoa(effect.OperationIndex) + "-" + strconv.Itoa(effect.EffectIndex)
+}
+
+func horizonEffectOrder(effect SilverEffect) int {
+	return effect.EffectIndex + 1
 }
 
 func horizonOperationTypeName(opType int32, fallback string) string {

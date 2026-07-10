@@ -952,7 +952,7 @@ func (r *UnifiedDuckDBReader) GetEnrichedOperationsWithCursor(ctx context.Contex
 	}
 
 	if filters.PaymentsOnly {
-		whereClause += " AND is_payment_op = true"
+		whereClause += " AND " + horizonPaymentOperationPredicate
 	}
 
 	if filters.SorobanOnly {
@@ -2886,12 +2886,20 @@ func (r *UnifiedDuckDBReader) GetEffects(ctx context.Context, filters EffectFilt
 
 	// Cursor pagination - direction depends on order
 	if filters.Cursor != nil {
-		conditions = append(conditions, fmt.Sprintf(`
+		if filters.HorizonOrder && filters.Cursor.OperationID != nil {
+			conditions = append(conditions, fmt.Sprintf(`
+			(operation_id, effect_index) %s ($%d, $%d)
+		`, cursorOp, argNum, argNum+1))
+			args = append(args, *filters.Cursor.OperationID, filters.Cursor.EffectIndex)
+			argNum += 2
+		} else {
+			conditions = append(conditions, fmt.Sprintf(`
 			(ledger_sequence, transaction_hash, operation_index, effect_index) %s ($%d, $%d, $%d, $%d)
 		`, cursorOp, argNum, argNum+1, argNum+2, argNum+3))
-		args = append(args, filters.Cursor.LedgerSequence, filters.Cursor.TransactionHash,
-			filters.Cursor.OperationIndex, filters.Cursor.EffectIndex)
-		argNum += 4
+			args = append(args, filters.Cursor.LedgerSequence, filters.Cursor.TransactionHash,
+				filters.Cursor.OperationIndex, filters.Cursor.EffectIndex)
+			argNum += 4
+		}
 	}
 
 	whereClause := "1=1"
@@ -2905,15 +2913,15 @@ func (r *UnifiedDuckDBReader) GetEffects(ctx context.Context, filters EffectFilt
 	}
 
 	if shouldQueryAccountEffectsByTier(filters) {
-		return r.getAccountEffectsByTier(ctx, whereClause, orderDir, argNum, args, limit, filters.Order)
+		return r.getAccountEffectsByTier(ctx, whereClause, orderDir, argNum, args, limit, filters.Order, filters.HorizonOrder)
 	}
 
 	if shouldQueryEffectsSequentially(filters) {
-		effects, nextCursor, hasMore, err := r.getEffectsFromSchema(ctx, r.hotSchema, whereClause, orderDir, argNum, args, limit, filters.Order)
+		effects, nextCursor, hasMore, err := r.getEffectsFromSchema(ctx, r.hotSchema, whereClause, orderDir, argNum, args, limit, filters.Order, filters.HorizonOrder)
 		if err == nil && len(effects) > 0 {
 			return effects, nextCursor, hasMore, nil
 		}
-		effects, nextCursor, hasMore, coldErr := r.getEffectsFromSchema(ctx, r.coldSchema, whereClause, orderDir, argNum, args, limit, filters.Order)
+		effects, nextCursor, hasMore, coldErr := r.getEffectsFromSchema(ctx, r.coldSchema, whereClause, orderDir, argNum, args, limit, filters.Order, filters.HorizonOrder)
 		if coldErr == nil {
 			return effects, nextCursor, hasMore, nil
 		}
@@ -2921,6 +2929,11 @@ func (r *UnifiedDuckDBReader) GetEffects(ctx context.Context, filters EffectFilt
 			return nil, "", false, fmt.Errorf("unified GetEffects sequential hot=%v cold=%w", err, coldErr)
 		}
 		return nil, "", false, fmt.Errorf("unified GetEffects sequential cold: %w", coldErr)
+	}
+
+	orderBy := fmt.Sprintf("ledger_sequence %s, transaction_hash %s, operation_index %s, effect_index %s", orderDir, orderDir, orderDir, orderDir)
+	if filters.HorizonOrder {
+		orderBy = fmt.Sprintf("operation_id %s, effect_index %s", orderDir, orderDir)
 	}
 
 	// Unified query with hot+cold merge - effects are append-only so no dedup needed
@@ -2951,9 +2964,9 @@ func (r *UnifiedDuckDBReader) GetEffects(ctx context.Context, filters EffectFilt
 				   created_at
 			FROM %s.effects WHERE %s
 		) combined
-		ORDER BY ledger_sequence %s, transaction_hash %s, operation_index %s, effect_index %s
+		ORDER BY %s
 		LIMIT $%d
-	`, r.hotSchema, whereClause, r.coldSchema, whereClause, orderDir, orderDir, orderDir, orderDir, argNum)
+	`, r.hotSchema, whereClause, r.coldSchema, whereClause, orderBy, argNum)
 	args = append(args, limit+1)
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
@@ -2968,9 +2981,9 @@ func (r *UnifiedDuckDBReader) GetEffects(ctx context.Context, filters EffectFilt
 				   signer_account, signer_weight, offer_id, seller_account,
 				   created_at
 			FROM %s.effects WHERE %s
-			ORDER BY ledger_sequence %s, transaction_hash %s, operation_index %s, effect_index %s
+			ORDER BY %s
 			LIMIT $%d
-		`, r.hotSchema, whereClause, orderDir, orderDir, orderDir, orderDir, argNum)
+		`, r.hotSchema, whereClause, orderBy, argNum)
 		rows, err = r.db.QueryContext(ctx, hotOnlyQuery, args...)
 		if err != nil {
 			return nil, "", false, fmt.Errorf("unified GetEffects (hot-only fallback): %w", err)
@@ -3058,6 +3071,7 @@ func (r *UnifiedDuckDBReader) GetEffects(ctx context.Context, filters EffectFilt
 			TransactionHash: last.TransactionHash,
 			OperationIndex:  last.OperationIndex,
 			EffectIndex:     last.EffectIndex,
+			OperationID:     last.OperationID,
 			Order:           filters.Order,
 		}.Encode()
 	}
@@ -3088,15 +3102,15 @@ func shouldQueryAccountEffectsByTier(filters EffectFilters) bool {
 		filters.LedgerSequence == 0
 }
 
-func (r *UnifiedDuckDBReader) getAccountEffectsByTier(ctx context.Context, whereClause, orderDir string, argNum int, args []interface{}, limit int, order string) ([]SilverEffect, string, bool, error) {
-	hotEffects, hotNext, hotHasMore, hotErr := r.getEffectsFromSchema(ctx, r.hotSchema, whereClause, orderDir, argNum, args, limit, order)
+func (r *UnifiedDuckDBReader) getAccountEffectsByTier(ctx context.Context, whereClause, orderDir string, argNum int, args []interface{}, limit int, order string, horizonOrder bool) ([]SilverEffect, string, bool, error) {
+	hotEffects, hotNext, hotHasMore, hotErr := r.getEffectsFromSchema(ctx, r.hotSchema, whereClause, orderDir, argNum, args, limit, order, horizonOrder)
 	if hotErr == nil {
 		if hotHasMore || len(hotEffects) >= limit {
 			return hotEffects, hotNext, hotHasMore, nil
 		}
 		remaining := limit - len(hotEffects)
 		if remaining > 0 {
-			coldEffects, coldNext, coldHasMore, coldErr := r.getEffectsFromSchema(ctx, r.coldSchema, whereClause, orderDir, argNum, args, remaining, order)
+			coldEffects, coldNext, coldHasMore, coldErr := r.getEffectsFromSchema(ctx, r.coldSchema, whereClause, orderDir, argNum, args, remaining, order, horizonOrder)
 			if coldErr == nil {
 				combined := append(hotEffects, coldEffects...)
 				if coldHasMore {
@@ -3110,7 +3124,7 @@ func (r *UnifiedDuckDBReader) getAccountEffectsByTier(ctx context.Context, where
 		}
 	}
 
-	coldEffects, coldNext, coldHasMore, coldErr := r.getEffectsFromSchema(ctx, r.coldSchema, whereClause, orderDir, argNum, args, limit, order)
+	coldEffects, coldNext, coldHasMore, coldErr := r.getEffectsFromSchema(ctx, r.coldSchema, whereClause, orderDir, argNum, args, limit, order, horizonOrder)
 	if coldErr == nil {
 		return coldEffects, coldNext, coldHasMore, nil
 	}
@@ -3120,12 +3134,16 @@ func (r *UnifiedDuckDBReader) getAccountEffectsByTier(ctx context.Context, where
 	return nil, "", false, fmt.Errorf("unified GetEffects account cold: %w", coldErr)
 }
 
-func (r *UnifiedDuckDBReader) getEffectsFromSchema(ctx context.Context, schema, whereClause, orderDir string, argNum int, args []interface{}, limit int, order string) ([]SilverEffect, string, bool, error) {
+func (r *UnifiedDuckDBReader) getEffectsFromSchema(ctx context.Context, schema, whereClause, orderDir string, argNum int, args []interface{}, limit int, order string, horizonOrder bool) ([]SilverEffect, string, bool, error) {
 	if strings.TrimSpace(schema) == "" {
 		return nil, "", false, sql.ErrNoRows
 	}
 	queryArgs := append([]interface{}{}, args...)
 	queryArgs = append(queryArgs, limit+1)
+	orderBy := fmt.Sprintf("ledger_sequence %s, transaction_hash %s, operation_index %s, effect_index %s", orderDir, orderDir, orderDir, orderDir)
+	if horizonOrder {
+		orderBy = fmt.Sprintf("operation_id %s, effect_index %s", orderDir, orderDir)
+	}
 	query := fmt.Sprintf(`
 		SELECT ledger_sequence, transaction_hash, operation_index, effect_index,
 			   operation_id, effect_type, effect_type_string, account_id,
@@ -3136,9 +3154,9 @@ func (r *UnifiedDuckDBReader) getEffectsFromSchema(ctx context.Context, schema, 
 			   created_at
 		FROM %s.effects
 		WHERE %s
-		ORDER BY ledger_sequence %s, transaction_hash %s, operation_index %s, effect_index %s
+		ORDER BY %s
 		LIMIT $%d
-	`, schema, whereClause, orderDir, orderDir, orderDir, orderDir, argNum)
+	`, schema, whereClause, orderBy, argNum)
 
 	rows, err := r.db.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
@@ -3164,6 +3182,7 @@ func (r *UnifiedDuckDBReader) getEffectsFromSchema(ctx context.Context, schema, 
 			TransactionHash: last.TransactionHash,
 			OperationIndex:  last.OperationIndex,
 			EffectIndex:     last.EffectIndex,
+			OperationID:     last.OperationID,
 			Order:           order,
 		}.Encode()
 	}

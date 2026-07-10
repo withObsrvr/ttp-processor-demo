@@ -154,7 +154,7 @@ func TestHorizonAccountPaymentsFiltersPaymentsOnly(t *testing.T) {
 	}
 }
 
-func TestHorizonTransactionOperationsHydratesInvokeHostFunctionFields(t *testing.T) {
+func TestHorizonTransactionOperationsUsesHorizonInvokeHostFunctionShape(t *testing.T) {
 	argsJSON := `[{"type":"symbol","value":"AAAA"}]`
 	contractID := "CCONTRACT"
 	functionName := "transfer"
@@ -196,7 +196,10 @@ func TestHorizonTransactionOperationsHydratesInvokeHostFunctionFields(t *testing
 	}
 	record := body.Embedded.Records[0]
 	params, _ := record["parameters"].([]any)
-	if record["type"] != "invoke_host_function" || record["address"] != "CCONTRACT" || record["function"] != "transfer" || len(params) != 1 {
+	if record["type"] != "invoke_host_function" ||
+		record["address"] != "" ||
+		record["function"] != "HostFunctionTypeHostFunctionTypeInvokeContract" ||
+		len(params) != 1 {
 		t.Fatalf("record = %#v", record)
 	}
 }
@@ -230,7 +233,7 @@ func TestHorizonTransactionEffectsFiltersAndReturnsPage(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if reader.filters.TransactionHash != "txhash" || reader.filters.Limit != 2 || reader.filters.Order != "asc" {
+	if reader.filters.TransactionHash != "txhash" || reader.filters.Limit != 2 || reader.filters.Order != "asc" || !reader.filters.HorizonOrder {
 		t.Fatalf("filters = %+v", reader.filters)
 	}
 
@@ -246,8 +249,23 @@ func TestHorizonTransactionEffectsFiltersAndReturnsPage(t *testing.T) {
 		t.Fatalf("records len = %d", len(body.Embedded.Records))
 	}
 	record := body.Embedded.Records[0]
-	if record["type"] != "account_credited" || record["account"] != "GACCOUNT" || record["asset_code"] != "USD" || record["amount"] != "5.0000000" {
+	if record["type"] != "account_credited" ||
+		record["account"] != "GACCOUNT" ||
+		record["asset_code"] != "USD" ||
+		record["amount"] != "5.0000000" ||
+		record["id"] != "0000000528280981505-0000000003" ||
+		record["paging_token"] != "528280981505-3" {
 		t.Fatalf("record = %#v", record)
+	}
+}
+
+func TestDecodeHorizonEffectCursorPair(t *testing.T) {
+	cursor, err := decodeHorizonEffectCursor("528280981505-3")
+	if err != nil {
+		t.Fatalf("decodeHorizonEffectCursor: %v", err)
+	}
+	if cursor == nil || cursor.OperationID == nil || *cursor.OperationID != 528280981505 || cursor.EffectIndex != 2 {
+		t.Fatalf("cursor = %+v", cursor)
 	}
 }
 

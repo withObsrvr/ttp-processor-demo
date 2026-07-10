@@ -471,6 +471,7 @@ type EffectCursor struct {
 	TransactionHash string
 	OperationIndex  int
 	EffectIndex     int
+	OperationID     *int64
 	Order           string // "asc" or "desc" - preserves order across pagination
 }
 

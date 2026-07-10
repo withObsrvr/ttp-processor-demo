@@ -762,3 +762,87 @@ and recent ledger lookup, but not yet ready as a broad Horizon replacement for a
 heavy Horizon user. The next parity cycle should focus on collection JSON shape,
 account feed freshness, operation detail, account root trustlines, and effects
 performance before expanding to new route families.
+
+## Post-Fix Public Retest - 2026-07-10 22:01 UTC
+
+Deployed testnet image:
+
+`withobsrvr/stellar-query-api:cycle5b-horizon-01490ea-20260710-payment-class-safe`
+
+Digest:
+
+`sha256:69d4b1173632f6c7f098bdc0358979249a095a1d7a40ee6ebc10a5809f6b3a5b`
+
+Nomad deployment:
+
+`754acb5e`
+
+Command:
+
+```bash
+python3 obsrvr-lake/stellar-query-api/scripts/horizon_compat_accuracy.py --timeout 20 --json
+```
+
+Result: no hard failures. The account-payments 504 introduced by the broad
+serving payment predicate was removed before this final retest.
+
+Passes:
+
+- `fee_stats`
+- `ledger_historical`
+- `account_transactions`
+- `transaction_by_hash`
+- `transaction_operations`
+- `transaction_effects`
+- `operations_latest`
+- `operation_by_id`
+- `operation_effects`
+- `effects_latest`
+- `account_operations`
+
+Remaining partials:
+
+- `ledgers_latest`: live-tip drift only in the final run. Obsrvr was one
+  ledger behind Horizon; this route passed in earlier same-session runs.
+- `account`: account root is still missing trustline balances and
+  `sequence_ledger` / `sequence_time` in public testnet data for the sampled
+  account.
+- `payments_latest`: Obsrvr now uses Horizon's classic payment operation class
+  (`create_account`, payment, path payments, account merge), but the sampled
+  Horizon latest payment was an `invoke_host_function` with contract asset
+  balance changes. Our serving/silver `is_payment_op` flag does not yet mark
+  that Soroban operation as a payment.
+- `account_payments`: same Soroban payment-classification gap. The account
+  serving fast path intentionally remains on the indexed `is_payment_op` flag
+  for now; using the broader OR predicate here timed out.
+- `account_effects`: Obsrvr returns `extend_footprint_ttl` as the first account
+  effect while Horizon returns a contract debit effect. This is a semantic gap
+  in account-effect assignment/filtering, not an ID/cursor formatting issue.
+
+Fixes completed in this pass:
+
+- `invoke_host_function` Horizon shape now reports
+  `HostFunctionTypeHostFunctionTypeInvokeContract` and an empty `address`,
+  matching Horizon's public resource shape.
+- Effects now use Horizon IDs and cursors:
+  `ID=%019d-%010d`, `paging_token=%d-%d`.
+- Horizon effect cursors decode as `(operation_id, effect_order)` and effect
+  queries can order/page by `(operation_id, effect_index)`.
+- Fee stats capacity usage now uses summed transaction operation counts over
+  the last five ledgers, matching Horizon's calculation.
+- Horizon payment filters now include Horizon's classic payment operation type
+  set in non-account paths.
+
+Recommended next order:
+
+1. Populate/serve complete Horizon account root state: trustline balances,
+   liabilities/auth flags, `sequence_ledger`, and `sequence_time`.
+2. Fix Soroban payment classification in the data plane: mark
+   `invoke_host_function` operations with contract asset balance changes as
+   payment-class operations, then backfill/refresh serving rows and add an
+   indexed account-payment path for that broader class.
+3. Align account-effect semantics: avoid exposing TTL/admin effects as account
+   effects when Horizon would not, and ensure contract debit/credit effects are
+   assigned to the same accounts/contracts Horizon uses.
+4. Make the accuracy harness live-tip-aware or add frozen-ledger comparison
+   routes so one-ledger ingestion skew does not appear as a parity regression.

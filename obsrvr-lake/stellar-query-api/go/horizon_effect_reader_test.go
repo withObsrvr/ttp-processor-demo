@@ -90,6 +90,43 @@ func TestUnifiedGetEffectsRecentDescUsesHotFirst(t *testing.T) {
 	}
 }
 
+func TestUnifiedGetEffectsHorizonCursorUsesOperationIDOrder(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	operationID := toid.New(200, 1, 1).ToInt64()
+	cursorOperationID := toid.New(201, 1, 1).ToInt64()
+	reader := &UnifiedDuckDBReader{db: db, hotSchema: "hot", coldSchema: "cold"}
+	mock.ExpectQuery("operation_id, effect_index\\) <").
+		WithArgs(cursorOperationID, 1, 2).
+		WillReturnRows(sqlmock.NewRows(horizonEffectColumns).AddRow(
+			int64(200), "txhash", 0, 0,
+			operationID, int32(1), "account_created", "GA",
+			nil, nil, nil, nil,
+			nil, nil, nil, nil, nil, nil, nil, nil,
+			time.Date(2026, 7, 10, 12, 1, 0, 0, time.UTC),
+		))
+
+	effects, _, _, err := reader.GetEffects(context.Background(), EffectFilters{
+		Limit:        1,
+		Order:        "desc",
+		HorizonOrder: true,
+		Cursor:       &EffectCursor{OperationID: &cursorOperationID, EffectIndex: 1},
+	})
+	if err != nil {
+		t.Fatalf("GetEffects: %v", err)
+	}
+	if len(effects) != 1 || effects[0].OperationID == nil || *effects[0].OperationID != operationID {
+		t.Fatalf("effects = %#v", effects)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
 func TestUnifiedGetEffectsAccountDescUsesHotThenCold(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

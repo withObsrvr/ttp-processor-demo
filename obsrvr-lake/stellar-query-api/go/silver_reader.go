@@ -1423,6 +1423,7 @@ type EffectFilters struct {
 	Limit           int
 	Cursor          *EffectCursor
 	Order           string // "asc" or "desc" (default: "asc" for backward compatibility)
+	HorizonOrder    bool   // order/page by operation_id,effect_index for Horizon compatibility
 }
 
 // EffectTypeCount represents an effect type with its count

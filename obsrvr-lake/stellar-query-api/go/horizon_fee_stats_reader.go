@@ -57,19 +57,18 @@ func (r *HorizonFeeStatsReader) getFeeStatsFromTables(ctx context.Context, db *s
 		return nil, sql.ErrNoRows
 	}
 	oldest, latest := ledgers[len(ledgers)-1].sequence, ledgers[0].sequence
-	feeCharged, maxFee, err := queryFeeValues(ctx, db, txTable, oldest, latest)
+	feeCharged, maxFee, capacityOperationCnt, err := queryFeeValues(ctx, db, txTable, oldest, latest)
 	if err != nil {
 		return nil, err
 	}
 
-	var txCapacityNumerator, txCapacityDenominator int64
+	var txCapacityDenominator int64
 	for _, ledger := range ledgers {
-		txCapacityNumerator += ledger.operationCnt
 		txCapacityDenominator += ledger.maxTxSetSize
 	}
 	capacityUsage := 0.0
 	if txCapacityDenominator > 0 {
-		capacityUsage = float64(txCapacityNumerator) / float64(txCapacityDenominator)
+		capacityUsage = float64(capacityOperationCnt) / float64(txCapacityDenominator)
 		capacityUsage = math.Round(capacityUsage*100) / 100
 	}
 	feeChargedDist := horizonFeeDistribution(feeCharged)
@@ -111,27 +110,31 @@ func queryFeeStatLedgers(ctx context.Context, db *sql.DB, table string) ([]horiz
 	return out, rows.Err()
 }
 
-func queryFeeValues(ctx context.Context, db *sql.DB, table string, start, end int64) ([]int64, []int64, error) {
+func queryFeeValues(ctx context.Context, db *sql.DB, table string, start, end int64) ([]int64, []int64, int64, error) {
 	rows, err := db.QueryContext(ctx, fmt.Sprintf(`
 		SELECT fee_charged, max_fee, operation_count
 		FROM %s
 		WHERE ledger_sequence >= $1 AND ledger_sequence <= $2
 	`, table), start, end)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 	defer rows.Close()
 
 	var feeCharged, maxFee []int64
+	var capacityOperationCnt int64
 	for rows.Next() {
 		var charged, max sql.NullInt64
 		var opCount sql.NullInt64
 		if err := rows.Scan(&charged, &max, &opCount); err != nil {
-			return nil, nil, err
+			return nil, nil, 0, err
 		}
 		denominator := int64(1)
 		if opCount.Valid && opCount.Int64 > 0 {
 			denominator = opCount.Int64
+		}
+		if opCount.Valid {
+			capacityOperationCnt += opCount.Int64
 		}
 		if charged.Valid {
 			feeCharged = append(feeCharged, charged.Int64/denominator)
@@ -140,7 +143,7 @@ func queryFeeValues(ctx context.Context, db *sql.DB, table string, start, end in
 			maxFee = append(maxFee, max.Int64/denominator)
 		}
 	}
-	return feeCharged, maxFee, rows.Err()
+	return feeCharged, maxFee, capacityOperationCnt, rows.Err()
 }
 
 func horizonFlatFeeDistribution(value int64) protocol.FeeDistribution {
