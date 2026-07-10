@@ -1145,6 +1145,12 @@ func (b *Backfiller) retentionPredicate(timeExpr string) string {
 		timeExpr, b.cfg.RetentionDays, b.silverTable("enriched_ledgers"), q(b.cfg.Network), b.cfg.End, timeExpr)
 }
 
+func (b *Backfiller) transactionRetentionPredicate(timeExpr string) string {
+	source := b.bronzeTable("transactions_row_v2")
+	return fmt.Sprintf("%s >= COALESCE((SELECT MAX(created_at) - INTERVAL %d DAY FROM %s WHERE ledger_sequence <= %d), %s)",
+		timeExpr, b.cfg.RetentionDays, source, b.cfg.End, timeExpr)
+}
+
 func selectLedgerStatsRecent(b *Backfiller, chunk Chunk) string {
 	return fmt.Sprintf(`SELECT ledger_sequence, ledger_closed_at AS closed_at, ledger_hash,
 		previous_ledger_hash AS prev_hash, ledger_version AS protocol_version,
@@ -1174,7 +1180,7 @@ func selectTransactionsRecent(b *Backfiller, chunk Chunk) string {
 		current_timestamp AS ingested_at
 		FROM %s
 		WHERE ledger_sequence BETWEEN %d AND %d AND %s`,
-		b.bronzeTable("transactions_row_v2"), chunk.Start, chunk.End, b.retentionPredicate("created_at"))
+		b.bronzeTable("transactions_row_v2"), chunk.Start, chunk.End, b.transactionRetentionPredicate("created_at"))
 }
 
 func selectOperationsRecent(b *Backfiller, chunk Chunk) string {
