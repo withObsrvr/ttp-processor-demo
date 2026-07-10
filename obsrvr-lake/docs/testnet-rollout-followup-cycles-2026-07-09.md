@@ -64,7 +64,7 @@ Cycle 5 should start as a smaller `Cycle 5A` slice focused on the common Horizon
 
 ## Cycle 5A Implementation Status - 2026-07-10
 
-Implemented locally in `stellar-query-api`:
+Implemented and deployed to testnet in `stellar-query-api`:
 
 - `GET /api/v1/horizon-compat/accounts/{id}`
 - `GET /api/v1/horizon-compat/accounts/{id}/transactions`
@@ -77,7 +77,8 @@ Implemented locally in `stellar-query-api`:
 Implementation notes:
 
 - Account root is composed from current account state, balances, and signers using the existing SDK Horizon `Account` shape. Account data remains `{}` until an `account_data_current` data plane exists.
-- Account transaction history reuses the existing full-history account transaction reader and hydrates each transaction through the Bronze XDR-backed Horizon transaction reader.
+- Account transaction history uses the serving account feed when covered, preserves TOID-backed cursors, and hydrates transaction resources by TOID/ledger when Bronze XDR can be read quickly.
+- If account transaction XDR hydration times out, the list route now returns a feed-backed transaction summary instead of failing the whole page. This keeps the migration route usable while marking full cold XDR hydration as a follow-up performance/data-plane concern.
 - Ledger collection/detail uses the existing Bronze hot/cold ledger scans and emits TOID-style ledger paging tokens.
 - Fee stats are computed from the latest five available ledgers and matching transaction fees.
 - Operation detail uses the real `operation_id` TOID and adds the decoded ledger sequence as a cold-scan guard.
@@ -86,12 +87,18 @@ Implementation notes:
 Verification:
 
 - `go test -count=1 ./...` in `obsrvr-lake/stellar-query-api/go` passes locally.
-
-Remaining before rollout:
-
-- Build and deploy a new `stellar-query-api` image to testnet.
-- Run public smoke checks against known testnet accounts, ledgers, operation IDs, and fee stats.
-- Compare representative responses against Horizon testnet where fields are expected to match; keep the documented exceptions for account data and unimplemented nested ledger routes.
+- Deployed image: `withobsrvr/stellar-query-api:cycle5a-horizon-fix8-20260710143233`
+  (`sha256:1c4f26fbbf17b49ffb5212e6f18b81fcce22ee2b5660ffc92edb0dd5eabbeb87`), Nomad job version 58, deployment `33301b01`.
+- Public smoke against `https://obsrvr-lake-testnet.withobsrvr.com` passed:
+  - `/health` -> `200` in `0.115s`
+  - `/api/v1/horizon-compat/fee_stats` -> `200` in `0.108s`
+  - `/api/v1/horizon-compat/ledgers?limit=1&order=desc` -> `200` in `0.386s`
+  - `/api/v1/horizon-compat/ledgers/3535639` -> `200` in `0.108s`
+  - `/api/v1/horizon-compat/operations?limit=1&order=desc` -> `200` in `1.116s`
+  - `/api/v1/horizon-compat/operations/15185453875503105` -> `200` in `0.370s`
+  - `/api/v1/horizon-compat/operations/15185453875503105/effects?limit=5` -> `200` in `0.369s`
+  - `/api/v1/horizon-compat/accounts/GBTHMMFWTAPFAHRGS33LKETZYJKBTNEENRN47EDZMZPT2BNCJO47GVQG` -> `200` in `0.111s`
+  - `/api/v1/horizon-compat/accounts/GBTHMMFWTAPFAHRGS33LKETZYJKBTNEENRN47EDZMZPT2BNCJO47GVQG/transactions?limit=1&order=desc` -> `200` in `4.245s`
 
 ## Scope Line
 
