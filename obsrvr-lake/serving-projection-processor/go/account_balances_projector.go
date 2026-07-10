@@ -21,8 +21,10 @@ type AccountBalancesProjector struct {
 }
 
 type changedAccount struct {
-	AccountID string
-	Ledger    int64
+	AccountID        string
+	Ledger           int64
+	AccountChanged   bool
+	TrustlineChanged bool
 }
 
 type trustlineCurrentRow struct {
@@ -76,24 +78,24 @@ func (p *AccountBalancesProjector) RunOnce(ctx context.Context) (RunStats, error
 	}
 	defer tx.Rollback(ctx)
 
-	deleteTag, err := tx.Exec(ctx, `DELETE FROM serving.sv_account_balances_current WHERE account_id = ANY($1)`, affected)
-	if err != nil {
-		return RunStats{}, fmt.Errorf("delete stale balances: %w", err)
-	}
-
 	var rowsApplied int64
-	for _, accountID := range affected {
-		inserted, err := p.projectAccountXLM(ctx, tx, accountID)
-		if err != nil {
-			return RunStats{}, err
+	for _, c := range changed {
+		projectXLM, projectTrustlines := balanceProjectionSteps(c)
+		if projectXLM {
+			inserted, err := p.projectAccountXLM(ctx, tx, c.AccountID)
+			if err != nil {
+				return RunStats{}, err
+			}
+			rowsApplied += inserted
 		}
-		rowsApplied += inserted
 
-		inserted, err = p.projectAccountTrustlines(ctx, tx, accountID)
-		if err != nil {
-			return RunStats{}, err
+		if projectTrustlines {
+			inserted, err := p.projectAccountTrustlines(ctx, tx, c.AccountID)
+			if err != nil {
+				return RunStats{}, err
+			}
+			rowsApplied += inserted
 		}
-		rowsApplied += inserted
 	}
 
 	now := time.Now().UTC()
@@ -104,23 +106,25 @@ func (p *AccountBalancesProjector) RunOnce(ctx context.Context) (RunStats, error
 		return RunStats{}, fmt.Errorf("commit target tx: %w", err)
 	}
 
-	rowsDeleted := deleteTag.RowsAffected()
-	log.Printf("projector=%s network=%s accounts=%d applied=%d deleted=%d checkpoint=%d", p.Name(), p.network, len(affected), rowsApplied, rowsDeleted, maxLedger)
-	return RunStats{RowsApplied: rowsApplied, RowsDeleted: rowsDeleted, Checkpoint: maxLedger}, nil
+	log.Printf("projector=%s network=%s accounts=%d applied=%d deleted=%d checkpoint=%d", p.Name(), p.network, len(affected), rowsApplied, int64(0), maxLedger)
+	return RunStats{RowsApplied: rowsApplied, RowsDeleted: 0, Checkpoint: maxLedger}, nil
 }
 
 func (p *AccountBalancesProjector) loadChangedAccounts(ctx context.Context, checkpoint int64) ([]changedAccount, error) {
 	rows, err := p.sourcePool.Query(ctx, `
 		WITH changed AS (
-			SELECT account_id, last_modified_ledger
+			SELECT account_id, last_modified_ledger, true AS account_changed, false AS trustline_changed
 			FROM accounts_current
 			WHERE last_modified_ledger > $1
-			UNION
-			SELECT account_id, last_modified_ledger
+			UNION ALL
+			SELECT account_id, last_modified_ledger, false AS account_changed, true AS trustline_changed
 			FROM trustlines_current
 			WHERE last_modified_ledger > $1
 		)
-		SELECT account_id, MAX(last_modified_ledger) as max_ledger
+		SELECT account_id,
+		       MAX(last_modified_ledger) as max_ledger,
+		       BOOL_OR(account_changed) as account_changed,
+		       BOOL_OR(trustline_changed) as trustline_changed
 		FROM changed
 		GROUP BY account_id
 		ORDER BY max_ledger ASC, account_id ASC
@@ -134,7 +138,7 @@ func (p *AccountBalancesProjector) loadChangedAccounts(ctx context.Context, chec
 	var changed []changedAccount
 	for rows.Next() {
 		var c changedAccount
-		if err := rows.Scan(&c.AccountID, &c.Ledger); err != nil {
+		if err := rows.Scan(&c.AccountID, &c.Ledger, &c.AccountChanged, &c.TrustlineChanged); err != nil {
 			return nil, fmt.Errorf("scan changed account: %w", err)
 		}
 		changed = append(changed, c)
@@ -143,6 +147,10 @@ func (p *AccountBalancesProjector) loadChangedAccounts(ctx context.Context, chec
 		return nil, fmt.Errorf("iterate changed accounts: %w", err)
 	}
 	return changed, nil
+}
+
+func balanceProjectionSteps(c changedAccount) (projectXLM bool, projectTrustlines bool) {
+	return c.AccountChanged, c.TrustlineChanged
 }
 
 func (p *AccountBalancesProjector) projectAccountXLM(ctx context.Context, tx pgx.Tx, accountID string) (int64, error) {
@@ -174,6 +182,21 @@ func (p *AccountBalancesProjector) projectAccountXLM(ctx context.Context, tx pgx
 			last_modified_ledger,
 			updated_at
 		) VALUES ($1,'XLM','XLM',NULL,'native',$2,$3,$4,$5)
+		ON CONFLICT (account_id, asset_key) DO UPDATE SET
+			asset_code = EXCLUDED.asset_code,
+			asset_issuer = EXCLUDED.asset_issuer,
+			asset_type = EXCLUDED.asset_type,
+			balance_stroops = EXCLUDED.balance_stroops,
+			balance_display = EXCLUDED.balance_display,
+			limit_stroops = EXCLUDED.limit_stroops,
+			buying_liabilities_stroops = EXCLUDED.buying_liabilities_stroops,
+			selling_liabilities_stroops = EXCLUDED.selling_liabilities_stroops,
+			is_authorized = EXCLUDED.is_authorized,
+			is_authorized_to_maintain_liabilities = EXCLUDED.is_authorized_to_maintain_liabilities,
+			is_clawback_enabled = EXCLUDED.is_clawback_enabled,
+			sponsor = EXCLUDED.sponsor,
+			last_modified_ledger = EXCLUDED.last_modified_ledger,
+			updated_at = EXCLUDED.updated_at
 	`, accountID, balance, stroopsToDisplay(balance), lastModified, updatedAt)
 	if err != nil {
 		return 0, fmt.Errorf("insert XLM balance for %s: %w", accountID, err)
@@ -246,6 +269,21 @@ func (p *AccountBalancesProjector) projectAccountTrustlines(ctx context.Context,
 				last_modified_ledger,
 				updated_at
 			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+			ON CONFLICT (account_id, asset_key) DO UPDATE SET
+				asset_code = EXCLUDED.asset_code,
+				asset_issuer = EXCLUDED.asset_issuer,
+				asset_type = EXCLUDED.asset_type,
+				balance_stroops = EXCLUDED.balance_stroops,
+				balance_display = EXCLUDED.balance_display,
+				limit_stroops = EXCLUDED.limit_stroops,
+				is_authorized = EXCLUDED.is_authorized,
+				buying_liabilities_stroops = EXCLUDED.buying_liabilities_stroops,
+				selling_liabilities_stroops = EXCLUDED.selling_liabilities_stroops,
+				is_authorized_to_maintain_liabilities = EXCLUDED.is_authorized_to_maintain_liabilities,
+				is_clawback_enabled = EXCLUDED.is_clawback_enabled,
+				sponsor = EXCLUDED.sponsor,
+				last_modified_ledger = EXCLUDED.last_modified_ledger,
+				updated_at = EXCLUDED.updated_at
 		`,
 			r.AccountID,
 			assetKey,

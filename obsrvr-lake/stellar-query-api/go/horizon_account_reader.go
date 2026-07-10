@@ -81,20 +81,25 @@ func (r *HorizonAccountReader) GetHorizonAccount(ctx context.Context, accountID 
 		out.LastModifiedTime = ts
 	}
 
+	var balances *AccountBalancesResponse
 	if r.hot != nil {
-		if balances, err := r.hot.GetServingAccountBalances(ctx, accountID); err == nil && balances != nil {
-			out.Balances = horizonBalances(balances)
+		if servingBalances, err := r.hot.GetServingAccountBalances(ctx, accountID); err == nil && servingBalances != nil {
+			balances = servingBalances
 		} else if r.unified == nil {
 			return nil, fmt.Errorf("horizon account balances: %w", err)
 		}
 	}
-	if len(out.Balances) == 0 && r.unified != nil {
-		balances, err := r.unified.GetAccountBalances(ctx, accountID)
+	if r.unified != nil && horizonAccountBalancesNeedUnifiedFill(acc, balances) {
+		unifiedBalances, err := r.unified.GetAccountBalances(ctx, accountID)
 		if err != nil {
-			return nil, fmt.Errorf("horizon account balances: %w", err)
+			if balances == nil {
+				return nil, fmt.Errorf("horizon account balances: %w", err)
+			}
+		} else {
+			balances = mergeAccountBalanceResponses(balances, unifiedBalances)
 		}
-		out.Balances = horizonBalances(balances)
 	}
+	out.Balances = horizonBalances(balances)
 	if r.hot != nil {
 		if signers, err := r.hotAccountSigners(ctx, accountID); err == nil && signers != nil {
 			applyHorizonSigners(out, signers)
@@ -127,11 +132,15 @@ func (r *HorizonAccountReader) GetHorizonAccount(ctx context.Context, accountID 
 }
 
 func (r *HorizonAccountReader) currentAccount(ctx context.Context, accountID string) (*AccountCurrent, error) {
+	var servingAcc *AccountCurrent
 	var servingErr error
 	if r.hot != nil {
 		acc, err := r.hot.GetServingAccountCurrent(ctx, accountID)
 		if err == nil && acc != nil {
-			return acc, nil
+			if !horizonAccountCurrentNeedsUnifiedFill(acc) {
+				return acc, nil
+			}
+			servingAcc = acc
 		}
 		servingErr = err
 	}
@@ -140,8 +149,8 @@ func (r *HorizonAccountReader) currentAccount(ctx context.Context, accountID str
 		if err != nil {
 			return nil, err
 		}
-		if acc != nil {
-			return acc, nil
+		if merged := mergeAccountCurrent(servingAcc, acc); merged != nil {
+			return merged, nil
 		}
 	}
 	if r.hot != nil {
@@ -149,12 +158,127 @@ func (r *HorizonAccountReader) currentAccount(ctx context.Context, accountID str
 		if err != nil {
 			return nil, err
 		}
+		if merged := mergeAccountCurrent(servingAcc, acc); merged != nil {
+			return merged, nil
+		}
 		return acc, nil
+	}
+	if servingAcc != nil {
+		return servingAcc, nil
 	}
 	if servingErr != nil && !errors.Is(servingErr, sql.ErrNoRows) {
 		return nil, servingErr
 	}
 	return nil, nil
+}
+
+func horizonAccountCurrentNeedsUnifiedFill(acc *AccountCurrent) bool {
+	if acc == nil {
+		return true
+	}
+	return acc.SequenceNumber != "" && (acc.SequenceLedger == 0 || acc.SequenceTime == 0)
+}
+
+func mergeAccountCurrent(primary, fallback *AccountCurrent) *AccountCurrent {
+	if primary == nil {
+		return fallback
+	}
+	if fallback == nil {
+		return primary
+	}
+
+	merged := *primary
+	if fallback.LastModifiedLedger > primary.LastModifiedLedger {
+		merged = *fallback
+		if merged.CreatedAt == nil {
+			merged.CreatedAt = primary.CreatedAt
+		}
+	}
+
+	if merged.SequenceNumber == fallback.SequenceNumber {
+		if merged.SequenceLedger == 0 {
+			merged.SequenceLedger = fallback.SequenceLedger
+		}
+		if merged.SequenceTime == 0 {
+			merged.SequenceTime = fallback.SequenceTime
+		}
+	}
+	if merged.HomeDomain == nil {
+		merged.HomeDomain = fallback.HomeDomain
+	}
+	if merged.Sponsor == nil {
+		merged.Sponsor = fallback.Sponsor
+	}
+	if merged.AuthRequired == nil {
+		merged.AuthRequired = fallback.AuthRequired
+	}
+	if merged.AuthRevocable == nil {
+		merged.AuthRevocable = fallback.AuthRevocable
+	}
+	if merged.AuthImmutable == nil {
+		merged.AuthImmutable = fallback.AuthImmutable
+	}
+	if merged.AuthClawbackEnabled == nil {
+		merged.AuthClawbackEnabled = fallback.AuthClawbackEnabled
+	}
+	return &merged
+}
+
+func horizonAccountBalancesNeedUnifiedFill(acc *AccountCurrent, balances *AccountBalancesResponse) bool {
+	if balances == nil || len(balances.Balances) == 0 {
+		return true
+	}
+	if acc == nil || acc.NumSubentries <= 0 {
+		return false
+	}
+	for _, bal := range balances.Balances {
+		if bal.AssetType != "" && bal.AssetType != "native" {
+			return false
+		}
+	}
+	return true
+}
+
+func mergeAccountBalanceResponses(primary, fallback *AccountBalancesResponse) *AccountBalancesResponse {
+	if primary == nil {
+		return fallback
+	}
+	if fallback == nil {
+		return primary
+	}
+
+	merged := &AccountBalancesResponse{
+		AccountID: primary.AccountID,
+		Balances:  make([]Balance, 0, len(primary.Balances)+len(fallback.Balances)),
+	}
+	if merged.AccountID == "" {
+		merged.AccountID = fallback.AccountID
+	}
+
+	seen := make(map[string]struct{}, len(primary.Balances)+len(fallback.Balances))
+	for _, bal := range primary.Balances {
+		key := horizonBalanceKey(bal)
+		seen[key] = struct{}{}
+		merged.Balances = append(merged.Balances, bal)
+	}
+	for _, bal := range fallback.Balances {
+		key := horizonBalanceKey(bal)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		merged.Balances = append(merged.Balances, bal)
+	}
+	merged.TotalBalances = len(merged.Balances)
+	return merged
+}
+
+func horizonBalanceKey(b Balance) string {
+	issuer := ""
+	if b.AssetIssuer != nil {
+		issuer = *b.AssetIssuer
+	}
+	return b.AssetType + ":" + b.AssetCode + ":" + issuer
 }
 
 func (r *HorizonAccountReader) hotAccountSigners(ctx context.Context, accountID string) (*AccountSignersResponse, error) {
