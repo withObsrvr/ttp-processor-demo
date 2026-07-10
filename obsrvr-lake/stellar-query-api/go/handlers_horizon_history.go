@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,6 +16,43 @@ import (
 
 func (h *HorizonCompatHandlers) HandleOperations(w http.ResponseWriter, r *http.Request) {
 	h.handleOperationCollection(w, r, OperationFilters{})
+}
+
+func (h *HorizonCompatHandlers) HandleOperation(w http.ResponseWriter, r *http.Request) {
+	if h.operationReader == nil {
+		renderHorizonProblem(w, r, horizonProblem(
+			http.StatusServiceUnavailable,
+			"data_unavailable",
+			"Data Unavailable",
+			"Horizon compatibility operation lookup requires the unified DuckDB reader.",
+		))
+		return
+	}
+
+	id, err := strconv.ParseInt(mux.Vars(r)["id"], 10, 64)
+	if err != nil || id <= 0 {
+		renderHorizonProblem(w, r, horizonProblem(http.StatusBadRequest, "bad_request", "Bad Request", "operation id must be a positive integer"))
+		return
+	}
+
+	ctx, cancel := withInteractiveQueryTimeout(r.Context())
+	defer cancel()
+	op, err := h.operationReader.GetOperationByID(ctx, id)
+	if err != nil {
+		switch {
+		case errors.Is(err, errHorizonOperationNotFound):
+			renderHorizonProblem(w, r, horizonProblem(http.StatusNotFound, "not_found", "Resource Missing", "Operation not found."))
+		case isQueryTimeout(err):
+			renderHorizonProblem(w, r, horizonProblem(http.StatusGatewayTimeout, "timeout", "Timeout", err.Error()))
+		default:
+			renderHorizonProblem(w, r, horizonProblem(http.StatusInternalServerError, "server_error", "Internal Server Error", err.Error()))
+		}
+		return
+	}
+
+	if err := writeHorizonJSON(w, http.StatusOK, horizonOperationRecord(r, *op, "asc")); err != nil {
+		renderHorizonProblem(w, r, horizonProblem(http.StatusInternalServerError, "server_error", "Internal Server Error", err.Error()))
+	}
 }
 
 func (h *HorizonCompatHandlers) HandlePayments(w http.ResponseWriter, r *http.Request) {
@@ -97,6 +135,15 @@ func (h *HorizonCompatHandlers) handleOperationCollection(w http.ResponseWriter,
 
 func (h *HorizonCompatHandlers) HandleEffects(w http.ResponseWriter, r *http.Request) {
 	h.handleEffectCollection(w, r, EffectFilters{})
+}
+
+func (h *HorizonCompatHandlers) HandleOperationEffects(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(mux.Vars(r)["id"], 10, 64)
+	if err != nil || id <= 0 {
+		renderHorizonProblem(w, r, horizonProblem(http.StatusBadRequest, "bad_request", "Bad Request", "operation id must be a positive integer"))
+		return
+	}
+	h.handleEffectCollection(w, r, EffectFilters{OperationID: &id})
 }
 
 func (h *HorizonCompatHandlers) HandleTransactionEffects(w http.ResponseWriter, r *http.Request) {

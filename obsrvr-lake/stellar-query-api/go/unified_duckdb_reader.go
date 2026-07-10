@@ -2804,6 +2804,13 @@ func (r *UnifiedDuckDBReader) GetEffects(ctx context.Context, filters EffectFilt
 		argNum++
 	}
 
+	// Operation filter
+	if filters.OperationID != nil {
+		conditions = append(conditions, fmt.Sprintf("operation_id = $%d", argNum))
+		args = append(args, *filters.OperationID)
+		argNum++
+	}
+
 	// Determine order direction (default: asc for backward compatibility)
 	orderDir := "ASC"
 	cursorOp := ">"

@@ -1369,6 +1369,7 @@ type EffectFilters struct {
 	EffectType      string // Can be int (as string) or effect type name
 	LedgerSequence  int64
 	TransactionHash string
+	OperationID     *int64
 	StartTime       time.Time
 	EndTime         time.Time
 	Limit           int

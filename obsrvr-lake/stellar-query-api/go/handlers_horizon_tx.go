@@ -11,24 +11,50 @@ import (
 )
 
 type HorizonCompatHandlers struct {
-	txReader        *HorizonTransactionReader
-	operationReader horizonOperationReader
-	effectReader    horizonEffectReader
+	txReader                 *HorizonTransactionReader
+	accountReader            horizonAccountReader
+	accountTransactionReader horizonAccountTransactionReader
+	ledgerReader             horizonLedgerReader
+	feeStatsReader           horizonFeeStatsReader
+	operationReader          horizonOperationReader
+	effectReader             horizonEffectReader
 }
 
 type horizonOperationReader interface {
 	GetEnrichedOperationsWithCursor(context.Context, OperationFilters) ([]EnrichedOperation, string, bool, error)
+	GetOperationByID(context.Context, int64) (*EnrichedOperation, error)
 }
 
 type horizonEffectReader interface {
 	GetEffects(context.Context, EffectFilters) ([]SilverEffect, string, bool, error)
 }
 
+type horizonAccountReader interface {
+	GetHorizonAccount(context.Context, string) (*protocol.Account, error)
+}
+
+type horizonAccountTransactionReader interface {
+	GetAccountTransactions(context.Context, AccountTransactionsFilters) ([]AccountTransaction, string, bool, AccountLedgerIndexCoverage, error)
+}
+
+type horizonLedgerReader interface {
+	GetLedger(context.Context, int64) (*protocol.Ledger, error)
+	GetLedgers(context.Context, horizonPageQuery) ([]protocol.Ledger, error)
+}
+
+type horizonFeeStatsReader interface {
+	GetFeeStats(context.Context) (*protocol.FeeStats, error)
+}
+
 func NewHorizonCompatHandlers(app *application) *HorizonCompatHandlers {
 	return &HorizonCompatHandlers{
-		txReader:        NewHorizonTransactionReader(app.hotReader, app.coldReader, app.indexReader),
-		operationReader: NewHorizonOperationReader(app.unifiedDuckDBReader),
-		effectReader:    app.unifiedDuckDBReader,
+		txReader:                 NewHorizonTransactionReader(app.hotReader, app.coldReader, app.indexReader),
+		accountReader:            NewHorizonAccountReader(app.silverHotReader, app.unifiedDuckDBReader),
+		accountTransactionReader: app.unifiedDuckDBReader,
+		ledgerReader:             NewHorizonLedgerReader(app.queryService, app.unifiedDuckDBReader),
+		feeStatsReader:           NewHorizonFeeStatsReader(app.hotReader, app.coldReader),
+		operationReader:          NewHorizonOperationReader(app.unifiedDuckDBReader),
+		effectReader:             app.unifiedDuckDBReader,
 	}
 }
 

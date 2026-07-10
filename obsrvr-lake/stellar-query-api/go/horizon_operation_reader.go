@@ -3,9 +3,14 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/stellar/go-stellar-sdk/toid"
 )
+
+var errHorizonOperationNotFound = errors.New("horizon operation not found")
 
 type HorizonOperationReader struct {
 	db         *sql.DB
@@ -123,6 +128,67 @@ func (r *HorizonOperationReader) GetEnrichedOperationsWithCursor(ctx context.Con
 	}
 
 	return ops, nextCursor, hasMore, nil
+}
+
+func (r *HorizonOperationReader) GetOperationByID(ctx context.Context, operationID int64) (*EnrichedOperation, error) {
+	if r == nil || r.db == nil {
+		return nil, fmt.Errorf("horizon operation reader unavailable")
+	}
+
+	whereClause := "WHERE operation_id = $1"
+	args := []interface{}{operationID}
+	if ledgerSequence := int64(toid.Parse(operationID).LedgerSequence); ledgerSequence > 0 {
+		whereClause = "WHERE operation_id = $1 AND ledger_sequence = $2"
+		args = append(args, ledgerSequence)
+	}
+
+	arms := make([]string, 0, 2)
+	if r.schemaHasOperationTOIDs(ctx, r.hotSchema) {
+		arms = append(arms, horizonOperationArm(r.hotSchema, whereClause, 1))
+	}
+	if r.schemaHasOperationTOIDs(ctx, r.coldSchema) {
+		arms = append(arms, horizonOperationArm(r.coldSchema, whereClause, 2))
+	}
+	if len(arms) == 0 {
+		return nil, fmt.Errorf("horizon operation reader requires transaction_id and operation_id columns")
+	}
+
+	query := fmt.Sprintf(`
+		WITH combined AS (
+			%s
+		), ranked AS (
+			SELECT *,
+			       ROW_NUMBER() OVER (PARTITION BY operation_id ORDER BY source) AS rn
+			FROM combined
+			WHERE transaction_id IS NOT NULL
+			  AND operation_id IS NOT NULL
+		)
+		SELECT transaction_hash, operation_id, ledger_sequence,
+		       ledger_closed_at, source_account, type, destination,
+		       asset_code, asset_issuer, amount, tx_successful,
+		       tx_fee_charged, is_payment_op, is_soroban_op,
+		       contract_id, function_name, parameters
+		FROM ranked
+		WHERE rn = 1
+		LIMIT 1
+	`, strings.Join(arms, "\nUNION ALL\n"))
+
+	var op EnrichedOperation
+	err := r.db.QueryRowContext(ctx, query, args...).Scan(
+		&op.TransactionHash, &op.OperationID, &op.LedgerSequence,
+		&op.LedgerClosedAt, &op.SourceAccount, &op.Type,
+		&op.Destination, &op.AssetCode, &op.AssetIssuer, &op.Amount,
+		&op.TxSuccessful, &op.TxFeeCharged, &op.IsPaymentOp, &op.IsSorobanOp,
+		&op.SorobanContractID, &op.SorobanFunction, &op.SorobanArgsJSON,
+	)
+	if err == sql.ErrNoRows {
+		return nil, errHorizonOperationNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("horizon GetOperationByID: %w", err)
+	}
+	op.TypeName = operationTypeName(op.Type)
+	return &op, nil
 }
 
 func (r *HorizonOperationReader) schemaHasOperationTOIDs(ctx context.Context, schema string) bool {

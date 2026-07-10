@@ -14,12 +14,26 @@ import (
 type fakeHorizonOperationReader struct {
 	filters OperationFilters
 	ops     []EnrichedOperation
+	op      *EnrichedOperation
 	err     error
 }
 
 func (f *fakeHorizonOperationReader) GetEnrichedOperationsWithCursor(ctx context.Context, filters OperationFilters) ([]EnrichedOperation, string, bool, error) {
 	f.filters = filters
 	return f.ops, "", false, f.err
+}
+
+func (f *fakeHorizonOperationReader) GetOperationByID(ctx context.Context, id int64) (*EnrichedOperation, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.op != nil {
+		return f.op, nil
+	}
+	if len(f.ops) > 0 {
+		return &f.ops[0], nil
+	}
+	return nil, errHorizonOperationNotFound
 }
 
 type fakeHorizonEffectReader struct {

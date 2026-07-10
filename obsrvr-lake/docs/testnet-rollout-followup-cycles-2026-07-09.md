@@ -62,6 +62,37 @@ Next cycle:
 
 Cycle 5 should start as a smaller `Cycle 5A` slice focused on the common Horizon read-only migration surface: account root, ledgers, fee stats, operation by id, operation effects, and tighter Horizon paging semantics for account history routes.
 
+## Cycle 5A Implementation Status - 2026-07-10
+
+Implemented locally in `stellar-query-api`:
+
+- `GET /api/v1/horizon-compat/accounts/{id}`
+- `GET /api/v1/horizon-compat/accounts/{id}/transactions`
+- `GET /api/v1/horizon-compat/ledgers`
+- `GET /api/v1/horizon-compat/ledgers/{sequence}`
+- `GET /api/v1/horizon-compat/fee_stats`
+- `GET /api/v1/horizon-compat/operations/{id}`
+- `GET /api/v1/horizon-compat/operations/{id}/effects`
+
+Implementation notes:
+
+- Account root is composed from current account state, balances, and signers using the existing SDK Horizon `Account` shape. Account data remains `{}` until an `account_data_current` data plane exists.
+- Account transaction history reuses the existing full-history account transaction reader and hydrates each transaction through the Bronze XDR-backed Horizon transaction reader.
+- Ledger collection/detail uses the existing Bronze hot/cold ledger scans and emits TOID-style ledger paging tokens.
+- Fee stats are computed from the latest five available ledgers and matching transaction fees.
+- Operation detail uses the real `operation_id` TOID and adds the decoded ledger sequence as a cold-scan guard.
+- Operation effects are filtered through the shared `EffectFilters.OperationID` path.
+
+Verification:
+
+- `go test -count=1 ./...` in `obsrvr-lake/stellar-query-api/go` passes locally.
+
+Remaining before rollout:
+
+- Build and deploy a new `stellar-query-api` image to testnet.
+- Run public smoke checks against known testnet accounts, ledgers, operation IDs, and fee stats.
+- Compare representative responses against Horizon testnet where fields are expected to match; keep the documented exceptions for account data and unimplemented nested ledger routes.
+
 ## Scope Line
 
 Must have:
