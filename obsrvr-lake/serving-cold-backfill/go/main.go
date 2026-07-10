@@ -853,6 +853,7 @@ func (b *Backfiller) ensureTargetIndexes(ctx context.Context, targetTable string
 		statements = []string{
 			fmt.Sprintf("CREATE UNIQUE INDEX IF NOT EXISTS sv_operations_by_account_uq ON %s (account_id, operation_toid)", table),
 			fmt.Sprintf("CREATE INDEX IF NOT EXISTS sv_operations_by_account_page_idx ON %s (account_id, operation_toid DESC)", table),
+			fmt.Sprintf("CREATE INDEX IF NOT EXISTS sv_operations_by_account_operation_idx ON %s (operation_toid)", table),
 			fmt.Sprintf("CREATE INDEX IF NOT EXISTS sv_operations_by_account_tx_idx ON %s (tx_hash, op_index)", table),
 			fmt.Sprintf("CREATE INDEX IF NOT EXISTS sv_operations_by_account_ledger_idx ON %s (ledger_sequence)", table),
 		}

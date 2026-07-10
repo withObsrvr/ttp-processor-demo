@@ -52,6 +52,20 @@ func (r *HorizonOperationReader) GetEnrichedOperationsWithCursor(ctx context.Con
 		if covered {
 			return ops, next, hasMore, nil
 		}
+		ops, next, hasMore, covered, err = r.serving.GetServingTransactionOperations(ctx, filters)
+		if err != nil {
+			return nil, "", false, err
+		}
+		if covered {
+			return ops, next, hasMore, nil
+		}
+		ops, next, hasMore, covered, err = r.serving.GetServingOperations(ctx, filters)
+		if err != nil {
+			return nil, "", false, err
+		}
+		if covered {
+			return ops, next, hasMore, nil
+		}
 	}
 	if r.db == nil {
 		return nil, "", false, fmt.Errorf("horizon operation reader unavailable")
@@ -154,7 +168,19 @@ func (r *HorizonOperationReader) GetEnrichedOperationsWithCursor(ctx context.Con
 }
 
 func (r *HorizonOperationReader) GetOperationByID(ctx context.Context, operationID int64) (*EnrichedOperation, error) {
-	if r == nil || r.db == nil {
+	if r == nil {
+		return nil, fmt.Errorf("horizon operation reader unavailable")
+	}
+	if r.serving != nil {
+		op, covered, err := r.serving.GetServingOperationByID(ctx, operationID)
+		if err != nil {
+			return nil, err
+		}
+		if covered && op != nil {
+			return op, nil
+		}
+	}
+	if r.db == nil {
 		return nil, fmt.Errorf("horizon operation reader unavailable")
 	}
 

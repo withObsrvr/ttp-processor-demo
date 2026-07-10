@@ -1285,6 +1285,11 @@ create table if not exists serving.sv_operations_by_account (
 
 create index if not exists sv_operations_by_account_page_idx
     on serving.sv_operations_by_account (account_id, operation_toid desc);
+create index if not exists sv_operations_by_account_operation_idx
+    on serving.sv_operations_by_account (operation_toid);
+create index if not exists sv_operations_by_account_payment_page_idx
+    on serving.sv_operations_by_account (account_id, operation_toid desc)
+    where is_payment_op = true;
 create index if not exists sv_operations_by_account_tx_idx
     on serving.sv_operations_by_account (tx_hash, op_index);
 create index if not exists sv_operations_by_account_ledger_idx

@@ -135,6 +135,10 @@ func horizonAccountTransactionHydrationTimeout() time.Duration {
 	return 1500 * time.Millisecond
 }
 
+func horizonLedgerDetailTimeout() time.Duration {
+	return 15 * time.Second
+}
+
 func (h *HorizonCompatHandlers) HandleLedger(w http.ResponseWriter, r *http.Request) {
 	if h.ledgerReader == nil {
 		renderHorizonProblem(w, r, horizonProblem(
@@ -151,7 +155,7 @@ func (h *HorizonCompatHandlers) HandleLedger(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	ctx, cancel := withInteractiveQueryTimeout(r.Context())
+	ctx, cancel := context.WithTimeout(r.Context(), horizonLedgerDetailTimeout())
 	defer cancel()
 	ledger, err := h.ledgerReader.GetLedger(ctx, sequence)
 	if err != nil {

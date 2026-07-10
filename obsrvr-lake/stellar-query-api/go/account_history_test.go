@@ -441,7 +441,7 @@ func TestGetServingAccountTransactionsFallsBackWhenUnboundedFeedStale(t *testing
 	mock.ExpectQuery("SELECT status, complete_from, complete_thru").
 		WillReturnRows(sqlmock.NewRows([]string{"status", "complete_from", "complete_thru"}).AddRow("complete", int64(1), int64(10)))
 	mock.ExpectQuery("SELECT COALESCE\\(MAX\\(ledger_sequence\\), 0\\) FROM serving.sv_ledger_stats_recent").
-		WillReturnRows(sqlmock.NewRows([]string{"latest"}).AddRow(int64(100)))
+		WillReturnRows(sqlmock.NewRows([]string{"latest"}).AddRow(int64(2000)))
 
 	got, next, hasMore, covered, err := hot.GetServingAccountTransactions(context.Background(), AccountTransactionsFilters{
 		AccountID: "GA",
@@ -453,6 +453,41 @@ func TestGetServingAccountTransactionsFallsBackWhenUnboundedFeedStale(t *testing
 	}
 	if covered || hasMore || next != "" || len(got) != 0 {
 		t.Fatalf("expected stale feed fallback, got covered=%v hasMore=%v next=%q rows=%d", covered, hasMore, next, len(got))
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestGetServingAccountTransactionsAllowsSmallUnboundedFeedLag(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	hot := &SilverHotReader{db: db, network: "testnet"}
+	mock.ExpectQuery("SELECT status, complete_from, complete_thru").
+		WillReturnRows(sqlmock.NewRows([]string{"status", "complete_from", "complete_thru"}).AddRow("complete", int64(1), int64(10)))
+	mock.ExpectQuery("SELECT COALESCE\\(MAX\\(ledger_sequence\\), 0\\) FROM serving.sv_ledger_stats_recent").
+		WillReturnRows(sqlmock.NewRows([]string{"latest"}).AddRow(int64(100)))
+	mock.ExpectQuery("FROM serving.sv_transactions_by_account").
+		WithArgs("GA", int64(1), int64(10), 6).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"ledger_sequence", "closed_at", "tx_hash", "toid", "successful", "source_account",
+			"fee_charged", "memo_type", "memo_value", "activity_type", "source_table", "summary",
+		}))
+
+	got, next, hasMore, covered, err := hot.GetServingAccountTransactions(context.Background(), AccountTransactionsFilters{
+		AccountID: "GA",
+		Limit:     5,
+		Order:     "desc",
+	})
+	if err != nil {
+		t.Fatalf("GetServingAccountTransactions: %v", err)
+	}
+	if !covered || hasMore || next != "" || len(got) != 0 {
+		t.Fatalf("expected small-lag serving coverage, got covered=%v hasMore=%v next=%q rows=%d", covered, hasMore, next, len(got))
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)

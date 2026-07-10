@@ -47,20 +47,20 @@ Collection routes accept Horizon-style pagination parameters:
 | --- | --- | --- | --- |
 | `/fee_stats` | GET | implemented | hot/cold ledger and transaction fee data |
 | `/ledgers` | GET | implemented | hot/cold ledger data |
-| `/ledgers/{sequence}` | GET | implemented | hot/cold ledger data |
+| `/ledgers/{sequence}` | GET | implemented | exact hot/cold ledger lookup with `ledger_range` pruning |
 | `/transactions/{hash}` | GET | implemented | serving `sv_transactions_recent` first, then bounded hot/cold Bronze fallback |
-| `/transactions/{hash}/operations` | GET | implemented | enriched operations |
-| `/transactions/{hash}/payments` | GET | implemented | enriched operations, payment subset |
+| `/transactions/{hash}/operations` | GET | implemented | serving `sv_operations_by_account` first, then enriched operations fallback |
+| `/transactions/{hash}/payments` | GET | implemented | serving `sv_operations_by_account` first, payment subset, then fallback |
 | `/transactions/{hash}/effects` | GET | implemented | effects |
 | `/accounts/{id}` | GET | implemented | current account state, balances, signers |
 | `/accounts/{id}/transactions` | GET | implemented | account transaction feed plus Horizon transaction hydration |
 | `/accounts/{id}/operations` | GET | implemented | serving `sv_operations_by_account` first, then unified enriched operations fallback |
 | `/accounts/{id}/payments` | GET | implemented | serving `sv_operations_by_account` first, payment subset, then fallback |
 | `/accounts/{id}/effects` | GET | implemented | serving `sv_effects_by_account` first, then unified effects fallback |
-| `/operations` | GET | implemented | enriched operations |
-| `/operations/{id}` | GET | implemented | enriched operation by TOID |
+| `/operations` | GET | implemented | serving `sv_operations_by_account` first, then enriched operations fallback |
+| `/operations/{id}` | GET | implemented | serving `sv_operations_by_account` first, then enriched operation by TOID fallback |
 | `/operations/{id}/effects` | GET | implemented | effects filtered by operation TOID |
-| `/payments` | GET | implemented | enriched operations, payment subset |
+| `/payments` | GET | implemented | serving `sv_operations_by_account` first, payment subset, then fallback |
 | `/effects` | GET | implemented | effects |
 
 ## Cycle 5B Transaction Hydration
@@ -134,6 +134,22 @@ python3 obsrvr-lake/stellar-query-api/scripts/horizon_compat_accuracy.py \
 This compares high-priority implemented routes, including account transaction
 freshness, operation lookup, effects routes, account balances, and collection
 record shape.
+
+## Current Accuracy Caveats
+
+The 2026-07-10 closeout smoke passed and the accuracy harness had no hard route
+failures. Remaining differences are documented in
+`obsrvr-lake/docs/horizon-compat-accuracy-findings-2026-07-10.md` and are
+mostly compatibility-quality gaps:
+
+- live-tip collections can differ by a few ledgers from SDF Horizon during the
+  comparison window
+- account root is not yet Horizon-exact for all balance, sequence, liability,
+  sponsorship, and auth fields
+- Soroban operation detail formatting differs from Horizon's generic
+  host-function representation
+- `/payments` semantics and effect ID/paging token formatting still differ from
+  Horizon
 
 ## Not Implemented
 

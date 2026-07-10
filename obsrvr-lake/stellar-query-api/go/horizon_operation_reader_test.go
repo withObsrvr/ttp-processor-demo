@@ -220,3 +220,56 @@ func TestHorizonOperationReaderUsesServingAccountOperationsWhenCovered(t *testin
 		t.Fatalf("unmet expectations: %v", err)
 	}
 }
+
+func TestHorizonOperationReaderUsesServingGlobalOperationsWhenCovered(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	operationID := toid.New(30, 2, 1).ToInt64()
+	nextOperationID := toid.New(29, 1, 1).ToInt64()
+	closedAt := time.Date(2026, 7, 10, 12, 5, 0, 0, time.UTC)
+
+	mock.ExpectQuery("FROM serving.sv_watermarks").
+		WillReturnRows(sqlmock.NewRows([]string{"status", "complete_thru"}).
+			AddRow("complete", int64(30)))
+	mock.ExpectQuery("SELECT COALESCE\\(MAX\\(ledger_sequence\\), 0\\) FROM serving.sv_ledger_stats_recent").
+		WillReturnRows(sqlmock.NewRows([]string{"latest"}).AddRow(int64(30)))
+	mock.ExpectQuery("FROM serving.sv_operations_by_account").
+		WithArgs(2).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"operation_toid", "tx_hash", "ledger_sequence", "closed_at", "source_account",
+			"type_code", "type_name", "destination_account", "asset_key", "amount_stroops",
+			"successful", "is_payment_op", "is_soroban_op", "contract_id", "function_name",
+		}).AddRow(operationID, "txhash", int64(30), closedAt, "GA", int64(24), "invoke_host_function", nil, nil, nil, true, false, true, "CCONTRACT", "invoke").
+			AddRow(nextOperationID, "nexttx", int64(29), closedAt, "GB", int64(1), "payment", "GC", "native:XLM", int64(10000000), true, true, false, nil, nil))
+
+	reader := NewHorizonOperationReader(
+		&UnifiedDuckDBReader{db: db, hotSchema: "hot", coldSchema: "cold"},
+		&SilverHotReader{db: db, network: "testnet"},
+	)
+	ops, next, hasMore, err := reader.GetEnrichedOperationsWithCursor(context.Background(), OperationFilters{
+		Limit: 1,
+		Order: "desc",
+	})
+	if err != nil {
+		t.Fatalf("GetEnrichedOperationsWithCursor: %v", err)
+	}
+	if !hasMore || next == "" {
+		t.Fatalf("pagination = hasMore %v next %q", hasMore, next)
+	}
+	if len(ops) != 1 {
+		t.Fatalf("ops len = %d", len(ops))
+	}
+	if ops[0].OperationID != operationID || ops[0].TransactionHash != "txhash" || !ops[0].IsSorobanOp {
+		t.Fatalf("op = %+v", ops[0])
+	}
+	if ops[0].SorobanContractID == nil || *ops[0].SorobanContractID != "CCONTRACT" {
+		t.Fatalf("contract id = %v", ops[0].SorobanContractID)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}

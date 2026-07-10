@@ -29,7 +29,7 @@ func (r *HorizonLedgerReader) GetLedger(ctx context.Context, sequence int64) (*p
 	if r == nil || r.queryService == nil {
 		return nil, fmt.Errorf("horizon ledger reader unavailable")
 	}
-	rows, err := r.queryLedgerRange(ctx, sequence, sequence, 1, "sequence_asc")
+	rows, err := r.queryLedgerExact(ctx, sequence)
 	if err != nil {
 		return nil, err
 	}
@@ -38,6 +38,54 @@ func (r *HorizonLedgerReader) GetLedger(ctx context.Context, sequence int64) (*p
 	}
 	ledger := horizonLedgerFromMap(rows[0])
 	return &ledger, nil
+}
+
+func (r *HorizonLedgerReader) queryLedgerExact(ctx context.Context, sequence int64) ([]map[string]interface{}, error) {
+	qs := r.queryService
+	if qs.hot == nil && qs.cold == nil {
+		return nil, fmt.Errorf("horizon ledger reader has no bronze readers")
+	}
+	if qs.hot == nil {
+		rows, err := qs.cold.QueryLedger(ctx, sequence)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		return scanLedgers(rows)
+	}
+	if qs.cold == nil {
+		rows, err := qs.hot.QueryLedger(ctx, sequence)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		return scanLedgers(rows)
+	}
+
+	queryHot, queryCold, _, _, _, _ := qs.determineSource(sequence, sequence)
+	if queryHot {
+		rows, err := qs.hot.QueryLedger(ctx, sequence)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		scanned, err := scanLedgers(rows)
+		if err != nil {
+			return nil, err
+		}
+		if len(scanned) > 0 {
+			return scanned, nil
+		}
+	}
+	if queryCold {
+		rows, err := qs.cold.QueryLedger(ctx, sequence)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		return scanLedgers(rows)
+	}
+	return []map[string]interface{}{}, nil
 }
 
 func (r *HorizonLedgerReader) GetLedgers(ctx context.Context, page horizonPageQuery) ([]protocol.Ledger, error) {

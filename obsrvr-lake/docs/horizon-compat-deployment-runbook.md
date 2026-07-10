@@ -20,12 +20,14 @@ Services involved:
 - `serving-projection-processor`
 - `serving-cold-backfill`
 - `silver-cold-flusher`
+- `account-index-transformer`
 
 Serving tables involved:
 
 - `serving.sv_transactions_recent`
 - `serving.sv_accounts_current`
 - `serving.sv_account_balances_current`
+- `serving.sv_transactions_by_account`
 - `serving.sv_operations_by_account`
 - `serving.sv_effects_by_account`
 
@@ -67,6 +69,25 @@ sequence_time
 8. Serving current account/balance tables have the Horizon account-root columns
    for sponsorship, auth flags, trustline liabilities, clawback, and
    last-modified ledger.
+9. `account-index-transformer` has `serving_feed.enabled=true` so
+   `serving.sv_transactions_by_account` and
+   `serving.sv_operations_by_account` keep advancing after the historical
+   catch-up.
+10. Postgres serving has the operation-feed indexes required by Horizon
+    account/transaction/global operation pages:
+
+```sql
+create index if not exists sv_operations_by_account_operation_idx
+  on serving.sv_operations_by_account (operation_toid);
+
+create index if not exists sv_operations_by_account_payment_page_idx
+  on serving.sv_operations_by_account (account_id, operation_toid desc)
+  where is_payment_op = true;
+```
+
+Do not add the partial payment index to DuckDB-backed cold-backfill index
+creation; DuckDB does not support partial indexes. Keep the partial index in the
+Postgres serving schema and the live `account-index-transformer` ensure path.
 
 ## Build And Push
 
@@ -85,6 +106,7 @@ docker build -t "withobsrvr/silver-current-state-projector:${TAG}" obsrvr-lake/s
 docker build -t "withobsrvr/serving-projection-processor:${TAG}" obsrvr-lake/serving-projection-processor
 docker build -t "withobsrvr/serving-cold-backfill:${TAG}" obsrvr-lake/serving-cold-backfill
 docker build -t "withobsrvr/silver-cold-flusher:${TAG}" obsrvr-lake/silver-cold-flusher
+docker build -t "withobsrvr/account-index-transformer:${TAG}" obsrvr-lake/account-index-transformer
 
 docker push "withobsrvr/stellar-query-api:${TAG}"
 docker push "withobsrvr/stellar-history-loader:${TAG}"
@@ -96,6 +118,7 @@ docker push "withobsrvr/silver-current-state-projector:${TAG}"
 docker push "withobsrvr/serving-projection-processor:${TAG}"
 docker push "withobsrvr/serving-cold-backfill:${TAG}"
 docker push "withobsrvr/silver-cold-flusher:${TAG}"
+docker push "withobsrvr/account-index-transformer:${TAG}"
 ```
 
 Record the image digests in the rollout note.
@@ -291,6 +314,82 @@ where table_name in (
   'serving.sv_effects_by_account'
 );
 ```
+
+## Maintain By-Account Serving Feeds
+
+`serving.sv_transactions_by_account` and
+`serving.sv_operations_by_account` are maintained by
+`account-index-transformer` when `serving_feed.enabled=true`.
+
+Minimal config block:
+
+```yaml
+serving_feed:
+  enabled: true
+  schema: serving
+  transactions_table: sv_transactions_by_account
+  operations_table: sv_operations_by_account
+  watermark_table: serving.sv_watermarks
+  consumer_table: ops.consumers
+  pipeline: account-index-transformer.account-feed
+```
+
+Deploy `account-index-transformer` after the by-account catch-up and verify the
+live writer is active:
+
+```text
+Serving feed sink: enabled (serving.sv_transactions_by_account)
+Serving feed wrote ... account operation rows
+```
+
+Verification:
+
+```sql
+select table_name, status, complete_from, complete_thru
+from serving.sv_watermarks
+where table_name in (
+  'serving.sv_transactions_by_account',
+  'serving.sv_operations_by_account'
+)
+order by table_name;
+
+select c.relname, i.indisvalid, i.indisready
+from pg_class c
+join pg_index i on i.indexrelid = c.oid
+where c.relname in (
+  'sv_operations_by_account_operation_idx',
+  'sv_operations_by_account_payment_page_idx'
+)
+order by c.relname;
+```
+
+Expected shape after a full-history testnet catch-up:
+
+```text
+serving.sv_operations_by_account|complete|3|<current-ledger>
+serving.sv_transactions_by_account|complete|3|<current-ledger>
+sv_operations_by_account_operation_idx|t|t
+sv_operations_by_account_payment_page_idx|t|t
+```
+
+Important: `serving-cold-backfill` currently writes `complete_from` as the
+range start for the run. If you run a catch-up like `3466466..3539759` after a
+full-history backfill, restore `complete_from` to the true full-history floor
+after the job completes:
+
+```sql
+update serving.sv_watermarks
+set complete_from = 3, updated_at = now()
+where table_name in (
+  'serving.sv_transactions_by_account',
+  'serving.sv_operations_by_account'
+)
+  and complete_from > 3;
+```
+
+Do this only when the earlier ledger range is already populated. Otherwise the
+query API will correctly avoid serving-feed reads for ranges the table does not
+cover.
 
 ## Deploy `stellar-query-api`
 
