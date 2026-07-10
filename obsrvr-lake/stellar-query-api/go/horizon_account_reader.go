@@ -57,13 +57,21 @@ func (r *HorizonAccountReader) GetHorizonAccount(ctx context.Context, accountID 
 		out.LastModifiedTime = ts
 	}
 
-	if r.unified != nil {
+	if r.hot != nil {
+		if balances, err := r.hot.GetServingAccountBalances(ctx, accountID); err == nil && balances != nil {
+			out.Balances = horizonBalances(balances)
+		} else if r.unified == nil {
+			return nil, fmt.Errorf("horizon account balances: %w", err)
+		}
+	}
+	if len(out.Balances) == 0 && r.unified != nil {
 		balances, err := r.unified.GetAccountBalances(ctx, accountID)
 		if err != nil {
 			return nil, fmt.Errorf("horizon account balances: %w", err)
 		}
 		out.Balances = horizonBalances(balances)
-
+	}
+	if r.unified != nil {
 		signers, err := r.unified.GetAccountSigners(ctx, accountID)
 		if err != nil {
 			return nil, fmt.Errorf("horizon account signers: %w", err)

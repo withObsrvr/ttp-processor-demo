@@ -11,6 +11,7 @@ import (
 	hbase "github.com/stellar/go-stellar-sdk/protocols/horizon/base"
 	heffects "github.com/stellar/go-stellar-sdk/protocols/horizon/effects"
 	hoperations "github.com/stellar/go-stellar-sdk/protocols/horizon/operations"
+	"github.com/stellar/go-stellar-sdk/toid"
 	"github.com/stellar/go-stellar-sdk/xdr"
 )
 
@@ -143,7 +144,11 @@ func (h *HorizonCompatHandlers) HandleOperationEffects(w http.ResponseWriter, r 
 		renderHorizonProblem(w, r, horizonProblem(http.StatusBadRequest, "bad_request", "Bad Request", "operation id must be a positive integer"))
 		return
 	}
-	h.handleEffectCollection(w, r, EffectFilters{OperationID: &id})
+	filters := EffectFilters{OperationID: &id}
+	if ledgerSequence := int64(toid.Parse(id).LedgerSequence); ledgerSequence > 0 {
+		filters.LedgerSequence = ledgerSequence
+	}
+	h.handleEffectCollection(w, r, filters)
 }
 
 func (h *HorizonCompatHandlers) HandleTransactionEffects(w http.ResponseWriter, r *http.Request) {

@@ -56,10 +56,10 @@ func (r *HorizonOperationReader) GetEnrichedOperationsWithCursor(ctx context.Con
 	}
 
 	arms := make([]string, 0, 2)
-	if r.schemaHasOperationTOIDs(ctx, r.hotSchema) {
+	if strings.TrimSpace(r.hotSchema) != "" {
 		arms = append(arms, horizonOperationArm(r.hotSchema, whereClause, 1))
 	}
-	if r.schemaHasOperationTOIDs(ctx, r.coldSchema) {
+	if strings.TrimSpace(r.coldSchema) != "" {
 		arms = append(arms, horizonOperationArm(r.coldSchema, whereClause, 2))
 	}
 	if len(arms) == 0 {
@@ -143,10 +143,10 @@ func (r *HorizonOperationReader) GetOperationByID(ctx context.Context, operation
 	}
 
 	arms := make([]string, 0, 2)
-	if r.schemaHasOperationTOIDs(ctx, r.hotSchema) {
+	if strings.TrimSpace(r.hotSchema) != "" {
 		arms = append(arms, horizonOperationArm(r.hotSchema, whereClause, 1))
 	}
-	if r.schemaHasOperationTOIDs(ctx, r.coldSchema) {
+	if strings.TrimSpace(r.coldSchema) != "" {
 		arms = append(arms, horizonOperationArm(r.coldSchema, whereClause, 2))
 	}
 	if len(arms) == 0 {
