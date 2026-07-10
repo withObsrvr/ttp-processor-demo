@@ -48,7 +48,7 @@ type horizonFeeStatsReader interface {
 
 func NewHorizonCompatHandlers(app *application) *HorizonCompatHandlers {
 	return &HorizonCompatHandlers{
-		txReader:                 NewHorizonTransactionReader(app.hotReader, app.coldReader, app.indexReader),
+		txReader:                 NewHorizonTransactionReader(app.hotReader, app.coldReader, app.indexReader, app.silverHotReader),
 		accountReader:            NewHorizonAccountReader(app.silverHotReader, app.unifiedDuckDBReader),
 		accountTransactionReader: NewHorizonAccountTransactionReader(app.silverHotReader, app.unifiedDuckDBReader),
 		ledgerReader:             NewHorizonLedgerReader(app.queryService, app.unifiedDuckDBReader),

@@ -152,11 +152,12 @@ type Backfiller struct {
 }
 
 type FeedProjection struct {
-	Name        string
-	TargetTable string
-	RangeCol    string
-	KeyExprs    []string
-	SelectSQL   func(*Backfiller, Chunk) string
+	Name          string
+	TargetTable   string
+	RangeCol      string
+	KeyExprs      []string
+	InsertColumns []string
+	SelectSQL     func(*Backfiller, Chunk) string
 }
 
 type CurrentProjection struct {
@@ -538,7 +539,15 @@ func checkpointPlan(cfg Config, projections []Projection) []Checkpoint {
 func feedProjections() []FeedProjection {
 	return []FeedProjection{
 		{Name: "sv_ledger_stats_recent", TargetTable: "sv_ledger_stats_recent", RangeCol: "ledger_sequence", KeyExprs: []string{"ledger_sequence"}, SelectSQL: selectLedgerStatsRecent},
-		{Name: "sv_transactions_recent", TargetTable: "sv_transactions_recent", RangeCol: "ledger_sequence", KeyExprs: []string{"tx_hash"}, SelectSQL: selectTransactionsRecent},
+		{Name: "sv_transactions_recent", TargetTable: "sv_transactions_recent", RangeCol: "ledger_sequence", KeyExprs: []string{"tx_hash"}, InsertColumns: []string{
+			"tx_hash", "ledger_sequence", "created_at", "source_account",
+			"fee_charged_stroops", "max_fee_stroops", "successful", "operation_count",
+			"tx_type", "summary_text", "summary_json", "primary_contract_id",
+			"primary_asset_key", "primary_amount_stroops", "memo_type", "memo_value",
+			"account_sequence", "is_soroban", "cpu_insns", "mem_bytes", "read_bytes",
+			"write_bytes", "transaction_id", "tx_envelope", "tx_result", "tx_meta",
+			"tx_fee_meta", "tx_signers", "ingested_at",
+		}, SelectSQL: selectTransactionsRecent},
 		{Name: "sv_operations_recent", TargetTable: "sv_operations_recent", RangeCol: "ledger_sequence", KeyExprs: []string{"operation_id"}, SelectSQL: selectOperationsRecent},
 		{Name: "sv_contract_calls_recent", TargetTable: "sv_contract_calls_recent", RangeCol: "ledger_sequence", KeyExprs: []string{"call_id"}, SelectSQL: selectContractCallsRecent},
 		{Name: "sv_tx_receipts", TargetTable: "sv_tx_receipts", RangeCol: "ledger_sequence", KeyExprs: []string{"tx_hash"}, SelectSQL: selectTxReceipts},
@@ -639,7 +648,7 @@ func (b *Backfiller) replaceFeedProjection(ctx context.Context, chunk Chunk, pro
 		_ = tx.Rollback()
 		return 0, fmt.Errorf("delete %s %d..%d: %w", projection.Name, chunk.Start, chunk.End, err)
 	}
-	insertSQL := fmt.Sprintf("INSERT INTO %s %s", b.servingTable(projection.TargetTable), projection.SelectSQL(b, chunk))
+	insertSQL := fmt.Sprintf("INSERT INTO %s%s %s", b.servingTable(projection.TargetTable), insertColumnsSQL(projection.InsertColumns), projection.SelectSQL(b, chunk))
 	if _, err := tx.ExecContext(ctx, insertSQL); err != nil {
 		_ = tx.Rollback()
 		return 0, fmt.Errorf("insert %s %d..%d: %w", projection.Name, chunk.Start, chunk.End, err)
@@ -656,6 +665,17 @@ func (b *Backfiller) replaceFeedProjection(ctx context.Context, chunk Chunk, pro
 		return 0, err
 	}
 	return rows, nil
+}
+
+func insertColumnsSQL(columns []string) string {
+	if len(columns) == 0 {
+		return ""
+	}
+	out := make([]string, 0, len(columns))
+	for _, column := range columns {
+		out = append(out, ident(column))
+	}
+	return " (" + strings.Join(out, ", ") + ")"
 }
 
 // toPostgresNative rewrites DuckDB SQL that targets the attached Postgres catalog into native
@@ -1150,6 +1170,7 @@ func selectTransactionsRecent(b *Backfiller, chunk Chunk) string {
 		(soroban_contract_id IS NOT NULL) AS is_soroban,
 		soroban_resources_instructions AS cpu_insns, NULL::BIGINT AS mem_bytes,
 		soroban_resources_read_bytes AS read_bytes, soroban_resources_write_bytes AS write_bytes,
+		transaction_id, tx_envelope, tx_result, tx_meta, tx_fee_meta, tx_signers,
 		current_timestamp AS ingested_at
 		FROM %s
 		WHERE ledger_sequence BETWEEN %d AND %d AND %s`,

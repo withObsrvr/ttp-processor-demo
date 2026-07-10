@@ -23,6 +23,7 @@ var (
 type HorizonTransactionReader struct {
 	hot        *sql.DB
 	cold       *sql.DB
+	serving    *sql.DB
 	coldTable  string
 	index      transactionLocationLookup
 	hotEnabled bool
@@ -32,11 +33,14 @@ type transactionLocationLookup interface {
 	LookupTransactionHash(context.Context, string) (*TxLocation, error)
 }
 
-func NewHorizonTransactionReader(hot *HotReader, cold *ColdReader, index transactionLocationLookup) *HorizonTransactionReader {
+func NewHorizonTransactionReader(hot *HotReader, cold *ColdReader, index transactionLocationLookup, serving *SilverHotReader) *HorizonTransactionReader {
 	reader := &HorizonTransactionReader{index: index}
 	if hot != nil {
 		reader.hot = hot.DB()
 		reader.hotEnabled = reader.hot != nil
+	}
+	if serving != nil {
+		reader.serving = serving.DB()
 	}
 	if cold != nil {
 		reader.cold = cold.DB()
@@ -46,7 +50,7 @@ func NewHorizonTransactionReader(hot *HotReader, cold *ColdReader, index transac
 }
 
 func (r *HorizonTransactionReader) Available() bool {
-	return r != nil && (r.hot != nil || r.cold != nil)
+	return r != nil && (r.serving != nil || r.hot != nil || r.cold != nil)
 }
 
 func (r *HorizonTransactionReader) GetTransactionByHash(ctx context.Context, hash string) (*protocol.Transaction, error) {
@@ -63,6 +67,25 @@ func (r *HorizonTransactionReader) GetTransactionByIDAtLedger(ctx context.Contex
 	}
 	if transactionID <= 0 {
 		return nil, errHorizonTransactionNotFound
+	}
+	var servingResourceErr error
+	if r.serving != nil {
+		query := horizonServingTransactionIDQuery
+		args := []interface{}{transactionID}
+		if ledgerSeq > 0 {
+			query = horizonServingTransactionIDQueryWithLedger
+			args = []interface{}{ledgerSeq, transactionID}
+		}
+		tx, err := r.query(ctx, r.serving, query, args...)
+		if err == nil {
+			return tx, nil
+		}
+		if errors.Is(err, errHorizonTransactionXDRUnavailable) {
+			servingResourceErr = err
+		}
+		if err != sql.ErrNoRows && !errors.Is(err, errHorizonTransactionXDRUnavailable) && !isMissingServingTransactionResource(err) {
+			return nil, err
+		}
 	}
 	if r.hot != nil {
 		query := horizonHotTransactionIDQuery
@@ -94,12 +117,35 @@ func (r *HorizonTransactionReader) GetTransactionByIDAtLedger(ctx context.Contex
 			return nil, err
 		}
 	}
+	if servingResourceErr != nil {
+		return nil, servingResourceErr
+	}
 	return nil, errHorizonTransactionNotFound
 }
 
 func (r *HorizonTransactionReader) getTransactionByHash(ctx context.Context, hash string, ledgerSeq int64) (*protocol.Transaction, error) {
 	if !r.Available() {
 		return nil, errHorizonTransactionReaderUnavailable
+	}
+
+	var servingResourceErr error
+	if r.serving != nil {
+		query := horizonServingTransactionHashQuery
+		args := []interface{}{hash}
+		if ledgerSeq > 0 {
+			query = horizonServingTransactionHashQueryWithLedger
+			args = []interface{}{ledgerSeq, hash}
+		}
+		tx, err := r.query(ctx, r.serving, query, args...)
+		if err == nil {
+			return tx, nil
+		}
+		if errors.Is(err, errHorizonTransactionXDRUnavailable) {
+			servingResourceErr = err
+		}
+		if err != sql.ErrNoRows && !errors.Is(err, errHorizonTransactionXDRUnavailable) && !isMissingServingTransactionResource(err) {
+			return nil, err
+		}
 	}
 
 	if r.hot != nil {
@@ -137,6 +183,9 @@ func (r *HorizonTransactionReader) getTransactionByHash(ctx context.Context, has
 		}
 	}
 
+	if servingResourceErr != nil {
+		return nil, servingResourceErr
+	}
 	return nil, errHorizonTransactionNotFound
 }
 
@@ -158,12 +207,59 @@ func (r *HorizonTransactionReader) lookupLedgerHint(ctx context.Context, hash st
 	return loc.LedgerSequence
 }
 
+func isMissingServingTransactionResource(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "sv_transactions_recent") ||
+		strings.Contains(msg, "transaction_id") ||
+		strings.Contains(msg, "tx_envelope") ||
+		strings.Contains(msg, "tx_result") ||
+		strings.Contains(msg, "tx_meta") ||
+		strings.Contains(msg, "tx_fee_meta") ||
+		strings.Contains(msg, "tx_signers")
+}
+
 const horizonTransactionSelect = `
 	SELECT ledger_sequence, transaction_hash, transaction_id, source_account,
 	       source_account_muxed, account_sequence, fee_charged, max_fee,
 	       successful, operation_count, memo_type, memo, created_at,
 	       tx_envelope, tx_result, tx_meta, tx_fee_meta, tx_signers,
 	       fee_account_muxed, inner_transaction_hash
+`
+
+const horizonServingTransactionSelect = `
+	SELECT ledger_sequence, tx_hash AS transaction_hash, transaction_id, source_account,
+	       NULL::text AS source_account_muxed, account_sequence,
+	       fee_charged_stroops AS fee_charged, max_fee_stroops AS max_fee,
+	       successful, operation_count, memo_type, memo_value AS memo, created_at,
+	       tx_envelope, tx_result, tx_meta, tx_fee_meta, tx_signers,
+	       NULL::text AS fee_account_muxed, NULL::text AS inner_transaction_hash
+`
+
+const horizonServingTransactionHashQuery = horizonServingTransactionSelect + `
+	FROM serving.sv_transactions_recent
+	WHERE tx_hash = $1
+	LIMIT 1
+`
+
+const horizonServingTransactionHashQueryWithLedger = horizonServingTransactionSelect + `
+	FROM serving.sv_transactions_recent
+	WHERE ledger_sequence = $1 AND tx_hash = $2
+	LIMIT 1
+`
+
+const horizonServingTransactionIDQuery = horizonServingTransactionSelect + `
+	FROM serving.sv_transactions_recent
+	WHERE transaction_id = $1
+	LIMIT 1
+`
+
+const horizonServingTransactionIDQueryWithLedger = horizonServingTransactionSelect + `
+	FROM serving.sv_transactions_recent
+	WHERE ledger_sequence = $1 AND transaction_id = $2
+	LIMIT 1
 `
 
 const horizonHotTransactionQuery = horizonTransactionSelect + `

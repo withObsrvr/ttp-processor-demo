@@ -25,6 +25,7 @@ type TransactionsRecentProjector struct {
 type bronzeTransactionRow struct {
 	LedgerSequence               int64
 	TransactionHash              string
+	TransactionID                *int64
 	SourceAccount                *string
 	FeeCharged                   *int64
 	MaxFee                       *int64
@@ -38,6 +39,11 @@ type bronzeTransactionRow struct {
 	SorobanResourcesReadBytes    *int64
 	SorobanResourcesWriteBytes   *int64
 	SorobanContractID            *string
+	TxEnvelope                   *string
+	TxResult                     *string
+	TxMeta                       *string
+	TxFeeMeta                    *string
+	TxSigners                    *string
 }
 
 func NewTransactionsRecentProjector(network string, batchSize int, sourcePool, silverPool, targetPool *pgxpool.Pool, checkpoints *CheckpointStore) *TransactionsRecentProjector {
@@ -75,6 +81,7 @@ func (p *TransactionsRecentProjector) RunOnce(ctx context.Context) (RunStats, er
 		SELECT
 			ledger_sequence,
 			transaction_hash,
+			transaction_id,
 			source_account,
 			fee_charged,
 			max_fee,
@@ -87,7 +94,12 @@ func (p *TransactionsRecentProjector) RunOnce(ctx context.Context) (RunStats, er
 			soroban_resources_instructions,
 			soroban_resources_read_bytes,
 			soroban_resources_write_bytes,
-			soroban_contract_id
+			soroban_contract_id,
+			tx_envelope,
+			tx_result,
+			tx_meta,
+			tx_fee_meta,
+			tx_signers
 		FROM transactions_row_v2
 		WHERE ledger_sequence > $1
 		  AND created_at >= $3::timestamp - INTERVAL '30 days'
@@ -105,6 +117,7 @@ func (p *TransactionsRecentProjector) RunOnce(ctx context.Context) (RunStats, er
 		if err := rows.Scan(
 			&r.LedgerSequence,
 			&r.TransactionHash,
+			&r.TransactionID,
 			&r.SourceAccount,
 			&r.FeeCharged,
 			&r.MaxFee,
@@ -118,6 +131,11 @@ func (p *TransactionsRecentProjector) RunOnce(ctx context.Context) (RunStats, er
 			&r.SorobanResourcesReadBytes,
 			&r.SorobanResourcesWriteBytes,
 			&r.SorobanContractID,
+			&r.TxEnvelope,
+			&r.TxResult,
+			&r.TxMeta,
+			&r.TxFeeMeta,
+			&r.TxSigners,
 		); err != nil {
 			return RunStats{}, fmt.Errorf("scan bronze transaction: %w", err)
 		}
@@ -195,9 +213,15 @@ func (p *TransactionsRecentProjector) RunOnce(ctx context.Context) (RunStats, er
 				is_soroban,
 				cpu_insns,
 				read_bytes,
-				write_bytes
+				write_bytes,
+				transaction_id,
+				tx_envelope,
+				tx_result,
+				tx_meta,
+				tx_fee_meta,
+				tx_signers
 			) VALUES (
-				$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21
+				$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27
 			)
 			ON CONFLICT (tx_hash) DO UPDATE SET
 				ledger_sequence = EXCLUDED.ledger_sequence,
@@ -219,7 +243,13 @@ func (p *TransactionsRecentProjector) RunOnce(ctx context.Context) (RunStats, er
 				is_soroban = EXCLUDED.is_soroban,
 				cpu_insns = EXCLUDED.cpu_insns,
 				read_bytes = EXCLUDED.read_bytes,
-				write_bytes = EXCLUDED.write_bytes
+				write_bytes = EXCLUDED.write_bytes,
+				transaction_id = EXCLUDED.transaction_id,
+				tx_envelope = COALESCE(EXCLUDED.tx_envelope, sv_transactions_recent.tx_envelope),
+				tx_result = COALESCE(EXCLUDED.tx_result, sv_transactions_recent.tx_result),
+				tx_meta = COALESCE(EXCLUDED.tx_meta, sv_transactions_recent.tx_meta),
+				tx_fee_meta = COALESCE(EXCLUDED.tx_fee_meta, sv_transactions_recent.tx_fee_meta),
+				tx_signers = COALESCE(EXCLUDED.tx_signers, sv_transactions_recent.tx_signers)
 		`,
 			r.TransactionHash,
 			r.LedgerSequence,
@@ -242,6 +272,12 @@ func (p *TransactionsRecentProjector) RunOnce(ctx context.Context) (RunStats, er
 			r.SorobanResourcesInstructions,
 			r.SorobanResourcesReadBytes,
 			r.SorobanResourcesWriteBytes,
+			r.TransactionID,
+			r.TxEnvelope,
+			r.TxResult,
+			r.TxMeta,
+			r.TxFeeMeta,
+			r.TxSigners,
 		)
 		if err != nil {
 			return RunStats{}, fmt.Errorf("upsert serving transaction %s: %w", r.TransactionHash, err)

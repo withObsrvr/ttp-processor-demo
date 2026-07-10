@@ -100,6 +100,36 @@ Verification:
   - `/api/v1/horizon-compat/accounts/GBTHMMFWTAPFAHRGS33LKETZYJKBTNEENRN47EDZMZPT2BNCJO47GVQG` -> `200` in `0.111s`
   - `/api/v1/horizon-compat/accounts/GBTHMMFWTAPFAHRGS33LKETZYJKBTNEENRN47EDZMZPT2BNCJO47GVQG/transactions?limit=1&order=desc` -> `200` in `4.245s`
 
+## Cycle 5B Implementation Status - 2026-07-10
+
+Implemented locally across serving and `stellar-query-api`:
+
+- `serving.sv_transactions_recent` now carries the Horizon transaction resource fields needed to hydrate account transaction pages without re-scanning Bronze: `transaction_id`, `tx_envelope`, `tx_result`, `tx_meta`, `tx_fee_meta`, and `tx_signers`.
+- The live transactions serving projector reads those fields from Bronze `transactions_row_v2` and preserves existing XDR values during upserts when an incoming row is partial.
+- The serving cold backfill includes those fields when rebuilding `sv_transactions_recent`.
+- `HorizonTransactionReader` now tries `serving.sv_transactions_recent` first for transaction hash and TOID+ledger lookups, then falls back to hot/cold Bronze when the serving row is absent, the schema has not been applied yet, or XDR fields are still missing.
+- The account transactions Horizon handler no longer returns a feed-summary fallback when hydration fails. It returns `503 data_unavailable` instead of a partial Horizon transaction, and tests cover both the complete-serving and incomplete-hydration paths.
+
+Verification:
+
+- `go test -count=1 ./...` in `obsrvr-lake/stellar-query-api/go` passes locally.
+- `go test -count=1 ./...` in `obsrvr-lake/serving-projection-processor/go` passes locally.
+- `GOWORK=off GOCACHE=/tmp/go-build-cache go test -count=1 ./...` in `obsrvr-lake/serving-cold-backfill/go` passes locally.
+
+Rollout requirements:
+
+- Apply the updated serving schema before deploying the query API path that prefers `sv_transactions_recent`.
+- Rebuild or incrementally populate `serving.sv_transactions_recent` after the schema change so historical rows have the new XDR fields.
+- Deploy the serving projection processor, serving cold backfill image, and `stellar-query-api` image from the same source revision.
+- Public smoke should verify `/api/v1/horizon-compat/accounts/{id}/transactions?limit=1&order=desc` returns `envelope_xdr`, `result_xdr`, `result_meta_xdr`, and `fee_meta_xdr`.
+
+Public smoke attempt on current testnet deployment:
+
+- `2026-07-10`: `GET /health`, `/api/v1/horizon-compat/fee_stats`, `/api/v1/horizon-compat/ledgers?limit=1&order=desc`, and `/api/v1/horizon-compat/accounts/{id}` all returned `200`.
+- `GET /api/v1/horizon-compat/accounts/GBTHMMFWTAPFAHRGS33LKETZYJKBTNEENRN47EDZMZPT2BNCJO47GVQG/transactions?limit=1&order=desc` returned `200`, but the transaction record had empty `envelope_xdr`, empty `result_xdr`, empty `fee_meta_xdr`, missing `result_meta_xdr`, and `signatures: null`.
+- `GET /api/v1/horizon-compat/transactions/366bc4543a8fe66e09c021af35377c78df6e90e57f85582a0aad1617fcc027e8` did not complete within roughly 60 seconds and was cancelled locally.
+- Conclusion: the current public deployment is still pre-Cycle-5B for account transaction hydration. Do not treat this as a Cycle 5B pass until the schema/backfill/query-api rollout above is completed.
+
 ## Scope Line
 
 Must have:

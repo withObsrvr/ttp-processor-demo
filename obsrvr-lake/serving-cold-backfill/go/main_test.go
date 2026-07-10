@@ -121,6 +121,7 @@ func TestFeedBackfillRerunResumeNoDuplicates(t *testing.T) {
 
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_ledger_stats_recent`, 4)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_transactions_recent`, 3)
+	assertBackfillCount(t, db, `SELECT transaction_id FROM serving.sv_transactions_recent WHERE tx_hash='tx3' AND tx_envelope='env3' AND tx_result='res3' AND tx_meta='meta3' AND tx_fee_meta='fee3' AND tx_signers='["sig3"]'`, transactionTOID(3, 1))
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_operations_recent`, 4)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_contract_calls_recent`, 2)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_tx_receipts`, 3)
@@ -282,7 +283,8 @@ func loadBackfillFixture(t *testing.T, ctx context.Context, db *sql.DB) {
 			transaction_hash VARCHAR, ledger_sequence BIGINT, created_at TIMESTAMP, source_account VARCHAR,
 			fee_charged BIGINT, max_fee BIGINT, successful BOOLEAN, operation_count INTEGER,
 			soroban_contract_id VARCHAR, memo_type VARCHAR, memo VARCHAR, account_sequence BIGINT,
-			soroban_resources_instructions BIGINT, soroban_resources_read_bytes BIGINT, soroban_resources_write_bytes BIGINT
+			soroban_resources_instructions BIGINT, soroban_resources_read_bytes BIGINT, soroban_resources_write_bytes BIGINT,
+			transaction_id BIGINT, tx_envelope VARCHAR, tx_result VARCHAR, tx_meta VARCHAR, tx_fee_meta VARCHAR, tx_signers VARCHAR
 		)`,
 		`CREATE TABLE bronze.operations_row_v2 (
 			transaction_hash VARCHAR, ledger_sequence BIGINT, operation_index INTEGER,
@@ -332,9 +334,9 @@ func loadBackfillFixture(t *testing.T, ctx context.Context, db *sql.DB) {
 			('mainnet',5,'2026-01-01 00:00:05','h5','h4',23,100,0,1,1),
 			('mainnet',6,'2026-01-01 00:00:06','h6','h5',23,100,1,0,0)`,
 		`INSERT INTO bronze.transactions_row_v2 VALUES
-			('tx3',3,'2026-01-01 00:00:03','GA1',100,200,true,1,NULL,'none',NULL,10,NULL,NULL,NULL),
-			('tx4',4,'2026-01-01 00:00:04','GA2',101,201,true,2,'CC1','text','memo',11,1000,10,20),
-			('tx5',5,'2026-01-01 00:00:05','GA3',102,202,false,1,NULL,'none',NULL,12,NULL,NULL,NULL)`,
+			('tx3',3,'2026-01-01 00:00:03','GA1',100,200,true,1,NULL,'none',NULL,10,NULL,NULL,NULL,12884905984,'env3','res3','meta3','fee3','["sig3"]'),
+			('tx4',4,'2026-01-01 00:00:04','GA2',101,201,true,2,'CC1','text','memo',11,1000,10,20,17179873280,'env4','res4','meta4','fee4','["sig4"]'),
+			('tx5',5,'2026-01-01 00:00:05','GA3',102,202,false,1,NULL,'none',NULL,12,NULL,NULL,NULL,21474840576,'env5','res5','meta5','fee5','["sig5"]')`,
 		`INSERT INTO bronze.operations_row_v2 VALUES
 			('tx3',3,0,1,12884905984,12884905985),
 			('tx4',4,0,1,17179873280,17179873281),

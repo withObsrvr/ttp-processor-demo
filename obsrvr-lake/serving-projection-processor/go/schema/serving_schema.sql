@@ -360,14 +360,30 @@ create table if not exists serving.sv_transactions_recent (
     mem_bytes                 bigint,
     read_bytes                bigint,
     write_bytes               bigint,
+    transaction_id            bigint,
+    tx_envelope               text,
+    tx_result                 text,
+    tx_meta                   text,
+    tx_fee_meta               text,
+    tx_signers                text,
     ingested_at               timestamptz not null default now()
 );
 
 alter table serving.sv_transactions_recent
     add column if not exists summary_json jsonb;
+alter table serving.sv_transactions_recent
+    add column if not exists transaction_id bigint,
+    add column if not exists tx_envelope text,
+    add column if not exists tx_result text,
+    add column if not exists tx_meta text,
+    add column if not exists tx_fee_meta text,
+    add column if not exists tx_signers text;
 
 create index if not exists sv_transactions_recent_ledger_idx
     on serving.sv_transactions_recent (ledger_sequence desc);
+create index if not exists sv_transactions_recent_toid_idx
+    on serving.sv_transactions_recent (transaction_id)
+    where transaction_id is not null;
 create index if not exists sv_transactions_recent_created_idx
     on serving.sv_transactions_recent (created_at desc);
 create index if not exists sv_transactions_recent_source_idx

@@ -336,6 +336,155 @@ func TestHorizonTransactionReaderUsesTransactionIDAndLedgerForHotLookup(t *testi
 	}
 }
 
+func TestHorizonTransactionReaderUsesServingTransactionIDLookupFirst(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	closedAt := time.Date(2026, 7, 9, 15, 4, 0, 0, time.UTC)
+	mock.ExpectQuery(regexp.QuoteMeta(horizonServingTransactionIDQueryWithLedger)).
+		WithArgs(int64(789), int64(3388729196544)).
+		WillReturnRows(sqlmock.NewRows(horizonTxColumns).AddRow(
+			int64(789),
+			"txhash",
+			int64(3388729196544),
+			"GACCOUNT",
+			nil,
+			int64(99),
+			int64(100),
+			int64(1000),
+			true,
+			int64(2),
+			"none",
+			nil,
+			closedAt,
+			"AAAA-envelope",
+			"AAAA-result",
+			"AAAA-meta",
+			"AAAA-fee-meta",
+			`["sig1"]`,
+			nil,
+			nil,
+		))
+
+	reader := &HorizonTransactionReader{serving: db}
+	if !reader.Available() {
+		t.Fatalf("serving-only reader should be available")
+	}
+	got, err := reader.GetTransactionByIDAtLedger(context.Background(), 3388729196544, 789)
+	if err != nil {
+		t.Fatalf("GetTransactionByIDAtLedger: %v", err)
+	}
+
+	if got.PT != "3388729196544" || got.Hash != "txhash" || got.EnvelopeXdr != "AAAA-envelope" {
+		t.Fatalf("transaction = pt:%q hash:%q envelope:%q", got.PT, got.Hash, got.EnvelopeXdr)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestHorizonTransactionReaderReturnsServingXDRUnavailableWithoutFallback(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery(regexp.QuoteMeta(horizonServingTransactionIDQueryWithLedger)).
+		WithArgs(int64(789), int64(3388729196544)).
+		WillReturnRows(sqlmock.NewRows(horizonTxColumns).AddRow(
+			int64(789),
+			"txhash",
+			int64(3388729196544),
+			"GACCOUNT",
+			nil,
+			int64(99),
+			int64(100),
+			int64(1000),
+			true,
+			int64(2),
+			"none",
+			nil,
+			time.Date(2026, 7, 9, 15, 4, 0, 0, time.UTC),
+			"",
+			"",
+			"AAAA-meta",
+			"",
+			"[]",
+			nil,
+			nil,
+		))
+
+	reader := &HorizonTransactionReader{serving: db}
+	_, err = reader.GetTransactionByIDAtLedger(context.Background(), 3388729196544, 789)
+	if !errors.Is(err, errHorizonTransactionXDRUnavailable) {
+		t.Fatalf("error = %v, want errHorizonTransactionXDRUnavailable", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestHorizonTransactionReaderFallsBackWhenServingResourceSchemaMissing(t *testing.T) {
+	servingDB, servingMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New serving: %v", err)
+	}
+	defer servingDB.Close()
+	hotDB, hotMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New hot: %v", err)
+	}
+	defer hotDB.Close()
+
+	closedAt := time.Date(2026, 7, 9, 15, 4, 0, 0, time.UTC)
+	servingMock.ExpectQuery(regexp.QuoteMeta(horizonServingTransactionIDQueryWithLedger)).
+		WithArgs(int64(789), int64(3388729196544)).
+		WillReturnError(fmt.Errorf(`ERROR: column "tx_envelope" does not exist`))
+	hotMock.ExpectQuery(regexp.QuoteMeta(horizonHotTransactionIDQueryWithLedger)).
+		WithArgs(int64(789), int64(3388729196544)).
+		WillReturnRows(sqlmock.NewRows(horizonTxColumns).AddRow(
+			int64(789),
+			"txhash",
+			int64(3388729196544),
+			"GACCOUNT",
+			nil,
+			int64(99),
+			int64(100),
+			int64(1000),
+			true,
+			int64(2),
+			"none",
+			nil,
+			closedAt,
+			"AAAA-envelope",
+			"AAAA-result",
+			"AAAA-meta",
+			"AAAA-fee-meta",
+			`["sig1"]`,
+			nil,
+			nil,
+		))
+
+	reader := &HorizonTransactionReader{serving: servingDB, hot: hotDB}
+	got, err := reader.GetTransactionByIDAtLedger(context.Background(), 3388729196544, 789)
+	if err != nil {
+		t.Fatalf("GetTransactionByIDAtLedger: %v", err)
+	}
+	if got.Hash != "txhash" {
+		t.Fatalf("hash = %q", got.Hash)
+	}
+	if err := servingMock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet serving expectations: %v", err)
+	}
+	if err := hotMock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet hot expectations: %v", err)
+	}
+}
+
 func TestHorizonTransactionReaderFallsBackWhenIndexLookupFails(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
