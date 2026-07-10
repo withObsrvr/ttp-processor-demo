@@ -144,13 +144,15 @@ func (r *HorizonAccountReader) currentAccount(ctx context.Context, accountID str
 	if r.unified != nil {
 		acc, err := r.unified.GetAccountCurrent(ctx, accountID)
 		if err != nil {
-			if servingAcc != nil && isUnifiedAccountCurrentSequenceSchemaGap(err) {
-				return servingAcc, nil
+			if !(servingAcc != nil && isUnifiedAccountCurrentSequenceSchemaGap(err)) {
+				return nil, err
 			}
-			return nil, err
-		}
-		if merged := mergeAccountCurrent(servingAcc, acc); merged != nil {
-			return merged, nil
+			// Keep going: hot silver may have the sequence metadata even when the
+			// cold/unified schema is still missing those newer columns.
+		} else {
+			if merged := mergeAccountCurrent(servingAcc, acc); merged != nil {
+				return merged, nil
+			}
 		}
 	}
 	if r.hot != nil {

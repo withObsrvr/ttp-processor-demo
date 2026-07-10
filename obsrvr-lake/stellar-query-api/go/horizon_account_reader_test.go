@@ -67,7 +67,7 @@ func TestHorizonAccountReaderPreservesServingTrustlineBalancesWhenSignersExist(t
 	}
 }
 
-func TestHorizonAccountCurrentIgnoresUnifiedSequenceSchemaGap(t *testing.T) {
+func TestHorizonAccountCurrentUsesHotFallbackAfterUnifiedSequenceSchemaGap(t *testing.T) {
 	servingDB, servingMock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("sqlmock.New serving: %v", err)
@@ -91,6 +91,14 @@ func TestHorizonAccountCurrentIgnoresUnifiedSequenceSchemaGap(t *testing.T) {
 	unifiedMock.ExpectQuery("SELECT account_id, balance, sequence_number, num_subentries").
 		WithArgs("GA").
 		WillReturnError(errors.New(`Binder Error: Referenced column "sequence_ledger" not found in FROM clause`))
+	servingMock.ExpectQuery("FROM accounts_current").
+		WithArgs("GA").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"account_id", "balance", "sequence_number", "num_subentries",
+			"num_sponsoring", "num_sponsored", "last_modified_ledger", "sequence_ledger",
+			"sequence_time", "updated_at", "home_domain", "sponsor_account",
+			"auth_required", "auth_revocable", "auth_immutable", "auth_clawback_enabled",
+		}).AddRow("GA", "1000000000", "123", int64(0), int64(0), int64(0), int64(50), int64(50), int64(1783699200), "2026-07-10T12:00:00Z", nil, nil, false, false, false, false))
 
 	reader := &HorizonAccountReader{
 		hot:     &SilverHotReader{db: servingDB},
@@ -100,8 +108,8 @@ func TestHorizonAccountCurrentIgnoresUnifiedSequenceSchemaGap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("currentAccount: %v", err)
 	}
-	if account == nil || account.AccountID != "GA" || account.SequenceNumber != "123" {
-		t.Fatalf("account = %#v, want serving account", account)
+	if account == nil || account.AccountID != "GA" || account.SequenceNumber != "123" || account.SequenceLedger != 50 || account.SequenceTime != 1783699200 {
+		t.Fatalf("account = %#v, want serving account with hot sequence metadata", account)
 	}
 	if err := servingMock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet serving expectations: %v", err)
