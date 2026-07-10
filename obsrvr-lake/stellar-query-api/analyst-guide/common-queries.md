@@ -18,6 +18,51 @@ curl -H "Authorization: Api-Key YOUR_API_KEY" "https://gateway.withobsrvr.com/la
 
 ---
 
+## Horizon Compatibility Endpoints
+
+Read-only Horizon-shaped routes for migration work live under:
+
+```bash
+GET /api/v1/horizon-compat/...
+```
+
+These routes use Horizon SDK response structs where implemented and support
+Horizon-style `cursor`, `limit`, and `order` query parameters on collections.
+`limit` defaults to `10` and is clamped to `200`.
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/v1/horizon-compat/fee_stats` | Horizon fee stats |
+| `GET /api/v1/horizon-compat/ledgers` | Ledger collection |
+| `GET /api/v1/horizon-compat/ledgers/{sequence}` | Ledger detail |
+| `GET /api/v1/horizon-compat/transactions/{hash}` | Transaction detail with XDR/signatures |
+| `GET /api/v1/horizon-compat/transactions/{hash}/operations` | Transaction operations |
+| `GET /api/v1/horizon-compat/transactions/{hash}/payments` | Transaction payments |
+| `GET /api/v1/horizon-compat/transactions/{hash}/effects` | Transaction effects |
+| `GET /api/v1/horizon-compat/accounts/{id}` | Account detail |
+| `GET /api/v1/horizon-compat/accounts/{id}/transactions` | Account transaction history |
+| `GET /api/v1/horizon-compat/accounts/{id}/operations` | Account operation history |
+| `GET /api/v1/horizon-compat/accounts/{id}/payments` | Account payment history |
+| `GET /api/v1/horizon-compat/accounts/{id}/effects` | Account effects |
+| `GET /api/v1/horizon-compat/operations` | Operations collection |
+| `GET /api/v1/horizon-compat/operations/{id}` | Operation detail |
+| `GET /api/v1/horizon-compat/operations/{id}/effects` | Operation effects |
+| `GET /api/v1/horizon-compat/payments` | Payments collection |
+| `GET /api/v1/horizon-compat/effects` | Effects collection |
+
+Example:
+
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "$BASE/api/v1/horizon-compat/accounts/GBTHMMFWTAPFAHRGS33LKETZYJKBTNEENRN47EDZMZPT2BNCJO47GVQG/transactions?limit=1&order=desc"
+```
+
+See `../docs/HORIZON_COMPAT_API.md` for current route status, unsupported
+Horizon route families, deployment smoke tests, and Cycle 5B transaction
+hydration details.
+
+---
+
 ## Silver Layer Endpoints
 
 Analytics-ready, pre-processed data optimized for common queries.

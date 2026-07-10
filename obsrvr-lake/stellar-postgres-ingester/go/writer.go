@@ -1862,7 +1862,7 @@ func (w *Writer) insertAccounts(ctx context.Context, tx pgx.Tx, accounts []Accou
 	query := `
 		INSERT INTO accounts_snapshot_v1 (
 			account_id, ledger_sequence, closed_at, balance,
-			sequence_number, num_subentries, num_sponsoring, num_sponsored, home_domain,
+			sequence_number, sequence_ledger, sequence_time, num_subentries, num_sponsoring, num_sponsored, home_domain,
 			master_weight, low_threshold, med_threshold, high_threshold,
 			flags, auth_required, auth_revocable, auth_immutable, auth_clawback_enabled,
 			signers, sponsor_account,
@@ -1870,11 +1870,13 @@ func (w *Writer) insertAccounts(ctx context.Context, tx pgx.Tx, accounts []Accou
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
 			$11, $12, $13, $14, $15, $16, $17, $18,
-			$19, $20, $21, $22, $23, $24, $25
+			$19, $20, $21, $22, $23, $24, $25, $26, $27
 		)
 		ON CONFLICT (account_id, ledger_sequence) DO UPDATE SET
 			balance = EXCLUDED.balance,
 			sequence_number = EXCLUDED.sequence_number,
+			sequence_ledger = EXCLUDED.sequence_ledger,
+			sequence_time = EXCLUDED.sequence_time,
 			num_subentries = EXCLUDED.num_subentries,
 			flags = EXCLUDED.flags,
 			updated_at = EXCLUDED.updated_at,
@@ -1896,6 +1898,8 @@ func (w *Writer) insertAccounts(ctx context.Context, tx pgx.Tx, accounts []Accou
 			acct.ClosedAt,
 			acct.Balance,
 			acct.SequenceNumber,
+			acct.SequenceLedger,
+			acct.SequenceTime,
 			acct.NumSubentries,
 			acct.NumSponsoring,
 			acct.NumSponsored,

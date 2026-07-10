@@ -171,7 +171,7 @@ func invertHorizonOrder(order string) string {
 }
 
 func writeHorizonJSON(w http.ResponseWriter, status int, data interface{}) error {
-	js, err := json.Marshal(data)
+	js, err := marshalHorizonJSON(data)
 	if err != nil {
 		return err
 	}
@@ -180,6 +180,47 @@ func writeHorizonJSON(w http.ResponseWriter, status int, data interface{}) error
 	w.WriteHeader(status)
 	_, err = w.Write(js)
 	return err
+}
+
+func marshalHorizonJSON(data interface{}) ([]byte, error) {
+	js, err := json.Marshal(data)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeHorizonEmbeddedRecords(js)
+}
+
+func normalizeHorizonEmbeddedRecords(js []byte) ([]byte, error) {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(js, &top); err != nil {
+		return nil, err
+	}
+
+	embeddedRaw, ok := top["_embedded"]
+	if !ok {
+		return js, nil
+	}
+
+	var embedded map[string]json.RawMessage
+	if err := json.Unmarshal(embeddedRaw, &embedded); err != nil {
+		return nil, err
+	}
+	if _, hasLower := embedded["records"]; hasLower {
+		return js, nil
+	}
+	records, hasUpper := embedded["Records"]
+	if !hasUpper {
+		return js, nil
+	}
+
+	embedded["records"] = records
+	delete(embedded, "Records")
+	normalizedEmbedded, err := json.Marshal(embedded)
+	if err != nil {
+		return nil, err
+	}
+	top["_embedded"] = normalizedEmbedded
+	return json.Marshal(top)
 }
 
 func renderHorizonProblem(w http.ResponseWriter, r *http.Request, p problem.P) {

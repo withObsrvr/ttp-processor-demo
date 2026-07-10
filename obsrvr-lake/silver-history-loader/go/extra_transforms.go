@@ -8,7 +8,7 @@ func metaSelect(l *Loader, start, end int64) string {
 
 func selectAccountsSnapshotAll(l *Loader, start, end int64) string {
 	return fmt.Sprintf(`SELECT %s AS network, account_id, ledger_sequence, closed_at, balance, sequence_number,
-		num_subentries, num_sponsoring, num_sponsored, home_domain, master_weight, low_threshold, med_threshold,
+		sequence_ledger, sequence_time, num_subentries, num_sponsoring, num_sponsored, home_domain, master_weight, low_threshold, med_threshold,
 		high_threshold, flags, auth_required, auth_revocable, auth_immutable, auth_clawback_enabled, signers,
 		sponsor_account, closed_at AS created_at, closed_at AS updated_at, ledger_range, era_id, version_label,
 		NULL::TIMESTAMP AS valid_to, closed_at AS ledger_closed_at, %s

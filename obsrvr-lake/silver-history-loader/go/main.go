@@ -438,6 +438,11 @@ func selectEnrichedOperations(l *Loader, start, end int64) string {
 	return fmt.Sprintf(`SELECT %s AS network,
 		o.transaction_hash, o.operation_index, o.ledger_sequence, o.source_account, o.type, o.type_string,
 		o.created_at, o.transaction_successful, o.operation_result_code, NULL AS operation_trace_code, o.ledger_range,
+		t.transaction_id,
+		CASE
+			WHEN t.transaction_id IS NULL THEN NULL
+			ELSE (t.transaction_id | ((o.operation_index + 1)::BIGINT & 4095))
+		END AS operation_id,
 		o.source_account_muxed, o.asset, o.asset_type, o.asset_code, o.asset_issuer, o.source_asset,
 		o.source_asset_type, o.source_asset_code, o.source_asset_issuer, o.destination, NULL AS destination_muxed,
 		o.amount, o.source_amount, NULL AS from_account, NULL AS from_muxed, NULL AS to_address, NULL AS to_muxed,

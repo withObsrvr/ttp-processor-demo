@@ -256,6 +256,8 @@ type AccountData struct {
 
 	// Account settings (5 fields)
 	SequenceNumber uint64
+	SequenceLedger uint32
+	SequenceTime   uint64
 	NumSubentries  uint32
 	NumSponsoring  uint32
 	NumSponsored   uint32

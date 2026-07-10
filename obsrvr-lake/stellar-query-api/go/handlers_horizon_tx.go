@@ -11,13 +11,20 @@ import (
 )
 
 type HorizonCompatHandlers struct {
-	txReader                 *HorizonTransactionReader
+	txReader                 horizonTransactionReader
 	accountReader            horizonAccountReader
 	accountTransactionReader horizonAccountTransactionReader
 	ledgerReader             horizonLedgerReader
 	feeStatsReader           horizonFeeStatsReader
 	operationReader          horizonOperationReader
 	effectReader             horizonEffectReader
+}
+
+type horizonTransactionReader interface {
+	Available() bool
+	GetTransactionByHash(context.Context, string) (*protocol.Transaction, error)
+	GetTransactionByHashAtLedger(context.Context, string, int64) (*protocol.Transaction, error)
+	GetTransactionByIDAtLedger(context.Context, int64, int64) (*protocol.Transaction, error)
 }
 
 type horizonOperationReader interface {
@@ -53,8 +60,8 @@ func NewHorizonCompatHandlers(app *application) *HorizonCompatHandlers {
 		accountTransactionReader: NewHorizonAccountTransactionReader(app.silverHotReader, app.unifiedDuckDBReader),
 		ledgerReader:             NewHorizonLedgerReader(app.queryService, app.unifiedDuckDBReader),
 		feeStatsReader:           NewHorizonFeeStatsReader(app.hotReader, app.coldReader),
-		operationReader:          NewHorizonOperationReader(app.unifiedDuckDBReader),
-		effectReader:             app.unifiedDuckDBReader,
+		operationReader:          NewHorizonOperationReader(app.unifiedDuckDBReader, app.silverHotReader),
+		effectReader:             NewHorizonEffectReader(app.unifiedDuckDBReader, app.silverHotReader),
 	}
 }
 

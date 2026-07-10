@@ -107,7 +107,7 @@ func (h *HotBufferLoader) LoadTail(ctx context.Context, tailLedgers uint32, endL
 		{
 			name:      "accounts_snapshot_v1",
 			bronzeDir: "accounts_snapshot",
-			columns:   "account_id, ledger_sequence, closed_at, balance, sequence_number, num_subentries, num_sponsoring, num_sponsored, home_domain, master_weight, low_threshold, med_threshold, high_threshold, flags, auth_required, auth_revocable, auth_immutable, auth_clawback_enabled, signers, sponsor_account, ledger_range",
+			columns:   "account_id, ledger_sequence, closed_at, balance, sequence_number, sequence_ledger, sequence_time, num_subentries, num_sponsoring, num_sponsored, home_domain, master_weight, low_threshold, med_threshold, high_threshold, flags, auth_required, auth_revocable, auth_immutable, auth_clawback_enabled, signers, sponsor_account, ledger_range",
 			seqFilter: "ledger_sequence",
 		},
 		{

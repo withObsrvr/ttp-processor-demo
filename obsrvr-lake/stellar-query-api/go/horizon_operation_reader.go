@@ -18,24 +18,42 @@ type HorizonOperationReader struct {
 	db           *sql.DB
 	hotSchema    string
 	coldSchema   string
+	serving      *SilverHotReader
 	schemaCapsMu sync.Mutex
 	schemaCaps   map[string]bool
 }
 
-func NewHorizonOperationReader(reader *UnifiedDuckDBReader) *HorizonOperationReader {
+func NewHorizonOperationReader(reader *UnifiedDuckDBReader, serving ...*SilverHotReader) *HorizonOperationReader {
 	if reader == nil {
 		return nil
+	}
+	var servingReader *SilverHotReader
+	if len(serving) > 0 {
+		servingReader = serving[0]
 	}
 	return &HorizonOperationReader{
 		db:         reader.db,
 		hotSchema:  reader.hotSchema,
 		coldSchema: reader.coldSchema,
+		serving:    servingReader,
 		schemaCaps: make(map[string]bool),
 	}
 }
 
 func (r *HorizonOperationReader) GetEnrichedOperationsWithCursor(ctx context.Context, filters OperationFilters) ([]EnrichedOperation, string, bool, error) {
-	if r == nil || r.db == nil {
+	if r == nil {
+		return nil, "", false, fmt.Errorf("horizon operation reader unavailable")
+	}
+	if r.serving != nil {
+		ops, next, hasMore, covered, err := r.serving.GetServingAccountOperations(ctx, filters)
+		if err != nil {
+			return nil, "", false, err
+		}
+		if covered {
+			return ops, next, hasMore, nil
+		}
+	}
+	if r.db == nil {
 		return nil, "", false, fmt.Errorf("horizon operation reader unavailable")
 	}
 
@@ -140,43 +158,62 @@ func (r *HorizonOperationReader) GetOperationByID(ctx context.Context, operation
 		return nil, fmt.Errorf("horizon operation reader unavailable")
 	}
 
-	whereClause := "WHERE operation_id = $1"
+	ledgerSequence := int64(toid.Parse(operationID).LedgerSequence)
+	attempted := false
+	if r.schemaHasOperationTOIDsCached(r.hotSchema) {
+		attempted = true
+		op, err := r.getOperationByIDFromSchema(ctx, r.hotSchema, operationID, ledgerSequence)
+		if err == nil {
+			return op, nil
+		}
+		if !errors.Is(err, errHorizonOperationNotFound) {
+			return nil, err
+		}
+	}
+	if r.schemaHasOperationTOIDsCached(r.coldSchema) {
+		attempted = true
+		op, err := r.getOperationByIDFromSchema(ctx, r.coldSchema, operationID, ledgerSequence)
+		if err == nil {
+			return op, nil
+		}
+		if !errors.Is(err, errHorizonOperationNotFound) {
+			return nil, err
+		}
+	}
+	if !attempted {
+		return nil, fmt.Errorf("horizon operation reader requires transaction_id and operation_id columns")
+	}
+	return nil, errHorizonOperationNotFound
+}
+
+func (r *HorizonOperationReader) getOperationByIDFromSchema(ctx context.Context, schema string, operationID, ledgerSequence int64) (*EnrichedOperation, error) {
+	whereClause := "operation_id = $1"
 	args := []interface{}{operationID}
-	if ledgerSequence := int64(toid.Parse(operationID).LedgerSequence); ledgerSequence > 0 {
-		whereClause = "WHERE operation_id = $1 AND ledger_sequence = $2"
+	if ledgerSequence > 0 {
+		whereClause = "operation_id = $1 AND ledger_sequence = $2"
 		args = append(args, ledgerSequence)
 	}
 
-	arms := make([]string, 0, 2)
-	if r.schemaHasOperationTOIDsCached(r.hotSchema) {
-		arms = append(arms, horizonOperationArm(r.hotSchema, whereClause, 1))
-	}
-	if r.schemaHasOperationTOIDsCached(r.coldSchema) {
-		arms = append(arms, horizonOperationArm(r.coldSchema, whereClause, 2))
-	}
-	if len(arms) == 0 {
-		return nil, fmt.Errorf("horizon operation reader requires transaction_id and operation_id columns")
-	}
-
 	query := fmt.Sprintf(`
-		WITH combined AS (
-			%s
-		), ranked AS (
-			SELECT *,
-			       ROW_NUMBER() OVER (PARTITION BY operation_id ORDER BY source) AS rn
-			FROM combined
-			WHERE transaction_id IS NOT NULL
-			  AND operation_id IS NOT NULL
+		WITH ops AS (
+			SELECT transaction_hash, transaction_id, %s AS operation_id, operation_index, ledger_sequence,
+			       ledger_closed_at, source_account, type, destination,
+			       asset_code, asset_issuer, amount, tx_successful,
+			       tx_fee_charged, is_payment_op, is_soroban_op,
+			       contract_id, function_name, parameters
+			FROM %s.enriched_history_operations
 		)
 		SELECT transaction_hash, operation_id, ledger_sequence,
 		       ledger_closed_at, source_account, type, destination,
 		       asset_code, asset_issuer, amount, tx_successful,
 		       tx_fee_charged, is_payment_op, is_soroban_op,
 		       contract_id, function_name, parameters
-		FROM ranked
-		WHERE rn = 1
+		FROM ops
+		WHERE %s
+		  AND transaction_id IS NOT NULL
+		  AND operation_id IS NOT NULL
 		LIMIT 1
-	`, strings.Join(arms, "\nUNION ALL\n"))
+	`, horizonOperationIDExpr(), schema, whereClause)
 
 	var op EnrichedOperation
 	err := r.db.QueryRowContext(ctx, query, args...).Scan(
@@ -190,7 +227,7 @@ func (r *HorizonOperationReader) GetOperationByID(ctx context.Context, operation
 		return nil, errHorizonOperationNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("horizon GetOperationByID: %w", err)
+		return nil, fmt.Errorf("horizon GetOperationByID %s: %w", schema, err)
 	}
 	op.TypeName = operationTypeName(op.Type)
 	return &op, nil
@@ -237,14 +274,21 @@ func (r *HorizonOperationReader) schemaHasOperationTOIDs(ctx context.Context, sc
 
 func horizonOperationArm(schema, whereClause string, source int) string {
 	return fmt.Sprintf(`
-			SELECT transaction_hash, transaction_id, operation_id, operation_index, ledger_sequence,
+			SELECT transaction_hash, transaction_id, %s AS operation_id, operation_index, ledger_sequence,
 			       ledger_closed_at, source_account, type, destination,
 			       asset_code, asset_issuer, amount, tx_successful,
 			       tx_fee_charged, is_payment_op, is_soroban_op,
 			       contract_id, function_name, parameters,
 			       %d as source
 			FROM %s.enriched_history_operations
-			%s`, source, schema, whereClause)
+			%s`, horizonOperationIDExpr(), source, schema, whereClause)
+}
+
+func horizonOperationIDExpr() string {
+	return `COALESCE(operation_id, CASE
+		WHEN transaction_id IS NULL THEN NULL
+		ELSE (transaction_id | ((operation_index + 1)::BIGINT & 4095))
+	END)`
 }
 
 func horizonOperationWhereClause(filters OperationFilters, startArg int) (string, []interface{}, int) {

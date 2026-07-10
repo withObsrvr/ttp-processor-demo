@@ -16,10 +16,10 @@ type HorizonFeeStatsReader struct {
 }
 
 type horizonFeeLedger struct {
-	sequence         int64
-	baseFee          int64
-	transactionCount int64
-	maxTxSetSize     int64
+	sequence     int64
+	baseFee      int64
+	operationCnt int64
+	maxTxSetSize int64
 }
 
 func NewHorizonFeeStatsReader(hot *HotReader, cold *ColdReader) *HorizonFeeStatsReader {
@@ -64,26 +64,33 @@ func (r *HorizonFeeStatsReader) getFeeStatsFromTables(ctx context.Context, db *s
 
 	var txCapacityNumerator, txCapacityDenominator int64
 	for _, ledger := range ledgers {
-		txCapacityNumerator += ledger.transactionCount
+		txCapacityNumerator += ledger.operationCnt
 		txCapacityDenominator += ledger.maxTxSetSize
 	}
 	capacityUsage := 0.0
 	if txCapacityDenominator > 0 {
 		capacityUsage = float64(txCapacityNumerator) / float64(txCapacityDenominator)
+		capacityUsage = math.Round(capacityUsage*100) / 100
+	}
+	feeChargedDist := horizonFeeDistribution(feeCharged)
+	maxFeeDist := horizonFeeDistribution(maxFee)
+	if len(feeCharged) == 0 && len(maxFee) == 0 {
+		feeChargedDist = horizonFlatFeeDistribution(ledgers[0].baseFee)
+		maxFeeDist = horizonFlatFeeDistribution(ledgers[0].baseFee)
 	}
 
 	return &protocol.FeeStats{
 		LastLedger:          uint32(latest),
 		LastLedgerBaseFee:   ledgers[0].baseFee,
 		LedgerCapacityUsage: capacityUsage,
-		FeeCharged:          horizonFeeDistribution(feeCharged),
-		MaxFee:              horizonFeeDistribution(maxFee),
+		FeeCharged:          feeChargedDist,
+		MaxFee:              maxFeeDist,
 	}, nil
 }
 
 func queryFeeStatLedgers(ctx context.Context, db *sql.DB, table string) ([]horizonFeeLedger, error) {
 	rows, err := db.QueryContext(ctx, fmt.Sprintf(`
-		SELECT sequence, base_fee, transaction_count, max_tx_set_size
+		SELECT sequence, base_fee, operation_count, max_tx_set_size
 		FROM %s
 		ORDER BY sequence DESC
 		LIMIT 5
@@ -96,7 +103,7 @@ func queryFeeStatLedgers(ctx context.Context, db *sql.DB, table string) ([]horiz
 	var out []horizonFeeLedger
 	for rows.Next() {
 		var ledger horizonFeeLedger
-		if err := rows.Scan(&ledger.sequence, &ledger.baseFee, &ledger.transactionCount, &ledger.maxTxSetSize); err != nil {
+		if err := rows.Scan(&ledger.sequence, &ledger.baseFee, &ledger.operationCnt, &ledger.maxTxSetSize); err != nil {
 			return nil, err
 		}
 		out = append(out, ledger)
@@ -106,7 +113,7 @@ func queryFeeStatLedgers(ctx context.Context, db *sql.DB, table string) ([]horiz
 
 func queryFeeValues(ctx context.Context, db *sql.DB, table string, start, end int64) ([]int64, []int64, error) {
 	rows, err := db.QueryContext(ctx, fmt.Sprintf(`
-		SELECT fee_charged, max_fee
+		SELECT fee_charged, max_fee, operation_count
 		FROM %s
 		WHERE ledger_sequence >= $1 AND ledger_sequence <= $2
 	`, table), start, end)
@@ -118,17 +125,41 @@ func queryFeeValues(ctx context.Context, db *sql.DB, table string, start, end in
 	var feeCharged, maxFee []int64
 	for rows.Next() {
 		var charged, max sql.NullInt64
-		if err := rows.Scan(&charged, &max); err != nil {
+		var opCount sql.NullInt64
+		if err := rows.Scan(&charged, &max, &opCount); err != nil {
 			return nil, nil, err
 		}
+		denominator := int64(1)
+		if opCount.Valid && opCount.Int64 > 0 {
+			denominator = opCount.Int64
+		}
 		if charged.Valid {
-			feeCharged = append(feeCharged, charged.Int64)
+			feeCharged = append(feeCharged, charged.Int64/denominator)
 		}
 		if max.Valid {
-			maxFee = append(maxFee, max.Int64)
+			maxFee = append(maxFee, max.Int64/denominator)
 		}
 	}
 	return feeCharged, maxFee, rows.Err()
+}
+
+func horizonFlatFeeDistribution(value int64) protocol.FeeDistribution {
+	return protocol.FeeDistribution{
+		Max:  value,
+		Min:  value,
+		Mode: value,
+		P10:  value,
+		P20:  value,
+		P30:  value,
+		P40:  value,
+		P50:  value,
+		P60:  value,
+		P70:  value,
+		P80:  value,
+		P90:  value,
+		P95:  value,
+		P99:  value,
+	}
 }
 
 func horizonFeeDistribution(values []int64) protocol.FeeDistribution {

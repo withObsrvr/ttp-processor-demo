@@ -12,6 +12,7 @@ import (
 	"time"
 
 	protocol "github.com/stellar/go-stellar-sdk/protocols/horizon"
+	"github.com/stellar/go-stellar-sdk/xdr"
 )
 
 var (
@@ -408,7 +409,72 @@ func (row *horizonTransactionRow) toProtocol() (*protocol.Transaction, error) {
 	if row.Memo.Valid {
 		tx.Memo = row.Memo.String
 	}
+	tx.Preconditions = horizonTransactionPreconditions(row.EnvelopeXDR.String)
 	return tx, nil
+}
+
+func horizonTransactionPreconditions(envelopeXDR string) *protocol.TransactionPreconditions {
+	var envelope xdr.TransactionEnvelope
+	if err := xdr.SafeUnmarshalBase64(envelopeXDR, &envelope); err != nil {
+		return nil
+	}
+
+	cond := envelope.Preconditions()
+	out := &protocol.TransactionPreconditions{}
+	hasFields := false
+	switch cond.Type {
+	case xdr.PreconditionTypePrecondTime:
+		if cond.TimeBounds != nil {
+			out.TimeBounds = horizonTransactionTimeBounds(cond.TimeBounds)
+			hasFields = true
+		}
+	case xdr.PreconditionTypePrecondV2:
+		if cond.V2 == nil {
+			break
+		}
+		if cond.V2.TimeBounds != nil {
+			out.TimeBounds = horizonTransactionTimeBounds(cond.V2.TimeBounds)
+			hasFields = true
+		}
+		if cond.V2.LedgerBounds != nil {
+			out.LedgerBounds = &protocol.TransactionPreconditionsLedgerbounds{
+				MinLedger: uint32(cond.V2.LedgerBounds.MinLedger),
+				MaxLedger: uint32(cond.V2.LedgerBounds.MaxLedger),
+			}
+			hasFields = true
+		}
+		if cond.V2.MinSeqNum != nil {
+			out.MinAccountSequence = strconv.FormatInt(int64(*cond.V2.MinSeqNum), 10)
+			hasFields = true
+		}
+		if cond.V2.MinSeqAge > 0 {
+			out.MinAccountSequenceAge = strconv.FormatUint(uint64(cond.V2.MinSeqAge), 10)
+			hasFields = true
+		}
+		if cond.V2.MinSeqLedgerGap > 0 {
+			out.MinAccountSequenceLedgerGap = uint32(cond.V2.MinSeqLedgerGap)
+			hasFields = true
+		}
+		for _, signer := range cond.V2.ExtraSigners {
+			if address, err := signer.GetAddress(); err == nil && address != "" {
+				out.ExtraSigners = append(out.ExtraSigners, address)
+			}
+		}
+		if len(out.ExtraSigners) > 0 {
+			hasFields = true
+		}
+	}
+	if !hasFields {
+		return nil
+	}
+	return out
+}
+
+func horizonTransactionTimeBounds(bounds *xdr.TimeBounds) *protocol.TransactionPreconditionsTimebounds {
+	return &protocol.TransactionPreconditionsTimebounds{
+		MinTime: strconv.FormatUint(uint64(bounds.MinTime), 10),
+		MaxTime: strconv.FormatUint(uint64(bounds.MaxTime), 10),
+	}
 }
 
 func (row *horizonTransactionRow) missingMandatoryFields() []string {

@@ -548,13 +548,9 @@ func (w *Worker) extractLedger(meta LedgerMeta) (*LedgerData, error) {
 		return &LedgerData{Trades: rows}, nil
 	})
 	launch("accounts", func() (*LedgerData, error) {
-		libRows, err := extract.ExtractAccounts(libInput)
+		rows, err := extractAccounts(meta.LCM, w.config.NetworkPassphrase, meta.LedgerSequence, meta.ClosedAt, meta.LedgerRange)
 		if err != nil {
 			return nil, err
-		}
-		rows := make([]AccountData, len(libRows))
-		for i, r := range libRows {
-			rows[i] = AccountData(r)
 		}
 		return &LedgerData{Accounts: rows}, nil
 	})

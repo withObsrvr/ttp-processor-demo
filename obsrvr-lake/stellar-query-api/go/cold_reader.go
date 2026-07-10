@@ -105,6 +105,7 @@ func (c *ColdReader) QueryLedgers(ctx context.Context, start, end int64, limit i
 		orderBy = "transaction_count DESC, sequence DESC"
 	}
 
+	startRange, endRange := ledgerRangeBounds(start, end)
 	query := fmt.Sprintf(`
 		SELECT
 			sequence,
@@ -135,11 +136,12 @@ func (c *ColdReader) QueryLedgers(ctx context.Context, start, end int64, limit i
 			COALESCE(ingestion_timestamp, closed_at) as created_at
 		FROM %s.%s.ledgers_row_v2
 		WHERE sequence >= ? AND sequence <= ?
+		  AND ledger_range >= ? AND ledger_range <= ?
 		ORDER BY %s
 		LIMIT ?
 	`, c.config.CatalogName, c.config.SchemaName, orderBy)
 
-	rows, err := c.db.QueryContext(ctx, query, start, end, limit)
+	rows, err := c.db.QueryContext(ctx, query, start, end, startRange, endRange, limit)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query ledgers from DuckLake: %w", err)
 	}

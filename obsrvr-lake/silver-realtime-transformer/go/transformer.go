@@ -1490,7 +1490,8 @@ func (rt *RealtimeTransformer) transformAccountsCurrent(ctx context.Context, tx 
 			&row.MasterWeight, &row.LowThreshold, &row.MedThreshold, &row.HighThreshold,
 			&row.Flags, &row.AuthRequired, &row.AuthRevocable, &row.AuthImmutable, &row.AuthClawbackEnabled,
 			&row.Signers, &row.SponsorAccount, &row.CreatedAt, &row.UpdatedAt,
-			&row.LastModifiedLedger, &row.LedgerRange, &row.EraID, &row.VersionLabel,
+			&row.LastModifiedLedger, &row.SequenceLedger, &row.SequenceTime,
+			&row.LedgerRange, &row.EraID, &row.VersionLabel,
 		)
 
 		if err != nil {
@@ -1668,6 +1669,7 @@ func (rt *RealtimeTransformer) transformAccountsSnapshot(ctx context.Context, tx
 		row := &AccountSnapshotRow{}
 		err := rows.Scan(
 			&row.AccountID, &row.LedgerSequence, &row.ClosedAt, &row.Balance, &row.SequenceNumber,
+			&row.SequenceLedger, &row.SequenceTime,
 			&row.NumSubentries, &row.NumSponsoring, &row.NumSponsored, &row.HomeDomain,
 			&row.MasterWeight, &row.LowThreshold, &row.MedThreshold, &row.HighThreshold,
 			&row.Flags, &row.AuthRequired, &row.AuthRevocable, &row.AuthImmutable, &row.AuthClawbackEnabled,

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
+	"github.com/stellar/go-stellar-sdk/xdr"
 )
 
 var horizonTxColumns = []string{
@@ -133,6 +134,55 @@ func TestHorizonTransactionReaderRejectsMissingXDR(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestHorizonTransactionPreconditionsFromEnvelopeXDR(t *testing.T) {
+	minSeq := xdr.SequenceNumber(98)
+	extraSigner := xdr.MustSigner("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF")
+	envelope := xdr.TransactionEnvelope{
+		Type: xdr.EnvelopeTypeEnvelopeTypeTx,
+		V1: &xdr.TransactionV1Envelope{
+			Tx: xdr.Transaction{
+				SourceAccount: xdr.MustMuxedAddress("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"),
+				Fee:           100,
+				SeqNum:        99,
+				Cond: xdr.Preconditions{
+					Type: xdr.PreconditionTypePrecondV2,
+					V2: &xdr.PreconditionsV2{
+						TimeBounds:      &xdr.TimeBounds{MinTime: 1, MaxTime: 2},
+						LedgerBounds:    &xdr.LedgerBounds{MinLedger: 3, MaxLedger: 4},
+						MinSeqNum:       &minSeq,
+						MinSeqAge:       5,
+						MinSeqLedgerGap: 6,
+						ExtraSigners:    []xdr.SignerKey{extraSigner},
+					},
+				},
+				Memo:       xdr.Memo{Type: xdr.MemoTypeMemoNone},
+				Operations: []xdr.Operation{},
+			},
+		},
+	}
+	envelopeXDR, err := xdr.MarshalBase64(envelope)
+	if err != nil {
+		t.Fatalf("MarshalBase64: %v", err)
+	}
+
+	got := horizonTransactionPreconditions(envelopeXDR)
+	if got == nil {
+		t.Fatal("preconditions = nil")
+	}
+	if got.TimeBounds == nil || got.TimeBounds.MinTime != "1" || got.TimeBounds.MaxTime != "2" {
+		t.Fatalf("timebounds = %#v", got.TimeBounds)
+	}
+	if got.LedgerBounds == nil || got.LedgerBounds.MinLedger != 3 || got.LedgerBounds.MaxLedger != 4 {
+		t.Fatalf("ledgerbounds = %#v", got.LedgerBounds)
+	}
+	if got.MinAccountSequence != "98" || got.MinAccountSequenceAge != "5" || got.MinAccountSequenceLedgerGap != 6 {
+		t.Fatalf("min sequence fields = %#v", got)
+	}
+	if len(got.ExtraSigners) != 1 || got.ExtraSigners[0] != extraSigner.Address() {
+		t.Fatalf("extra signers = %#v", got.ExtraSigners)
 	}
 }
 

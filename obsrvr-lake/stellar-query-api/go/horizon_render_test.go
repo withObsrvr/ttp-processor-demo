@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 )
@@ -34,5 +36,42 @@ func TestHorizonCompatLinkBuilderUsesForwardedScheme(t *testing.T) {
 
 	if got.Href != "https://obsrvr-lake-testnet.withobsrvr.com/api/v1/horizon-compat/transactions/abc" {
 		t.Fatalf("href = %q", got.Href)
+	}
+}
+
+func TestWriteHorizonJSONNormalizesEmbeddedRecordsKey(t *testing.T) {
+	var page struct {
+		Embedded struct {
+			Records []map[string]string
+		} `json:"_embedded"`
+	}
+	page.Embedded.Records = []map[string]string{{"id": "1"}}
+
+	rec := httptest.NewRecorder()
+	if err := writeHorizonJSON(rec, http.StatusOK, page); err != nil {
+		t.Fatalf("writeHorizonJSON: %v", err)
+	}
+
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &top); err != nil {
+		t.Fatalf("json.Unmarshal top: %v", err)
+	}
+	var embedded map[string]json.RawMessage
+	if err := json.Unmarshal(top["_embedded"], &embedded); err != nil {
+		t.Fatalf("json.Unmarshal embedded: %v", err)
+	}
+	if _, ok := embedded["Records"]; ok {
+		t.Fatalf("unexpected SDK-style Records key in response: %s", rec.Body.String())
+	}
+	recordsRaw, ok := embedded["records"]
+	if !ok {
+		t.Fatalf("missing Horizon records key in response: %s", rec.Body.String())
+	}
+	var records []map[string]string
+	if err := json.Unmarshal(recordsRaw, &records); err != nil {
+		t.Fatalf("json.Unmarshal records: %v", err)
+	}
+	if len(records) != 1 || records[0]["id"] != "1" {
+		t.Fatalf("records = %#v", records)
 	}
 }

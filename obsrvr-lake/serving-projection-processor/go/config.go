@@ -69,6 +69,7 @@ type ProjectorsConfig struct {
 	ExplorerEventsRecent ProjectorConfig `yaml:"explorer_events_recent"`
 	ContractCallsRecent  ProjectorConfig `yaml:"contract_calls_recent"`
 	TxReceipts           ProjectorConfig `yaml:"tx_receipts"`
+	EffectsByAccount     ProjectorConfig `yaml:"effects_by_account"`
 }
 
 type ProjectorConfig struct {
@@ -144,6 +145,9 @@ func LoadConfig(path string) (*Config, error) {
 		// memory; 256 is a safe starting point. Raise if throughput is fine
 		// and memory headroom allows.
 		cfg.Projectors.TxReceipts.BatchSize = 256
+	}
+	if cfg.Projectors.EffectsByAccount.BatchSize <= 0 {
+		cfg.Projectors.EffectsByAccount.BatchSize = 256
 	}
 	if cfg.Health.Port == 0 {
 		cfg.Health.Port = 8097

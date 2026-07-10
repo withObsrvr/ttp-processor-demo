@@ -325,14 +325,20 @@ func (r *UnifiedDuckDBReader) GetAccountCurrent(ctx context.Context, accountID s
 	// Return the row with highest last_modified_ledger (most recent state)
 	query := fmt.Sprintf(`
 		SELECT account_id, balance, sequence_number, num_subentries,
-		       last_modified_ledger, updated_at, home_domain
+		       num_sponsoring, num_sponsored, last_modified_ledger,
+		       sequence_ledger, sequence_time, updated_at, home_domain,
+		       sponsor_account, auth_required, auth_revocable, auth_immutable, auth_clawback_enabled
 		FROM (
 			SELECT account_id, balance, sequence_number, num_subentries,
-			       last_modified_ledger, updated_at, home_domain
+			       num_sponsoring, num_sponsored, last_modified_ledger,
+			       sequence_ledger, sequence_time, updated_at, home_domain,
+			       sponsor_account, auth_required, auth_revocable, auth_immutable, auth_clawback_enabled
 			FROM %s.accounts_current WHERE account_id = $1
 			UNION ALL
 			SELECT account_id, balance, sequence_number, num_subentries,
-			       last_modified_ledger, updated_at, home_domain
+			       num_sponsoring, num_sponsored, last_modified_ledger,
+			       sequence_ledger, sequence_time, updated_at, home_domain,
+			       sponsor_account, auth_required, auth_revocable, auth_immutable, auth_clawback_enabled
 			FROM %s.accounts_current WHERE account_id = $1
 		) combined
 		ORDER BY last_modified_ledger DESC
@@ -340,11 +346,14 @@ func (r *UnifiedDuckDBReader) GetAccountCurrent(ctx context.Context, accountID s
 	`, r.hotSchema, r.coldSchema)
 
 	var acc AccountCurrent
-	var homeDomain sql.NullString
+	var homeDomain, sponsor sql.NullString
+	var sequenceLedger, sequenceTime sql.NullInt64
+	var authRequired, authRevocable, authImmutable, authClawback sql.NullBool
 	err := r.db.QueryRowContext(ctx, query, accountID).Scan(
 		&acc.AccountID, &acc.Balance, &acc.SequenceNumber,
-		&acc.NumSubentries, &acc.LastModifiedLedger, &acc.UpdatedAt,
-		&homeDomain,
+		&acc.NumSubentries, &acc.NumSponsoring, &acc.NumSponsored,
+		&acc.LastModifiedLedger, &sequenceLedger, &sequenceTime, &acc.UpdatedAt,
+		&homeDomain, &sponsor, &authRequired, &authRevocable, &authImmutable, &authClawback,
 	)
 
 	if err == sql.ErrNoRows {
@@ -356,6 +365,27 @@ func (r *UnifiedDuckDBReader) GetAccountCurrent(ctx context.Context, accountID s
 
 	if homeDomain.Valid && homeDomain.String != "" {
 		acc.HomeDomain = &homeDomain.String
+	}
+	if sponsor.Valid && sponsor.String != "" {
+		acc.Sponsor = &sponsor.String
+	}
+	if sequenceLedger.Valid {
+		acc.SequenceLedger = sequenceLedger.Int64
+	}
+	if sequenceTime.Valid {
+		acc.SequenceTime = sequenceTime.Int64
+	}
+	if authRequired.Valid {
+		acc.AuthRequired = &authRequired.Bool
+	}
+	if authRevocable.Valid {
+		acc.AuthRevocable = &authRevocable.Bool
+	}
+	if authImmutable.Valid {
+		acc.AuthImmutable = &authImmutable.Bool
+	}
+	if authClawback.Valid {
+		acc.AuthClawbackEnabled = &authClawback.Bool
 	}
 
 	return &acc, nil
@@ -562,20 +592,24 @@ func (r *UnifiedDuckDBReader) GetAccountBalances(ctx context.Context, accountID 
 	trustlineQuery := fmt.Sprintf(`
 		WITH combined AS (
 			SELECT account_id, asset_type, asset_code, asset_issuer,
-			       balance, trust_line_limit, flags, last_modified_ledger, 1 as source
+			       balance, trust_line_limit, buying_liabilities, selling_liabilities,
+			       flags, sponsor, last_modified_ledger, 1 as source
 			FROM %s.trustlines_current WHERE account_id = $1
 			UNION ALL
 			SELECT account_id, asset_type, asset_code, asset_issuer,
-			       balance, trust_line_limit, flags, last_modified_ledger, 2 as source
+			       balance, trust_line_limit, buying_liabilities, selling_liabilities,
+			       flags, sponsor, last_modified_ledger, 2 as source
 			FROM %s.trustlines_current WHERE account_id = $1
 		),
 		deduplicated AS (
 			SELECT DISTINCT ON (account_id, asset_code, asset_issuer)
-			       asset_type, asset_code, asset_issuer, balance, trust_line_limit, flags
+			       asset_type, asset_code, asset_issuer, balance, trust_line_limit,
+			       buying_liabilities, selling_liabilities, flags, sponsor, last_modified_ledger
 			FROM combined
 			ORDER BY account_id, asset_code, asset_issuer, last_modified_ledger DESC
 		)
-		SELECT asset_type, asset_code, asset_issuer, balance, trust_line_limit, flags
+		SELECT asset_type, asset_code, asset_issuer, balance, trust_line_limit,
+		       buying_liabilities, selling_liabilities, flags, sponsor, last_modified_ledger
 		FROM deduplicated
 	`, r.hotSchema, r.coldSchema)
 
@@ -589,9 +623,12 @@ func (r *UnifiedDuckDBReader) GetAccountBalances(ctx context.Context, accountID 
 		var assetType, assetCode string
 		var assetIssuer sql.NullString
 		var balanceStroops, limit sql.NullInt64
+		var buyingLiabilities, sellingLiabilities sql.NullInt64
 		var flags sql.NullInt64
+		var sponsor sql.NullString
+		var lastModified sql.NullInt64
 
-		if err := rows.Scan(&assetType, &assetCode, &assetIssuer, &balanceStroops, &limit, &flags); err != nil {
+		if err := rows.Scan(&assetType, &assetCode, &assetIssuer, &balanceStroops, &limit, &buyingLiabilities, &sellingLiabilities, &flags, &sponsor, &lastModified); err != nil {
 			return nil, fmt.Errorf("failed to scan trustline: %w", err)
 		}
 
@@ -607,22 +644,46 @@ func (r *UnifiedDuckDBReader) GetAccountBalances(ctx context.Context, accountID 
 		}
 
 		var isAuthorized *bool
+		var isAuthorizedToMaintainLiabilities *bool
+		var isClawbackEnabled *bool
 		if flags.Valid {
 			// Flag 1 = authorized (see Stellar SDK)
 			authorized := (flags.Int64 & 1) != 0
 			isAuthorized = &authorized
+			authorizedToMaintain := (flags.Int64 & 2) != 0
+			isAuthorizedToMaintainLiabilities = &authorizedToMaintain
+			clawbackEnabled := (flags.Int64 & 4) != 0
+			isClawbackEnabled = &clawbackEnabled
 		}
 
 		bal := balanceStroops.Int64
-		balances = append(balances, Balance{
-			AssetType:      assetType,
-			AssetCode:      assetCode,
-			AssetIssuer:    issuer,
-			Balance:        formatStroopsToDecimal(bal),
-			BalanceStroops: bal,
-			Limit:          limitStr,
-			IsAuthorized:   isAuthorized,
-		})
+		out := Balance{
+			AssetType:                         assetType,
+			AssetCode:                         assetCode,
+			AssetIssuer:                       issuer,
+			Balance:                           formatStroopsToDecimal(bal),
+			BalanceStroops:                    bal,
+			Limit:                             limitStr,
+			IsAuthorized:                      isAuthorized,
+			IsAuthorizedToMaintainLiabilities: isAuthorizedToMaintainLiabilities,
+			IsClawbackEnabled:                 isClawbackEnabled,
+		}
+		if buyingLiabilities.Valid {
+			v := formatStroopsToDecimal(buyingLiabilities.Int64)
+			out.BuyingLiabilities = &v
+		}
+		if sellingLiabilities.Valid {
+			v := formatStroopsToDecimal(sellingLiabilities.Int64)
+			out.SellingLiabilities = &v
+		}
+		if sponsor.Valid {
+			out.Sponsor = &sponsor.String
+		}
+		if lastModified.Valid {
+			v := lastModified.Int64
+			out.LastModifiedLedger = &v
+		}
+		balances = append(balances, out)
 	}
 
 	return &AccountBalancesResponse{
@@ -2795,6 +2856,10 @@ func (r *UnifiedDuckDBReader) GetEffects(ctx context.Context, filters EffectFilt
 		conditions = append(conditions, fmt.Sprintf("ledger_sequence = $%d", argNum))
 		args = append(args, filters.LedgerSequence)
 		argNum++
+		ledgerRange, _ := ledgerRangeBounds(filters.LedgerSequence, filters.LedgerSequence)
+		conditions = append(conditions, fmt.Sprintf("ledger_range = $%d", argNum))
+		args = append(args, ledgerRange)
+		argNum++
 	}
 
 	// Transaction filter
@@ -2837,6 +2902,25 @@ func (r *UnifiedDuckDBReader) GetEffects(ctx context.Context, filters EffectFilt
 	limit := filters.Limit
 	if limit <= 0 {
 		limit = 100
+	}
+
+	if shouldQueryAccountEffectsByTier(filters) {
+		return r.getAccountEffectsByTier(ctx, whereClause, orderDir, argNum, args, limit, filters.Order)
+	}
+
+	if shouldQueryEffectsSequentially(filters) {
+		effects, nextCursor, hasMore, err := r.getEffectsFromSchema(ctx, r.hotSchema, whereClause, orderDir, argNum, args, limit, filters.Order)
+		if err == nil && len(effects) > 0 {
+			return effects, nextCursor, hasMore, nil
+		}
+		effects, nextCursor, hasMore, coldErr := r.getEffectsFromSchema(ctx, r.coldSchema, whereClause, orderDir, argNum, args, limit, filters.Order)
+		if coldErr == nil {
+			return effects, nextCursor, hasMore, nil
+		}
+		if err != nil {
+			return nil, "", false, fmt.Errorf("unified GetEffects sequential hot=%v cold=%w", err, coldErr)
+		}
+		return nil, "", false, fmt.Errorf("unified GetEffects sequential cold: %w", coldErr)
 	}
 
 	// Unified query with hot+cold merge - effects are append-only so no dedup needed
@@ -2979,6 +3063,190 @@ func (r *UnifiedDuckDBReader) GetEffects(ctx context.Context, filters EffectFilt
 	}
 
 	return effects, nextCursor, hasMore, nil
+}
+
+func shouldQueryEffectsSequentially(filters EffectFilters) bool {
+	if filters.Cursor != nil {
+		return false
+	}
+	if filters.OperationID != nil || filters.TransactionHash != "" || filters.LedgerSequence > 0 {
+		return true
+	}
+	return filters.Order == "desc" &&
+		filters.AccountID == "" &&
+		filters.EffectType == "" &&
+		filters.StartTime.IsZero() &&
+		filters.EndTime.IsZero()
+}
+
+func shouldQueryAccountEffectsByTier(filters EffectFilters) bool {
+	return filters.Cursor == nil &&
+		filters.Order == "desc" &&
+		filters.AccountID != "" &&
+		filters.TransactionHash == "" &&
+		filters.OperationID == nil &&
+		filters.LedgerSequence == 0
+}
+
+func (r *UnifiedDuckDBReader) getAccountEffectsByTier(ctx context.Context, whereClause, orderDir string, argNum int, args []interface{}, limit int, order string) ([]SilverEffect, string, bool, error) {
+	hotEffects, hotNext, hotHasMore, hotErr := r.getEffectsFromSchema(ctx, r.hotSchema, whereClause, orderDir, argNum, args, limit, order)
+	if hotErr == nil {
+		if hotHasMore || len(hotEffects) >= limit {
+			return hotEffects, hotNext, hotHasMore, nil
+		}
+		remaining := limit - len(hotEffects)
+		if remaining > 0 {
+			coldEffects, coldNext, coldHasMore, coldErr := r.getEffectsFromSchema(ctx, r.coldSchema, whereClause, orderDir, argNum, args, remaining, order)
+			if coldErr == nil {
+				combined := append(hotEffects, coldEffects...)
+				if coldHasMore {
+					return combined, coldNext, true, nil
+				}
+				return combined, "", false, nil
+			}
+		}
+		if len(hotEffects) > 0 {
+			return hotEffects, "", false, nil
+		}
+	}
+
+	coldEffects, coldNext, coldHasMore, coldErr := r.getEffectsFromSchema(ctx, r.coldSchema, whereClause, orderDir, argNum, args, limit, order)
+	if coldErr == nil {
+		return coldEffects, coldNext, coldHasMore, nil
+	}
+	if hotErr != nil {
+		return nil, "", false, fmt.Errorf("unified GetEffects account hot=%v cold=%w", hotErr, coldErr)
+	}
+	return nil, "", false, fmt.Errorf("unified GetEffects account cold: %w", coldErr)
+}
+
+func (r *UnifiedDuckDBReader) getEffectsFromSchema(ctx context.Context, schema, whereClause, orderDir string, argNum int, args []interface{}, limit int, order string) ([]SilverEffect, string, bool, error) {
+	if strings.TrimSpace(schema) == "" {
+		return nil, "", false, sql.ErrNoRows
+	}
+	queryArgs := append([]interface{}{}, args...)
+	queryArgs = append(queryArgs, limit+1)
+	query := fmt.Sprintf(`
+		SELECT ledger_sequence, transaction_hash, operation_index, effect_index,
+			   operation_id, effect_type, effect_type_string, account_id,
+			   amount, asset_code, asset_issuer, asset_type,
+			   details_json,
+			   trustline_limit, authorize_flag, clawback_flag,
+			   signer_account, signer_weight, offer_id, seller_account,
+			   created_at
+		FROM %s.effects
+		WHERE %s
+		ORDER BY ledger_sequence %s, transaction_hash %s, operation_index %s, effect_index %s
+		LIMIT $%d
+	`, schema, whereClause, orderDir, orderDir, orderDir, orderDir, argNum)
+
+	rows, err := r.db.QueryContext(ctx, query, queryArgs...)
+	if err != nil {
+		return nil, "", false, err
+	}
+	defer rows.Close()
+
+	effects, err := scanSilverEffects(rows)
+	if err != nil {
+		return nil, "", false, err
+	}
+
+	hasMore := len(effects) > limit
+	if hasMore {
+		effects = effects[:limit]
+	}
+
+	var nextCursor string
+	if hasMore && len(effects) > 0 {
+		last := effects[len(effects)-1]
+		nextCursor = EffectCursor{
+			LedgerSequence:  last.LedgerSequence,
+			TransactionHash: last.TransactionHash,
+			OperationIndex:  last.OperationIndex,
+			EffectIndex:     last.EffectIndex,
+			Order:           order,
+		}.Encode()
+	}
+	return effects, nextCursor, hasMore, nil
+}
+
+type silverEffectRows interface {
+	Next() bool
+	Scan(dest ...interface{}) error
+	Err() error
+}
+
+func scanSilverEffects(rows silverEffectRows) ([]SilverEffect, error) {
+	var effects []SilverEffect
+	for rows.Next() {
+		var e SilverEffect
+		var operationID sql.NullInt64
+		var accountID, amount, assetCode, assetIssuer, assetType sql.NullString
+		var detailsJSON sql.NullString
+		var trustlineLimit, signerAccount, sellerAccount sql.NullString
+		var authorizeFlag, clawbackFlag sql.NullBool
+		var signerWeight sql.NullInt32
+		var offerID sql.NullInt64
+
+		err := rows.Scan(
+			&e.LedgerSequence, &e.TransactionHash, &e.OperationIndex, &e.EffectIndex,
+			&operationID, &e.EffectType, &e.EffectTypeString, &accountID,
+			&amount, &assetCode, &assetIssuer, &assetType,
+			&detailsJSON,
+			&trustlineLimit, &authorizeFlag, &clawbackFlag,
+			&signerAccount, &signerWeight, &offerID, &sellerAccount,
+			&e.Timestamp,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("scan effect: %w", err)
+		}
+
+		if operationID.Valid {
+			e.OperationID = &operationID.Int64
+		}
+		if accountID.Valid {
+			e.AccountID = &accountID.String
+		}
+		if amount.Valid {
+			e.Amount = &amount.String
+		}
+		if assetCode.Valid || assetType.Valid {
+			asset := buildAssetInfo(assetType.String, assetCode.String, assetIssuer.String)
+			e.Asset = &asset
+		}
+		if detailsJSON.Valid {
+			raw := json.RawMessage(detailsJSON.String)
+			e.Details = &raw
+		}
+		if trustlineLimit.Valid {
+			e.TrustlineLimit = &trustlineLimit.String
+		}
+		if authorizeFlag.Valid {
+			e.AuthorizeFlag = &authorizeFlag.Bool
+		}
+		if clawbackFlag.Valid {
+			e.ClawbackFlag = &clawbackFlag.Bool
+		}
+		if signerAccount.Valid {
+			e.SignerAccount = &signerAccount.String
+		}
+		if signerWeight.Valid {
+			sw := int(signerWeight.Int32)
+			e.SignerWeight = &sw
+		}
+		if offerID.Valid {
+			e.OfferID = &offerID.Int64
+		}
+		if sellerAccount.Valid {
+			e.SellerAccount = &sellerAccount.String
+		}
+
+		effects = append(effects, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return effects, nil
 }
 
 // GetEffectTypes returns counts of each effect type from unified storage

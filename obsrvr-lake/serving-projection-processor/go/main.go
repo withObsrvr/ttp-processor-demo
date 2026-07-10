@@ -61,6 +61,9 @@ func buildProjectors(cfg *Config, bronze, silver, serving *pgxpool.Pool, checkpo
 	if cfg.Projectors.TxReceipts.Enabled {
 		projectors = append(projectors, NewTxReceiptsProjector(network, cfg.Projectors.TxReceipts.BatchSize, bronze, silver, serving, checkpoints))
 	}
+	if cfg.Projectors.EffectsByAccount.Enabled {
+		projectors = append(projectors, NewEffectsByAccountProjector(network, cfg.Projectors.EffectsByAccount.BatchSize, silver, serving, checkpoints))
+	}
 	return projectors
 }
 

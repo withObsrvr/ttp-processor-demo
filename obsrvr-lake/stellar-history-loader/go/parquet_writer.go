@@ -283,6 +283,8 @@ type ParquetAccount struct {
 	ClosedAt            int64   `parquet:"closed_at,timestamp(microsecond)"`
 	Balance             string  `parquet:"balance"`
 	SequenceNumber      uint64  `parquet:"sequence_number"`
+	SequenceLedger      uint32  `parquet:"sequence_ledger"`
+	SequenceTime        uint64  `parquet:"sequence_time"`
 	NumSubentries       uint32  `parquet:"num_subentries"`
 	NumSponsoring       uint32  `parquet:"num_sponsoring"`
 	NumSponsored        uint32  `parquet:"num_sponsored"`
@@ -913,6 +915,8 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 				ClosedAt:            a.ClosedAt.UnixMicro(),
 				Balance:             a.Balance,
 				SequenceNumber:      a.SequenceNumber,
+				SequenceLedger:      a.SequenceLedger,
+				SequenceTime:        a.SequenceTime,
 				NumSubentries:       a.NumSubentries,
 				NumSponsoring:       a.NumSponsoring,
 				NumSponsored:        a.NumSponsored,

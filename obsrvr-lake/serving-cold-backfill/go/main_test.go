@@ -26,8 +26,8 @@ func TestPlanChunksDeterministic(t *testing.T) {
 
 func TestRequiredProjectionContractIncludesCheckpointTargets(t *testing.T) {
 	got := requiredProjections("serving")
-	if len(got) != 20 {
-		t.Fatalf("required projection count = %d, want 20", len(got))
+	if len(got) != 21 {
+		t.Fatalf("required projection count = %d, want 21", len(got))
 	}
 	checkpointed := 0
 	for _, p := range got {
@@ -41,8 +41,8 @@ func TestRequiredProjectionContractIncludesCheckpointTargets(t *testing.T) {
 			t.Fatalf("%s checkpoint=%v class=%s, want false/blocked_source_mapping", p.Name, p.Checkpoint, p.InitialClass)
 		}
 	}
-	if checkpointed != 18 {
-		t.Fatalf("checkpointed projection count = %d, want 18", checkpointed)
+	if checkpointed != 19 {
+		t.Fatalf("checkpointed projection count = %d, want 19", checkpointed)
 	}
 }
 
@@ -127,6 +127,7 @@ func TestFeedBackfillRerunResumeNoDuplicates(t *testing.T) {
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_tx_receipts`, 3)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_transactions_by_account`, 6)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_operations_by_account`, 7)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_effects_by_account`, 4)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_accounts_current`, 2)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_account_balances_current`, 3)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_network_stats_current`, 1)
@@ -145,17 +146,19 @@ func TestFeedBackfillRerunResumeNoDuplicates(t *testing.T) {
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_contract_activity_summary`, 1)
 	assertBackfillString(t, db, `SELECT activity_classification FROM serving.sv_contract_activity_summary WHERE contract_id='CC1'`, "invoked_contract")
 	assertBackfillCount(t, db, `SELECT invocation_count_7d FROM serving.sv_contract_activity_summary WHERE contract_id='CC1'`, 2)
-	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_backfill_manifest WHERE status='completed'`, 25)
-	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_projection_checkpoints WHERE last_ledger_sequence=6`, 18)
-	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_watermarks WHERE status='complete' AND complete_thru=6`, 18)
-	assertBackfillCount(t, db, `SELECT COUNT(*) FROM ops.consumers WHERE pipeline='serving-cold-backfill' AND checkpoint=6`, 18)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_backfill_manifest WHERE status='completed'`, 27)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_projection_checkpoints WHERE last_ledger_sequence=6`, 19)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_watermarks WHERE status='complete' AND complete_thru=6`, 19)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM ops.consumers WHERE pipeline='serving-cold-backfill' AND checkpoint=6`, 19)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM (SELECT tx_hash, COUNT(*) n FROM serving.sv_transactions_recent GROUP BY tx_hash HAVING COUNT(*) > 1)`, 0)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM (SELECT operation_id, COUNT(*) n FROM serving.sv_operations_recent GROUP BY operation_id HAVING COUNT(*) > 1)`, 0)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM (SELECT account_id, toid, COUNT(*) n FROM serving.sv_transactions_by_account GROUP BY account_id, toid HAVING COUNT(*) > 1)`, 0)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM (SELECT account_id, operation_toid, COUNT(*) n FROM serving.sv_operations_by_account GROUP BY account_id, operation_toid HAVING COUNT(*) > 1)`, 0)
-	assertBackfillCount(t, db, `SELECT COUNT(*) FROM duckdb_indexes() WHERE index_name IN ('sv_transactions_by_account_page_idx', 'sv_operations_by_account_page_idx')`, 2)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM (SELECT account_id, ledger_sequence, tx_hash, op_index, effect_index, COUNT(*) n FROM serving.sv_effects_by_account GROUP BY account_id, ledger_sequence, tx_hash, op_index, effect_index HAVING COUNT(*) > 1)`, 0)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM duckdb_indexes() WHERE index_name IN ('sv_transactions_by_account_page_idx', 'sv_operations_by_account_page_idx', 'sv_effects_by_account_page_idx')`, 3)
 	assertBackfillCount(t, db, `SELECT toid FROM serving.sv_transactions_by_account WHERE account_id='GA1' AND tx_hash='tx3'`, transactionTOID(3, 1))
 	assertBackfillCount(t, db, `SELECT operation_toid FROM serving.sv_operations_by_account WHERE account_id='GA1' AND tx_hash='tx3'`, operationTOID(3, 1, 1))
+	assertBackfillCount(t, db, `SELECT operation_toid FROM serving.sv_effects_by_account WHERE account_id='GA1' AND tx_hash='tx3' AND effect_index=0`, operationTOID(3, 1, 1))
 	assertBackfillString(t, db, `SELECT typeof(involved_accounts) FROM serving.sv_tx_receipts LIMIT 1`, "VARCHAR[]")
 	assertBackfillCount(t, db, `SELECT total_calls_24h FROM serving.sv_contract_stats_current WHERE contract_id='CC1'`, 1)
 	assertBackfillCount(t, db, `SELECT total_calls_7d FROM serving.sv_contract_stats_current WHERE contract_id='CC1'`, 2)
@@ -173,8 +176,8 @@ func TestFeedBackfillRerunResumeNoDuplicates(t *testing.T) {
 		t.Fatalf("resume skipped chunks = %d, want 2\n%s", got, out.String())
 	}
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_transactions_recent`, 3)
-	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_backfill_manifest WHERE status='completed'`, 25)
-	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_projection_checkpoints WHERE last_ledger_sequence=6`, 18)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_backfill_manifest WHERE status='completed'`, 27)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_projection_checkpoints WHERE last_ledger_sequence=6`, 19)
 }
 
 func TestByAccountOnlyProjectionSelection(t *testing.T) {
@@ -296,16 +299,32 @@ func loadBackfillFixture(t *testing.T, ctx context.Context, db *sql.DB) {
 			destination VARCHAR, asset VARCHAR, amount VARCHAR, contract_id VARCHAR, function_name VARCHAR,
 			tx_successful BOOLEAN, is_payment_op BOOLEAN, is_soroban_op BOOLEAN
 		)`,
+		`CREATE TABLE silver.effects (
+			ledger_sequence BIGINT, transaction_hash VARCHAR, operation_index INTEGER, effect_index INTEGER,
+			operation_id BIGINT, effect_type INTEGER, effect_type_string VARCHAR, account_id VARCHAR,
+			amount VARCHAR, asset_code VARCHAR, asset_issuer VARCHAR, asset_type VARCHAR,
+			details_json VARCHAR, trustline_limit VARCHAR, authorize_flag BOOLEAN, clawback_flag BOOLEAN,
+			signer_account VARCHAR, signer_weight INTEGER, offer_id BIGINT, seller_account VARCHAR,
+			created_at TIMESTAMP, ledger_range BIGINT
+		)`,
 		`CREATE TABLE silver.contract_invocations_raw (
 			network VARCHAR, transaction_hash VARCHAR, operation_index INTEGER, ledger_sequence BIGINT,
 			closed_at TIMESTAMP, contract_id VARCHAR, source_account VARCHAR, function_name VARCHAR, successful BOOLEAN
 		)`,
 		`CREATE TABLE silver.accounts_current (
 			network VARCHAR, account_id VARCHAR, balance VARCHAR, sequence_number BIGINT,
-			num_subentries INTEGER, created_at TIMESTAMP, last_modified_ledger BIGINT,
-			updated_at TIMESTAMP, home_domain VARCHAR, master_weight INTEGER,
-			low_threshold INTEGER, med_threshold INTEGER, high_threshold INTEGER,
+			num_subentries INTEGER, num_sponsoring INTEGER, num_sponsored INTEGER,
+			created_at TIMESTAMP, last_modified_ledger BIGINT, sequence_ledger BIGINT,
+			sequence_time BIGINT, updated_at TIMESTAMP, home_domain VARCHAR, sponsor_account VARCHAR,
+			master_weight INTEGER, low_threshold INTEGER, med_threshold INTEGER, high_threshold INTEGER,
+			auth_required BOOLEAN, auth_revocable BOOLEAN, auth_immutable BOOLEAN, auth_clawback_enabled BOOLEAN,
 			signers VARCHAR, ledger_range BIGINT
+		)`,
+		`CREATE TABLE silver.trustlines_current (
+			network VARCHAR, account_id VARCHAR, asset_type VARCHAR, asset_issuer VARCHAR,
+			asset_code VARCHAR, liquidity_pool_id VARCHAR, balance BIGINT, trust_line_limit BIGINT,
+			buying_liabilities BIGINT, selling_liabilities BIGINT, flags INTEGER, sponsor VARCHAR,
+			last_modified_ledger BIGINT, updated_at TIMESTAMP
 		)`,
 		`CREATE TABLE silver.address_balances_current (
 			network VARCHAR, owner_address VARCHAR, asset_key VARCHAR, asset_code VARCHAR,
@@ -347,13 +366,21 @@ func loadBackfillFixture(t *testing.T, ctx context.Context, db *sql.DB) {
 			('mainnet','tx4',0,4,'2026-01-01 00:00:04',24,'invoke_host_function','GA2',NULL,NULL,NULL,'CC1','transfer',true,false,true),
 			('mainnet','tx4',1,4,'2026-01-01 00:00:04',1,'payment','GA2','GB2','USD:ISSUER','50',NULL,NULL,true,true,false),
 			('mainnet','tx5',0,5,'2026-01-01 00:00:05',1,'payment','GA3','GB3','native','75',NULL,NULL,false,true,false)`,
+		`INSERT INTO silver.effects VALUES
+			(3,'tx3',0,0,NULL,3,'account_debited','GA1','100','XLM',NULL,'native',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'2026-01-01 00:00:03',0),
+			(3,'tx3',0,1,NULL,2,'account_credited','GB1','100','XLM',NULL,'native',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'2026-01-01 00:00:03',0),
+			(4,'tx4',1,0,17179873282,3,'account_debited','GA2','50','USD','ISSUER','credit_alphanum4',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'2026-01-01 00:00:04',0),
+			(4,'tx4',1,1,17179873282,2,'account_credited','GB2','50','USD','ISSUER','credit_alphanum4',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'2026-01-01 00:00:04',0)`,
 		`INSERT INTO silver.contract_invocations_raw VALUES
 			('mainnet','tx3',0,3,'2025-12-30 00:00:03','CC1','GA9','transfer',true),
 			('mainnet','tx4',0,4,'2026-01-01 00:00:04','CC1','GA2','transfer',true)`,
 		`INSERT INTO silver.accounts_current VALUES
-			('mainnet','GA1','1000',10,1,'2026-01-01 00:00:03',4,'2026-01-01 00:00:04',NULL,1,1,1,1,'[]',3),
-			('mainnet','GA2','2000',11,1,'2026-01-01 00:00:04',5,'2026-01-01 00:00:05','example.com',1,1,1,1,'[]',4),
-			('mainnet','GA3','3000',12,1,'2026-01-01 00:00:08',8,'2026-01-01 00:00:08',NULL,1,1,1,1,'[]',8)`,
+			('mainnet','GA1','1000',10,1,0,0,'2026-01-01 00:00:03',4,4,4,'2026-01-01 00:00:04',NULL,NULL,1,1,1,1,false,false,false,false,'[]',3),
+			('mainnet','GA2','2000',11,1,0,0,'2026-01-01 00:00:04',5,5,5,'2026-01-01 00:00:05','example.com',NULL,1,1,1,1,false,false,false,false,'[]',4),
+			('mainnet','GA3','3000',12,1,0,0,'2026-01-01 00:00:08',8,8,8,'2026-01-01 00:00:08',NULL,NULL,1,1,1,1,false,false,false,false,'[]',8)`,
+		`INSERT INTO silver.trustlines_current VALUES
+			('mainnet','GA2','credit_alphanum4','ISSUER','USD',NULL,50000000,1000000000,0,0,1,NULL,5,'2026-01-01 00:00:05'),
+			('mainnet','GA3','credit_alphanum4','ISSUER2','EUR',NULL,75000000,1000000000,0,0,1,NULL,8,'2026-01-01 00:00:08')`,
 		`INSERT INTO silver.address_balances_current VALUES
 			('mainnet','GA1','native:XLM','XLM',NULL,'native','1000','0.0001000',4,'2026-01-01 00:00:04'),
 			('mainnet','GA2','native:XLM','XLM',NULL,'native','2000','0.0002000',5,'2026-01-01 00:00:05'),

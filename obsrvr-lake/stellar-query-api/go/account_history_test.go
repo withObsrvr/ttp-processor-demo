@@ -430,6 +430,35 @@ func TestGetServingAccountTransactionsUsesWatermarkAndTOIDCursor(t *testing.T) {
 	}
 }
 
+func TestGetServingAccountTransactionsFallsBackWhenUnboundedFeedStale(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	hot := &SilverHotReader{db: db, network: "testnet"}
+	mock.ExpectQuery("SELECT status, complete_from, complete_thru").
+		WillReturnRows(sqlmock.NewRows([]string{"status", "complete_from", "complete_thru"}).AddRow("complete", int64(1), int64(10)))
+	mock.ExpectQuery("SELECT COALESCE\\(MAX\\(ledger_sequence\\), 0\\) FROM serving.sv_ledger_stats_recent").
+		WillReturnRows(sqlmock.NewRows([]string{"latest"}).AddRow(int64(100)))
+
+	got, next, hasMore, covered, err := hot.GetServingAccountTransactions(context.Background(), AccountTransactionsFilters{
+		AccountID: "GA",
+		Limit:     5,
+		Order:     "desc",
+	})
+	if err != nil {
+		t.Fatalf("GetServingAccountTransactions: %v", err)
+	}
+	if covered || hasMore || next != "" || len(got) != 0 {
+		t.Fatalf("expected stale feed fallback, got covered=%v hasMore=%v next=%q rows=%d", covered, hasMore, next, len(got))
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
 func TestGetServingAccountTransactionsFallsBackForNonTOIDCursor(t *testing.T) {
 	for name, tieBreaker := range map[string]string{
 		"federated cursor without tie-breaker": "",

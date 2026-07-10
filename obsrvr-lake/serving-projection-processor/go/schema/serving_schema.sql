@@ -24,19 +24,38 @@ create table if not exists serving.sv_accounts_current (
     balance_stroops          bigint not null,
     sequence_number          bigint,
     num_subentries           integer,
+    num_sponsoring           integer,
+    num_sponsored            integer,
     created_at               timestamptz,
     last_modified_ledger     bigint not null,
+    sequence_ledger          bigint,
+    sequence_time            bigint,
     updated_at               timestamptz not null,
     home_domain              text,
+    sponsor                  text,
     master_weight            integer,
     low_threshold            integer,
     med_threshold            integer,
     high_threshold           integer,
+    auth_required            boolean,
+    auth_revocable           boolean,
+    auth_immutable           boolean,
+    auth_clawback_enabled    boolean,
     signers_json             jsonb,
     is_smart_account         boolean not null default false,
     smart_account_type       text,
     first_seen_ledger        bigint
 );
+
+alter table serving.sv_accounts_current add column if not exists num_sponsoring integer;
+alter table serving.sv_accounts_current add column if not exists num_sponsored integer;
+alter table serving.sv_accounts_current add column if not exists sequence_ledger bigint;
+alter table serving.sv_accounts_current add column if not exists sequence_time bigint;
+alter table serving.sv_accounts_current add column if not exists sponsor text;
+alter table serving.sv_accounts_current add column if not exists auth_required boolean;
+alter table serving.sv_accounts_current add column if not exists auth_revocable boolean;
+alter table serving.sv_accounts_current add column if not exists auth_immutable boolean;
+alter table serving.sv_accounts_current add column if not exists auth_clawback_enabled boolean;
 
 create index if not exists sv_accounts_current_last_modified_idx
     on serving.sv_accounts_current (last_modified_ledger desc);
@@ -57,11 +76,22 @@ create table if not exists serving.sv_account_balances_current (
     balance_stroops          bigint not null,
     balance_display          numeric(38,7),
     limit_stroops            bigint,
+    buying_liabilities_stroops bigint,
+    selling_liabilities_stroops bigint,
     is_authorized            boolean,
+    is_authorized_to_maintain_liabilities boolean,
+    is_clawback_enabled      boolean,
+    sponsor                  text,
     last_modified_ledger     bigint not null,
     updated_at               timestamptz not null,
     primary key (account_id, asset_key)
 );
+
+alter table serving.sv_account_balances_current add column if not exists buying_liabilities_stroops bigint;
+alter table serving.sv_account_balances_current add column if not exists selling_liabilities_stroops bigint;
+alter table serving.sv_account_balances_current add column if not exists is_authorized_to_maintain_liabilities boolean;
+alter table serving.sv_account_balances_current add column if not exists is_clawback_enabled boolean;
+alter table serving.sv_account_balances_current add column if not exists sponsor text;
 
 create index if not exists sv_account_balances_current_account_idx
     on serving.sv_account_balances_current (account_id, balance_stroops desc);
@@ -1262,6 +1292,41 @@ create index if not exists sv_operations_by_account_ledger_idx
 create index if not exists sv_operations_by_account_contract_idx
     on serving.sv_operations_by_account (contract_id, operation_toid desc) where contract_id is not null;
 
+create table if not exists serving.sv_effects_by_account (
+    account_id                  text not null,
+    ledger_sequence             bigint not null,
+    tx_hash                     text not null,
+    op_index                    integer not null,
+    effect_index                integer not null,
+    operation_toid              bigint,
+    effect_type                 integer,
+    effect_type_name            text,
+    amount                      text,
+    asset_code                  text,
+    asset_issuer                text,
+    asset_type                  text,
+    details_json                jsonb,
+    trustline_limit             text,
+    authorize_flag              boolean,
+    clawback_flag               boolean,
+    signer_account              text,
+    signer_weight               integer,
+    offer_id                    bigint,
+    seller_account              text,
+    closed_at                   timestamptz not null,
+    materialized_at             timestamptz not null default now(),
+    primary key (account_id, ledger_sequence, tx_hash, op_index, effect_index)
+);
+
+create index if not exists sv_effects_by_account_page_idx
+    on serving.sv_effects_by_account (account_id, ledger_sequence desc, tx_hash desc, op_index desc, effect_index desc);
+create index if not exists sv_effects_by_account_operation_idx
+    on serving.sv_effects_by_account (operation_toid) where operation_toid is not null;
+create index if not exists sv_effects_by_account_tx_idx
+    on serving.sv_effects_by_account (tx_hash, op_index);
+create index if not exists sv_effects_by_account_ledger_idx
+    on serving.sv_effects_by_account (ledger_sequence);
+
 -- ============================================================
 -- SELF-HEAL: ensure ON CONFLICT unique indexes exist
 -- ============================================================
@@ -1291,6 +1356,7 @@ begin
       ('serving.sv_tx_receipts',            'sv_tx_receipts_tx_uq',              'tx_hash'),
       ('serving.sv_transactions_by_account','sv_transactions_by_account_uq',     'account_id, toid'),
       ('serving.sv_operations_by_account',  'sv_operations_by_account_uq',       'account_id, operation_toid'),
+      ('serving.sv_effects_by_account',     'sv_effects_by_account_uq',          'account_id, ledger_sequence, tx_hash, op_index, effect_index'),
       ('serving.sv_contract_calls_recent',  'sv_contract_calls_recent_cc_uq',    'call_id'),
       ('serving.sv_events_recent',          'sv_events_recent_ev_uq',            'event_id'),
       ('serving.sv_explorer_events_recent', 'sv_explorer_events_recent_ev_uq',   'event_id'),

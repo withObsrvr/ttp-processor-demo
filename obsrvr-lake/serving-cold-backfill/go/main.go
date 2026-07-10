@@ -489,6 +489,7 @@ func requiredProjections(schema string) []Projection {
 		{Name: "sv_tx_receipts", TargetTable: table("sv_tx_receipts"), Source: "bronze transactions/operations/effects + silver enriched rows", Mode: "recent_range_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_transactions_by_account", TargetTable: table("sv_transactions_by_account"), Source: "silver.enriched_history_operations + bronze operations_row_v2 TOID", Mode: "full_history_chunk_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_operations_by_account", TargetTable: table("sv_operations_by_account"), Source: "silver.enriched_history_operations + bronze operations_row_v2 TOID", Mode: "full_history_chunk_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
+		{Name: "sv_effects_by_account", TargetTable: table("sv_effects_by_account"), Source: "silver.effects + bronze operations_row_v2 TOID", Mode: "full_history_chunk_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_accounts_current", TargetTable: table("sv_accounts_current"), Source: "silver.accounts_current", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_account_balances_current", TargetTable: table("sv_account_balances_current"), Source: "silver.address_balances_current / silver.native_balances_current", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_network_stats_current", TargetTable: table("sv_network_stats_current"), Source: "silver.enriched_ledgers + aggregate counts", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
@@ -553,6 +554,7 @@ func feedProjections() []FeedProjection {
 		{Name: "sv_tx_receipts", TargetTable: "sv_tx_receipts", RangeCol: "ledger_sequence", KeyExprs: []string{"tx_hash"}, SelectSQL: selectTxReceipts},
 		{Name: "sv_transactions_by_account", TargetTable: "sv_transactions_by_account", RangeCol: "ledger_sequence", KeyExprs: []string{"account_id", "toid"}, SelectSQL: selectTransactionsByAccount},
 		{Name: "sv_operations_by_account", TargetTable: "sv_operations_by_account", RangeCol: "ledger_sequence", KeyExprs: []string{"account_id", "operation_toid"}, SelectSQL: selectOperationsByAccount},
+		{Name: "sv_effects_by_account", TargetTable: "sv_effects_by_account", RangeCol: "ledger_sequence", KeyExprs: []string{"account_id", "ledger_sequence", "tx_hash", "op_index", "effect_index"}, SelectSQL: selectEffectsByAccount},
 	}
 }
 
@@ -853,6 +855,14 @@ func (b *Backfiller) ensureTargetIndexes(ctx context.Context, targetTable string
 			fmt.Sprintf("CREATE INDEX IF NOT EXISTS sv_operations_by_account_page_idx ON %s (account_id, operation_toid DESC)", table),
 			fmt.Sprintf("CREATE INDEX IF NOT EXISTS sv_operations_by_account_tx_idx ON %s (tx_hash, op_index)", table),
 			fmt.Sprintf("CREATE INDEX IF NOT EXISTS sv_operations_by_account_ledger_idx ON %s (ledger_sequence)", table),
+		}
+	case "sv_effects_by_account":
+		statements = []string{
+			fmt.Sprintf("CREATE UNIQUE INDEX IF NOT EXISTS sv_effects_by_account_uq ON %s (account_id, ledger_sequence, tx_hash, op_index, effect_index)", table),
+			fmt.Sprintf("CREATE INDEX IF NOT EXISTS sv_effects_by_account_page_idx ON %s (account_id, ledger_sequence DESC, tx_hash DESC, op_index DESC, effect_index DESC)", table),
+			fmt.Sprintf("CREATE INDEX IF NOT EXISTS sv_effects_by_account_operation_idx ON %s (operation_toid)", table),
+			fmt.Sprintf("CREATE INDEX IF NOT EXISTS sv_effects_by_account_tx_idx ON %s (tx_hash, op_index)", table),
+			fmt.Sprintf("CREATE INDEX IF NOT EXISTS sv_effects_by_account_ledger_idx ON %s (ledger_sequence)", table),
 		}
 	}
 	for _, stmt := range statements {
@@ -1335,10 +1345,46 @@ func selectOperationsByAccount(b *Backfiller, chunk Chunk) string {
 		b.bronzeTable("operations_row_v2"))
 }
 
+func selectEffectsByAccount(b *Backfiller, chunk Chunk) string {
+	return fmt.Sprintf(`SELECT
+			e.account_id,
+			e.ledger_sequence,
+			e.transaction_hash AS tx_hash,
+			e.operation_index AS op_index,
+			e.effect_index,
+			COALESCE(e.operation_id, bo.operation_id) AS operation_toid,
+			e.effect_type,
+			e.effect_type_string AS effect_type_name,
+			e.amount,
+			e.asset_code,
+			e.asset_issuer,
+			e.asset_type,
+			CASE WHEN e.details_json IS NULL OR e.details_json = '' THEN NULL ELSE e.details_json END AS details_json,
+			e.trustline_limit,
+			e.authorize_flag,
+			e.clawback_flag,
+			e.signer_account,
+			e.signer_weight,
+			e.offer_id,
+			e.seller_account,
+			e.created_at AS closed_at,
+			current_timestamp AS materialized_at
+		FROM %s e
+		LEFT JOIN %s bo ON bo.ledger_sequence = e.ledger_sequence
+			AND bo.transaction_hash = e.transaction_hash
+			AND bo.operation_index = e.operation_index
+		WHERE e.ledger_sequence BETWEEN %d AND %d
+			AND e.account_id IS NOT NULL
+			AND e.account_id <> ''`,
+		b.silverTable("effects"), b.bronzeTable("operations_row_v2"), chunk.Start, chunk.End)
+}
+
 func selectAccountsCurrent(b *Backfiller) string {
-	return fmt.Sprintf(`SELECT account_id, TRY_CAST(balance AS BIGINT) AS balance_stroops,
-		sequence_number, num_subentries, created_at, last_modified_ledger, updated_at,
-		home_domain, master_weight, low_threshold, med_threshold, high_threshold,
+	return fmt.Sprintf(`SELECT account_id, TRY_CAST(ROUND(TRY_CAST(balance AS DOUBLE) * 10000000) AS BIGINT) AS balance_stroops,
+		sequence_number, num_subentries, num_sponsoring, num_sponsored,
+		created_at, last_modified_ledger, sequence_ledger, sequence_time, updated_at,
+		home_domain, sponsor_account AS sponsor, master_weight, low_threshold, med_threshold, high_threshold,
+		auth_required, auth_revocable, auth_immutable, auth_clawback_enabled,
 		COALESCE(signers, '[]') AS signers_json, false AS is_smart_account,
 		NULL::VARCHAR AS smart_account_type, ledger_range AS first_seen_ledger
 		FROM %s WHERE network=%s AND last_modified_ledger <= %d`,
@@ -1346,14 +1392,46 @@ func selectAccountsCurrent(b *Backfiller) string {
 }
 
 func selectAccountBalancesCurrent(b *Backfiller) string {
-	return fmt.Sprintf(`SELECT owner_address AS account_id, asset_key,
-		COALESCE(asset_code, CASE WHEN asset_type='native' THEN 'XLM' ELSE asset_key END) AS asset_code,
-		asset_issuer, asset_type, TRY_CAST(balance_raw AS BIGINT) AS balance_stroops,
-		TRY_CAST(balance_display AS DECIMAL(38,7)) AS balance_display,
-		NULL::BIGINT AS limit_stroops, NULL::BOOLEAN AS is_authorized,
-		last_updated_ledger AS last_modified_ledger, updated_at
-		FROM %s WHERE network=%s AND last_updated_ledger <= %d`,
-		b.silverTable("address_balances_current"), q(b.cfg.Network), b.cfg.End)
+	return fmt.Sprintf(`SELECT account_id,
+		'XLM' AS asset_key,
+		'XLM' AS asset_code,
+		NULL::VARCHAR AS asset_issuer,
+		'native' AS asset_type,
+		TRY_CAST(ROUND(TRY_CAST(balance AS DOUBLE) * 10000000) AS BIGINT) AS balance_stroops,
+		TRY_CAST(balance AS DECIMAL(38,7)) AS balance_display,
+		NULL::BIGINT AS limit_stroops,
+		NULL::BIGINT AS buying_liabilities_stroops,
+		NULL::BIGINT AS selling_liabilities_stroops,
+		NULL::BOOLEAN AS is_authorized,
+		NULL::BOOLEAN AS is_authorized_to_maintain_liabilities,
+		NULL::BOOLEAN AS is_clawback_enabled,
+		NULL::VARCHAR AS sponsor,
+		last_modified_ledger,
+		COALESCE(updated_at, current_timestamp) AS updated_at
+		FROM %s WHERE network=%s AND last_modified_ledger <= %d
+		UNION ALL
+		SELECT account_id,
+		CASE
+			WHEN liquidity_pool_id IS NOT NULL AND liquidity_pool_id <> '' THEN 'POOL:' || liquidity_pool_id
+			ELSE COALESCE(asset_code, '') || ':' || COALESCE(asset_issuer, '')
+		END AS asset_key,
+		COALESCE(asset_code, '') AS asset_code,
+		asset_issuer,
+		asset_type,
+		balance AS balance_stroops,
+		TRY_CAST(balance AS DECIMAL(38,7)) / 10000000 AS balance_display,
+		trust_line_limit AS limit_stroops,
+		buying_liabilities AS buying_liabilities_stroops,
+		selling_liabilities AS selling_liabilities_stroops,
+		(flags & 1) <> 0 AS is_authorized,
+		(flags & 2) <> 0 AS is_authorized_to_maintain_liabilities,
+		(flags & 4) <> 0 AS is_clawback_enabled,
+		sponsor,
+		last_modified_ledger,
+		COALESCE(updated_at, current_timestamp) AS updated_at
+		FROM %s WHERE network=%s AND last_modified_ledger <= %d`,
+		b.silverTable("accounts_current"), q(b.cfg.Network), b.cfg.End,
+		b.silverTable("trustlines_current"), q(b.cfg.Network), b.cfg.End)
 }
 
 func selectNetworkStatsCurrent(b *Backfiller) string {

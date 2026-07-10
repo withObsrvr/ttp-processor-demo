@@ -68,6 +68,7 @@ func (h *HotReader) QueryLedgers(ctx context.Context, start, end int64, limit in
 		orderBy = "transaction_count DESC, sequence DESC"
 	}
 
+	startRange, endRange := ledgerRangeBounds(start, end)
 	query := fmt.Sprintf(`
 		SELECT
 			sequence,
@@ -98,11 +99,12 @@ func (h *HotReader) QueryLedgers(ctx context.Context, start, end int64, limit in
 			COALESCE(ingestion_timestamp, closed_at) as created_at
 		FROM ledgers_row_v2
 		WHERE sequence >= $1 AND sequence <= $2
+		  AND ledger_range >= $3 AND ledger_range <= $4
 		ORDER BY %s
-		LIMIT $3
+		LIMIT $5
 	`, orderBy)
 
-	rows, err := h.db.QueryContext(ctx, query, start, end, limit)
+	rows, err := h.db.QueryContext(ctx, query, start, end, startRange, endRange, limit)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query ledgers: %w", err)
 	}

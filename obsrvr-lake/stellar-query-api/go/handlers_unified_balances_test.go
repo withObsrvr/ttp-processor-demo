@@ -22,7 +22,7 @@ func TestGetUnifiedAddressBalancesComposesClassicAndSoroban(t *testing.T) {
 
 	setup := []string{
 		`CREATE TABLE accounts_current (account_id VARCHAR, balance BIGINT, last_modified_ledger BIGINT)`,
-		`CREATE TABLE trustlines_current (account_id VARCHAR, asset_type VARCHAR, asset_code VARCHAR, asset_issuer VARCHAR, balance BIGINT, trust_line_limit BIGINT, flags BIGINT, last_modified_ledger BIGINT)`,
+		`CREATE TABLE trustlines_current (account_id VARCHAR, asset_type VARCHAR, asset_code VARCHAR, asset_issuer VARCHAR, balance BIGINT, trust_line_limit BIGINT, buying_liabilities BIGINT, selling_liabilities BIGINT, flags BIGINT, sponsor VARCHAR, last_modified_ledger BIGINT)`,
 		`CREATE TABLE token_transfers_raw (from_account VARCHAR, to_account VARCHAR, amount BIGINT, token_contract_id VARCHAR, asset_code VARCHAR, asset_issuer VARCHAR, source_type VARCHAR, timestamp TIMESTAMP, transaction_hash VARCHAR, ledger_sequence BIGINT, event_index BIGINT, transaction_successful BOOLEAN)`,
 		`CREATE TABLE token_registry (contract_id VARCHAR, token_name VARCHAR, token_symbol VARCHAR, token_decimals INTEGER, token_type VARCHAR)`,
 	}
@@ -34,7 +34,7 @@ func TestGetUnifiedAddressBalancesComposesClassicAndSoroban(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO accounts_current VALUES (?, 125000000, 10)`, addr); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO trustlines_current VALUES (?, 'credit_alphanum4', 'USDC', ?, 42000000, 1000000000, 1, 11)`, addr, issuer); err != nil {
+	if _, err := db.Exec(`INSERT INTO trustlines_current VALUES (?, 'credit_alphanum4', 'USDC', ?, 42000000, 1000000000, 0, 0, 1, NULL, 11)`, addr, issuer); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO token_transfers_raw VALUES (NULL, ?, 5000, ?, NULL, NULL, 'soroban_contract', TIMESTAMP '2026-06-21 12:00:00', 'tx1', 12, 0, true)`, addr, contractID); err != nil {

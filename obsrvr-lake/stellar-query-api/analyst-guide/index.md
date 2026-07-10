@@ -9,6 +9,7 @@ Obsrvr Lake provides analytics-ready access to Stellar and Soroban blockchain da
 | [Getting Started](./getting-started.md) | 1 hour | Structured onboarding with hands-on examples |
 | [First 10 Queries](./first-10-queries.md) | 15 min | Copy-paste ready queries for common tasks |
 | [Horizon Migration Guide](./horizon-migration.md) | 30 min | Translate Horizon API calls to Query API |
+| [Horizon Compatibility API](../docs/HORIZON_COMPAT_API.md) | 10 min | Horizon-shaped route matrix and smoke test |
 
 ## Who is this for?
 
@@ -163,6 +164,7 @@ The API automatically queries both hot and cold storage, merging results seamles
 - [Data Model](./data-model.md) - Complete schema reference for all Bronze and Silver tables
 - [API Reference](./common-queries.md) - Complete endpoint documentation with examples
 - [Horizon Migration](./horizon-migration.md) - Side-by-side Horizon vs Query API mappings
+- [Horizon Compatibility API](../docs/HORIZON_COMPAT_API.md) - Current `/api/v1/horizon-compat` route matrix
 - [nebu for Analysts](./nebu-for-analysts.md) - Build custom data pipelines (power users)
 - [Hubble Comparison](./vs-hubble.md) - How Obsrvr Lake compares to Stellar Hubble
 

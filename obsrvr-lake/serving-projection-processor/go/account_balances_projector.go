@@ -33,7 +33,10 @@ type trustlineCurrentRow struct {
 	LiquidityPoolID    *string
 	Balance            *int64
 	TrustLineLimit     *int64
+	BuyingLiabilities  *int64
+	SellingLiabilities *int64
 	Flags              *int32
+	Sponsor            *string
 	LastModifiedLedger int64
 	UpdatedAt          *time.Time
 }
@@ -188,7 +191,10 @@ func (p *AccountBalancesProjector) projectAccountTrustlines(ctx context.Context,
 			liquidity_pool_id,
 			balance,
 			trust_line_limit,
+			buying_liabilities,
+			selling_liabilities,
 			flags,
+			sponsor,
 			last_modified_ledger,
 			updated_at
 		FROM trustlines_current
@@ -210,7 +216,10 @@ func (p *AccountBalancesProjector) projectAccountTrustlines(ctx context.Context,
 			&r.LiquidityPoolID,
 			&r.Balance,
 			&r.TrustLineLimit,
+			&r.BuyingLiabilities,
+			&r.SellingLiabilities,
 			&r.Flags,
+			&r.Sponsor,
 			&r.LastModifiedLedger,
 			&r.UpdatedAt,
 		); err != nil {
@@ -229,9 +238,14 @@ func (p *AccountBalancesProjector) projectAccountTrustlines(ctx context.Context,
 				balance_display,
 				limit_stroops,
 				is_authorized,
+				buying_liabilities_stroops,
+				selling_liabilities_stroops,
+				is_authorized_to_maintain_liabilities,
+				is_clawback_enabled,
+				sponsor,
 				last_modified_ledger,
 				updated_at
-			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 		`,
 			r.AccountID,
 			assetKey,
@@ -242,6 +256,11 @@ func (p *AccountBalancesProjector) projectAccountTrustlines(ctx context.Context,
 			stroopsToDisplay(r.Balance),
 			r.TrustLineLimit,
 			authorizedFromFlags(r.Flags),
+			r.BuyingLiabilities,
+			r.SellingLiabilities,
+			authorizedToMaintainFromFlags(r.Flags),
+			clawbackFromFlags(r.Flags),
+			r.Sponsor,
 			r.LastModifiedLedger,
 			r.UpdatedAt,
 		)
@@ -288,6 +307,22 @@ func authorizedFromFlags(flags *int32) *bool {
 		return nil
 	}
 	v := ((*flags) & 1) != 0
+	return &v
+}
+
+func authorizedToMaintainFromFlags(flags *int32) *bool {
+	if flags == nil {
+		return nil
+	}
+	v := ((*flags) & 2) != 0
+	return &v
+}
+
+func clawbackFromFlags(flags *int32) *bool {
+	if flags == nil {
+		return nil
+	}
+	v := ((*flags) & 4) != 0
 	return &v
 }
 

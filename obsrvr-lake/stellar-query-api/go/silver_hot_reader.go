@@ -347,6 +347,102 @@ func (h *SilverHotReader) GetServingAccountCurrent(ctx context.Context, accountI
 			balance_stroops,
 			sequence_number,
 			num_subentries,
+			num_sponsoring,
+			num_sponsored,
+			last_modified_ledger,
+			sequence_ledger,
+			sequence_time,
+			updated_at,
+			home_domain,
+			created_at,
+			sponsor,
+			auth_required,
+			auth_revocable,
+			auth_immutable,
+			auth_clawback_enabled
+		FROM serving.sv_accounts_current
+		WHERE account_id = $1
+	`
+
+	var acc AccountCurrent
+	var balance sql.NullInt64
+	var seq sql.NullInt64
+	var seqLedger, seqTime sql.NullInt64
+	var updatedAt sql.NullTime
+	var homeDomain, createdAt, sponsor sql.NullString
+	var authRequired, authRevocable, authImmutable, authClawback sql.NullBool
+	err := h.db.QueryRowContext(ctx, query, accountID).Scan(
+		&acc.AccountID,
+		&balance,
+		&seq,
+		&acc.NumSubentries,
+		&acc.NumSponsoring,
+		&acc.NumSponsored,
+		&acc.LastModifiedLedger,
+		&seqLedger,
+		&seqTime,
+		&updatedAt,
+		&homeDomain,
+		&createdAt,
+		&sponsor,
+		&authRequired,
+		&authRevocable,
+		&authImmutable,
+		&authClawback,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return h.getServingAccountCurrentLegacy(ctx, accountID)
+	}
+
+	if balance.Valid {
+		acc.Balance = strconv.FormatInt(balance.Int64, 10)
+	}
+	if seq.Valid {
+		acc.SequenceNumber = strconv.FormatInt(seq.Int64, 10)
+	}
+	if seqLedger.Valid {
+		acc.SequenceLedger = seqLedger.Int64
+	}
+	if seqTime.Valid {
+		acc.SequenceTime = seqTime.Int64
+	}
+	if updatedAt.Valid {
+		acc.UpdatedAt = updatedAt.Time.UTC().Format(time.RFC3339)
+	}
+	if homeDomain.Valid && homeDomain.String != "" {
+		acc.HomeDomain = &homeDomain.String
+	}
+	if createdAt.Valid && createdAt.String != "" {
+		acc.CreatedAt = &createdAt.String
+	}
+	if sponsor.Valid && sponsor.String != "" {
+		acc.Sponsor = &sponsor.String
+	}
+	if authRequired.Valid {
+		acc.AuthRequired = &authRequired.Bool
+	}
+	if authRevocable.Valid {
+		acc.AuthRevocable = &authRevocable.Bool
+	}
+	if authImmutable.Valid {
+		acc.AuthImmutable = &authImmutable.Bool
+	}
+	if authClawback.Valid {
+		acc.AuthClawbackEnabled = &authClawback.Bool
+	}
+	return &acc, nil
+}
+
+func (h *SilverHotReader) getServingAccountCurrentLegacy(ctx context.Context, accountID string) (*AccountCurrent, error) {
+	query := `
+		SELECT
+			account_id,
+			balance_stroops,
+			sequence_number,
+			num_subentries,
 			last_modified_ledger,
 			updated_at,
 			home_domain,
@@ -437,6 +533,96 @@ func (h *SilverHotReader) GetServingTopAccounts(ctx context.Context, limit int) 
 
 // GetServingAccountBalances returns all balances for an account from serving schema.
 func (h *SilverHotReader) GetServingAccountBalances(ctx context.Context, accountID string) (*AccountBalancesResponse, error) {
+	rows, err := h.db.QueryContext(ctx, `
+		SELECT
+			asset_type,
+			asset_code,
+			asset_issuer,
+			balance_stroops,
+			limit_stroops,
+			is_authorized,
+			buying_liabilities_stroops,
+			selling_liabilities_stroops,
+			is_authorized_to_maintain_liabilities,
+			is_clawback_enabled,
+			sponsor,
+			last_modified_ledger
+		FROM serving.sv_account_balances_current
+		WHERE account_id = $1
+		ORDER BY balance_stroops DESC, asset_code ASC
+	`, accountID)
+	if err != nil {
+		return h.getServingAccountBalancesLegacy(ctx, accountID)
+	}
+	defer rows.Close()
+
+	resp := &AccountBalancesResponse{AccountID: accountID}
+	for rows.Next() {
+		var bal Balance
+		var issuer sql.NullString
+		var balanceStroops sql.NullInt64
+		var limitStroops sql.NullInt64
+		var authorized sql.NullBool
+		var buyingLiabilities sql.NullInt64
+		var sellingLiabilities sql.NullInt64
+		var authorizedMaintain sql.NullBool
+		var clawbackEnabled sql.NullBool
+		var sponsor sql.NullString
+		var lastModified sql.NullInt64
+		if err := rows.Scan(&bal.AssetType, &bal.AssetCode, &issuer, &balanceStroops, &limitStroops, &authorized, &buyingLiabilities, &sellingLiabilities, &authorizedMaintain, &clawbackEnabled, &sponsor, &lastModified); err != nil {
+			return nil, err
+		}
+		if issuer.Valid {
+			bal.AssetIssuer = &issuer.String
+		}
+		if balanceStroops.Valid {
+			bal.BalanceStroops = balanceStroops.Int64
+			bal.Balance = formatStroopsToDecimal(balanceStroops.Int64)
+		}
+		if limitStroops.Valid {
+			ls := formatStroopsToDecimal(limitStroops.Int64)
+			bal.Limit = &ls
+		}
+		if authorized.Valid {
+			v := authorized.Bool
+			bal.IsAuthorized = &v
+		}
+		if buyingLiabilities.Valid {
+			v := formatStroopsToDecimal(buyingLiabilities.Int64)
+			bal.BuyingLiabilities = &v
+		}
+		if sellingLiabilities.Valid {
+			v := formatStroopsToDecimal(sellingLiabilities.Int64)
+			bal.SellingLiabilities = &v
+		}
+		if authorizedMaintain.Valid {
+			v := authorizedMaintain.Bool
+			bal.IsAuthorizedToMaintainLiabilities = &v
+		}
+		if clawbackEnabled.Valid {
+			v := clawbackEnabled.Bool
+			bal.IsClawbackEnabled = &v
+		}
+		if sponsor.Valid {
+			bal.Sponsor = &sponsor.String
+		}
+		if lastModified.Valid {
+			v := lastModified.Int64
+			bal.LastModifiedLedger = &v
+		}
+		resp.Balances = append(resp.Balances, bal)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(resp.Balances) == 0 {
+		return nil, fmt.Errorf("account not found: %s", accountID)
+	}
+	resp.TotalBalances = len(resp.Balances)
+	return resp, nil
+}
+
+func (h *SilverHotReader) getServingAccountBalancesLegacy(ctx context.Context, accountID string) (*AccountBalancesResponse, error) {
 	rows, err := h.db.QueryContext(ctx, `
 		SELECT
 			asset_type,
@@ -922,6 +1108,17 @@ func (h *SilverHotReader) GetServingAccountTransactions(ctx context.Context, fil
 		return nil, "", false, false, nil
 	}
 
+	requestedUnboundedEnd := filters.EndLedger == 0
+	if requestedUnboundedEnd {
+		latestLedger, err := h.GetServingLatestLedgerSequence(ctx)
+		if err != nil {
+			return nil, "", false, false, fmt.Errorf("serving latest ledger for account transactions: %w", err)
+		}
+		if latestLedger == 0 || completeThru < latestLedger {
+			return nil, "", false, false, nil
+		}
+	}
+
 	startLedger := filters.StartLedger
 	if startLedger == 0 {
 		startLedger = completeFrom
@@ -1037,6 +1234,311 @@ func (h *SilverHotReader) GetServingAccountTransactions(ctx context.Context, fil
 		next = last.tx.PagingToken
 	}
 	return out, next, hasMore, true, nil
+}
+
+// GetServingAccountOperations serves Horizon account operation/payment pages from
+// the materialized by-account operation feed when its watermark is complete.
+func (h *SilverHotReader) GetServingAccountOperations(ctx context.Context, filters OperationFilters) ([]EnrichedOperation, string, bool, bool, error) {
+	if filters.AccountID == "" || filters.TxHash != "" || filters.ContractID != "" || filters.SorobanOnly || filters.SorobanFunction != "" {
+		return nil, "", false, false, nil
+	}
+
+	var status string
+	var completeFrom, completeThru int64
+	err := h.db.QueryRowContext(ctx, `
+		SELECT status, complete_from, complete_thru
+		FROM serving.sv_watermarks
+		WHERE table_name = 'serving.sv_operations_by_account'
+	`).Scan(&status, &completeFrom, &completeThru)
+	if err == sql.ErrNoRows {
+		return nil, "", false, false, nil
+	}
+	if err != nil {
+		return nil, "", false, false, fmt.Errorf("serving account operations watermark: %w", err)
+	}
+	if status != "complete" {
+		return nil, "", false, false, nil
+	}
+	if filters.StartLedger > 0 && completeFrom > filters.StartLedger {
+		return nil, "", false, false, nil
+	}
+	if filters.EndLedger > 0 && completeThru < filters.EndLedger {
+		return nil, "", false, false, nil
+	}
+	if filters.EndLedger == 0 {
+		latestLedger, err := h.GetServingLatestLedgerSequence(ctx)
+		if err != nil {
+			return nil, "", false, false, fmt.Errorf("serving latest ledger for account operations: %w", err)
+		}
+		if latestLedger == 0 || completeThru < latestLedger {
+			return nil, "", false, false, nil
+		}
+	}
+
+	limit := filters.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+	requestLimit := limit + 1
+	orderDir, cursorOp := "DESC", "<"
+	if filters.Order == "asc" {
+		orderDir, cursorOp = "ASC", ">"
+	}
+
+	startLedger := filters.StartLedger
+	if startLedger == 0 {
+		startLedger = completeFrom
+	}
+	endLedger := filters.EndLedger
+	if endLedger == 0 {
+		endLedger = completeThru
+	}
+
+	where := []string{"account_id = $1", "ledger_sequence BETWEEN $2 AND $3"}
+	args := []interface{}{filters.AccountID, startLedger, endLedger}
+	arg := 4
+	if filters.PaymentsOnly {
+		where = append(where, "is_payment_op = true")
+	}
+	if filters.Cursor != nil {
+		where = append(where, fmt.Sprintf("operation_toid %s $%d", cursorOp, arg))
+		args = append(args, filters.Cursor.OperationIndex)
+		arg++
+	}
+	args = append(args, requestLimit)
+
+	query := fmt.Sprintf(`
+		SELECT operation_toid, tx_hash, ledger_sequence, closed_at, source_account,
+		       type_code, type_name, destination_account, asset_key, amount_stroops,
+		       successful, is_payment_op, is_soroban_op, contract_id, function_name
+		FROM serving.sv_operations_by_account
+		WHERE %s
+		ORDER BY operation_toid %s
+		LIMIT $%d`, strings.Join(where, " AND "), orderDir, arg)
+
+	rows, err := h.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, "", false, true, fmt.Errorf("serving account operations: %w", err)
+	}
+	defer rows.Close()
+
+	ops := make([]EnrichedOperation, 0, requestLimit)
+	for rows.Next() {
+		var op EnrichedOperation
+		var closedAt time.Time
+		var typeCode sql.NullInt64
+		var typeName, destination, assetKey, contractID, functionName sql.NullString
+		var amount sql.NullInt64
+		if err := rows.Scan(
+			&op.OperationID,
+			&op.TransactionHash,
+			&op.LedgerSequence,
+			&closedAt,
+			&op.SourceAccount,
+			&typeCode,
+			&typeName,
+			&destination,
+			&assetKey,
+			&amount,
+			&op.TxSuccessful,
+			&op.IsPaymentOp,
+			&op.IsSorobanOp,
+			&contractID,
+			&functionName,
+		); err != nil {
+			return nil, "", false, true, err
+		}
+		op.LedgerClosedAt = closedAt.UTC().Format(time.RFC3339)
+		if typeCode.Valid {
+			op.Type = int32(typeCode.Int64)
+		}
+		if typeName.Valid {
+			op.TypeName = typeName.String
+		} else {
+			op.TypeName = operationTypeName(op.Type)
+		}
+		if destination.Valid && destination.String != "" {
+			op.Destination = &destination.String
+		}
+		if amount.Valid {
+			amt := formatStroopsToDecimal(amount.Int64)
+			op.Amount = &amt
+		}
+		if assetKey.Valid {
+			op.AssetCode, op.AssetIssuer = horizonServingAssetParts(assetKey.String)
+		}
+		if contractID.Valid && contractID.String != "" {
+			op.SorobanContractID = &contractID.String
+		}
+		if functionName.Valid && functionName.String != "" {
+			op.SorobanFunction = &functionName.String
+		}
+		ops = append(ops, op)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", false, true, err
+	}
+
+	hasMore := len(ops) > limit
+	if hasMore {
+		ops = ops[:limit]
+	}
+
+	nextCursor := ""
+	if hasMore && len(ops) > 0 {
+		last := ops[len(ops)-1]
+		nextCursor = OperationCursor{
+			LedgerSequence: last.LedgerSequence,
+			OperationIndex: last.OperationID,
+			Order:          filters.Order,
+		}.Encode()
+	}
+	return ops, nextCursor, hasMore, true, nil
+}
+
+// GetServingAccountEffects serves Horizon account effect pages from the
+// materialized by-account effect feed when its watermark covers the request.
+func (h *SilverHotReader) GetServingAccountEffects(ctx context.Context, filters EffectFilters) ([]SilverEffect, string, bool, bool, error) {
+	if filters.AccountID == "" || filters.TransactionHash != "" || filters.OperationID != nil {
+		return nil, "", false, false, nil
+	}
+
+	var status string
+	var completeFrom, completeThru int64
+	err := h.db.QueryRowContext(ctx, `
+		SELECT status, complete_from, complete_thru
+		FROM serving.sv_watermarks
+		WHERE table_name = 'serving.sv_effects_by_account'
+	`).Scan(&status, &completeFrom, &completeThru)
+	if err == sql.ErrNoRows {
+		return nil, "", false, false, nil
+	}
+	if err != nil {
+		return nil, "", false, false, fmt.Errorf("serving account effects watermark: %w", err)
+	}
+	if status != "complete" {
+		return nil, "", false, false, nil
+	}
+
+	startLedger := completeFrom
+	endLedger := completeThru
+	if filters.LedgerSequence > 0 {
+		if filters.LedgerSequence < completeFrom || filters.LedgerSequence > completeThru {
+			return nil, "", false, false, nil
+		}
+		startLedger = filters.LedgerSequence
+		endLedger = filters.LedgerSequence
+	} else {
+		latestLedger, err := h.GetServingLatestLedgerSequence(ctx)
+		if err != nil {
+			return nil, "", false, false, fmt.Errorf("serving latest ledger for account effects: %w", err)
+		}
+		if latestLedger == 0 || completeThru < latestLedger {
+			return nil, "", false, false, nil
+		}
+	}
+
+	limit := filters.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	requestLimit := limit + 1
+	orderDir, cursorOp := "ASC", ">"
+	if filters.Order == "desc" {
+		orderDir, cursorOp = "DESC", "<"
+	}
+
+	where := []string{"account_id = $1", "ledger_sequence BETWEEN $2 AND $3"}
+	args := []interface{}{filters.AccountID, startLedger, endLedger}
+	arg := 4
+	if filters.EffectType != "" {
+		if typeInt, err := strconv.Atoi(filters.EffectType); err == nil {
+			where = append(where, fmt.Sprintf("effect_type = $%d", arg))
+			args = append(args, typeInt)
+		} else {
+			where = append(where, fmt.Sprintf("effect_type_name = $%d", arg))
+			args = append(args, filters.EffectType)
+		}
+		arg++
+	}
+	if !filters.StartTime.IsZero() {
+		where = append(where, fmt.Sprintf("closed_at >= $%d", arg))
+		args = append(args, filters.StartTime)
+		arg++
+	}
+	if !filters.EndTime.IsZero() {
+		where = append(where, fmt.Sprintf("closed_at <= $%d", arg))
+		args = append(args, filters.EndTime)
+		arg++
+	}
+	if filters.Cursor != nil {
+		where = append(where, fmt.Sprintf("(ledger_sequence, tx_hash, op_index, effect_index) %s ($%d, $%d, $%d, $%d)", cursorOp, arg, arg+1, arg+2, arg+3))
+		args = append(args, filters.Cursor.LedgerSequence, filters.Cursor.TransactionHash, filters.Cursor.OperationIndex, filters.Cursor.EffectIndex)
+		arg += 4
+	}
+	args = append(args, requestLimit)
+
+	query := fmt.Sprintf(`
+		SELECT ledger_sequence, tx_hash AS transaction_hash, op_index AS operation_index, effect_index,
+		       operation_toid AS operation_id, COALESCE(effect_type, 0), COALESCE(effect_type_name, ''), account_id,
+		       amount, asset_code, asset_issuer, asset_type,
+		       details_json::text,
+		       trustline_limit, authorize_flag, clawback_flag,
+		       signer_account, signer_weight, offer_id, seller_account,
+		       closed_at AS created_at
+		FROM serving.sv_effects_by_account
+		WHERE %s
+		ORDER BY ledger_sequence %s, tx_hash %s, op_index %s, effect_index %s
+		LIMIT $%d`, strings.Join(where, " AND "), orderDir, orderDir, orderDir, orderDir, arg)
+
+	rows, err := h.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, "", false, true, fmt.Errorf("serving account effects: %w", err)
+	}
+	defer rows.Close()
+
+	effects, err := scanSilverEffects(rows)
+	if err != nil {
+		return nil, "", false, true, fmt.Errorf("serving account effects: %w", err)
+	}
+
+	hasMore := len(effects) > limit
+	if hasMore {
+		effects = effects[:limit]
+	}
+
+	nextCursor := ""
+	if hasMore && len(effects) > 0 {
+		last := effects[len(effects)-1]
+		nextCursor = EffectCursor{
+			LedgerSequence:  last.LedgerSequence,
+			TransactionHash: last.TransactionHash,
+			OperationIndex:  last.OperationIndex,
+			EffectIndex:     last.EffectIndex,
+			Order:           filters.Order,
+		}.Encode()
+	}
+	return effects, nextCursor, hasMore, true, nil
+}
+
+func horizonServingAssetParts(assetKey string) (*string, *string) {
+	assetKey = strings.TrimSpace(assetKey)
+	if assetKey == "" || assetKey == "native" || assetKey == "native:XLM" || assetKey == "XLM" {
+		code := "XLM"
+		return &code, nil
+	}
+	parts := strings.Split(assetKey, ":")
+	switch {
+	case len(parts) >= 3 && strings.HasPrefix(parts[0], "credit_"):
+		code, issuer := parts[1], parts[2]
+		return &code, &issuer
+	case len(parts) >= 2:
+		code, issuer := parts[0], parts[1]
+		return &code, &issuer
+	default:
+		code := assetKey
+		return &code, nil
+	}
 }
 
 func buildFallbackRecentTxSummary(txType, summaryText string, primaryContract sql.NullString) TxSummary {
@@ -1979,19 +2481,31 @@ func (h *SilverHotReader) GetAccountCurrent(ctx context.Context, accountID strin
 			balance,
 			sequence_number,
 			num_subentries,
+			num_sponsoring,
+			num_sponsored,
 			last_modified_ledger,
+			sequence_ledger,
+			sequence_time,
 			updated_at,
-			home_domain
+			home_domain,
+			sponsor_account,
+			auth_required,
+			auth_revocable,
+			auth_immutable,
+			auth_clawback_enabled
 		FROM accounts_current
 		WHERE account_id = $1
 	`
 
 	var acc AccountCurrent
-	var homeDomain sql.NullString
+	var homeDomain, sponsor sql.NullString
+	var sequenceLedger, sequenceTime sql.NullInt64
+	var authRequired, authRevocable, authImmutable, authClawback sql.NullBool
 	err := h.db.QueryRowContext(ctx, query, accountID).Scan(
 		&acc.AccountID, &acc.Balance, &acc.SequenceNumber,
-		&acc.NumSubentries, &acc.LastModifiedLedger, &acc.UpdatedAt,
-		&homeDomain,
+		&acc.NumSubentries, &acc.NumSponsoring, &acc.NumSponsored,
+		&acc.LastModifiedLedger, &sequenceLedger, &sequenceTime, &acc.UpdatedAt,
+		&homeDomain, &sponsor, &authRequired, &authRevocable, &authImmutable, &authClawback,
 	)
 
 	if err == sql.ErrNoRows {
@@ -2003,6 +2517,27 @@ func (h *SilverHotReader) GetAccountCurrent(ctx context.Context, accountID strin
 
 	if homeDomain.Valid && homeDomain.String != "" {
 		acc.HomeDomain = &homeDomain.String
+	}
+	if sponsor.Valid && sponsor.String != "" {
+		acc.Sponsor = &sponsor.String
+	}
+	if sequenceLedger.Valid {
+		acc.SequenceLedger = sequenceLedger.Int64
+	}
+	if sequenceTime.Valid {
+		acc.SequenceTime = sequenceTime.Int64
+	}
+	if authRequired.Valid {
+		acc.AuthRequired = &authRequired.Bool
+	}
+	if authRevocable.Valid {
+		acc.AuthRevocable = &authRevocable.Bool
+	}
+	if authImmutable.Valid {
+		acc.AuthImmutable = &authImmutable.Bool
+	}
+	if authClawback.Valid {
+		acc.AuthClawbackEnabled = &authClawback.Bool
 	}
 
 	return &acc, nil

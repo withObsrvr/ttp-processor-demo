@@ -60,6 +60,8 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.accounts_snapshot (
      closed_at TIMESTAMP NOT NULL,
      balance TEXT NOT NULL,
      sequence_number BIGINT NOT NULL,
+     sequence_ledger BIGINT,
+     sequence_time BIGINT,
      num_subentries INTEGER NOT NULL,
      num_sponsoring INTEGER NOT NULL,
      num_sponsored INTEGER NOT NULL,

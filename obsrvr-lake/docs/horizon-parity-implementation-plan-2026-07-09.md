@@ -83,6 +83,55 @@ Build parity as an **adapter layer over existing readers** (per the audit's reco
   `POST /transactions`, `POST /transactions_async`, `/friendbot`, `/paths*`. SSE streaming
   (`Accept: text/event-stream`) is out of scope for all cycles — plain JSON GET only.
 
+## Current Deployed Status - 2026-07-10
+
+Cycles 5A and 5B have been deployed to public testnet under
+`/api/v1/horizon-compat`.
+
+Implemented routes:
+
+- `GET /api/v1/horizon-compat/fee_stats`
+- `GET /api/v1/horizon-compat/ledgers`
+- `GET /api/v1/horizon-compat/ledgers/{sequence}`
+- `GET /api/v1/horizon-compat/transactions/{hash}`
+- `GET /api/v1/horizon-compat/transactions/{hash}/operations`
+- `GET /api/v1/horizon-compat/transactions/{hash}/payments`
+- `GET /api/v1/horizon-compat/transactions/{hash}/effects`
+- `GET /api/v1/horizon-compat/accounts/{id}`
+- `GET /api/v1/horizon-compat/accounts/{id}/transactions`
+- `GET /api/v1/horizon-compat/accounts/{id}/operations`
+- `GET /api/v1/horizon-compat/accounts/{id}/payments`
+- `GET /api/v1/horizon-compat/accounts/{id}/effects`
+- `GET /api/v1/horizon-compat/operations`
+- `GET /api/v1/horizon-compat/operations/{id}`
+- `GET /api/v1/horizon-compat/operations/{id}/effects`
+- `GET /api/v1/horizon-compat/payments`
+- `GET /api/v1/horizon-compat/effects`
+
+Cycle 5B moved Horizon transaction hydration for recent account transaction
+history onto `serving.sv_transactions_recent`. The serving table now stores
+`transaction_id`, `tx_envelope`, `tx_result`, `tx_meta`, `tx_fee_meta`, and
+`tx_signers`; `stellar-query-api` reads those fields first for
+`/transactions/{hash}` and `/accounts/{id}/transactions`.
+
+Public testnet smoke on 2026-07-10 passed for:
+
+- `/health`
+- `/api/v1/horizon-compat/fee_stats`
+- `/api/v1/horizon-compat/ledgers?limit=1&order=desc`
+- `/api/v1/horizon-compat/accounts/GBTHMMFWTAPFAHRGS33LKETZYJKBTNEENRN47EDZMZPT2BNCJO47GVQG`
+- `/api/v1/horizon-compat/accounts/GBTHMMFWTAPFAHRGS33LKETZYJKBTNEENRN47EDZMZPT2BNCJO47GVQG/transactions?limit=1&order=desc`
+- `/api/v1/horizon-compat/transactions/366bc4543a8fe66e09c021af35377c78df6e90e57f85582a0aad1617fcc027e8`
+
+Both transaction responses included non-empty `envelope_xdr`, `result_xdr`,
+`result_meta_xdr`, `fee_meta_xdr`, and signatures.
+
+Current operator docs:
+
+- `stellar-query-api/docs/HORIZON_COMPAT_API.md`
+- `docs/horizon-compat-deployment-runbook.md`
+- `stellar-query-api/scripts/horizon_compat_smoke.py`
+
 ## Implementation Status — 2026-07-09
 
 Started Cycle 1 in `stellar-query-api` under `/api/v1/horizon-compat`.
@@ -130,8 +179,9 @@ full Horizon operation/effect parity yet**:
   still needs an operation-ID filter path.
 - `cursor=now` is accepted as a no-op for plain JSON reads, but live-follow/SSE semantics remain out
   of scope.
-- account transaction routes are still blocked for historical data until testnet/mainnet
-  `transactions_row_v2` are replayed or sidefilled with the new XDR/signature columns.
+- historical note from 2026-07-09: account transaction routes were blocked for historical data until
+  `transactions_row_v2` could be replayed or sidefilled with the new XDR/signature columns. Cycle 5B
+  resolved this for the testnet recent serving window via `serving.sv_transactions_recent`.
 
 ### New files (all in `obsrvr-lake/stellar-query-api/go/`)
 

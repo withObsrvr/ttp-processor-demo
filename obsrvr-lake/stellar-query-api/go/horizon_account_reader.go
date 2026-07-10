@@ -49,10 +49,33 @@ func (r *HorizonAccountReader) GetHorizonAccount(ctx context.Context, accountID 
 		SubentryCount:      int32(acc.NumSubentries),
 		LastModifiedLedger: uint32(acc.LastModifiedLedger),
 		Data:               map[string]string{},
+		NumSponsoring:      uint32(acc.NumSponsoring),
+		NumSponsored:       uint32(acc.NumSponsored),
 		PT:                 acc.AccountID,
+	}
+	if acc.SequenceLedger > 0 {
+		out.SequenceLedger = uint32(acc.SequenceLedger)
+	}
+	if acc.SequenceTime > 0 {
+		out.SequenceTime = strconv.FormatInt(acc.SequenceTime, 10)
 	}
 	if acc.HomeDomain != nil {
 		out.HomeDomain = *acc.HomeDomain
+	}
+	if acc.Sponsor != nil {
+		out.Sponsor = *acc.Sponsor
+	}
+	if acc.AuthRequired != nil {
+		out.Flags.AuthRequired = *acc.AuthRequired
+	}
+	if acc.AuthRevocable != nil {
+		out.Flags.AuthRevocable = *acc.AuthRevocable
+	}
+	if acc.AuthImmutable != nil {
+		out.Flags.AuthImmutable = *acc.AuthImmutable
+	}
+	if acc.AuthClawbackEnabled != nil {
+		out.Flags.AuthClawbackEnabled = *acc.AuthClawbackEnabled
 	}
 	if ts := parseOptionalHorizonTime(acc.UpdatedAt); ts != nil {
 		out.LastModifiedTime = ts
@@ -85,11 +108,14 @@ func (r *HorizonAccountReader) GetHorizonAccount(ctx context.Context, accountID 
 			return nil, fmt.Errorf("horizon account signers: %w", err)
 		}
 		applyHorizonSigners(out, signers)
-	} else {
+	}
+	if len(out.Balances) == 0 {
 		out.Balances = []protocol.Balance{{
 			Balance: horizonBalanceAmount(acc.Balance),
 			Asset:   hbase.Asset{Type: "native"},
 		}}
+	}
+	if len(out.Signers) == 0 {
 		out.Signers = []protocol.Signer{{
 			Key:    accountID,
 			Type:   "ed25519_public_key",
@@ -191,14 +217,22 @@ func horizonBalances(resp *AccountBalancesResponse) []protocol.Balance {
 	out := make([]protocol.Balance, 0, len(resp.Balances))
 	for _, b := range resp.Balances {
 		bal := protocol.Balance{
-			Balance:      horizonBalanceAmount(b.Balance),
-			Limit:        derefString(b.Limit),
-			IsAuthorized: b.IsAuthorized,
+			Balance:                           horizonBalanceAmount(b.Balance),
+			Limit:                             derefString(b.Limit),
+			BuyingLiabilities:                 derefString(b.BuyingLiabilities),
+			SellingLiabilities:                derefString(b.SellingLiabilities),
+			IsAuthorized:                      b.IsAuthorized,
+			IsAuthorizedToMaintainLiabilities: b.IsAuthorizedToMaintainLiabilities,
+			IsClawbackEnabled:                 b.IsClawbackEnabled,
+			Sponsor:                           derefString(b.Sponsor),
 			Asset: hbase.Asset{
 				Type:   b.AssetType,
 				Code:   b.AssetCode,
 				Issuer: derefString(b.AssetIssuer),
 			},
+		}
+		if b.LastModifiedLedger != nil && *b.LastModifiedLedger > 0 {
+			bal.LastModifiedLedger = uint32(*b.LastModifiedLedger)
 		}
 		if bal.Asset.Type == "" || bal.Asset.Type == "native" || bal.Asset.Code == "XLM" {
 			bal.Asset = hbase.Asset{Type: "native"}

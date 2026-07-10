@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -152,7 +153,17 @@ func (h *HorizonCompatHandlers) HandleOperationEffects(w http.ResponseWriter, r 
 }
 
 func (h *HorizonCompatHandlers) HandleTransactionEffects(w http.ResponseWriter, r *http.Request) {
-	h.handleEffectCollection(w, r, EffectFilters{TransactionHash: mux.Vars(r)["hash"]})
+	hash := mux.Vars(r)["hash"]
+	filters := EffectFilters{TransactionHash: hash}
+	if h.txReader != nil && h.txReader.Available() {
+		ctx, cancel := withInteractiveQueryTimeout(r.Context())
+		tx, err := h.txReader.GetTransactionByHash(ctx, hash)
+		cancel()
+		if err == nil && tx != nil && tx.Ledger > 0 {
+			filters.LedgerSequence = int64(tx.Ledger)
+		}
+	}
+	h.handleEffectCollection(w, r, filters)
 }
 
 func (h *HorizonCompatHandlers) HandleAccountEffects(w http.ResponseWriter, r *http.Request) {
@@ -224,6 +235,13 @@ func decodeHorizonOperationCursor(raw string) (*OperationCursor, error) {
 	if raw == "now" {
 		return nil, nil
 	}
+	if id, err := strconv.ParseInt(raw, 10, 64); err == nil && id > 0 {
+		parsed := toid.Parse(id)
+		return &OperationCursor{
+			LedgerSequence: int64(parsed.LedgerSequence),
+			OperationIndex: id,
+		}, nil
+	}
 	return DecodeOperationCursor(raw)
 }
 
@@ -249,7 +267,39 @@ func horizonOperationRecord(r *http.Request, op EnrichedOperation, order string)
 		}
 		return payment
 	}
+	if op.Type == int32(xdr.OperationTypeInvokeHostFunction) {
+		return hoperations.InvokeHostFunction{
+			Base:                base,
+			Function:            derefString(op.SorobanFunction),
+			Parameters:          horizonHostFunctionParameters(op.SorobanArgsJSON),
+			Address:             derefString(op.SorobanContractID),
+			AssetBalanceChanges: []hoperations.AssetContractBalanceChange{},
+		}
+	}
 	return base
+}
+
+func horizonHostFunctionParameters(raw *string) []hoperations.HostFunctionParameter {
+	if raw == nil || strings.TrimSpace(*raw) == "" {
+		return []hoperations.HostFunctionParameter{}
+	}
+	value := strings.TrimSpace(*raw)
+
+	var params []hoperations.HostFunctionParameter
+	if err := json.Unmarshal([]byte(value), &params); err == nil {
+		return params
+	}
+
+	var values []string
+	if err := json.Unmarshal([]byte(value), &values); err == nil {
+		params = make([]hoperations.HostFunctionParameter, 0, len(values))
+		for _, v := range values {
+			params = append(params, hoperations.HostFunctionParameter{Value: v})
+		}
+		return params
+	}
+
+	return []hoperations.HostFunctionParameter{{Value: value}}
 }
 
 func horizonOperationBase(r *http.Request, op EnrichedOperation, order string) hoperations.Base {
@@ -309,7 +359,7 @@ func horizonEffectBase(r *http.Request, effect SilverEffect, order string) heffe
 }
 
 func horizonOperationPagingToken(op EnrichedOperation, order string) string {
-	return OperationCursor{LedgerSequence: op.LedgerSequence, OperationIndex: op.OperationID, Order: order}.Encode()
+	return strconv.FormatInt(op.OperationID, 10)
 }
 
 func horizonEffectPagingToken(effect SilverEffect, order string) string {

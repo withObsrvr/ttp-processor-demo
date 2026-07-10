@@ -108,6 +108,8 @@ func (w *Writer) extractAccountData(entry *xdr.AccountEntry, ledgerSeq uint32, c
 
 	// Account Settings
 	sequenceNumber := uint64(entry.SeqNum)
+	sequenceLedger := uint32(entry.SeqLedger())
+	sequenceTime := uint64(entry.SeqTime())
 	numSubentries := uint32(entry.NumSubEntries)
 	numSponsoring := uint32(0)
 	numSponsored := uint32(0)
@@ -181,6 +183,8 @@ func (w *Writer) extractAccountData(entry *xdr.AccountEntry, ledgerSeq uint32, c
 
 		// Account Settings
 		SequenceNumber: sequenceNumber,
+		SequenceLedger: sequenceLedger,
+		SequenceTime:   sequenceTime,
 		NumSubentries:  numSubentries,
 		NumSponsoring:  numSponsoring,
 		NumSponsored:   numSponsored,

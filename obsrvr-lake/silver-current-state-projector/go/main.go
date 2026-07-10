@@ -932,7 +932,7 @@ func selectAccountsCurrent(p *Projector, start, end int64) string {
 		num_sponsoring, num_sponsored, home_domain, master_weight, low_threshold, med_threshold,
 		high_threshold, flags, auth_required, auth_revocable, auth_immutable, auth_clawback_enabled,
 		signers, sponsor_account, created_at, COALESCE(updated_at, closed_at, current_timestamp) AS updated_at,
-		ledger_sequence AS last_modified_ledger, ledger_range, era_id, version_label
+		ledger_sequence AS last_modified_ledger, sequence_ledger, sequence_time, ledger_range, era_id, version_label
 		FROM (
 			SELECT r.* FROM (
 				SELECT arg_max(s, ROW(s.ledger_sequence, COALESCE(s.updated_at, s.closed_at))) AS r
