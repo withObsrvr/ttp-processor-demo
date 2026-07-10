@@ -242,6 +242,53 @@ func TestHorizonTransactionReaderUsesProvidedLedgerHintForColdLookup(t *testing.
 	}
 }
 
+func TestHorizonTransactionReaderUsesProvidedLedgerHintForHotLookup(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	closedAt := time.Date(2026, 7, 9, 15, 4, 0, 0, time.UTC)
+	mock.ExpectQuery(regexp.QuoteMeta(horizonHotTransactionQueryWithLedger)).
+		WithArgs(int64(789), "txhash").
+		WillReturnRows(sqlmock.NewRows(horizonTxColumns).AddRow(
+			int64(789),
+			"txhash",
+			int64(3388729196544),
+			"GACCOUNT",
+			nil,
+			int64(99),
+			int64(100),
+			int64(1000),
+			true,
+			int64(2),
+			"none",
+			nil,
+			closedAt,
+			"AAAA-envelope",
+			"AAAA-result",
+			"AAAA-meta",
+			"AAAA-fee-meta",
+			`["sig1"]`,
+			nil,
+			nil,
+		))
+
+	reader := &HorizonTransactionReader{hot: db}
+	got, err := reader.GetTransactionByHashAtLedger(context.Background(), "txhash", 789)
+	if err != nil {
+		t.Fatalf("GetTransactionByHashAtLedger: %v", err)
+	}
+
+	if got.Ledger != 789 || got.Hash != "txhash" {
+		t.Fatalf("transaction = ledger:%d hash:%q", got.Ledger, got.Hash)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
 func TestHorizonTransactionReaderFallsBackWhenIndexLookupFails(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

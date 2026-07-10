@@ -63,7 +63,13 @@ func (r *HorizonTransactionReader) getTransactionByHash(ctx context.Context, has
 	}
 
 	if r.hot != nil {
-		tx, err := r.query(ctx, r.hot, horizonHotTransactionQuery, hash)
+		query := horizonHotTransactionQuery
+		args := []interface{}{hash}
+		if ledgerSeq > 0 {
+			query = horizonHotTransactionQueryWithLedger
+			args = []interface{}{ledgerSeq, hash}
+		}
+		tx, err := r.query(ctx, r.hot, query, args...)
 		if err == nil {
 			return tx, nil
 		}
@@ -123,6 +129,12 @@ const horizonTransactionSelect = `
 const horizonHotTransactionQuery = horizonTransactionSelect + `
 	FROM transactions_row_v2
 	WHERE transaction_hash = $1
+	LIMIT 1
+`
+
+const horizonHotTransactionQueryWithLedger = horizonTransactionSelect + `
+	FROM transactions_row_v2
+	WHERE ledger_sequence = $1 AND transaction_hash = $2
 	LIMIT 1
 `
 
