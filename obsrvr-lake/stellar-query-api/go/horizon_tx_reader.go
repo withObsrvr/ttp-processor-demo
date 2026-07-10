@@ -50,6 +50,14 @@ func (r *HorizonTransactionReader) Available() bool {
 }
 
 func (r *HorizonTransactionReader) GetTransactionByHash(ctx context.Context, hash string) (*protocol.Transaction, error) {
+	return r.getTransactionByHash(ctx, hash, 0)
+}
+
+func (r *HorizonTransactionReader) GetTransactionByHashAtLedger(ctx context.Context, hash string, ledgerSeq int64) (*protocol.Transaction, error) {
+	return r.getTransactionByHash(ctx, hash, ledgerSeq)
+}
+
+func (r *HorizonTransactionReader) getTransactionByHash(ctx context.Context, hash string, ledgerSeq int64) (*protocol.Transaction, error) {
 	if !r.Available() {
 		return nil, errHorizonTransactionReaderUnavailable
 	}
@@ -67,7 +75,10 @@ func (r *HorizonTransactionReader) GetTransactionByHash(ctx context.Context, has
 	if r.cold != nil {
 		query := fmt.Sprintf(horizonColdTransactionQuery, r.coldTable)
 		args := []interface{}{hash}
-		if ledgerSeq := r.lookupLedgerHint(ctx, hash); ledgerSeq > 0 {
+		if ledgerSeq <= 0 {
+			ledgerSeq = r.lookupLedgerHint(ctx, hash)
+		}
+		if ledgerSeq > 0 {
 			query = fmt.Sprintf(horizonColdTransactionQueryWithLedger, r.coldTable)
 			args = []interface{}{ledgerSeq, hash}
 		}
