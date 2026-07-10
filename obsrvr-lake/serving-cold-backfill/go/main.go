@@ -161,11 +161,12 @@ type FeedProjection struct {
 }
 
 type CurrentProjection struct {
-	Name         string
-	TargetTable  string
-	MaxLedgerCol string
-	KeyExprs     []string
-	SelectSQL    func(*Backfiller) string
+	Name          string
+	TargetTable   string
+	MaxLedgerCol  string
+	KeyExprs      []string
+	InsertColumns []string
+	SelectSQL     func(*Backfiller) string
 	// PostgresNative runs this projection's DDL/DELETE/INSERT server-side in Postgres via
 	// postgres_execute instead of through DuckDB. Use for aggregates over LARGE serving tables
 	// (e.g. sv_assets_current GROUP BY over ~163M-row sv_account_balances_current) — pulling
@@ -561,7 +562,24 @@ func feedProjections() []FeedProjection {
 func currentProjections() []CurrentProjection {
 	return []CurrentProjection{
 		{Name: "sv_accounts_current", TargetTable: "sv_accounts_current", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"account_id"}, SelectSQL: selectAccountsCurrent},
-		{Name: "sv_account_balances_current", TargetTable: "sv_account_balances_current", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"account_id", "asset_key"}, SelectSQL: selectAccountBalancesCurrent},
+		{Name: "sv_account_balances_current", TargetTable: "sv_account_balances_current", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"account_id", "asset_key"}, InsertColumns: []string{
+			"account_id",
+			"asset_key",
+			"asset_code",
+			"asset_issuer",
+			"asset_type",
+			"balance_stroops",
+			"balance_display",
+			"limit_stroops",
+			"buying_liabilities_stroops",
+			"selling_liabilities_stroops",
+			"is_authorized",
+			"is_authorized_to_maintain_liabilities",
+			"is_clawback_enabled",
+			"sponsor",
+			"last_modified_ledger",
+			"updated_at",
+		}, SelectSQL: selectAccountBalancesCurrent},
 		{Name: "sv_network_stats_current", TargetTable: "sv_network_stats_current", MaxLedgerCol: "latest_ledger", KeyExprs: []string{"network"}, SelectSQL: selectNetworkStatsCurrent},
 		{Name: "sv_assets_current", TargetTable: "sv_assets_current", KeyExprs: []string{"asset_key"}, SelectSQL: selectAssetsCurrent, PostgresNative: true},
 		{Name: "sv_asset_stats_current", TargetTable: "sv_asset_stats_current", KeyExprs: []string{"asset_key"}, SelectSQL: selectAssetStatsCurrent, PostgresNative: true},
@@ -712,7 +730,7 @@ func (b *Backfiller) replaceCurrentProjectionPG(ctx context.Context, chunk Chunk
 	if err := b.pgExec(ctx, "DELETE FROM "+tgt); err != nil {
 		return 0, fmt.Errorf("delete %s: %w", projection.Name, err)
 	}
-	if err := b.pgExec(ctx, fmt.Sprintf("INSERT INTO %s %s", tgt, sel)); err != nil {
+	if err := b.pgExec(ctx, fmt.Sprintf("INSERT INTO %s%s %s", tgt, insertColumnsSQL(projection.InsertColumns), sel)); err != nil {
 		return 0, fmt.Errorf("insert %s: %w", projection.Name, err)
 	}
 	rows, err := b.countCurrentRows(ctx, projection) // small result table; DuckDB read is cheap
@@ -746,7 +764,7 @@ func (b *Backfiller) replaceCurrentProjection(ctx context.Context, out io.Writer
 		_ = tx.Rollback()
 		return 0, fmt.Errorf("delete %s: %w", projection.Name, err)
 	}
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s %s", b.servingTable(projection.TargetTable), projection.SelectSQL(b))); err != nil {
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s%s %s", b.servingTable(projection.TargetTable), insertColumnsSQL(projection.InsertColumns), projection.SelectSQL(b))); err != nil {
 		_ = tx.Rollback()
 		return 0, fmt.Errorf("insert %s: %w", projection.Name, err)
 	}
@@ -796,7 +814,7 @@ func (b *Backfiller) replaceCurrentProjectionBucketed(ctx context.Context, out i
 			_ = tx.Rollback()
 			return 0, fmt.Errorf("delete %s bucket %d: %w", projection.Name, i, err)
 		}
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s SELECT * FROM %s", target, ident(stage))); err != nil {
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s%s SELECT * FROM %s", target, insertColumnsSQL(projection.InsertColumns), ident(stage))); err != nil {
 			_ = tx.Rollback()
 			return 0, fmt.Errorf("insert %s bucket %d: %w", projection.Name, i, err)
 		}

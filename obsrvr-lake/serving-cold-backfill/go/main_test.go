@@ -66,6 +66,54 @@ func TestAssignedChunkOverridesChunkPlan(t *testing.T) {
 	}
 }
 
+func TestCurrentProjectionUsesInsertColumnList(t *testing.T) {
+	ctx := context.Background()
+	db := openBackfillFixtureDB(t)
+	defer db.Close()
+
+	cfg := Config{
+		Network:       "testnet",
+		Start:         3,
+		End:           6,
+		ServingSchema: "serving",
+	}
+	backfiller := NewBackfillerWithDB(db, cfg)
+	if err := backfiller.ensureServingSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := backfiller.ensureManifest(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE serving.current_projection_order_test (
+			account_id VARCHAR NOT NULL,
+			updated_at TIMESTAMP NOT NULL,
+			is_authorized BOOLEAN
+		)
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	projection := CurrentProjection{
+		Name:          "current_projection_order_test",
+		TargetTable:   "current_projection_order_test",
+		InsertColumns: []string{"account_id", "is_authorized", "updated_at"},
+		SelectSQL: func(*Backfiller) string {
+			return `SELECT 'GA1' AS account_id, true AS is_authorized, TIMESTAMP '2026-07-10 00:00:00' AS updated_at`
+		},
+	}
+
+	var out bytes.Buffer
+	rows, err := backfiller.replaceCurrentProjection(ctx, &out, Chunk{Start: 3, End: 6}, projection)
+	if err != nil {
+		t.Fatalf("replaceCurrentProjection: %v\n%s", err, out.String())
+	}
+	if rows != 1 {
+		t.Fatalf("rows = %d, want 1", rows)
+	}
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.current_projection_order_test WHERE account_id='GA1' AND is_authorized=true AND updated_at=TIMESTAMP '2026-07-10 00:00:00'`, 1)
+}
+
 func TestClassifiedOptionalTablesAreDocumented(t *testing.T) {
 	got := classifiedOptionalTables("serving")
 	if len(got) < 17 {
