@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -142,6 +143,50 @@ func TestHorizonAccountReaderFillsServingGapsFromUnified(t *testing.T) {
 	}
 	if !foundUSDC {
 		t.Fatalf("missing unified USDC balance: %#v", account.Balances)
+	}
+	if err := servingMock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet serving expectations: %v", err)
+	}
+	if err := unifiedMock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet unified expectations: %v", err)
+	}
+}
+
+func TestHorizonAccountCurrentIgnoresUnifiedSequenceSchemaGap(t *testing.T) {
+	servingDB, servingMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New serving: %v", err)
+	}
+	defer servingDB.Close()
+	unifiedDB, unifiedMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New unified: %v", err)
+	}
+	defer unifiedDB.Close()
+
+	updatedAt := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	servingMock.ExpectQuery("FROM serving.sv_accounts_current").
+		WithArgs("GA").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"account_id", "balance_stroops", "sequence_number", "num_subentries",
+			"num_sponsoring", "num_sponsored", "last_modified_ledger", "sequence_ledger",
+			"sequence_time", "updated_at", "home_domain", "created_at", "sponsor",
+			"auth_required", "auth_revocable", "auth_immutable", "auth_clawback_enabled",
+		}).AddRow("GA", int64(1000000000), int64(123), int64(0), int64(0), int64(0), int64(50), nil, nil, updatedAt, nil, nil, nil, false, false, false, false))
+	unifiedMock.ExpectQuery("SELECT account_id, balance, sequence_number, num_subentries").
+		WithArgs("GA").
+		WillReturnError(errors.New(`Binder Error: Referenced column "sequence_ledger" not found in FROM clause`))
+
+	reader := &HorizonAccountReader{
+		hot:     &SilverHotReader{db: servingDB},
+		unified: &UnifiedDuckDBReader{db: unifiedDB, hotSchema: "hot", coldSchema: "cold"},
+	}
+	account, err := reader.currentAccount(context.Background(), "GA")
+	if err != nil {
+		t.Fatalf("currentAccount: %v", err)
+	}
+	if account == nil || account.AccountID != "GA" || account.SequenceNumber != "123" {
+		t.Fatalf("account = %#v, want serving account", account)
 	}
 	if err := servingMock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet serving expectations: %v", err)

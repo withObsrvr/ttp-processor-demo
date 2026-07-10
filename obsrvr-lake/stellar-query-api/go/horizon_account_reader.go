@@ -147,6 +147,9 @@ func (r *HorizonAccountReader) currentAccount(ctx context.Context, accountID str
 	if r.unified != nil {
 		acc, err := r.unified.GetAccountCurrent(ctx, accountID)
 		if err != nil {
+			if servingAcc != nil && isUnifiedAccountCurrentSequenceSchemaGap(err) {
+				return servingAcc, nil
+			}
 			return nil, err
 		}
 		if merged := mergeAccountCurrent(servingAcc, acc); merged != nil {
@@ -170,6 +173,14 @@ func (r *HorizonAccountReader) currentAccount(ctx context.Context, accountID str
 		return nil, servingErr
 	}
 	return nil, nil
+}
+
+func isUnifiedAccountCurrentSequenceSchemaGap(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "sequence_ledger") || strings.Contains(msg, "sequence_time")
 }
 
 func horizonAccountCurrentNeedsUnifiedFill(acc *AccountCurrent) bool {
