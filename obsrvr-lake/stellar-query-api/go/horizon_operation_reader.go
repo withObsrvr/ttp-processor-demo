@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/stellar/go-stellar-sdk/toid"
 )
@@ -13,9 +15,11 @@ import (
 var errHorizonOperationNotFound = errors.New("horizon operation not found")
 
 type HorizonOperationReader struct {
-	db         *sql.DB
-	hotSchema  string
-	coldSchema string
+	db           *sql.DB
+	hotSchema    string
+	coldSchema   string
+	schemaCapsMu sync.Mutex
+	schemaCaps   map[string]bool
 }
 
 func NewHorizonOperationReader(reader *UnifiedDuckDBReader) *HorizonOperationReader {
@@ -26,6 +30,7 @@ func NewHorizonOperationReader(reader *UnifiedDuckDBReader) *HorizonOperationRea
 		db:         reader.db,
 		hotSchema:  reader.hotSchema,
 		coldSchema: reader.coldSchema,
+		schemaCaps: make(map[string]bool),
 	}
 }
 
@@ -56,10 +61,10 @@ func (r *HorizonOperationReader) GetEnrichedOperationsWithCursor(ctx context.Con
 	}
 
 	arms := make([]string, 0, 2)
-	if strings.TrimSpace(r.hotSchema) != "" {
+	if r.schemaHasOperationTOIDsCached(r.hotSchema) {
 		arms = append(arms, horizonOperationArm(r.hotSchema, whereClause, 1))
 	}
-	if strings.TrimSpace(r.coldSchema) != "" {
+	if r.schemaHasOperationTOIDsCached(r.coldSchema) {
 		arms = append(arms, horizonOperationArm(r.coldSchema, whereClause, 2))
 	}
 	if len(arms) == 0 {
@@ -143,10 +148,10 @@ func (r *HorizonOperationReader) GetOperationByID(ctx context.Context, operation
 	}
 
 	arms := make([]string, 0, 2)
-	if strings.TrimSpace(r.hotSchema) != "" {
+	if r.schemaHasOperationTOIDsCached(r.hotSchema) {
 		arms = append(arms, horizonOperationArm(r.hotSchema, whereClause, 1))
 	}
-	if strings.TrimSpace(r.coldSchema) != "" {
+	if r.schemaHasOperationTOIDsCached(r.coldSchema) {
 		arms = append(arms, horizonOperationArm(r.coldSchema, whereClause, 2))
 	}
 	if len(arms) == 0 {
@@ -189,6 +194,32 @@ func (r *HorizonOperationReader) GetOperationByID(ctx context.Context, operation
 	}
 	op.TypeName = operationTypeName(op.Type)
 	return &op, nil
+}
+
+func (r *HorizonOperationReader) schemaHasOperationTOIDsCached(schema string) bool {
+	schema = strings.TrimSpace(schema)
+	if schema == "" {
+		return false
+	}
+
+	r.schemaCapsMu.Lock()
+	if r.schemaCaps == nil {
+		r.schemaCaps = make(map[string]bool)
+	}
+	available, ok := r.schemaCaps[schema]
+	r.schemaCapsMu.Unlock()
+	if ok {
+		return available
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	available = r.schemaHasOperationTOIDs(ctx, schema)
+
+	r.schemaCapsMu.Lock()
+	r.schemaCaps[schema] = available
+	r.schemaCapsMu.Unlock()
+	return available
 }
 
 func (r *HorizonOperationReader) schemaHasOperationTOIDs(ctx context.Context, schema string) bool {
