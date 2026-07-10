@@ -89,15 +89,12 @@ func (r *HorizonAccountReader) GetHorizonAccount(ctx context.Context, accountID 
 			return nil, fmt.Errorf("horizon account balances: %w", err)
 		}
 	}
-	if r.unified != nil && horizonAccountBalancesNeedUnifiedFill(acc, balances) {
+	if balances == nil && r.unified != nil {
 		unifiedBalances, err := r.unified.GetAccountBalances(ctx, accountID)
 		if err != nil {
-			if balances == nil {
-				return nil, fmt.Errorf("horizon account balances: %w", err)
-			}
-		} else {
-			balances = mergeAccountBalanceResponses(balances, unifiedBalances)
+			return nil, fmt.Errorf("horizon account balances: %w", err)
 		}
+		balances = unifiedBalances
 	}
 	out.Balances = horizonBalances(balances)
 	if r.hot != nil {
@@ -233,63 +230,6 @@ func mergeAccountCurrent(primary, fallback *AccountCurrent) *AccountCurrent {
 		merged.AuthClawbackEnabled = fallback.AuthClawbackEnabled
 	}
 	return &merged
-}
-
-func horizonAccountBalancesNeedUnifiedFill(acc *AccountCurrent, balances *AccountBalancesResponse) bool {
-	if balances == nil || len(balances.Balances) == 0 {
-		return true
-	}
-	if acc == nil || acc.NumSubentries <= 0 {
-		return false
-	}
-	for _, bal := range balances.Balances {
-		if bal.AssetType != "" && bal.AssetType != "native" {
-			return false
-		}
-	}
-	return true
-}
-
-func mergeAccountBalanceResponses(primary, fallback *AccountBalancesResponse) *AccountBalancesResponse {
-	if primary == nil {
-		return fallback
-	}
-	if fallback == nil {
-		return primary
-	}
-
-	merged := &AccountBalancesResponse{
-		AccountID: primary.AccountID,
-		Balances:  make([]Balance, 0, len(primary.Balances)+len(fallback.Balances)),
-	}
-	if merged.AccountID == "" {
-		merged.AccountID = fallback.AccountID
-	}
-
-	seen := make(map[string]struct{}, len(primary.Balances)+len(fallback.Balances))
-	for _, bal := range primary.Balances {
-		key := horizonBalanceKey(bal)
-		seen[key] = struct{}{}
-		merged.Balances = append(merged.Balances, bal)
-	}
-	for _, bal := range fallback.Balances {
-		key := horizonBalanceKey(bal)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		merged.Balances = append(merged.Balances, bal)
-	}
-	merged.TotalBalances = len(merged.Balances)
-	return merged
-}
-
-func horizonBalanceKey(b Balance) string {
-	issuer := ""
-	if b.AssetIssuer != nil {
-		issuer = *b.AssetIssuer
-	}
-	return b.AssetType + ":" + b.AssetCode + ":" + issuer
 }
 
 func (r *HorizonAccountReader) hotAccountSigners(ctx context.Context, accountID string) (*AccountSignersResponse, error) {
