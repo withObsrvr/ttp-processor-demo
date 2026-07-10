@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -71,7 +72,14 @@ func (r *HorizonAccountReader) GetHorizonAccount(ctx context.Context, accountID 
 		}
 		out.Balances = horizonBalances(balances)
 	}
-	if r.unified != nil {
+	if r.hot != nil {
+		if signers, err := r.hotAccountSigners(ctx, accountID); err == nil && signers != nil {
+			applyHorizonSigners(out, signers)
+		} else if r.unified == nil {
+			return nil, fmt.Errorf("horizon account signers: %w", err)
+		}
+	}
+	if len(out.Signers) == 0 && r.unified != nil {
 		signers, err := r.unified.GetAccountSigners(ctx, accountID)
 		if err != nil {
 			return nil, fmt.Errorf("horizon account signers: %w", err)
@@ -121,6 +129,59 @@ func (r *HorizonAccountReader) currentAccount(ctx context.Context, accountID str
 		return nil, servingErr
 	}
 	return nil, nil
+}
+
+func (r *HorizonAccountReader) hotAccountSigners(ctx context.Context, accountID string) (*AccountSignersResponse, error) {
+	if r.hot == nil || r.hot.db == nil {
+		return nil, nil
+	}
+	var accID string
+	var signersJSON string
+	var masterWeight, lowThreshold, medThreshold, highThreshold int
+	err := r.hot.db.QueryRowContext(ctx, `
+		SELECT
+			account_id,
+			COALESCE(signers, '[]') as signers,
+			COALESCE(master_weight, 1) as master_weight,
+			COALESCE(low_threshold, 0) as low_threshold,
+			COALESCE(med_threshold, 0) as med_threshold,
+			COALESCE(high_threshold, 0) as high_threshold
+		FROM accounts_current
+		WHERE account_id = $1
+	`, accountID).Scan(&accID, &signersJSON, &masterWeight, &lowThreshold, &medThreshold, &highThreshold)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	var signers []AccountSigner
+	if signersJSON != "" && signersJSON != "[]" {
+		_ = json.Unmarshal([]byte(signersJSON), &signers)
+	}
+	if masterWeight > 0 {
+		hasMaster := false
+		for _, signer := range signers {
+			if signer.Key == accountID {
+				hasMaster = true
+				break
+			}
+		}
+		if !hasMaster {
+			signers = append([]AccountSigner{{
+				Key:    accountID,
+				Weight: masterWeight,
+				Type:   "ed25519_public_key",
+			}}, signers...)
+		}
+	}
+
+	resp := &AccountSignersResponse{AccountID: accID, Signers: signers}
+	resp.Thresholds.LowThreshold = lowThreshold
+	resp.Thresholds.MedThreshold = medThreshold
+	resp.Thresholds.HighThreshold = highThreshold
+	return resp, nil
 }
 
 func horizonBalances(resp *AccountBalancesResponse) []protocol.Balance {
