@@ -1386,12 +1386,13 @@ func scanContractEvents(rows *sql.Rows) ([]map[string]interface{}, error) {
 
 	for rows.Next() {
 		var (
-			eventID, contractID, txHash               string
-			ledgerSeq, opIndex, eventIndex, eventType int64
-			topicsJSON, dataJSON                      string
-			closedAt                                  time.Time
-			ledgerRange                               int64
-			eraID, versionLabel                       sql.NullString
+			eventID, contractID, txHash sql.NullString
+			ledgerSeq, opIndex          sql.NullInt64
+			eventIndex, ledgerRange     sql.NullInt64
+			eventType                   sql.NullString
+			topicsJSON, dataJSON        sql.NullString
+			closedAt                    sql.NullTime
+			eraID, versionLabel         sql.NullString
 		)
 
 		err := rows.Scan(
@@ -1402,18 +1403,37 @@ func scanContractEvents(rows *sql.Rows) ([]map[string]interface{}, error) {
 			return nil, fmt.Errorf("failed to scan contract event row: %w", err)
 		}
 
+		stringValue := func(v sql.NullString) interface{} {
+			if !v.Valid {
+				return nil
+			}
+			return v.String
+		}
+		intValue := func(v sql.NullInt64) interface{} {
+			if !v.Valid {
+				return nil
+			}
+			return v.Int64
+		}
+		timeValue := func(v sql.NullTime) interface{} {
+			if !v.Valid {
+				return nil
+			}
+			return v.Time
+		}
+
 		eventResult := map[string]interface{}{
-			"event_id":         eventID,
-			"contract_id":      contractID,
-			"ledger_sequence":  ledgerSeq,
-			"transaction_hash": txHash,
-			"operation_index":  opIndex,
-			"event_index":      eventIndex,
-			"event_type":       eventType,
-			"topics_json":      topicsJSON,
-			"data_json":        dataJSON,
-			"closed_at":        closedAt,
-			"ledger_range":     ledgerRange,
+			"event_id":         stringValue(eventID),
+			"contract_id":      stringValue(contractID),
+			"ledger_sequence":  intValue(ledgerSeq),
+			"transaction_hash": stringValue(txHash),
+			"operation_index":  intValue(opIndex),
+			"event_index":      intValue(eventIndex),
+			"event_type":       stringValue(eventType),
+			"topics_json":      stringValue(topicsJSON),
+			"data_json":        stringValue(dataJSON),
+			"closed_at":        timeValue(closedAt),
+			"ledger_range":     intValue(ledgerRange),
 		}
 
 		if eraID.Valid {

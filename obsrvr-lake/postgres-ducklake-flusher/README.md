@@ -23,19 +23,24 @@ The service uses a safe, idempotent flush pattern:
    SELECT MAX(sequence) FROM ledgers_row_v2;
    ```
 
-2. **FLUSH**: Copy all data ≤ watermark to DuckLake using `postgres_scan`
+2. **FLUSH**: Replace and copy the checkpoint range to DuckLake using `postgres_scan`
    ```sql
+   DELETE FROM bronze.ledgers_row_v2
+   WHERE sequence > last_flushed AND sequence <= watermark;
+
    INSERT INTO bronze.ledgers_row_v2
    SELECT * FROM postgres_scan('...', 'public', 'ledgers_row_v2')
-   WHERE sequence <= watermark;
+   WHERE sequence > last_flushed AND sequence <= watermark;
    ```
 
-3. **DELETE**: Remove flushed data from PostgreSQL
+3. **CHECKPOINT**: Advance the flusher checkpoint only if every table flushed successfully.
+
+4. **DELETE**: Remove flushed data from PostgreSQL
    ```sql
    DELETE FROM ledgers_row_v2 WHERE sequence <= watermark;
    ```
 
-4. **VACUUM**: Periodically reclaim space (every 10th flush)
+5. **VACUUM**: Periodically reclaim space (every 10th flush)
    ```sql
    VACUUM ANALYZE ledgers_row_v2;
    ```
@@ -48,7 +53,7 @@ The service uses a safe, idempotent flush pattern:
 - ✅ **Automatic VACUUM** (every N flushes)
 - ✅ **Health endpoint** with metrics
 - ✅ **Prometheus-compatible** metrics
-- ✅ **Graceful shutdown** with final flush
+- ✅ **Controlled one-shot flush** for catch-up operations
 - ✅ **PostgreSQL connection pooling**
 - ✅ **DuckDB integration** with ducklake extension
 
@@ -147,6 +152,16 @@ vacuum:
 ./go/bin/postgres-ducklake-flusher -config config.yaml
 ```
 
+### Run One Controlled Flush
+
+```bash
+./go/bin/postgres-ducklake-flusher -config config.yaml -flush-once -flush-timeout 30m
+```
+
+Use this mode for explicit catch-up work during rollouts. Normal SIGTERM/SIGINT
+shutdown does not run an implicit final flush unless `-final-flush-on-shutdown`
+is set.
+
 ### Monitor Health
 
 ```bash
@@ -201,10 +216,12 @@ flusher_total_rows_flushed 432189
 Every N minutes (configurable):
 
 1. **Get watermark**: Query `MAX(sequence)` from ledgers_row_v2
-2. **Flush tables**: For each of 19 tables:
-   - Use `postgres_scan` to copy rows ≤ watermark to DuckLake
-   - Handle errors gracefully (continue to next table)
-3. **Delete data**: Remove flushed rows from PostgreSQL
+2. **Flush tables**: For each table:
+   - Delete the target DuckLake range `(last_flushed, watermark]`
+   - Use `postgres_scan` to copy the same bounded range to DuckLake
+   - Keep delete and insert in one DuckLake transaction
+3. **Checkpoint**: Advance only after all tables succeed
+4. **Delete data**: Remove flushed rows from PostgreSQL
 4. **Vacuum** (if enabled and Nth flush): Run VACUUM ANALYZE
 5. **Update metrics**: Track flush count, watermark, rows flushed
 
@@ -213,9 +230,13 @@ Every N minutes (configurable):
 On SIGINT/SIGTERM:
 
 1. Stop scheduler
-2. Perform final flush
+2. Skip implicit final flush by default
 3. Close all connections
 4. Exit
+
+Set `-final-flush-on-shutdown` only for local/dev workflows where the process
+manager gives enough time for a full flush. Production catch-up should use
+`-flush-once`.
 
 ## Testing
 

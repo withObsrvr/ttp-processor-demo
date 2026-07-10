@@ -21,6 +21,7 @@ type OrchestratorConfig struct {
 	LedgersPerFile    uint32
 	FilesPerPartition uint32
 	EraID             string
+	OnlyTables        map[string]bool
 }
 
 // Orchestrator manages parallel workers for history loading.

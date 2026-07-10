@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"regexp"
 	"testing"
 	"time"
@@ -135,6 +136,112 @@ func TestHorizonTransactionReaderRejectsMissingXDR(t *testing.T) {
 	}
 }
 
+func TestHorizonTransactionReaderUsesIndexLedgerHintForColdLookup(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	coldTable := "bronze.transactions_row_v2"
+	query := fmt.Sprintf(horizonColdTransactionQueryWithLedger, coldTable)
+	closedAt := time.Date(2026, 7, 9, 15, 4, 0, 0, time.UTC)
+	mock.ExpectQuery(regexp.QuoteMeta(query)).
+		WithArgs(int64(456), "txhash").
+		WillReturnRows(sqlmock.NewRows(horizonTxColumns).AddRow(
+			int64(456),
+			"txhash",
+			int64(1958505086976),
+			"GACCOUNT",
+			nil,
+			int64(99),
+			int64(100),
+			int64(1000),
+			true,
+			int64(2),
+			"none",
+			nil,
+			closedAt,
+			"AAAA-envelope",
+			"AAAA-result",
+			"AAAA-meta",
+			"AAAA-fee-meta",
+			`["sig1"]`,
+			nil,
+			nil,
+		))
+
+	index := &fakeTransactionLocationLookup{loc: &TxLocation{LedgerSequence: 456}}
+	reader := &HorizonTransactionReader{cold: db, coldTable: coldTable, index: index}
+	got, err := reader.GetTransactionByHash(context.Background(), "txhash")
+	if err != nil {
+		t.Fatalf("GetTransactionByHash: %v", err)
+	}
+
+	if got.Ledger != 456 || got.Hash != "txhash" {
+		t.Fatalf("transaction = ledger:%d hash:%q", got.Ledger, got.Hash)
+	}
+	if index.calls != 1 || index.hash != "txhash" {
+		t.Fatalf("index lookup calls = %d hash = %q", index.calls, index.hash)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestHorizonTransactionReaderFallsBackWhenIndexLookupFails(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	coldTable := "bronze.transactions_row_v2"
+	query := fmt.Sprintf(horizonColdTransactionQuery, coldTable)
+	closedAt := time.Date(2026, 7, 9, 15, 4, 0, 0, time.UTC)
+	mock.ExpectQuery(regexp.QuoteMeta(query)).
+		WithArgs("txhash").
+		WillReturnRows(sqlmock.NewRows(horizonTxColumns).AddRow(
+			int64(456),
+			"txhash",
+			int64(1958505086976),
+			"GACCOUNT",
+			nil,
+			int64(99),
+			int64(100),
+			int64(1000),
+			true,
+			int64(2),
+			"none",
+			nil,
+			closedAt,
+			"AAAA-envelope",
+			"AAAA-result",
+			"AAAA-meta",
+			"AAAA-fee-meta",
+			`["sig1"]`,
+			nil,
+			nil,
+		))
+
+	index := &fakeTransactionLocationLookup{err: errors.New("index unavailable")}
+	reader := &HorizonTransactionReader{cold: db, coldTable: coldTable, index: index}
+	got, err := reader.GetTransactionByHash(context.Background(), "txhash")
+	if err != nil {
+		t.Fatalf("GetTransactionByHash: %v", err)
+	}
+
+	if got.Ledger != 456 || got.Hash != "txhash" {
+		t.Fatalf("transaction = ledger:%d hash:%q", got.Ledger, got.Hash)
+	}
+	if index.calls != 1 || index.hash != "txhash" {
+		t.Fatalf("index lookup calls = %d hash = %q", index.calls, index.hash)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
 func TestParseHorizonSignatures(t *testing.T) {
 	tests := []struct {
 		name string
@@ -158,4 +265,17 @@ func TestParseHorizonSignatures(t *testing.T) {
 			}
 		})
 	}
+}
+
+type fakeTransactionLocationLookup struct {
+	loc   *TxLocation
+	err   error
+	calls int
+	hash  string
+}
+
+func (f *fakeTransactionLocationLookup) LookupTransactionHash(ctx context.Context, txHash string) (*TxLocation, error) {
+	f.calls++
+	f.hash = txHash
+	return f.loc, f.err
 }

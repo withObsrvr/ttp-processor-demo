@@ -13,6 +13,9 @@ import (
 func main() {
 	// Parse command-line flags
 	configPath := flag.String("config", "config.yaml", "Path to configuration file")
+	flushOnce := flag.Bool("flush-once", false, "Run one flush cycle and exit")
+	finalFlushOnShutdown := flag.Bool("final-flush-on-shutdown", false, "Run one final flush after SIGINT/SIGTERM before exiting")
+	flushTimeout := flag.Duration("flush-timeout", 0, "Optional timeout for each flush cycle, for example 30m; 0 means no timeout")
 	flag.Parse()
 
 	log.Println("Starting postgres-ducklake-flusher")
@@ -42,6 +45,35 @@ func main() {
 	}
 	defer flusher.Close()
 
+	runFlush := func(reason string) (*FlushMetrics, error) {
+		ctx := context.Background()
+		cancel := func() {}
+		if *flushTimeout > 0 {
+			ctx, cancel = context.WithTimeout(ctx, *flushTimeout)
+		}
+		defer cancel()
+
+		log.Printf("Starting %s flush", reason)
+		metrics, err := flusher.Flush(ctx)
+		if err != nil {
+			return metrics, err
+		}
+		if metrics.Watermark > 0 {
+			log.Printf("%s flush complete: count=%d, watermark=%d, flushed=%d rows in %v (success=%d, failed=%d)",
+				reason, flusher.GetFlushCount(), metrics.Watermark, metrics.RowsFlushed,
+				metrics.Duration, metrics.TablesSuccess, metrics.TablesFailed)
+		}
+		return metrics, nil
+	}
+
+	if *flushOnce {
+		if _, err := runFlush("one-shot"); err != nil {
+			log.Fatalf("One-shot flush failed: %v", err)
+		}
+		log.Println("One-shot flush complete; exiting")
+		return
+	}
+
 	// Start health server in background with maintenance endpoints
 	healthServer := NewHealthServer(flusher, flusher.GetDuckDB(), config.Service.HealthPort)
 	go func() {
@@ -66,30 +98,20 @@ func main() {
 	for {
 		select {
 		case <-ticker.C:
-			// Perform flush operation
-			ctx := context.Background()
-			metrics, err := flusher.Flush(ctx)
-			if err != nil {
+			if _, err := runFlush("scheduled"); err != nil {
 				log.Printf("ERROR: Flush failed: %v", err)
-				// Continue running despite errors
 				continue
-			}
-
-			// Log summary
-			if metrics.Watermark > 0 {
-				log.Printf("Flush #%d: watermark=%d, flushed=%d rows in %v (success=%d, failed=%d)",
-					flusher.GetFlushCount(), metrics.Watermark, metrics.RowsFlushed,
-					metrics.Duration, metrics.TablesSuccess, metrics.TablesFailed)
 			}
 
 		case sig := <-sigChan:
 			log.Printf("Received signal %v, shutting down gracefully...", sig)
 
-			// Perform one final flush before shutting down
-			log.Println("Performing final flush...")
-			ctx := context.Background()
-			if _, err := flusher.Flush(ctx); err != nil {
-				log.Printf("Warning: Final flush failed: %v", err)
+			if *finalFlushOnShutdown {
+				if _, err := runFlush("shutdown"); err != nil {
+					log.Printf("Warning: Final flush failed: %v", err)
+				}
+			} else {
+				log.Println("Skipping final flush on shutdown; use -flush-once for controlled catch-up flushes")
 			}
 
 			log.Println("Shutdown complete")

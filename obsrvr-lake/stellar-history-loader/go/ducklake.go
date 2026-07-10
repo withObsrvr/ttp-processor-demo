@@ -38,6 +38,7 @@ type DuckLakeConfig struct {
 	BronzeSchemaSQL string // Path to v3_bronze_schema.sql (optional, embedded fallback)
 	StartLedger     uint32 // Requested push start; used for idempotent full-chunk deletes
 	EndLedger       uint32 // Requested push end; used for idempotent full-chunk deletes
+	OnlyTables      map[string]bool
 	SkipTables      map[string]bool
 }
 
@@ -289,8 +290,8 @@ func (p *DuckLakePusher) Push(ctx context.Context, outputDir string) (*DuckLakeP
 }
 
 func (p *DuckLakePusher) shouldSkipTable(sourceName, duckTableName string) bool {
-	if len(p.config.SkipTables) == 0 {
-		return false
+	if len(p.config.OnlyTables) > 0 && !tableSetIncludes(p.config.OnlyTables, sourceName, duckTableName) {
+		return true
 	}
 	return p.config.SkipTables[sourceName] || p.config.SkipTables[duckTableName]
 }
@@ -352,30 +353,7 @@ func (p *DuckLakePusher) createTables(ctx context.Context) error {
 
 // mapToDuckLakeTable maps Parquet directory names to DuckLake table names.
 func mapToDuckLakeTable(dirName string) string {
-	mapping := map[string]string{
-		"ledgers":                     "ledgers_row_v2",
-		"transactions":                "transactions_row_v2",
-		"operations":                  "operations_row_v2",
-		"effects":                     "effects_row_v1",
-		"trades":                      "trades_row_v1",
-		"accounts_snapshot":           "accounts_snapshot_v1",
-		"offers_snapshot":             "offers_snapshot_v1",
-		"trustlines_snapshot":         "trustlines_snapshot_v1",
-		"account_signers_snapshot":    "account_signers_snapshot_v1",
-		"claimable_balances_snapshot": "claimable_balances_snapshot_v1",
-		"liquidity_pools_snapshot":    "liquidity_pools_snapshot_v1",
-		"config_settings":             "config_settings_snapshot_v1",
-		"ttl_snapshot":                "ttl_snapshot_v1",
-		"evicted_keys":                "evicted_keys_state_v1",
-		"contract_events":             "contract_events_stream_v1",
-		"contract_data_snapshot":      "contract_data_snapshot_v1",
-		"contract_code_snapshot":      "contract_code_snapshot_v1",
-		"native_balances":             "native_balances_snapshot_v1",
-		"restored_keys":               "restored_keys_state_v1",
-		"contract_creations":          "contract_creations_v1",
-		"token_transfers":             "token_transfers_stream_v1",
-	}
-	return mapping[dirName]
+	return duckLakeTableBySource[dirName]
 }
 
 // ledgerSequenceColumn returns the ledger sequence column name for a given table.

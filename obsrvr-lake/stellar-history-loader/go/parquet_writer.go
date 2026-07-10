@@ -944,32 +944,7 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 	if len(batch.ContractEvents) > 0 {
 		rows := make([]ParquetContractEvent, len(batch.ContractEvents))
 		for i, e := range batch.ContractEvents {
-			rows[i] = ParquetContractEvent{
-				EventID:                  e.EventID,
-				ContractID:               e.ContractID,
-				LedgerSequence:           e.LedgerSequence,
-				TransactionHash:          e.TransactionHash,
-				ClosedAt:                 e.ClosedAt.UnixMicro(),
-				EventType:                e.EventType,
-				InSuccessfulContractCall: e.InSuccessfulContractCall,
-				Successful:               e.Successful,
-				ContractEventXDR:         e.ContractEventXDR,
-				TopicsJSON:               e.TopicsJSON,
-				TopicsDecoded:            e.TopicsDecoded,
-				DataXDR:                  e.DataXDR,
-				DataDecoded:              e.DataDecoded,
-				TopicCount:               e.TopicCount,
-				Topic0Decoded:            e.Topic0Decoded,
-				Topic1Decoded:            e.Topic1Decoded,
-				Topic2Decoded:            e.Topic2Decoded,
-				Topic3Decoded:            e.Topic3Decoded,
-				OperationIndex:           e.OperationIndex,
-				EventIndex:               e.EventIndex,
-				CreatedAt:                e.CreatedAt.UnixMicro(),
-				LedgerRange:              e.LedgerRange,
-				EraID:                    e.EraID,
-				PipelineVersion:          pw.pipelineVersion,
-			}
+			rows[i] = parquetContractEventFromData(e, pw.pipelineVersion)
 		}
 		if err := pw.contractEvents.Write(rows, func(r ParquetContractEvent) uint32 { return r.LedgerRange }); err != nil {
 			return fmt.Errorf("write contract_events: %w", err)

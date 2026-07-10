@@ -26,8 +26,8 @@ func TestPlanChunksDeterministic(t *testing.T) {
 
 func TestRequiredProjectionContractIncludesCheckpointTargets(t *testing.T) {
 	got := requiredProjections("serving")
-	if len(got) != 18 {
-		t.Fatalf("required projection count = %d, want 18", len(got))
+	if len(got) != 20 {
+		t.Fatalf("required projection count = %d, want 20", len(got))
 	}
 	checkpointed := 0
 	for _, p := range got {
@@ -41,8 +41,8 @@ func TestRequiredProjectionContractIncludesCheckpointTargets(t *testing.T) {
 			t.Fatalf("%s checkpoint=%v class=%s, want false/blocked_source_mapping", p.Name, p.Checkpoint, p.InitialClass)
 		}
 	}
-	if checkpointed != 16 {
-		t.Fatalf("checkpointed projection count = %d, want 16", checkpointed)
+	if checkpointed != 18 {
+		t.Fatalf("checkpointed projection count = %d, want 18", checkpointed)
 	}
 }
 
@@ -136,12 +136,18 @@ func TestFeedBackfillRerunResumeNoDuplicates(t *testing.T) {
 	assertBackfillString(t, db, `SELECT type FROM serving.sv_contract_storage_current WHERE key_hash='K2'`, "instance")
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_contract_storage_current WHERE key_hash='K1' AND ttl_remaining=4 AND expired=false`, 1)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_contract_storage_current WHERE key_hash='K2' AND ttl_remaining=-1 AND expired=true`, 1)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_contract_storage_summary`, 1)
+	assertBackfillCount(t, db, `SELECT live_entries FROM serving.sv_contract_storage_summary WHERE contract_id='CC1'`, 1)
+	assertBackfillCount(t, db, `SELECT expired_entries FROM serving.sv_contract_storage_summary WHERE contract_id='CC1'`, 1)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_contract_stats_current`, 1)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_contract_function_stats_current`, 1)
-	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_backfill_manifest WHERE status='completed'`, 23)
-	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_projection_checkpoints WHERE last_ledger_sequence=6`, 16)
-	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_watermarks WHERE status='complete' AND complete_thru=6`, 16)
-	assertBackfillCount(t, db, `SELECT COUNT(*) FROM ops.consumers WHERE pipeline='serving-cold-backfill' AND checkpoint=6`, 16)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_contract_activity_summary`, 1)
+	assertBackfillString(t, db, `SELECT activity_classification FROM serving.sv_contract_activity_summary WHERE contract_id='CC1'`, "invoked_contract")
+	assertBackfillCount(t, db, `SELECT invocation_count_7d FROM serving.sv_contract_activity_summary WHERE contract_id='CC1'`, 2)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_backfill_manifest WHERE status='completed'`, 25)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_projection_checkpoints WHERE last_ledger_sequence=6`, 18)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_watermarks WHERE status='complete' AND complete_thru=6`, 18)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM ops.consumers WHERE pipeline='serving-cold-backfill' AND checkpoint=6`, 18)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM (SELECT tx_hash, COUNT(*) n FROM serving.sv_transactions_recent GROUP BY tx_hash HAVING COUNT(*) > 1)`, 0)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM (SELECT operation_id, COUNT(*) n FROM serving.sv_operations_recent GROUP BY operation_id HAVING COUNT(*) > 1)`, 0)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM (SELECT account_id, toid, COUNT(*) n FROM serving.sv_transactions_by_account GROUP BY account_id, toid HAVING COUNT(*) > 1)`, 0)
@@ -166,8 +172,8 @@ func TestFeedBackfillRerunResumeNoDuplicates(t *testing.T) {
 		t.Fatalf("resume skipped chunks = %d, want 2\n%s", got, out.String())
 	}
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_transactions_recent`, 3)
-	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_backfill_manifest WHERE status='completed'`, 23)
-	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_projection_checkpoints WHERE last_ledger_sequence=6`, 16)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_backfill_manifest WHERE status='completed'`, 25)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_projection_checkpoints WHERE last_ledger_sequence=6`, 18)
 }
 
 func TestByAccountOnlyProjectionSelection(t *testing.T) {

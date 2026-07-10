@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -197,9 +198,38 @@ func (c *DuckDBClient) buildIntersectionFlush(tableName, watermarkCol string, wa
 		pgConnStr, tableName, watermarkCol, lastFlushed, watermarkCol, watermark), nil
 }
 
-// execFlush runs a flush INSERT and returns the affected row count.
-func (c *DuckDBClient) execFlush(tableName, query string) (int64, error) {
-	result, err := c.db.Exec(query)
+func (c *DuckDBClient) buildDeleteRangeSQL(tableName, watermarkCol string, watermark, lastFlushed int64) string {
+	return fmt.Sprintf(`
+		DELETE FROM %s.%s.%s
+		WHERE %s > %d AND %s <= %d
+	`, c.config.CatalogName, c.config.SchemaName, tableName,
+		watermarkCol, lastFlushed, watermarkCol, watermark)
+}
+
+// execFlush runs a range-replacing flush INSERT and returns the affected row count.
+func (c *DuckDBClient) execFlush(tableName, watermarkCol string, watermark, lastFlushed int64, query string) (int64, error) {
+	tx, err := c.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("failed to begin DuckLake transaction for %s: %w", tableName, err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+				log.Printf("⚠️  rollback failed for %s: %v", tableName, rbErr)
+			}
+		}
+	}()
+
+	deleteResult, err := tx.Exec(c.buildDeleteRangeSQL(tableName, watermarkCol, watermark, lastFlushed))
+	if err != nil {
+		return 0, fmt.Errorf("failed to delete existing %s rows from DuckLake: %w", tableName, err)
+	}
+	if rowsDeleted, err := deleteResult.RowsAffected(); err == nil && rowsDeleted > 0 {
+		log.Printf("   Deleted %d existing rows from DuckLake %s for ledgers %d..%d", rowsDeleted, tableName, lastFlushed+1, watermark)
+	}
+
+	result, err := tx.Exec(query)
 	if err != nil {
 		return 0, fmt.Errorf("failed to flush table %s: %w", tableName, err)
 	}
@@ -207,6 +237,10 @@ func (c *DuckDBClient) execFlush(tableName, query string) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("failed to get rows affected for %s: %w", tableName, err)
 	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("failed to commit DuckLake transaction for %s: %w", tableName, err)
+	}
+	committed = true
 	return rowsAffected, nil
 }
 
@@ -216,7 +250,7 @@ func (c *DuckDBClient) FlushTable(tableName string, watermark int64, pgConnStr s
 	if err != nil {
 		return 0, err
 	}
-	return c.execFlush(tableName, query)
+	return c.execFlush(tableName, "last_modified_ledger", watermark, lastFlushed, query)
 }
 
 // FlushSnapshotTable flushes a snapshot/event table to DuckLake (watermark column ledger_sequence).
@@ -230,7 +264,7 @@ func (c *DuckDBClient) FlushSnapshotTable(tableName string, watermark int64, pgC
 	if err != nil {
 		return 0, err
 	}
-	return c.execFlush(tableName, query)
+	return c.execFlush(tableName, "ledger_sequence", watermark, lastFlushed, query)
 }
 
 // FlushTableWithColumn flushes a table to DuckLake using a custom watermark column.
@@ -239,7 +273,7 @@ func (c *DuckDBClient) FlushTableWithColumn(tableName string, watermark int64, p
 	if err != nil {
 		return 0, err
 	}
-	return c.execFlush(tableName, query)
+	return c.execFlush(tableName, column, watermark, lastFlushed, query)
 }
 
 // VerifyTableExists checks if a table exists in the DuckLake catalog

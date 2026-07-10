@@ -4263,9 +4263,10 @@ func (h *SilverHandlers) HandleContractStorage(w http.ResponseWriter, r *http.Re
 	ctx, cancel := withInteractiveQueryTimeout(r.Context())
 	defer cancel()
 
-	if !liveOnly && h.legacyReader != nil && h.legacyReader.hot != nil {
+	if h.legacyReader != nil && h.legacyReader.hot != nil {
 		entries, err := h.legacyReader.hot.GetServingContractStorage(ctx, contractID, durability, liveOnly, limit, offset)
 		if err == nil {
+			coverage, _ := h.legacyReader.hot.GetServingWatermark(ctx, "serving.sv_contract_storage_current")
 			respondJSON(w, map[string]interface{}{
 				"contract_id": contractID,
 				"entries":     entries,
@@ -4274,6 +4275,7 @@ func (h *SilverHandlers) HandleContractStorage(w http.ResponseWriter, r *http.Re
 				"offset":      offset,
 				"live_only":   liveOnly,
 				"source":      "serving.sv_contract_storage_current",
+				"coverage":    coverage,
 			})
 			return
 		}
@@ -4962,6 +4964,64 @@ func (h *SilverHandlers) HandleDataBoundaries(w http.ResponseWriter, r *http.Req
 	}
 
 	respondJSON(w, response)
+}
+
+func (h *SilverHandlers) HandleContractStorageSummary(w http.ResponseWriter, r *http.Request) {
+	contractID := strings.TrimSpace(mux.Vars(r)["id"])
+	if contractID == "" {
+		respondError(w, "contract_id required", http.StatusBadRequest)
+		return
+	}
+	if h.legacyReader == nil || h.legacyReader.hot == nil {
+		respondError(w, "serving reader not available", http.StatusServiceUnavailable)
+		return
+	}
+	ctx, cancel := withInteractiveQueryTimeout(r.Context())
+	defer cancel()
+
+	summary, err := h.legacyReader.hot.GetServingContractStorageSummary(ctx, contractID)
+	if err != nil {
+		if isQueryTimeout(err) {
+			respondQueryTimeout(w, "contract storage summary")
+			return
+		}
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if summary == nil {
+		respondError(w, "contract storage summary not found", http.StatusNotFound)
+		return
+	}
+	respondJSON(w, summary)
+}
+
+func (h *SilverHandlers) HandleContractActivitySummary(w http.ResponseWriter, r *http.Request) {
+	contractID := strings.TrimSpace(mux.Vars(r)["id"])
+	if contractID == "" {
+		respondError(w, "contract_id required", http.StatusBadRequest)
+		return
+	}
+	if h.legacyReader == nil || h.legacyReader.hot == nil {
+		respondError(w, "serving reader not available", http.StatusServiceUnavailable)
+		return
+	}
+	ctx, cancel := withInteractiveQueryTimeout(r.Context())
+	defer cancel()
+
+	summary, err := h.legacyReader.hot.GetServingContractActivitySummary(ctx, contractID)
+	if err != nil {
+		if isQueryTimeout(err) {
+			respondQueryTimeout(w, "contract activity summary")
+			return
+		}
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if summary == nil {
+		respondError(w, "contract activity summary not found", http.StatusNotFound)
+		return
+	}
+	respondJSON(w, summary)
 }
 
 func respondJSON(w http.ResponseWriter, data interface{}) {

@@ -88,6 +88,33 @@ Can run standalone on existing Parquet output, or chained after extraction:
   --b2-region "us-west-004"
 ```
 
+### Repair or replay one table
+
+Use `--only-tables` to extract only selected Bronze tables. The selector accepts
+extractor names, local Parquet directory names, or DuckLake table names. When
+`--ducklake` is also enabled, `--ducklake-only-tables` defaults to the same
+selection unless explicitly set.
+
+```bash
+./bin/stellar-history-loader \
+  --start 3 --end 3513746 \
+  --workers 16 --batch-size 100 \
+  --output /data/output \
+  --storage-type GCS \
+  --bucket "obsrvr-stellar-ledger-data-testnet-data/landing/ledgers/testnet" \
+  --network-passphrase "Test SDF Network ; September 2015" \
+  --only-tables contract_events \
+  --ducklake \
+  --ducklake-catalog "postgresql://user:pass@host:5432/catalog_db" \
+  --ducklake-data-path "s3://obsrvr-lake-testnet/" \
+  --ducklake-metadata-schema bronze_meta \
+  --b2-key-id "$B2_KEY_ID" \
+  --b2-key-secret "$B2_KEY_SECRET"
+```
+
+For a push-only repair from existing Parquet output, omit `--bucket` and use
+`--ducklake-only-tables contract_events_stream_v1`.
+
 ### Load PostgreSQL hot buffer
 
 Loads the most recent N ledgers into PostgreSQL for low-latency queries:
@@ -136,6 +163,7 @@ duckdb -c "DESCRIBE SELECT * FROM read_parquet('/data/output/bronze/ledgers/**/*
 | `--ledgers-per-file` | 1 | Ledgers per archive file (GCS/S3) |
 | `--files-per-partition` | 64000 | Files per archive partition (GCS/S3) |
 | `--era-id` | (empty) | Era identifier for DuckLake partitioning |
+| `--only-tables` | (empty) | Comma-separated extractor/source/DuckLake table names to extract; empty extracts all |
 | `--validate` | false | Run quality validation after extraction |
 
 ### DuckLake Push
@@ -147,6 +175,8 @@ duckdb -c "DESCRIBE SELECT * FROM read_parquet('/data/output/bronze/ledgers/**/*
 | `--ducklake-data-path` | | S3/B2 bucket path (e.g., `s3://obsrvr-lake-testnet/`) |
 | `--ducklake-metadata-schema` | bronze_meta | DuckLake metadata schema |
 | `--ducklake-schema-sql` | | Path to v3_bronze_schema.sql (optional, embedded by default) |
+| `--ducklake-only-tables` | (empty) | Comma-separated source or DuckLake table names to push; defaults to `--only-tables` when set |
+| `--ducklake-skip-tables` | (empty) | Comma-separated source or DuckLake table names to skip during push |
 | `--b2-key-id` | | B2/S3 access key ID |
 | `--b2-key-secret` | | B2/S3 secret access key |
 | `--b2-endpoint` | s3.us-west-004.backblazeb2.com | B2/S3 endpoint |

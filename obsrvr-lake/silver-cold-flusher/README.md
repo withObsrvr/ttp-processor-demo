@@ -33,19 +33,24 @@ The service uses a safe, idempotent flush pattern:
    SELECT MAX(last_ledger_sequence) FROM realtime_transformer_checkpoint;
    ```
 
-2. **FLUSH**: Copy all data ≤ watermark to DuckLake using `postgres_scan`
+2. **FLUSH**: Replace and copy the checkpoint range to DuckLake using `postgres_scan`
    ```sql
+   DELETE FROM silver_cold.enriched_history_operations
+   WHERE ledger_sequence > last_flushed AND ledger_sequence <= watermark;
+
    INSERT INTO silver_cold.enriched_history_operations
    SELECT * FROM postgres_scan('...', 'public', 'enriched_history_operations')
-   WHERE ledger_sequence <= watermark;
+   WHERE ledger_sequence > last_flushed AND ledger_sequence <= watermark;
    ```
 
-3. **DELETE**: Remove flushed data from PostgreSQL
+3. **CHECKPOINT**: Advance the chunk checkpoint only if every table flushed successfully.
+
+4. **DELETE**: Remove flushed data from PostgreSQL
    ```sql
    DELETE FROM enriched_history_operations WHERE ledger_sequence <= watermark;
    ```
 
-4. **VACUUM**: Periodically reclaim space (every 10th flush)
+5. **VACUUM**: Periodically reclaim space (every 10th flush)
    ```sql
    VACUUM ANALYZE enriched_history_operations;
    ```
@@ -120,6 +125,15 @@ This creates `bin/silver-cold-flusher`.
 ./scripts/start.sh
 ```
 
+### Run One Controlled Flush
+```bash
+./bin/silver-cold-flusher -config config.yaml -flush-once
+```
+
+Use this mode for explicit catch-up work during rollouts. Normal SIGTERM/SIGINT
+shutdown does not run an implicit final flush unless `-final-flush-on-shutdown`
+is set.
+
 ### Stop Service
 ```bash
 ./scripts/stop.sh
@@ -163,17 +177,23 @@ curl http://localhost:8095/metrics
 Every N hours (configurable):
 
 1. **Get watermark**: Query checkpoint from realtime transformer
-2. **Flush tables**: For each of 18 tables, use postgres_scan to copy
-3. **Delete data**: Remove flushed rows from silver_hot
-4. **Vacuum** (every Nth flush): Reclaim space
-5. **Update metrics**: Track stats for monitoring
+2. **Flush tables**: For each table, delete the target DuckLake range and insert
+   the same bounded range with `postgres_scan` in one transaction
+3. **Checkpoint**: Advance only after all tables succeed for the chunk
+4. **Delete data**: Remove flushed rows from silver_hot
+5. **Vacuum** (every Nth flush): Reclaim space
+6. **Update metrics**: Track stats for monitoring
 
 ### Graceful Shutdown
 On SIGINT/SIGTERM:
 1. Stop scheduler
-2. Perform final flush
+2. Skip implicit final flush by default
 3. Close all connections
 4. Exit
+
+Set `-final-flush-on-shutdown` only for local/dev workflows where the process
+manager gives enough time for a full flush. Production catch-up should use
+`-flush-once`.
 
 ## Performance
 

@@ -40,6 +40,51 @@ type ServingRecentLedger struct {
 	OperationCount     int    `json:"operation_count"`
 }
 
+type ServingCoverageMetadata struct {
+	Source       string  `json:"source"`
+	Status       string  `json:"status"`
+	CompleteFrom int64   `json:"complete_from"`
+	CompleteThru int64   `json:"complete_thru"`
+	UpdatedAt    *string `json:"updated_at,omitempty"`
+}
+
+type ServingContractStorageSummary struct {
+	ContractID        string                   `json:"contract_id"`
+	TotalEntries      int64                    `json:"total_entries"`
+	LiveEntries       int64                    `json:"live_entries"`
+	ExpiredEntries    int64                    `json:"expired_entries"`
+	DeletedEntries    int64                    `json:"deleted_entries"`
+	PersistentEntries int64                    `json:"persistent_entries"`
+	TemporaryEntries  int64                    `json:"temporary_entries"`
+	InstanceEntries   int64                    `json:"instance_entries"`
+	TotalSizeBytes    *int64                   `json:"total_size_bytes,omitempty"`
+	LatestLedger      *int64                   `json:"latest_ledger,omitempty"`
+	LatestClosedAt    *string                  `json:"latest_closed_at,omitempty"`
+	UpdatedAt         string                   `json:"updated_at"`
+	Coverage          *ServingCoverageMetadata `json:"coverage,omitempty"`
+}
+
+type ServingContractActivitySummary struct {
+	ContractID               string                   `json:"contract_id"`
+	FirstSeenLedger          *int64                   `json:"first_seen_ledger,omitempty"`
+	LastSeenLedger           *int64                   `json:"last_seen_ledger,omitempty"`
+	FirstSeenAt              *string                  `json:"first_seen_at,omitempty"`
+	LastSeenAt               *string                  `json:"last_seen_at,omitempty"`
+	InvocationCount24h       int64                    `json:"invocation_count_24h"`
+	InvocationCount7d        int64                    `json:"invocation_count_7d"`
+	InvocationCount30d       int64                    `json:"invocation_count_30d"`
+	InvocationCountAll       int64                    `json:"invocation_count_all"`
+	EventCount24h            int64                    `json:"event_count_24h"`
+	EventCount7d             int64                    `json:"event_count_7d"`
+	EventCount30d            int64                    `json:"event_count_30d"`
+	UniqueCallers30d         int64                    `json:"unique_callers_30d"`
+	SuccessfulInvocations30d int64                    `json:"successful_invocations_30d"`
+	FailedInvocations30d     int64                    `json:"failed_invocations_30d"`
+	ActivityClassification   string                   `json:"activity_classification"`
+	UpdatedAt                string                   `json:"updated_at"`
+	Coverage                 *ServingCoverageMetadata `json:"coverage,omitempty"`
+}
+
 type SilverHotReader struct {
 	db          *sql.DB
 	bronzeHotPG *sql.DB
@@ -77,26 +122,60 @@ func (h *SilverHotReader) DB() *sql.DB {
 	return h.db
 }
 
+func (h *SilverHotReader) GetServingWatermark(ctx context.Context, tableName string) (*ServingCoverageMetadata, error) {
+	var coverage ServingCoverageMetadata
+	var updatedAt sql.NullTime
+	err := h.db.QueryRowContext(ctx, `
+		SELECT table_name, status, complete_from, complete_thru, updated_at
+		FROM serving.sv_watermarks
+		WHERE table_name = $1
+	`, tableName).Scan(&coverage.Source, &coverage.Status, &coverage.CompleteFrom, &coverage.CompleteThru, &updatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if updatedAt.Valid {
+		s := updatedAt.Time.UTC().Format(time.RFC3339)
+		coverage.UpdatedAt = &s
+	}
+	return &coverage, nil
+}
+
 func (h *SilverHotReader) GetServingContractStorage(ctx context.Context, contractID, durability string, liveOnly bool, limit, offset int) ([]ContractStorageEntry, error) {
-	conditions := []string{"contract_id = $1"}
+	conditions := []string{"s.contract_id = $1"}
 	args := []interface{}{contractID}
 	arg := 2
 	if durability != "" {
-		conditions = append(conditions, fmt.Sprintf("durability = $%d", arg))
+		conditions = append(conditions, fmt.Sprintf("s.durability = $%d", arg))
 		args = append(args, durability)
 		arg++
 	}
 	if liveOnly {
-		conditions = append(conditions, "expired = false")
+		conditions = append(conditions, "(s.live_until_ledger_seq IS NULL OR s.live_until_ledger_seq >= cl.current_ledger)")
 	}
 	args = append(args, limit, offset)
 
 	query := fmt.Sprintf(`
-		SELECT contract_id, key, key_hash, type, durability, size_bytes, data_value,
-		       last_modified_ledger, closed_at, live_until_ledger_seq, ttl_remaining, expired
-		FROM serving.sv_contract_storage_current
+		WITH current_ledger AS (
+			SELECT COALESCE(MAX(ledger_sequence), 0) AS current_ledger
+			FROM serving.sv_ledger_stats_recent
+		)
+		SELECT s.contract_id, s.key, s.key_hash, s.type, s.durability, s.size_bytes, s.data_value,
+		       s.last_modified_ledger, s.closed_at, s.live_until_ledger_seq,
+		       CASE
+		         WHEN s.live_until_ledger_seq IS NULL OR cl.current_ledger = 0 THEN s.ttl_remaining
+		         ELSE (s.live_until_ledger_seq - cl.current_ledger)::int
+		       END AS ttl_remaining,
+		       CASE
+		         WHEN s.live_until_ledger_seq IS NOT NULL AND cl.current_ledger > 0 AND s.live_until_ledger_seq < cl.current_ledger THEN true
+		         ELSE s.expired
+		       END AS expired
+		FROM serving.sv_contract_storage_current s
+		CROSS JOIN current_ledger cl
 		WHERE %s
-		ORDER BY key_hash
+		ORDER BY s.key_hash
 		LIMIT $%d OFFSET $%d
 	`, strings.Join(conditions, " AND "), arg, arg+1)
 
@@ -149,6 +228,113 @@ func (h *SilverHotReader) GetServingContractStorage(ctx context.Context, contrac
 		return nil, err
 	}
 	return entries, nil
+}
+
+func (h *SilverHotReader) GetServingContractStorageSummary(ctx context.Context, contractID string) (*ServingContractStorageSummary, error) {
+	var summary ServingContractStorageSummary
+	var totalSize, latestLedger sql.NullInt64
+	var latestClosedAt sql.NullTime
+	var updatedAt time.Time
+	err := h.db.QueryRowContext(ctx, `
+		SELECT contract_id, total_entries, live_entries, expired_entries, deleted_entries,
+		       persistent_entries, temporary_entries, instance_entries, total_size_bytes,
+		       latest_ledger, latest_closed_at, updated_at
+		FROM serving.sv_contract_storage_summary
+		WHERE contract_id = $1
+	`, contractID).Scan(
+		&summary.ContractID,
+		&summary.TotalEntries,
+		&summary.LiveEntries,
+		&summary.ExpiredEntries,
+		&summary.DeletedEntries,
+		&summary.PersistentEntries,
+		&summary.TemporaryEntries,
+		&summary.InstanceEntries,
+		&totalSize,
+		&latestLedger,
+		&latestClosedAt,
+		&updatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if totalSize.Valid {
+		summary.TotalSizeBytes = &totalSize.Int64
+	}
+	if latestLedger.Valid {
+		summary.LatestLedger = &latestLedger.Int64
+	}
+	if latestClosedAt.Valid {
+		s := latestClosedAt.Time.UTC().Format(time.RFC3339)
+		summary.LatestClosedAt = &s
+	}
+	summary.UpdatedAt = updatedAt.UTC().Format(time.RFC3339)
+	if coverage, err := h.GetServingWatermark(ctx, "serving.sv_contract_storage_summary"); err == nil {
+		summary.Coverage = coverage
+	}
+	return &summary, nil
+}
+
+func (h *SilverHotReader) GetServingContractActivitySummary(ctx context.Context, contractID string) (*ServingContractActivitySummary, error) {
+	var summary ServingContractActivitySummary
+	var firstLedger, lastLedger sql.NullInt64
+	var firstSeenAt, lastSeenAt sql.NullTime
+	var updatedAt time.Time
+	err := h.db.QueryRowContext(ctx, `
+		SELECT contract_id, first_seen_ledger, last_seen_ledger, first_seen_at, last_seen_at,
+		       invocation_count_24h, invocation_count_7d, invocation_count_30d, invocation_count_all,
+		       event_count_24h, event_count_7d, event_count_30d,
+		       unique_callers_30d, successful_invocations_30d, failed_invocations_30d,
+		       activity_classification, updated_at
+		FROM serving.sv_contract_activity_summary
+		WHERE contract_id = $1
+	`, contractID).Scan(
+		&summary.ContractID,
+		&firstLedger,
+		&lastLedger,
+		&firstSeenAt,
+		&lastSeenAt,
+		&summary.InvocationCount24h,
+		&summary.InvocationCount7d,
+		&summary.InvocationCount30d,
+		&summary.InvocationCountAll,
+		&summary.EventCount24h,
+		&summary.EventCount7d,
+		&summary.EventCount30d,
+		&summary.UniqueCallers30d,
+		&summary.SuccessfulInvocations30d,
+		&summary.FailedInvocations30d,
+		&summary.ActivityClassification,
+		&updatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if firstLedger.Valid {
+		summary.FirstSeenLedger = &firstLedger.Int64
+	}
+	if lastLedger.Valid {
+		summary.LastSeenLedger = &lastLedger.Int64
+	}
+	if firstSeenAt.Valid {
+		s := firstSeenAt.Time.UTC().Format(time.RFC3339)
+		summary.FirstSeenAt = &s
+	}
+	if lastSeenAt.Valid {
+		s := lastSeenAt.Time.UTC().Format(time.RFC3339)
+		summary.LastSeenAt = &s
+	}
+	summary.UpdatedAt = updatedAt.UTC().Format(time.RFC3339)
+	if coverage, err := h.GetServingWatermark(ctx, "serving.sv_contract_activity_summary"); err == nil {
+		summary.Coverage = coverage
+	}
+	return &summary, nil
 }
 
 // GetServingAccountCurrent returns current account state from serving schema.

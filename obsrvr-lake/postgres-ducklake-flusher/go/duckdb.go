@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -152,23 +153,38 @@ func (c *DuckDBClient) FlushTableFromPostgres(ctx context.Context, postgresDSN, 
 	// SELECT * FROM postgres_scan('dsn', 'public', 'table')
 	// WHERE ledger_sequence <= watermark (or sequence for ledgers_row_v2)
 
-	// Determine the sequence column name based on table type
-	sequenceColumn := "ledger_sequence"
-	switch tableName {
-	case "ledgers_row_v2":
-		sequenceColumn = "sequence"
-	case "contract_creations_v1":
-		sequenceColumn = "created_ledger"
-	}
+	sequenceColumn := sequenceColumnForTable(tableName)
 
 	// Build INSERT query - use explicit column lists for tables where PostgreSQL
 	// column order differs from DuckLake schema (due to ALTER TABLE ADD COLUMN
 	// appending columns at the end vs schema.sql defining them in logical order)
 	insertSQL := c.buildFlushSQL(tableName, postgresDSN, sequenceColumn, lastFlushed, watermark)
+	deleteSQL := c.buildDeleteRangeSQL(tableName, sequenceColumn, lastFlushed, watermark)
 
 	log.Printf("Flushing %s (watermark=%d)...", tableName, watermark)
 
-	result, err := c.db.ExecContext(ctx, insertSQL)
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("failed to begin DuckLake transaction for %s: %w", tableName, err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+				log.Printf("Warning: rollback failed for %s: %v", tableName, rbErr)
+			}
+		}
+	}()
+
+	deleteResult, err := tx.ExecContext(ctx, deleteSQL)
+	if err != nil {
+		return 0, fmt.Errorf("failed to delete existing %s rows from DuckLake: %w", tableName, err)
+	}
+	if rowsDeleted, err := deleteResult.RowsAffected(); err == nil && rowsDeleted > 0 {
+		log.Printf("Deleted %d existing rows from DuckLake %s for ledgers %d..%d", rowsDeleted, tableName, lastFlushed+1, watermark)
+	}
+
+	result, err := tx.ExecContext(ctx, insertSQL)
 	if err != nil {
 		return 0, fmt.Errorf("failed to flush table %s: %w", tableName, err)
 	}
@@ -178,8 +194,24 @@ func (c *DuckDBClient) FlushTableFromPostgres(ctx context.Context, postgresDSN, 
 		return 0, fmt.Errorf("failed to get rows affected for %s: %w", tableName, err)
 	}
 
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("failed to commit DuckLake transaction for %s: %w", tableName, err)
+	}
+	committed = true
+
 	log.Printf("Flushed %d rows from %s to DuckLake", rowsAffected, tableName)
 	return rowsAffected, nil
+}
+
+func sequenceColumnForTable(tableName string) string {
+	switch tableName {
+	case "ledgers_row_v2":
+		return "sequence"
+	case "contract_creations_v1":
+		return "created_ledger"
+	default:
+		return "ledger_sequence"
+	}
 }
 
 // explicitColumnTables maps table names to their column lists for explicit INSERT/SELECT.
@@ -257,6 +289,14 @@ func (c *DuckDBClient) buildFlushSQL(tableName, postgresDSN, sequenceColumn stri
 		WHERE %s > %d AND %s <= %d;
 	`, c.config.CatalogName, c.config.SchemaName, tableName,
 		postgresDSN, tableName, sequenceColumn, lastFlushed, sequenceColumn, watermark)
+}
+
+func (c *DuckDBClient) buildDeleteRangeSQL(tableName, sequenceColumn string, lastFlushed, watermark int64) string {
+	return fmt.Sprintf(`
+		DELETE FROM %s.%s.%s
+		WHERE %s > %d AND %s <= %d;
+	`, c.config.CatalogName, c.config.SchemaName, tableName,
+		sequenceColumn, lastFlushed, sequenceColumn, watermark)
 }
 
 // VerifyTableExists checks if a table exists in the DuckLake catalog

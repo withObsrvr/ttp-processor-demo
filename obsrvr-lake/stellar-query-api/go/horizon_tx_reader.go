@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
+	"time"
 
 	protocol "github.com/stellar/go-stellar-sdk/protocols/horizon"
 )
@@ -22,11 +24,16 @@ type HorizonTransactionReader struct {
 	hot        *sql.DB
 	cold       *sql.DB
 	coldTable  string
+	index      transactionLocationLookup
 	hotEnabled bool
 }
 
-func NewHorizonTransactionReader(hot *HotReader, cold *ColdReader) *HorizonTransactionReader {
-	reader := &HorizonTransactionReader{}
+type transactionLocationLookup interface {
+	LookupTransactionHash(context.Context, string) (*TxLocation, error)
+}
+
+func NewHorizonTransactionReader(hot *HotReader, cold *ColdReader, index transactionLocationLookup) *HorizonTransactionReader {
+	reader := &HorizonTransactionReader{index: index}
 	if hot != nil {
 		reader.hot = hot.DB()
 		reader.hotEnabled = reader.hot != nil
@@ -59,7 +66,12 @@ func (r *HorizonTransactionReader) GetTransactionByHash(ctx context.Context, has
 
 	if r.cold != nil {
 		query := fmt.Sprintf(horizonColdTransactionQuery, r.coldTable)
-		tx, err := r.query(ctx, r.cold, query, hash)
+		args := []interface{}{hash}
+		if ledgerSeq := r.lookupLedgerHint(ctx, hash); ledgerSeq > 0 {
+			query = fmt.Sprintf(horizonColdTransactionQueryWithLedger, r.coldTable)
+			args = []interface{}{ledgerSeq, hash}
+		}
+		tx, err := r.query(ctx, r.cold, query, args...)
 		if err == nil {
 			return tx, nil
 		}
@@ -69,6 +81,24 @@ func (r *HorizonTransactionReader) GetTransactionByHash(ctx context.Context, has
 	}
 
 	return nil, errHorizonTransactionNotFound
+}
+
+func (r *HorizonTransactionReader) lookupLedgerHint(ctx context.Context, hash string) int64 {
+	if r.index == nil {
+		return 0
+	}
+	indexCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	loc, err := r.index.LookupTransactionHash(indexCtx, hash)
+	if err != nil {
+		log.Printf("horizon_tx path=index_lookup_error tx=%s err=%v", hash, err)
+		return 0
+	}
+	if loc == nil {
+		log.Printf("horizon_tx path=index_lookup_miss tx=%s", hash)
+		return 0
+	}
+	return loc.LedgerSequence
 }
 
 const horizonTransactionSelect = `
@@ -88,6 +118,12 @@ const horizonHotTransactionQuery = horizonTransactionSelect + `
 const horizonColdTransactionQuery = horizonTransactionSelect + `
 	FROM %s
 	WHERE transaction_hash = ?
+	LIMIT 1
+`
+
+const horizonColdTransactionQueryWithLedger = horizonTransactionSelect + `
+	FROM %s
+	WHERE ledger_sequence = ? AND transaction_hash = ?
 	LIMIT 1
 `
 
@@ -118,8 +154,8 @@ type horizonTransactionRow struct {
 	InnerTransactionHash sql.NullString
 }
 
-func (r *HorizonTransactionReader) query(ctx context.Context, db *sql.DB, query, hash string) (*protocol.Transaction, error) {
-	row, err := scanHorizonTransactionRow(db.QueryRowContext(ctx, query, hash))
+func (r *HorizonTransactionReader) query(ctx context.Context, db *sql.DB, query string, args ...interface{}) (*protocol.Transaction, error) {
+	row, err := scanHorizonTransactionRow(db.QueryRowContext(ctx, query, args...))
 	if err != nil {
 		return nil, err
 	}

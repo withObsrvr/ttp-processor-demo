@@ -495,8 +495,10 @@ func requiredProjections(schema string) []Projection {
 		{Name: "sv_asset_stats_current", TargetTable: table("sv_asset_stats_current"), Source: "sv_account_balances_current aggregates", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_contracts_current", TargetTable: table("sv_contracts_current"), Source: "silver.contract_metadata + silver.contract_data_current", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_contract_storage_current", TargetTable: table("sv_contract_storage_current"), Source: "silver.contract_data_current + silver.ttl_current", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
+		{Name: "sv_contract_storage_summary", TargetTable: table("sv_contract_storage_summary"), Source: "serving.sv_contract_storage_current aggregates", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_contract_stats_current", TargetTable: table("sv_contract_stats_current"), Source: "silver.contract_invocations_raw / contract events", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_contract_function_stats_current", TargetTable: table("sv_contract_function_stats_current"), Source: "silver.contract_invocations_raw grouped by contract/function", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
+		{Name: "sv_contract_activity_summary", TargetTable: table("sv_contract_activity_summary"), Source: "serving contract calls/storage summaries", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 	}
 }
 
@@ -554,8 +556,10 @@ func currentProjections() []CurrentProjection {
 		{Name: "sv_asset_stats_current", TargetTable: "sv_asset_stats_current", KeyExprs: []string{"asset_key"}, SelectSQL: selectAssetStatsCurrent, PostgresNative: true},
 		{Name: "sv_contracts_current", TargetTable: "sv_contracts_current", MaxLedgerCol: "deploy_ledger", KeyExprs: []string{"contract_id"}, SelectSQL: selectContractsCurrent},
 		{Name: "sv_contract_storage_current", TargetTable: "sv_contract_storage_current", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"contract_id", "key_hash"}, SelectSQL: selectContractStorageCurrent},
+		{Name: "sv_contract_storage_summary", TargetTable: "sv_contract_storage_summary", MaxLedgerCol: "latest_ledger", KeyExprs: []string{"contract_id"}, SelectSQL: selectContractStorageSummary},
 		{Name: "sv_contract_stats_current", TargetTable: "sv_contract_stats_current", KeyExprs: []string{"contract_id"}, SelectSQL: selectContractStatsCurrent},
 		{Name: "sv_contract_function_stats_current", TargetTable: "sv_contract_function_stats_current", KeyExprs: []string{"contract_id", "function_name"}, SelectSQL: selectContractFunctionStatsCurrent},
+		{Name: "sv_contract_activity_summary", TargetTable: "sv_contract_activity_summary", MaxLedgerCol: "last_seen_ledger", KeyExprs: []string{"contract_id"}, SelectSQL: selectContractActivitySummary},
 	}
 }
 
@@ -1473,6 +1477,24 @@ func selectContractStorageCurrent(b *Backfiller) string {
 		b.silverTable("contract_data_current"), b.cfg.End, b.silverTable("ttl_current"), q(b.cfg.Network), b.cfg.End, b.cfg.End)
 }
 
+func selectContractStorageSummary(b *Backfiller) string {
+	return fmt.Sprintf(`SELECT
+			contract_id,
+			COUNT(*)::BIGINT AS total_entries,
+			COUNT(*) FILTER (WHERE expired = false)::BIGINT AS live_entries,
+			COUNT(*) FILTER (WHERE expired = true)::BIGINT AS expired_entries,
+			0::BIGINT AS deleted_entries,
+			COUNT(*) FILTER (WHERE type = 'persistent')::BIGINT AS persistent_entries,
+			COUNT(*) FILTER (WHERE type = 'temporary')::BIGINT AS temporary_entries,
+			COUNT(*) FILTER (WHERE type = 'instance')::BIGINT AS instance_entries,
+			COALESCE(SUM(size_bytes), 0)::BIGINT AS total_size_bytes,
+			MAX(last_modified_ledger) AS latest_ledger,
+			MAX(closed_at) AS latest_closed_at,
+			current_timestamp AS updated_at
+		FROM %s
+		GROUP BY contract_id`, b.servingTable("sv_contract_storage_current"))
+}
+
 func selectContractStatsCurrent(b *Backfiller) string {
 	return fmt.Sprintf(`WITH latest AS (
 			SELECT closed_at FROM %s ORDER BY ledger_sequence DESC LIMIT 1
@@ -1513,6 +1535,58 @@ func selectContractFunctionStatsCurrent(b *Backfiller) string {
 		current_timestamp AS updated_at
 		FROM %s, latest GROUP BY contract_id, COALESCE(function_name, '')`,
 		b.servingTable("sv_ledger_stats_recent"), b.servingTable("sv_contract_calls_recent"))
+}
+
+func selectContractActivitySummary(b *Backfiller) string {
+	return fmt.Sprintf(`WITH latest AS (
+			SELECT closed_at FROM %s ORDER BY ledger_sequence DESC LIMIT 1
+		), inv AS (
+			SELECT
+				contract_id,
+				MIN(ledger_sequence) AS first_seen_ledger,
+				MAX(ledger_sequence) AS last_seen_ledger,
+				MIN(created_at) AS first_seen_at,
+				MAX(created_at) AS last_seen_at,
+				COUNT(*) FILTER (WHERE created_at >= latest.closed_at - INTERVAL 1 DAY) AS invocation_count_24h,
+				COUNT(*) FILTER (WHERE created_at >= latest.closed_at - INTERVAL 7 DAY) AS invocation_count_7d,
+				COUNT(*) FILTER (WHERE created_at >= latest.closed_at - INTERVAL 30 DAY) AS invocation_count_30d,
+				COUNT(*) AS invocation_count_all,
+				COUNT(DISTINCT caller_account) FILTER (WHERE created_at >= latest.closed_at - INTERVAL 30 DAY) AS unique_callers_30d,
+				COUNT(*) FILTER (WHERE successful AND created_at >= latest.closed_at - INTERVAL 30 DAY) AS successful_invocations_30d,
+				COUNT(*) FILTER (WHERE NOT successful AND created_at >= latest.closed_at - INTERVAL 30 DAY) AS failed_invocations_30d
+			FROM %s, latest
+			GROUP BY contract_id
+		), ids AS (
+			SELECT contract_id FROM inv
+			UNION
+			SELECT contract_id FROM %s
+		)
+		SELECT
+			ids.contract_id,
+			inv.first_seen_ledger,
+			inv.last_seen_ledger,
+			inv.first_seen_at,
+			inv.last_seen_at,
+			COALESCE(inv.invocation_count_24h, 0)::BIGINT AS invocation_count_24h,
+			COALESCE(inv.invocation_count_7d, 0)::BIGINT AS invocation_count_7d,
+			COALESCE(inv.invocation_count_30d, 0)::BIGINT AS invocation_count_30d,
+			COALESCE(inv.invocation_count_all, 0)::BIGINT AS invocation_count_all,
+			0::BIGINT AS event_count_24h,
+			0::BIGINT AS event_count_7d,
+			0::BIGINT AS event_count_30d,
+			COALESCE(inv.unique_callers_30d, 0)::BIGINT AS unique_callers_30d,
+			COALESCE(inv.successful_invocations_30d, 0)::BIGINT AS successful_invocations_30d,
+			COALESCE(inv.failed_invocations_30d, 0)::BIGINT AS failed_invocations_30d,
+			CASE
+				WHEN COALESCE(inv.invocation_count_30d, 0) > 0 THEN 'invoked_contract'
+				WHEN css.contract_id IS NOT NULL THEN 'storage_only'
+				ELSE 'unknown'
+			END AS activity_classification,
+			current_timestamp AS updated_at
+		FROM ids
+		LEFT JOIN inv ON inv.contract_id = ids.contract_id
+		LEFT JOIN %s css ON css.contract_id = ids.contract_id`,
+		b.servingTable("sv_ledger_stats_recent"), b.servingTable("sv_contract_calls_recent"), b.servingTable("sv_contract_storage_summary"), b.servingTable("sv_contract_storage_summary"))
 }
 
 func PlanChunks(start, end, size int64) []Chunk {

@@ -26,7 +26,7 @@ type horizonEffectReader interface {
 
 func NewHorizonCompatHandlers(app *application) *HorizonCompatHandlers {
 	return &HorizonCompatHandlers{
-		txReader:        NewHorizonTransactionReader(app.hotReader, app.coldReader),
+		txReader:        NewHorizonTransactionReader(app.hotReader, app.coldReader, app.indexReader),
 		operationReader: NewHorizonOperationReader(app.unifiedDuckDBReader),
 		effectReader:    app.unifiedDuckDBReader,
 	}
