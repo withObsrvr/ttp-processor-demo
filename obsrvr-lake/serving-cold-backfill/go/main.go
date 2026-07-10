@@ -1388,8 +1388,8 @@ func selectAccountsCurrent(b *Backfiller) string {
 		auth_required, auth_revocable, auth_immutable, auth_clawback_enabled,
 		COALESCE(signers, '[]') AS signers_json, false AS is_smart_account,
 		NULL::VARCHAR AS smart_account_type, ledger_range AS first_seen_ledger
-		FROM %s WHERE network=%s AND last_modified_ledger <= %d`,
-		b.silverTable("accounts_current"), q(b.cfg.Network), b.cfg.End)
+		FROM %s WHERE last_modified_ledger <= %d`,
+		b.silverTable("accounts_current"), b.cfg.End)
 }
 
 func selectAccountBalancesCurrent(b *Backfiller) string {
@@ -1409,7 +1409,7 @@ func selectAccountBalancesCurrent(b *Backfiller) string {
 		NULL::VARCHAR AS sponsor,
 		last_modified_ledger,
 		COALESCE(updated_at, current_timestamp) AS updated_at
-		FROM %s WHERE network=%s AND last_modified_ledger <= %d
+		FROM %s WHERE last_modified_ledger <= %d
 		UNION ALL
 		SELECT account_id,
 		CASE
@@ -1430,9 +1430,9 @@ func selectAccountBalancesCurrent(b *Backfiller) string {
 		sponsor,
 		last_modified_ledger,
 		COALESCE(updated_at, current_timestamp) AS updated_at
-		FROM %s WHERE network=%s AND last_modified_ledger <= %d`,
-		b.silverTable("accounts_current"), q(b.cfg.Network), b.cfg.End,
-		b.silverTable("trustlines_current"), q(b.cfg.Network), b.cfg.End)
+		FROM %s WHERE last_modified_ledger <= %d`,
+		b.silverTable("accounts_current"), b.cfg.End,
+		b.silverTable("trustlines_current"), b.cfg.End)
 }
 
 func selectNetworkStatsCurrent(b *Backfiller) string {
