@@ -178,6 +178,8 @@ func TestFeedBackfillRerunResumeNoDuplicates(t *testing.T) {
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_effects_by_account`, 4)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_accounts_current`, 2)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_account_balances_current`, 3)
+	assertBackfillCount(t, db, `SELECT balance_stroops FROM serving.sv_account_balances_current WHERE account_id='GA1' AND asset_key='XLM'`, 10000000000)
+	assertBackfillCount(t, db, `SELECT balance_stroops FROM serving.sv_account_balances_current WHERE account_id='GA2' AND asset_key='USD:ISSUER'`, 50000000)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_network_stats_current`, 1)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_assets_current`, 2)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_asset_stats_current`, 2)
@@ -423,10 +425,12 @@ func loadBackfillFixture(t *testing.T, ctx context.Context, db *sql.DB) {
 			('mainnet','tx3',0,3,'2025-12-30 00:00:03','CC1','GA9','transfer',true),
 			('mainnet','tx4',0,4,'2026-01-01 00:00:04','CC1','GA2','transfer',true)`,
 		`INSERT INTO silver.accounts_current VALUES
+			('mainnet','GA1','900',9,1,0,0,'2026-01-01 00:00:02',3,3,3,'2026-01-01 00:00:03',NULL,NULL,1,1,1,1,false,false,false,false,'[]',2),
 			('mainnet','GA1','1000',10,1,0,0,'2026-01-01 00:00:03',4,4,4,'2026-01-01 00:00:04',NULL,NULL,1,1,1,1,false,false,false,false,'[]',3),
 			('mainnet','GA2','2000',11,1,0,0,'2026-01-01 00:00:04',5,5,5,'2026-01-01 00:00:05','example.com',NULL,1,1,1,1,false,false,false,false,'[]',4),
 			('mainnet','GA3','3000',12,1,0,0,'2026-01-01 00:00:08',8,8,8,'2026-01-01 00:00:08',NULL,NULL,1,1,1,1,false,false,false,false,'[]',8)`,
 		`INSERT INTO silver.trustlines_current VALUES
+			('mainnet','GA2','credit_alphanum4','ISSUER','USD',NULL,10000000,1000000000,0,0,1,NULL,4,'2026-01-01 00:00:04'),
 			('mainnet','GA2','credit_alphanum4','ISSUER','USD',NULL,50000000,1000000000,0,0,1,NULL,5,'2026-01-01 00:00:05'),
 			('mainnet','GA3','credit_alphanum4','ISSUER2','EUR',NULL,75000000,1000000000,0,0,1,NULL,8,'2026-01-01 00:00:08')`,
 		`INSERT INTO silver.address_balances_current VALUES

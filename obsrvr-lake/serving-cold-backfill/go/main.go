@@ -1399,19 +1399,63 @@ func selectEffectsByAccount(b *Backfiller, chunk Chunk) string {
 }
 
 func selectAccountsCurrent(b *Backfiller) string {
-	return fmt.Sprintf(`SELECT account_id, TRY_CAST(ROUND(TRY_CAST(balance AS DOUBLE) * 10000000) AS BIGINT) AS balance_stroops,
+	return fmt.Sprintf(`WITH ranked AS (
+			SELECT *,
+				ROW_NUMBER() OVER (
+					PARTITION BY account_id
+					ORDER BY last_modified_ledger DESC, COALESCE(updated_at, TIMESTAMP '1970-01-01') DESC, COALESCE(sequence_number, 0) DESC
+				) AS rn
+			FROM %s
+			WHERE last_modified_ledger <= %d
+		)
+		SELECT account_id, TRY_CAST(ROUND(TRY_CAST(balance AS DOUBLE) * 10000000) AS BIGINT) AS balance_stroops,
 		sequence_number, num_subentries, num_sponsoring, num_sponsored,
 		created_at, last_modified_ledger, sequence_ledger, sequence_time, updated_at,
 		home_domain, sponsor_account AS sponsor, master_weight, low_threshold, med_threshold, high_threshold,
 		auth_required, auth_revocable, auth_immutable, auth_clawback_enabled,
 		COALESCE(signers, '[]') AS signers_json, false AS is_smart_account,
 		NULL::VARCHAR AS smart_account_type, ledger_range AS first_seen_ledger
-		FROM %s WHERE last_modified_ledger <= %d`,
+		FROM ranked WHERE rn = 1`,
 		b.silverTable("accounts_current"), b.cfg.End)
 }
 
 func selectAccountBalancesCurrent(b *Backfiller) string {
-	return fmt.Sprintf(`SELECT account_id,
+	return fmt.Sprintf(`WITH native_ranked AS (
+			SELECT *,
+				ROW_NUMBER() OVER (
+					PARTITION BY account_id
+					ORDER BY last_modified_ledger DESC, COALESCE(updated_at, TIMESTAMP '1970-01-01') DESC, COALESCE(sequence_number, 0) DESC
+				) AS rn
+			FROM %s
+			WHERE last_modified_ledger <= %d
+		), trustline_shaped AS (
+			SELECT account_id,
+				CASE
+					WHEN liquidity_pool_id IS NOT NULL AND liquidity_pool_id <> '' THEN 'POOL:' || liquidity_pool_id
+					ELSE COALESCE(asset_code, '') || ':' || COALESCE(asset_issuer, '')
+				END AS asset_key,
+				COALESCE(asset_code, '') AS asset_code,
+				asset_issuer,
+				asset_type,
+				balance,
+				trust_line_limit,
+				buying_liabilities,
+				selling_liabilities,
+				flags,
+				sponsor,
+				last_modified_ledger,
+				updated_at
+			FROM %s
+			WHERE last_modified_ledger <= %d
+		), trustline_ranked AS (
+			SELECT *,
+				ROW_NUMBER() OVER (
+					PARTITION BY account_id, asset_key
+					ORDER BY last_modified_ledger DESC, COALESCE(updated_at, TIMESTAMP '1970-01-01') DESC
+				) AS rn
+			FROM trustline_shaped
+		)
+		SELECT account_id,
 		'XLM' AS asset_key,
 		'XLM' AS asset_code,
 		NULL::VARCHAR AS asset_issuer,
@@ -1427,14 +1471,11 @@ func selectAccountBalancesCurrent(b *Backfiller) string {
 		NULL::VARCHAR AS sponsor,
 		last_modified_ledger,
 		COALESCE(updated_at, current_timestamp) AS updated_at
-		FROM %s WHERE last_modified_ledger <= %d
+		FROM native_ranked WHERE rn = 1
 		UNION ALL
 		SELECT account_id,
-		CASE
-			WHEN liquidity_pool_id IS NOT NULL AND liquidity_pool_id <> '' THEN 'POOL:' || liquidity_pool_id
-			ELSE COALESCE(asset_code, '') || ':' || COALESCE(asset_issuer, '')
-		END AS asset_key,
-		COALESCE(asset_code, '') AS asset_code,
+		asset_key,
+		asset_code,
 		asset_issuer,
 		asset_type,
 		balance AS balance_stroops,
@@ -1448,7 +1489,7 @@ func selectAccountBalancesCurrent(b *Backfiller) string {
 		sponsor,
 		last_modified_ledger,
 		COALESCE(updated_at, current_timestamp) AS updated_at
-		FROM %s WHERE last_modified_ledger <= %d`,
+		FROM trustline_ranked WHERE rn = 1`,
 		b.silverTable("accounts_current"), b.cfg.End,
 		b.silverTable("trustlines_current"), b.cfg.End)
 }
