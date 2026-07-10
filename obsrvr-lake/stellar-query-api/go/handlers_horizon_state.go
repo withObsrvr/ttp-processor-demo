@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -96,19 +98,27 @@ func (h *HorizonCompatHandlers) HandleAccountTransactions(w http.ResponseWriter,
 	for _, row := range rows {
 		var tx *protocol.Transaction
 		var err error
+		hydrateCtx, hydrateCancel := context.WithTimeout(ctx, horizonAccountTransactionHydrationTimeout())
 		if row.TransactionID > 0 {
-			tx, err = h.txReader.GetTransactionByIDAtLedger(ctx, row.TransactionID, row.LedgerSequence)
+			tx, err = h.txReader.GetTransactionByIDAtLedger(hydrateCtx, row.TransactionID, row.LedgerSequence)
 		} else {
-			tx, err = h.txReader.GetTransactionByHashAtLedger(ctx, row.TransactionHash, row.LedgerSequence)
+			tx, err = h.txReader.GetTransactionByHashAtLedger(hydrateCtx, row.TransactionHash, row.LedgerSequence)
 		}
+		hydrateCancel()
 		if err != nil {
-			switch {
-			case errors.Is(err, errHorizonTransactionXDRUnavailable), errors.Is(err, errHorizonTransactionReaderUnavailable), errors.Is(err, errHorizonTransactionNotFound):
-				renderHorizonProblem(w, r, horizonProblem(http.StatusServiceUnavailable, "data_unavailable", "Data Unavailable", err.Error()))
-			default:
-				renderHorizonProblem(w, r, horizonProblem(http.StatusInternalServerError, "server_error", "Internal Server Error", err.Error()))
+			if isQueryTimeout(err) && row.TransactionID > 0 {
+				log.Printf("horizon account transactions using feed summary fallback account=%s tx=%s ledger=%d err=%v", accountID, row.TransactionHash, row.LedgerSequence, err)
+				fallback := horizonTransactionFromAccountTransaction(row)
+				tx = &fallback
+			} else {
+				switch {
+				case errors.Is(err, errHorizonTransactionXDRUnavailable), errors.Is(err, errHorizonTransactionReaderUnavailable), errors.Is(err, errHorizonTransactionNotFound):
+					renderHorizonProblem(w, r, horizonProblem(http.StatusServiceUnavailable, "data_unavailable", "Data Unavailable", err.Error()))
+				default:
+					renderHorizonProblem(w, r, horizonProblem(http.StatusInternalServerError, "server_error", "Internal Server Error", err.Error()))
+				}
+				return
 			}
-			return
 		}
 		populateHorizonTransactionLinks(r, tx)
 		records = append(records, *tx)
@@ -126,6 +136,43 @@ func (h *HorizonCompatHandlers) HandleAccountTransactions(w http.ResponseWriter,
 	if err := writeHorizonJSON(w, http.StatusOK, out); err != nil {
 		renderHorizonProblem(w, r, horizonProblem(http.StatusInternalServerError, "server_error", "Internal Server Error", err.Error()))
 	}
+}
+
+func horizonAccountTransactionHydrationTimeout() time.Duration {
+	return 1500 * time.Millisecond
+}
+
+func horizonTransactionFromAccountTransaction(row AccountTransaction) protocol.Transaction {
+	tx := protocol.Transaction{
+		ID:              row.TransactionHash,
+		Hash:            row.TransactionHash,
+		PT:              strconv.FormatInt(row.TransactionID, 10),
+		Ledger:          int32(row.LedgerSequence),
+		LedgerCloseTime: parseHorizonTimestamp(row.ClosedAt),
+		MemoType:        "none",
+	}
+	if row.TransactionID <= 0 {
+		tx.PT = horizonAccountTransactionPagingToken(row, "desc")
+	}
+	if row.Successful != nil {
+		tx.Successful = *row.Successful
+	}
+	if row.SourceAccount != nil {
+		tx.Account = *row.SourceAccount
+		tx.FeeAccount = *row.SourceAccount
+	}
+	if row.FeeCharged != nil {
+		if fee, err := strconv.ParseInt(*row.FeeCharged, 10, 64); err == nil {
+			tx.FeeCharged = fee
+		}
+	}
+	if row.MemoType != nil {
+		tx.MemoType = normalizeHorizonMemoType(*row.MemoType)
+	}
+	if row.Memo != nil {
+		tx.Memo = *row.Memo
+	}
+	return tx
 }
 
 func (h *HorizonCompatHandlers) HandleLedger(w http.ResponseWriter, r *http.Request) {
