@@ -94,7 +94,13 @@ func (h *HorizonCompatHandlers) HandleAccountTransactions(w http.ResponseWriter,
 
 	records := make([]protocol.Transaction, 0, len(rows))
 	for _, row := range rows {
-		tx, err := h.txReader.GetTransactionByHashAtLedger(ctx, row.TransactionHash, row.LedgerSequence)
+		var tx *protocol.Transaction
+		var err error
+		if row.TransactionID > 0 {
+			tx, err = h.txReader.GetTransactionByIDAtLedger(ctx, row.TransactionID, row.LedgerSequence)
+		} else {
+			tx, err = h.txReader.GetTransactionByHashAtLedger(ctx, row.TransactionHash, row.LedgerSequence)
+		}
 		if err != nil {
 			switch {
 			case errors.Is(err, errHorizonTransactionXDRUnavailable), errors.Is(err, errHorizonTransactionReaderUnavailable), errors.Is(err, errHorizonTransactionNotFound):

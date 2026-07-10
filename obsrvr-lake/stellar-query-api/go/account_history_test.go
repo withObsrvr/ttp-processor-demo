@@ -415,7 +415,7 @@ func TestGetServingAccountTransactionsUsesWatermarkAndTOIDCursor(t *testing.T) {
 	if !covered || !hasMore || cursor == "" {
 		t.Fatalf("covered=%v hasMore=%v cursor=%q", covered, hasMore, cursor)
 	}
-	if len(got) != 1 || got[0].TransactionHash != "tx4" || got[0].ActivityTypes[0] != "payment" {
+	if len(got) != 1 || got[0].TransactionHash != "tx4" || got[0].ActivityTypes[0] != "payment" || got[0].TransactionID != 17179873280 {
 		t.Fatalf("unexpected feed rows: %#v", got)
 	}
 	decoded, err := DecodeHistoryCursor(cursor)

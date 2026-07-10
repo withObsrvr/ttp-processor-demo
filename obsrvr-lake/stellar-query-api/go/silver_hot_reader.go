@@ -1027,6 +1027,7 @@ func (h *SilverHotReader) GetServingAccountTransactions(ctx context.Context, fil
 	out := make([]AccountTransaction, 0, len(rowsOut))
 	for i := range rowsOut {
 		ts, _ := time.Parse(time.RFC3339Nano, rowsOut[i].tx.ClosedAt)
+		rowsOut[i].tx.TransactionID = rowsOut[i].toid
 		rowsOut[i].tx.PagingToken = HistoryCursor{LedgerSequence: rowsOut[i].tx.LedgerSequence, ClosedAt: ts, TransactionHash: rowsOut[i].tx.TransactionHash, TieBreaker: strconv.FormatInt(rowsOut[i].toid, 10), Order: filters.Order}.Encode()
 		out = append(out, rowsOut[i].tx)
 	}

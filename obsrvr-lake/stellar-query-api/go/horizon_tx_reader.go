@@ -57,6 +57,46 @@ func (r *HorizonTransactionReader) GetTransactionByHashAtLedger(ctx context.Cont
 	return r.getTransactionByHash(ctx, hash, ledgerSeq)
 }
 
+func (r *HorizonTransactionReader) GetTransactionByIDAtLedger(ctx context.Context, transactionID, ledgerSeq int64) (*protocol.Transaction, error) {
+	if !r.Available() {
+		return nil, errHorizonTransactionReaderUnavailable
+	}
+	if transactionID <= 0 {
+		return nil, errHorizonTransactionNotFound
+	}
+	if r.hot != nil {
+		query := horizonHotTransactionIDQuery
+		args := []interface{}{transactionID}
+		if ledgerSeq > 0 {
+			query = horizonHotTransactionIDQueryWithLedger
+			args = []interface{}{ledgerSeq, transactionID}
+		}
+		tx, err := r.query(ctx, r.hot, query, args...)
+		if err == nil {
+			return tx, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+	}
+	if r.cold != nil {
+		query := fmt.Sprintf(horizonColdTransactionIDQuery, r.coldTable)
+		args := []interface{}{transactionID}
+		if ledgerSeq > 0 {
+			query = fmt.Sprintf(horizonColdTransactionIDQueryWithLedger, r.coldTable)
+			args = []interface{}{ledgerSeq, transactionID}
+		}
+		tx, err := r.query(ctx, r.cold, query, args...)
+		if err == nil {
+			return tx, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+	}
+	return nil, errHorizonTransactionNotFound
+}
+
 func (r *HorizonTransactionReader) getTransactionByHash(ctx context.Context, hash string, ledgerSeq int64) (*protocol.Transaction, error) {
 	if !r.Available() {
 		return nil, errHorizonTransactionReaderUnavailable
@@ -138,6 +178,18 @@ const horizonHotTransactionQueryWithLedger = horizonTransactionSelect + `
 	LIMIT 1
 `
 
+const horizonHotTransactionIDQuery = horizonTransactionSelect + `
+	FROM transactions_row_v2
+	WHERE transaction_id = $1
+	LIMIT 1
+`
+
+const horizonHotTransactionIDQueryWithLedger = horizonTransactionSelect + `
+	FROM transactions_row_v2
+	WHERE ledger_sequence = $1 AND transaction_id = $2
+	LIMIT 1
+`
+
 const horizonColdTransactionQuery = horizonTransactionSelect + `
 	FROM %s
 	WHERE transaction_hash = ?
@@ -147,6 +199,18 @@ const horizonColdTransactionQuery = horizonTransactionSelect + `
 const horizonColdTransactionQueryWithLedger = horizonTransactionSelect + `
 	FROM %s
 	WHERE ledger_sequence = ? AND transaction_hash = ?
+	LIMIT 1
+`
+
+const horizonColdTransactionIDQuery = horizonTransactionSelect + `
+	FROM %s
+	WHERE transaction_id = ?
+	LIMIT 1
+`
+
+const horizonColdTransactionIDQueryWithLedger = horizonTransactionSelect + `
+	FROM %s
+	WHERE ledger_sequence = ? AND transaction_id = ?
 	LIMIT 1
 `
 
