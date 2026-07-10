@@ -1650,9 +1650,10 @@ func (h *SilverHotReader) GetServingAccountEffects(ctx context.Context, filters 
 		if err != nil {
 			return nil, "", false, false, fmt.Errorf("serving latest ledger for account effects: %w", err)
 		}
-		if !servingFeedFreshEnough(completeThru, latestLedger) {
-			return nil, "", false, false, nil
-		}
+		_ = latestLedger
+		// Account-scoped effect cold fallback is too expensive for interactive Horizon
+		// pages. A complete but slightly stale serving feed gives callers a bounded
+		// page instead of turning live-tip lag into a 504.
 	}
 
 	limit := filters.Limit
