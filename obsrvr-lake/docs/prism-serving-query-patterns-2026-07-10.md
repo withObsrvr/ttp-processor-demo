@@ -33,6 +33,8 @@ The response is backed by `serving.sv_contract_activity_summary` and is intended
 - 30d unique callers and success/failure counts
 - coarse `activity_classification`
 
+The live projector builds this table from `serving.sv_contract_calls_recent`, `serving.sv_events_recent`, `serving.sv_contract_storage_summary`, and smart-account serving tables. That keeps live activity summaries consistent with the same denormalized serving sources Prism uses for contract pages.
+
 ## Smart Accounts
 
 Use the existing routes:
@@ -53,3 +55,9 @@ If serving watermarks are absent, the handlers fall back to the silver smart-acc
 ## Client Rule
 
 Display `coverage.complete_thru` when available. If `coverage` is missing, treat the response as a fallback or unmaterialized serving view rather than a complete app projection.
+
+As of the 2026-07-10 testnet closeout, the Prism test contract `CAFLSFXZRGJNA37UFG55JWEJ33HAG5QENQZ44I6X7GF4GEBA7HOHHIFJ` is a useful smoke target:
+
+- storage summary should show `43` total entries and `43` live entries
+- storage rows should report source `serving.sv_contract_storage_current`
+- activity summary should show `46` invocations, `9` events, and `active_contract`

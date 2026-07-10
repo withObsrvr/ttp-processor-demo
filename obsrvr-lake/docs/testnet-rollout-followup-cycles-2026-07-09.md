@@ -17,6 +17,51 @@ Two important gaps remain:
 
 This document defines the next implementation cycles. The goal is to make the rollout durable, restore historical contract events, and continue Horizon parity without another full historical replay of every table.
 
+## Closeout Status - 2026-07-10
+
+Cycles 1-4 have been implemented and deployed to testnet.
+
+Deployed images:
+
+- `withobsrvr/stellar-query-api:cycle4-serving-20260710114316`
+  - digest: `sha256:260d9a2123007519a5372bf54bcbcb6f5bc24f02d164c3c232f59258bf5c742b`
+- `withobsrvr/serving-cold-backfill:cycle4-serving-20260710114316`
+  - digest: `sha256:63091538545e20c0fb2662f0a37b520ef4b8882ad024df0168c36a75b13a9a67`
+- `withobsrvr/serving-projection-processor:cycle4-serving-statsfix-20260710124212`
+  - digest: `sha256:3e0e1a9b8a616f5ebb65119c9e3a78d882549c9df5224baa49e17b782d0b0f27`
+
+Nomad rollout:
+
+- `stellar-query-api` deployed successfully and is serving the new storage/activity routes.
+- `serving-projection-processor-fast` deployed successfully.
+- `serving-projection-processor` deployed successfully after a stats-source fix.
+- `serving-cold-backfill-contract-storage` completed a storage-only serving backfill.
+
+Serving backfill result:
+
+- `serving.sv_contract_storage_current`: `5,919,336` rows.
+- `serving.sv_contract_storage_summary`: `487,479` rows.
+- Storage projection coverage: `3..3534034`.
+
+Public smoke checks:
+
+- `GET /health` returned `200`.
+- `GET /api/v1/silver/contracts/CAFLSFXZRGJNA37UFG55JWEJ33HAG5QENQZ44I6X7GF4GEBA7HOHHIFJ/storage/summary`
+  returned `43` total entries, `43` live entries, and coverage `3..3534034`.
+- `GET /api/v1/silver/contracts/CAFLSFXZRGJNA37UFG55JWEJ33HAG5QENQZ44I6X7GF4GEBA7HOHHIFJ/storage?live_only=true&limit=1`
+  returned from `serving.sv_contract_storage_current` with coverage `3..3534034`.
+- `GET /api/v1/silver/contracts/CAFLSFXZRGJNA37UFG55JWEJ33HAG5QENQZ44I6X7GF4GEBA7HOHHIFJ/activity/summary`
+  returned `46` invocations, `9` events, and classification `active_contract`.
+- `GET /api/v1/silver/smart-accounts/stats` returned `9,152` smart-account contracts and `12,654` active signers.
+
+Operational note:
+
+The first contract-storage backfill also populated `sv_contract_activity_summary`, but verification failed because the live `contract_stats` projector advanced the activity table beyond the frozen backfill end ledger while the batch was running. The batch was stopped, rerun as storage-only with automatic restart disabled, and the live `contract_stats` projector was corrected to aggregate from `serving.sv_contract_calls_recent` instead of raw silver invocations. That keeps the live activity summary aligned with the backfilled serving call table.
+
+Next cycle:
+
+Cycle 5 should start as a smaller `Cycle 5A` slice focused on the common Horizon read-only migration surface: account root, ledgers, fee stats, operation by id, operation effects, and tighter Horizon paging semantics for account history routes.
+
 ## Scope Line
 
 Must have:
