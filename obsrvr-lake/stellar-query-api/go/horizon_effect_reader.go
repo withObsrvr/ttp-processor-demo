@@ -22,7 +22,14 @@ func (r *HorizonEffectReader) GetEffects(ctx context.Context, filters EffectFilt
 		return nil, "", false, fmt.Errorf("horizon effect reader unavailable")
 	}
 	if r.serving != nil {
-		effects, next, hasMore, covered, err := r.serving.GetServingAccountEffects(ctx, filters)
+		effects, next, hasMore, covered, err := r.serving.GetServingTransactionEffects(ctx, filters)
+		if err != nil {
+			return nil, "", false, err
+		}
+		if covered {
+			return effects, next, hasMore, nil
+		}
+		effects, next, hasMore, covered, err = r.serving.GetServingAccountEffects(ctx, filters)
 		if err != nil {
 			return nil, "", false, err
 		}
