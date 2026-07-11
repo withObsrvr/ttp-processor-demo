@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strconv"
 	"testing"
 	"time"
 
@@ -76,6 +77,7 @@ func TestHorizonAccountReaderInfersMissingSequenceMetadata(t *testing.T) {
 	defer db.Close()
 
 	updatedAt := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	sequenceClosedAt := updatedAt.Add(-time.Second)
 	mock.ExpectQuery("FROM serving.sv_accounts_current").
 		WithArgs("GA").
 		WillReturnRows(sqlmock.NewRows([]string{
@@ -87,6 +89,9 @@ func TestHorizonAccountReaderInfersMissingSequenceMetadata(t *testing.T) {
 	mock.ExpectQuery("FROM accounts_current").
 		WithArgs("GA").
 		WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery("FROM serving.sv_ledger_stats_recent").
+		WithArgs(int64(50)).
+		WillReturnRows(sqlmock.NewRows([]string{"closed_at"}).AddRow(sequenceClosedAt))
 	mock.ExpectQuery("FROM serving.sv_account_balances_current").
 		WithArgs("GA").
 		WillReturnRows(sqlmock.NewRows([]string{
@@ -105,7 +110,7 @@ func TestHorizonAccountReaderInfersMissingSequenceMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetHorizonAccount: %v", err)
 	}
-	if account.SequenceLedger != 50 || account.SequenceTime != "1783684800" {
+	if account.SequenceLedger != 50 || account.SequenceTime != strconv.FormatInt(sequenceClosedAt.Unix(), 10) {
 		t.Fatalf("sequence metadata = (%d,%q), want inferred values", account.SequenceLedger, account.SequenceTime)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {

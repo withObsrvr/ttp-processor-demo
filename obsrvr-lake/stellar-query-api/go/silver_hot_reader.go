@@ -1053,6 +1053,25 @@ func (h *SilverHotReader) GetServingLatestLedgerSequence(ctx context.Context) (i
 	return latestSequence, nil
 }
 
+func (h *SilverHotReader) GetServingLedgerClosedAt(ctx context.Context, ledgerSequence int64) (time.Time, error) {
+	if h == nil || h.db == nil || ledgerSequence <= 0 {
+		return time.Time{}, nil
+	}
+	var closedAt time.Time
+	err := h.db.QueryRowContext(ctx, `
+		SELECT closed_at
+		FROM serving.sv_ledger_stats_recent
+		WHERE ledger_sequence = $1
+	`, ledgerSequence).Scan(&closedAt)
+	if err == sql.ErrNoRows {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	return closedAt.UTC(), nil
+}
+
 // GetServingRecentTransactions returns the most recent transactions from serving projections.
 func (h *SilverHotReader) GetServingRecentTransactions(ctx context.Context, limit int) (int64, []ServingRecentTransaction, error) {
 	latestSequence, err := h.GetServingLatestLedgerSequence(ctx)

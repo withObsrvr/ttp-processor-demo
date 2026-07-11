@@ -85,6 +85,11 @@ func (r *HorizonAccountReader) GetHorizonAccount(ctx context.Context, accountID 
 			out.SequenceTime = strconv.FormatInt(ts.Unix(), 10)
 		}
 	}
+	if r.hot != nil && out.SequenceLedger > 0 {
+		if closedAt, err := r.hot.GetServingLedgerClosedAt(ctx, int64(out.SequenceLedger)); err == nil && !closedAt.IsZero() {
+			out.SequenceTime = strconv.FormatInt(closedAt.Unix(), 10)
+		}
+	}
 
 	var balances *AccountBalancesResponse
 	if r.hot != nil {
