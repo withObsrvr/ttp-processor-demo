@@ -133,6 +133,13 @@ psql "$BRONZE_POSTGRES_DSN" -f obsrvr-lake/stellar-postgres-ingester/migrations/
 psql "$SILVER_POSTGRES_DSN" -f obsrvr-lake/silver-realtime-transformer/migrations/010_add_account_sequence_ledger_time.sql
 ```
 
+Rebuild and redeploy `postgres-ducklake-flusher` before its first flush after
+applying migration 009: Postgres appends `sequence_ledger`/`sequence_time` at
+the end of `accounts_snapshot_v1`, and older flusher builds read that table
+positionally, which would shift every value after `sequence_number` into the
+wrong DuckLake column. The updated flusher uses an explicit column list and
+adds the two columns to existing DuckLake tables on startup.
+
 Deploy or run `serving-projection-processor` with the image built above. The
 projector applies the serving schema idempotently, including `ALTER TABLE ...
 ADD COLUMN IF NOT EXISTS` for the transaction hydration, account-root, and

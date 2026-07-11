@@ -267,6 +267,19 @@ var explicitColumnTables = map[string]string{
 		amount, amount_raw, contract_id,
 		closed_at, created_at, ledger_range,
 		era_id, version_label`,
+	// accounts_snapshot_v1 must be explicit: v3_bronze_schema.sql defines
+	// sequence_ledger/sequence_time right after sequence_number, but upgraded
+	// PostgreSQL databases have them physically appended at the end by
+	// migration 009 (ALTER TABLE ADD COLUMN). A positional SELECT * would
+	// shift every value after sequence_number into the wrong DuckLake column.
+	"accounts_snapshot_v1": `
+		account_id, ledger_sequence, closed_at, balance,
+		sequence_number, sequence_ledger, sequence_time,
+		num_subentries, num_sponsoring, num_sponsored, home_domain,
+		master_weight, low_threshold, med_threshold, high_threshold,
+		flags, auth_required, auth_revocable, auth_immutable, auth_clawback_enabled,
+		signers, sponsor_account,
+		created_at, updated_at, ledger_range, era_id, version_label`,
 }
 
 // buildFlushSQL constructs the INSERT...SELECT SQL for flushing a table.
