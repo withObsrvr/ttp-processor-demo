@@ -310,21 +310,47 @@ def fetch_tip(base_url: str, timeout: float) -> int:
         return 0
 
 
+def fetch_feed_tip(base_url: str, timeout: float) -> int:
+    """Ledger of the newest record in Obsrvr's global operations feed.
+
+    The global operations/payments/effects collections serve from the serving
+    projection, whose watermark trails the bronze tip by a projector cycle
+    (and is allowed up to ~1000 ledgers of lag before readers decline). An
+    anchor derived only from bronze tips would compare a window Horizon has
+    but the serving feed has not projected yet.
+    """
+    status, _, body = fetch_json(join_url(base_url, "operations?limit=1&order=desc"), timeout)
+    if status != 200:
+        return 0
+    records = hal_records(body)
+    if not records:
+        return 0
+    try:
+        return int(records[0].get("paging_token") or 0) >> 32
+    except (TypeError, ValueError):
+        return 0
+
+
 def resolve_anchor(args: argparse.Namespace) -> tuple[int, int, int]:
     """Return (anchor_ledger, obs_tip, hor_tip).
 
     Tip-sensitive routes ("latest X") race the live tip: the two APIs are
     sampled sequentially and Obsrvr trails Horizon by ~1 ledger of ingest
     latency, so exact latest-record comparisons flip verdicts run to run.
-    Anchoring at min(tips) - ANCHOR_LAG_LEDGERS compares a window both sides
-    have fully settled, making the gate deterministic. anchor=0 means the tips
-    could not be resolved; anchored routes then fail loudly.
+    Anchoring at min(tips, obsrvr feed tip) - ANCHOR_LAG_LEDGERS compares a
+    window both sides have fully settled, making the gate deterministic.
+    anchor=0 means the tips could not be resolved; anchored routes then fail
+    loudly.
     """
     obs_tip = fetch_tip(args.obsrvr_base_url, args.timeout)
     hor_tip = fetch_tip(args.horizon_base_url, args.timeout)
     if obs_tip <= 0 or hor_tip <= 0:
         return 0, obs_tip, hor_tip
-    return min(obs_tip, hor_tip) - ANCHOR_LAG_LEDGERS, obs_tip, hor_tip
+    anchor = min(obs_tip, hor_tip)
+    feed_tip = fetch_feed_tip(args.obsrvr_base_url, args.timeout)
+    if feed_tip > 0:
+        anchor = min(anchor, feed_tip)
+    return anchor - ANCHOR_LAG_LEDGERS, obs_tip, hor_tip
 
 
 def build_routes(args: argparse.Namespace, anchor: int) -> list[Route]:
@@ -375,7 +401,13 @@ def main() -> int:
         obs_url = join_url(args.obsrvr_base_url, route.path)
         hor_url = join_url(args.horizon_base_url, route.path)
         obs_status, obs_elapsed, obs_body = fetch_json(obs_url, args.timeout)
+        if obs_status == 0:
+            # One retry on transport-level failure; a persistent status 0 still
+            # fails the route (never masked as a pass).
+            obs_status, obs_elapsed, obs_body = fetch_json(obs_url, args.timeout)
         hor_status, hor_elapsed, hor_body = fetch_json(hor_url, args.timeout)
+        if hor_status == 0:
+            hor_status, hor_elapsed, hor_body = fetch_json(hor_url, args.timeout)
         verdict, detail = compare(route.kind, obs_status, obs_body, hor_status, hor_body)
         if route.name in KNOWN_GAPS:
             if verdict == "pass":

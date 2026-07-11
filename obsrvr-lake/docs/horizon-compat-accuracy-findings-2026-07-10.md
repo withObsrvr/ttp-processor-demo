@@ -982,6 +982,41 @@ Deterministic known gaps surfaced by anchoring (tracked in the harness's
    includes. Surfaces only when the anchored window's newest payment is one
    of the missed types.
 
-Gate result with the deployed stack (`f0b1a08` query-api): `ok=true`,
-14 pass + 1 pass-with-known-gap-marker + 2 known-gap, `compared_200=15`,
-stable across consecutive runs.
+Final route-by-route results (query-api `f0b1a08`, anchor ledger
+3556359, obsrvr tip 3556361, horizon tip 3556362,
+`ok=true`, `compared_200=15`):
+
+| Route | Verdict | Obsrvr | Horizon | Detail |
+| --- | --- | --- | --- | --- |
+| `fee_stats` | pass | 200 | 200 | last_ledger skew 1 within tolerance |
+| `ledger_anchored` | pass | 200 | 200 | anchored ledger matches |
+| `ledger_historical` | pass | 200 | 200 | selected operation fields match |
+| `account` | pass | 200 | 200 | account structure matches, sequence skew 1 within tolerance |
+| `account_dormant` | known-gap | 504 | 200 | [known gap, non-gating] cold-only account root needs the account index plane; obsrvr 504s de... |
+| `account_transactions` | pass | 200 | 200 | records=1 |
+| `transaction_by_hash` | pass | 200 | 200 | transaction core fields present |
+| `transaction_operations` | pass | 200 | 200 | records=1 |
+| `transaction_effects` | pass | 200 | 200 | records=0 |
+| `operations_anchored` | pass | 200 | 200 | records=1 |
+| `operation_by_id` | pass | 200 | 200 | selected operation fields match |
+| `operation_effects` | pass | 200 | 200 | records=0 |
+| `payments_anchored` | known-gap | 200 | 200 | [known gap, non-gating] serving is_payment_op flag misses account_merge/Soroban payment-clas... |
+| `effects_anchored` | known-gap | 504 | 200 | [known gap, non-gating] global effects TOID-cursor paging lacks index support; obsrvr times ... |
+| `account_operations` | pass | 200 | 200 | records=1 |
+| `account_payments` | pass | 200 | 200 | records=1 |
+| `account_effects` | pass | 200 | 200 | records=2 |
+
+Three consecutive runs returned `ok=true` with identical gating outcomes; the
+only movement is `payments_anchored` flipping between pass and known-gap
+depending on whether the anchored window's newest payment is one of the
+missed classification types (non-gating either way).
+
+Two robustness refinements landed after the initial tip-aware version:
+
+- The anchor also considers Obsrvr's **serving feed tip** (ledger of the
+  newest record in the global operations feed), not just the bronze tips:
+  the serving projection trails bronze by a projector cycle, and an anchor
+  ahead of its watermark compared a window Horizon had but the feed had not
+  projected yet.
+- Transport-level failures (status 0) retry once before failing the route —
+  a persistent failure still fails, never masks.
