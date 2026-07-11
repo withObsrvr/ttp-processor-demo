@@ -191,13 +191,21 @@ func (r *HorizonAccountReader) currentAccount(ctx context.Context, accountID str
 		servingErr = err
 	}
 	if r.unified != nil {
-		acc, err := r.unified.GetAccountCurrent(ctx, accountID)
+		// Bound the unified (hot+cold) lookup so a slow cold scan — including the
+		// null-cast retry after a cold schema gap — cannot consume the handler's
+		// whole interactive budget and starve the hot-silver fallback below.
+		unifiedCtx, cancel := context.WithTimeout(ctx, horizonAccountUnifiedTimeout())
+		acc, err := r.unified.GetAccountCurrent(unifiedCtx, accountID)
+		cancel()
 		if err != nil {
-			if !(servingAcc != nil && isUnifiedAccountCurrentSequenceSchemaGap(err)) {
+			fallbackable := isUnifiedAccountCurrentSequenceSchemaGap(err) || isQueryTimeout(err)
+			if !(servingAcc != nil && fallbackable) {
 				return nil, err
 			}
+			logTierFallback("horizon_account currentAccount", "unified", "hot-silver", err)
 			// Keep going: hot silver may have the sequence metadata even when the
-			// cold/unified schema is still missing those newer columns.
+			// cold/unified schema is missing the newer columns or the cold scan
+			// cannot answer within the interactive deadline.
 		} else {
 			if merged := mergeAccountCurrent(servingAcc, acc); merged != nil {
 				return merged, nil
@@ -411,4 +419,8 @@ func parseOptionalHorizonTime(raw string) *time.Time {
 		return nil
 	}
 	return &ts
+}
+
+func horizonAccountUnifiedTimeout() time.Duration {
+	return 1500 * time.Millisecond
 }

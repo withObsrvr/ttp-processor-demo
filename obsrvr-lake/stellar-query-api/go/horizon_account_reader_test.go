@@ -288,3 +288,51 @@ func TestBuildHorizonAccountShellRefusesUnparseableSequence(t *testing.T) {
 		t.Fatalf("error = %v, want errHorizonAccountDataUnavailable", err)
 	}
 }
+
+func TestHorizonAccountCurrentFallsBackToHotSilverOnUnifiedTimeout(t *testing.T) {
+	servingDB, servingMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New serving: %v", err)
+	}
+	defer servingDB.Close()
+	unifiedDB, unifiedMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New unified: %v", err)
+	}
+	defer unifiedDB.Close()
+
+	updatedAt := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	servingMock.ExpectQuery("FROM serving.sv_accounts_current").
+		WithArgs("GA").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"account_id", "balance_stroops", "sequence_number", "num_subentries",
+			"num_sponsoring", "num_sponsored", "last_modified_ledger", "sequence_ledger",
+			"sequence_time", "updated_at", "home_domain", "created_at", "sponsor",
+			"auth_required", "auth_revocable", "auth_immutable", "auth_clawback_enabled",
+		}).AddRow("GA", int64(1000000000), int64(123), int64(0), int64(0), int64(0), int64(50), nil, nil, updatedAt, nil, nil, nil, false, false, false, false))
+	// A cold scan that cannot answer within the interactive deadline must not
+	// 504 the whole account lookup when hot silver can still answer.
+	unifiedMock.ExpectQuery("SELECT account_id, balance, sequence_number, num_subentries").
+		WithArgs("GA").
+		WillReturnError(errors.New("unified GetAccountCurrent: context deadline exceeded"))
+	servingMock.ExpectQuery("FROM accounts_current").
+		WithArgs("GA").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"account_id", "balance", "sequence_number", "num_subentries",
+			"num_sponsoring", "num_sponsored", "last_modified_ledger", "sequence_ledger",
+			"sequence_time", "updated_at", "home_domain", "sponsor_account",
+			"auth_required", "auth_revocable", "auth_immutable", "auth_clawback_enabled",
+		}).AddRow("GA", "1000000000", "123", int64(0), int64(0), int64(0), int64(50), int64(50), int64(1783699200), "2026-07-10T12:00:00Z", nil, nil, false, false, false, false))
+
+	reader := &HorizonAccountReader{
+		hot:     &SilverHotReader{db: servingDB},
+		unified: &UnifiedDuckDBReader{db: unifiedDB, hotSchema: "hot", coldSchema: "cold"},
+	}
+	account, err := reader.currentAccount(context.Background(), "GA")
+	if err != nil {
+		t.Fatalf("currentAccount: %v", err)
+	}
+	if account == nil || account.AccountID != "GA" || account.SequenceLedger != 50 {
+		t.Fatalf("account = %#v, want hot-silver fallback result", account)
+	}
+}
