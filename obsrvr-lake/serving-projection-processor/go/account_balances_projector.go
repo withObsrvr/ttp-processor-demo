@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -11,6 +12,20 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stellar/go-stellar-sdk/amount"
 )
+
+// Silver effect type codes (Horizon-aligned) used to reconcile removals.
+const (
+	effectTypeAccountRemoved   = 1
+	effectTypeTrustlineRemoved = 21
+)
+
+// balanceRemovalEffectOverlapLedgers re-scans a small window behind the
+// checkpoint when loading removal effects. The transformer commits effects and
+// trustlines_current in parallel per-table transactions, so an effect for a
+// ledger at or below the checkpoint can become visible after the checkpoint
+// has already advanced. Removal deletes are idempotent and guarded by
+// last_modified_ledger, so re-scanning the overlap is harmless.
+const balanceRemovalEffectOverlapLedgers = 100
 
 type AccountBalancesProjector struct {
 	network     string
@@ -59,7 +74,11 @@ func (p *AccountBalancesProjector) RunOnce(ctx context.Context) (RunStats, error
 	if err != nil {
 		return RunStats{}, err
 	}
-	if len(changed) == 0 {
+	removals, err := p.loadBalanceRemovals(ctx, checkpoint)
+	if err != nil {
+		return RunStats{}, err
+	}
+	if len(changed) == 0 && len(removals) == 0 {
 		return RunStats{Checkpoint: checkpoint}, nil
 	}
 
@@ -98,6 +117,11 @@ func (p *AccountBalancesProjector) RunOnce(ctx context.Context) (RunStats, error
 		}
 	}
 
+	rowsDeleted, err := p.applyBalanceRemovals(ctx, tx, removals)
+	if err != nil {
+		return RunStats{}, err
+	}
+
 	now := time.Now().UTC()
 	if err := p.checkpoints.Save(ctx, tx, p.Name(), p.network, maxLedger, &now); err != nil {
 		return RunStats{}, err
@@ -106,8 +130,117 @@ func (p *AccountBalancesProjector) RunOnce(ctx context.Context) (RunStats, error
 		return RunStats{}, fmt.Errorf("commit target tx: %w", err)
 	}
 
-	log.Printf("projector=%s network=%s accounts=%d applied=%d deleted=%d checkpoint=%d", p.Name(), p.network, len(affected), rowsApplied, int64(0), maxLedger)
-	return RunStats{RowsApplied: rowsApplied, RowsDeleted: 0, Checkpoint: maxLedger}, nil
+	log.Printf("projector=%s network=%s accounts=%d applied=%d deleted=%d checkpoint=%d", p.Name(), p.network, len(affected), rowsApplied, rowsDeleted, maxLedger)
+	return RunStats{RowsApplied: rowsApplied, RowsDeleted: rowsDeleted, Checkpoint: maxLedger}, nil
+}
+
+// balanceRemoval identifies serving balance rows that the chain removed. An
+// empty AssetKey means the whole account was removed (account merge).
+type balanceRemoval struct {
+	AccountID      string
+	AssetKey       string
+	LedgerSequence int64
+}
+
+// loadBalanceRemovals reads trustline_removed / account_removed effects past
+// the checkpoint (minus a small overlap). These effects are the only provable
+// removal signal: hot trustlines_current is a pruned window, not complete
+// current state, so a serving row being absent from the source must never
+// justify a delete — that would wipe balances for trustlines that simply
+// haven't changed recently (see
+// TestBalanceProjectionStepsPreserveTrustlinesOnAccountOnlyChange). The
+// remaining gap: removals older than the hot effects retention window (e.g.
+// across extended projector downtime) are missed.
+func (p *AccountBalancesProjector) loadBalanceRemovals(ctx context.Context, checkpoint int64) ([]balanceRemoval, error) {
+	scanFrom := checkpoint - balanceRemovalEffectOverlapLedgers
+	if scanFrom < 0 {
+		scanFrom = 0
+	}
+	rows, err := p.sourcePool.Query(ctx, `
+		SELECT account_id, effect_type, asset_type, asset_code, asset_issuer, details_json, ledger_sequence
+		FROM effects
+		WHERE effect_type = ANY($1)
+		  AND ledger_sequence > $2
+		  AND account_id IS NOT NULL
+		  AND account_id <> ''
+		ORDER BY ledger_sequence ASC
+	`, []int32{effectTypeAccountRemoved, effectTypeTrustlineRemoved}, scanFrom)
+	if err != nil {
+		return nil, fmt.Errorf("query balance removal effects: %w", err)
+	}
+	defer rows.Close()
+
+	var removals []balanceRemoval
+	for rows.Next() {
+		var accountID string
+		var effectType int32
+		var assetType, assetCode, assetIssuer, detailsJSON *string
+		var ledgerSequence int64
+		if err := rows.Scan(&accountID, &effectType, &assetType, &assetCode, &assetIssuer, &detailsJSON, &ledgerSequence); err != nil {
+			return nil, fmt.Errorf("scan balance removal effect: %w", err)
+		}
+		removal := balanceRemoval{AccountID: accountID, LedgerSequence: ledgerSequence}
+		if effectType == effectTypeTrustlineRemoved {
+			key, err := balanceRemovalAssetKey(assetType, assetCode, assetIssuer, detailsJSON)
+			if err != nil {
+				// An unresolvable asset must not degrade into "delete nothing"
+				// (stale balance) or "delete everything" (data loss).
+				return nil, fmt.Errorf("trustline_removed effect for %s at ledger %d: %w", accountID, ledgerSequence, err)
+			}
+			removal.AssetKey = key
+		}
+		removals = append(removals, removal)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate balance removal effects: %w", err)
+	}
+	return removals, nil
+}
+
+// balanceRemovalAssetKey maps a trustline_removed effect onto the serving
+// asset_key. Pool-share trustlines carry only liquidity_pool_id (in
+// details_json); classic trustlines carry the asset columns.
+func balanceRemovalAssetKey(assetType, assetCode, assetIssuer, detailsJSON *string) (string, error) {
+	if detailsJSON != nil && *detailsJSON != "" {
+		var details struct {
+			LiquidityPoolID string `json:"liquidity_pool_id"`
+		}
+		if err := json.Unmarshal([]byte(*detailsJSON), &details); err == nil && details.LiquidityPoolID != "" {
+			return "POOL:" + details.LiquidityPoolID, nil
+		}
+	}
+	if coalesceString(assetCode) == "" && coalesceString(assetIssuer) == "" {
+		return "", fmt.Errorf("no asset or liquidity pool identity on effect")
+	}
+	return assetKey(coalesceString(assetType), assetCode, assetIssuer, nil), nil
+}
+
+// applyBalanceRemovals deletes the serving rows for removed trustlines and
+// merged accounts. The last_modified_ledger guard makes deletes safe against
+// re-creation inside the same batch and against overlap re-scans: a trustline
+// re-established after the removal carries a newer last_modified_ledger and is
+// left alone.
+func (p *AccountBalancesProjector) applyBalanceRemovals(ctx context.Context, tx pgx.Tx, removals []balanceRemoval) (int64, error) {
+	var deleted int64
+	for _, r := range removals {
+		query := `
+			DELETE FROM serving.sv_account_balances_current
+			WHERE account_id = $1 AND asset_key = $2 AND last_modified_ledger <= $3`
+		args := []interface{}{r.AccountID, r.AssetKey, r.LedgerSequence}
+		if r.AssetKey == "" {
+			// Account removed: every balance row (including native) goes.
+			query = `
+				DELETE FROM serving.sv_account_balances_current
+				WHERE account_id = $1 AND last_modified_ledger <= $2`
+			args = []interface{}{r.AccountID, r.LedgerSequence}
+		}
+		cmdTag, err := tx.Exec(ctx, query, args...)
+		if err != nil {
+			return deleted, fmt.Errorf("delete removed balance %s/%s: %w", r.AccountID, r.AssetKey, err)
+		}
+		deleted += cmdTag.RowsAffected()
+	}
+	return deleted, nil
 }
 
 func (p *AccountBalancesProjector) loadChangedAccounts(ctx context.Context, checkpoint int64) ([]changedAccount, error) {
