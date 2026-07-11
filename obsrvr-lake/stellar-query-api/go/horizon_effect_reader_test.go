@@ -189,8 +189,6 @@ func TestHorizonEffectReaderUsesServingAccountEffectsWhenCovered(t *testing.T) {
 	mock.ExpectQuery("FROM serving.sv_watermarks").
 		WillReturnRows(sqlmock.NewRows([]string{"status", "complete_from", "complete_thru"}).
 			AddRow("complete", int64(1), int64(20)))
-	mock.ExpectQuery("SELECT COALESCE\\(MAX\\(ledger_sequence\\), 0\\) FROM serving.sv_ledger_stats_recent").
-		WillReturnRows(sqlmock.NewRows([]string{"latest"}).AddRow(int64(20)))
 	mock.ExpectQuery("FROM serving.sv_effects_by_account").
 		WithArgs("GA", int64(1), int64(20), 2).
 		WillReturnRows(sqlmock.NewRows(horizonEffectColumns).
@@ -352,8 +350,6 @@ func TestHorizonEffectReaderUsesStaleServingAccountEffectsWhenComplete(t *testin
 	mock.ExpectQuery("FROM serving.sv_watermarks").
 		WillReturnRows(sqlmock.NewRows([]string{"status", "complete_from", "complete_thru"}).
 			AddRow("complete", int64(1), int64(20)))
-	mock.ExpectQuery("SELECT COALESCE\\(MAX\\(ledger_sequence\\), 0\\) FROM serving.sv_ledger_stats_recent").
-		WillReturnRows(sqlmock.NewRows([]string{"latest"}).AddRow(int64(5000)))
 	mock.ExpectQuery("FROM serving.sv_effects_by_account").
 		WithArgs("GA", int64(1), int64(20), 2).
 		WillReturnRows(sqlmock.NewRows(horizonEffectColumns).

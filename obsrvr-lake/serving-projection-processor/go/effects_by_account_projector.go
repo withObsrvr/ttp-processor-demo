@@ -12,6 +12,44 @@ import (
 
 const effectsByAccountWatermarkTable = "serving.sv_effects_by_account"
 
+// effectsByAccountUpsertSQL is pinned against serving_schema.sql by
+// TestEffectsByAccountUpsertColumnsMatchServingSchema.
+const effectsByAccountUpsertSQL = `
+	INSERT INTO serving.sv_effects_by_account (
+		account_id, ledger_sequence, tx_hash, op_index, effect_index,
+		operation_toid, effect_type, effect_type_name, amount,
+		asset_code, asset_issuer, asset_type, details_json,
+		trustline_limit, authorize_flag, clawback_flag,
+		signer_account, signer_weight, offer_id, seller_account,
+		closed_at, materialized_at
+	) VALUES (
+		$1,$2,$3,$4,$5,
+		$6,$7,$8,$9,
+		$10,$11,$12,$13::jsonb,
+		$14,$15,$16,
+		$17,$18,$19,$20,
+		$21,now()
+	)
+	ON CONFLICT (account_id, ledger_sequence, tx_hash, op_index, effect_index) DO UPDATE SET
+		operation_toid = EXCLUDED.operation_toid,
+		effect_type = EXCLUDED.effect_type,
+		effect_type_name = EXCLUDED.effect_type_name,
+		amount = EXCLUDED.amount,
+		asset_code = EXCLUDED.asset_code,
+		asset_issuer = EXCLUDED.asset_issuer,
+		asset_type = EXCLUDED.asset_type,
+		details_json = EXCLUDED.details_json,
+		trustline_limit = EXCLUDED.trustline_limit,
+		authorize_flag = EXCLUDED.authorize_flag,
+		clawback_flag = EXCLUDED.clawback_flag,
+		signer_account = EXCLUDED.signer_account,
+		signer_weight = EXCLUDED.signer_weight,
+		offer_id = EXCLUDED.offer_id,
+		seller_account = EXCLUDED.seller_account,
+		closed_at = EXCLUDED.closed_at,
+		materialized_at = EXCLUDED.materialized_at
+`
+
 type EffectsByAccountProjector struct {
 	network     string
 	batchSize   int
@@ -56,12 +94,24 @@ func NewEffectsByAccountProjector(network string, batchSize int, sourcePool, tar
 
 func (p *EffectsByAccountProjector) Name() string { return "effects_by_account" }
 
+// SourceHighWatermark returns the highest ledger whose effects are guaranteed
+// committed. The transformer advances realtime_transformer_checkpoint only
+// after the batch's bronze→silver writes (including effects) have committed,
+// so it is a safe bound for empty-tail advancement. MAX(enriched_ledgers) is
+// NOT safe: it can become visible before the same batch's effects rows, and
+// advanceEmptyTail would then stamp checkpoint + complete watermark past
+// effects that arrive moments later — a permanent, vouched-for gap, since
+// loadBatch never revisits ledgers at or below the checkpoint.
 func (p *EffectsByAccountProjector) SourceHighWatermark(ctx context.Context) (int64, error) {
 	var wm int64
-	err := p.sourcePool.QueryRow(ctx, `SELECT COALESCE(MAX(ledger_sequence), 0) FROM enriched_ledgers`).Scan(&wm)
+	err := p.sourcePool.QueryRow(ctx, `SELECT COALESCE(last_ledger_sequence, 0) FROM realtime_transformer_checkpoint WHERE id = 1`).Scan(&wm)
 	if err == nil {
 		return wm, nil
 	}
+	// Backfill-only environments have no streaming transformer checkpoint; fall
+	// back to the effects table itself, which is self-consistent (it can only
+	// understate, never vouch for uncommitted effects).
+	log.Printf("projector=%s transformer checkpoint unavailable (%v); falling back to MAX(effects.ledger_sequence)", p.Name(), err)
 	err = p.sourcePool.QueryRow(ctx, `SELECT COALESCE(MAX(ledger_sequence), 0) FROM effects`).Scan(&wm)
 	if err != nil {
 		return 0, fmt.Errorf("query effects by account watermark: %w", err)
@@ -81,6 +131,9 @@ func (p *EffectsByAccountProjector) RunOnce(ctx context.Context) (RunStats, erro
 	}
 	startLedger := checkpoint
 	if hasCompleteWatermark {
+		if completeThru < checkpoint {
+			log.Printf("projector=%s watermark complete_thru=%d behind checkpoint=%d (manual watermark reset?); re-anchoring to watermark", p.Name(), completeThru, checkpoint)
+		}
 		startLedger = completeThru
 	}
 
@@ -101,41 +154,7 @@ func (p *EffectsByAccountProjector) RunOnce(ctx context.Context) (RunStats, erro
 	maxLedger := startLedger
 	var lastClosedAt *time.Time
 	for _, r := range batch {
-		_, err := tx.Exec(ctx, `
-			INSERT INTO serving.sv_effects_by_account (
-				account_id, ledger_sequence, tx_hash, op_index, effect_index,
-				operation_toid, effect_type, effect_type_name, amount,
-				asset_code, asset_issuer, asset_type, details_json,
-				trustline_limit, authorize_flag, clawback_flag,
-				signer_account, signer_weight, offer_id, seller_account,
-				closed_at, materialized_at
-			) VALUES (
-				$1,$2,$3,$4,$5,
-				$6,$7,$8,$9,
-				$10,$11,$12,$13::jsonb,
-				$14,$15,$16,
-				$17,$18,$19,$20,
-				$21,now()
-			)
-			ON CONFLICT (account_id, ledger_sequence, tx_hash, op_index, effect_index) DO UPDATE SET
-				operation_toid = EXCLUDED.operation_toid,
-				effect_type = EXCLUDED.effect_type,
-				effect_type_name = EXCLUDED.effect_type_name,
-				amount = EXCLUDED.amount,
-				asset_code = EXCLUDED.asset_code,
-				asset_issuer = EXCLUDED.asset_issuer,
-				asset_type = EXCLUDED.asset_type,
-				details_json = EXCLUDED.details_json,
-				trustline_limit = EXCLUDED.trustline_limit,
-				authorize_flag = EXCLUDED.authorize_flag,
-				clawback_flag = EXCLUDED.clawback_flag,
-				signer_account = EXCLUDED.signer_account,
-				signer_weight = EXCLUDED.signer_weight,
-				offer_id = EXCLUDED.offer_id,
-				seller_account = EXCLUDED.seller_account,
-				closed_at = EXCLUDED.closed_at,
-				materialized_at = EXCLUDED.materialized_at
-		`,
+		_, err := tx.Exec(ctx, effectsByAccountUpsertSQL,
 			r.AccountID,
 			r.LedgerSequence,
 			r.TxHash,

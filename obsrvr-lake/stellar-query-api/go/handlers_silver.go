@@ -4266,7 +4266,10 @@ func (h *SilverHandlers) HandleContractStorage(w http.ResponseWriter, r *http.Re
 	if h.legacyReader != nil && h.legacyReader.hot != nil {
 		entries, err := h.legacyReader.hot.GetServingContractStorage(ctx, contractID, durability, liveOnly, limit, offset)
 		if err == nil {
-			coverage, _ := h.legacyReader.hot.GetServingWatermark(ctx, "serving.sv_contract_storage_current")
+			coverage, coverageErr := h.legacyReader.hot.GetServingWatermark(ctx, "serving.sv_contract_storage_current")
+			if coverageErr != nil {
+				log.Printf("serving watermark lookup failed table=serving.sv_contract_storage_current err=%v", coverageErr)
+			}
 			respondJSON(w, map[string]interface{}{
 				"contract_id": contractID,
 				"entries":     entries,

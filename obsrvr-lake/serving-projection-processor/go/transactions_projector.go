@@ -60,6 +60,69 @@ func NewTransactionsRecentProjector(network string, batchSize int, sourcePool, s
 
 func (p *TransactionsRecentProjector) Name() string { return "transactions_recent" }
 
+// transactionsRecentUpsertSQL is pinned against serving_schema.sql by
+// TestTransactionsRecentUpsertColumnsMatchServingSchema.
+const transactionsRecentUpsertSQL = `
+			INSERT INTO serving.sv_transactions_recent (
+				tx_hash,
+				ledger_sequence,
+				created_at,
+				source_account,
+				fee_charged_stroops,
+				max_fee_stroops,
+				successful,
+				operation_count,
+				tx_type,
+				summary_text,
+				summary_json,
+				primary_contract_id,
+				primary_asset_key,
+				primary_amount_stroops,
+				memo_type,
+				memo_value,
+				account_sequence,
+				is_soroban,
+				cpu_insns,
+				read_bytes,
+				write_bytes,
+				transaction_id,
+				tx_envelope,
+				tx_result,
+				tx_meta,
+				tx_fee_meta,
+				tx_signers
+			) VALUES (
+				$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27
+			)
+			ON CONFLICT (tx_hash) DO UPDATE SET
+				ledger_sequence = EXCLUDED.ledger_sequence,
+				created_at = EXCLUDED.created_at,
+				source_account = EXCLUDED.source_account,
+				fee_charged_stroops = EXCLUDED.fee_charged_stroops,
+				max_fee_stroops = EXCLUDED.max_fee_stroops,
+				successful = EXCLUDED.successful,
+				operation_count = EXCLUDED.operation_count,
+				tx_type = EXCLUDED.tx_type,
+				summary_text = EXCLUDED.summary_text,
+				summary_json = EXCLUDED.summary_json,
+				primary_contract_id = EXCLUDED.primary_contract_id,
+				primary_asset_key = EXCLUDED.primary_asset_key,
+				primary_amount_stroops = EXCLUDED.primary_amount_stroops,
+				memo_type = EXCLUDED.memo_type,
+				memo_value = EXCLUDED.memo_value,
+				account_sequence = EXCLUDED.account_sequence,
+				is_soroban = EXCLUDED.is_soroban,
+				cpu_insns = EXCLUDED.cpu_insns,
+				read_bytes = EXCLUDED.read_bytes,
+				write_bytes = EXCLUDED.write_bytes,
+				transaction_id = EXCLUDED.transaction_id,
+				tx_envelope = COALESCE(EXCLUDED.tx_envelope, sv_transactions_recent.tx_envelope),
+				tx_result = COALESCE(EXCLUDED.tx_result, sv_transactions_recent.tx_result),
+				tx_meta = COALESCE(EXCLUDED.tx_meta, sv_transactions_recent.tx_meta),
+				tx_fee_meta = COALESCE(EXCLUDED.tx_fee_meta, sv_transactions_recent.tx_fee_meta),
+				tx_signers = COALESCE(EXCLUDED.tx_signers, sv_transactions_recent.tx_signers)
+		`
+
 func (p *TransactionsRecentProjector) SourceHighWatermark(ctx context.Context) (int64, error) {
 	var wm int64
 	err := p.sourcePool.QueryRow(ctx, `SELECT COALESCE(MAX(ledger_sequence), 0) FROM transactions_row_v2`).Scan(&wm)
@@ -191,66 +254,7 @@ func (p *TransactionsRecentProjector) RunOnce(ctx context.Context) (RunStats, er
 		}
 		primaryAssetKey, primaryAmount := derivePrimaryAssetAndAmount(summaryObj)
 
-		_, err = tx.Exec(ctx, `
-			INSERT INTO serving.sv_transactions_recent (
-				tx_hash,
-				ledger_sequence,
-				created_at,
-				source_account,
-				fee_charged_stroops,
-				max_fee_stroops,
-				successful,
-				operation_count,
-				tx_type,
-				summary_text,
-				summary_json,
-				primary_contract_id,
-				primary_asset_key,
-				primary_amount_stroops,
-				memo_type,
-				memo_value,
-				account_sequence,
-				is_soroban,
-				cpu_insns,
-				read_bytes,
-				write_bytes,
-				transaction_id,
-				tx_envelope,
-				tx_result,
-				tx_meta,
-				tx_fee_meta,
-				tx_signers
-			) VALUES (
-				$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27
-			)
-			ON CONFLICT (tx_hash) DO UPDATE SET
-				ledger_sequence = EXCLUDED.ledger_sequence,
-				created_at = EXCLUDED.created_at,
-				source_account = EXCLUDED.source_account,
-				fee_charged_stroops = EXCLUDED.fee_charged_stroops,
-				max_fee_stroops = EXCLUDED.max_fee_stroops,
-				successful = EXCLUDED.successful,
-				operation_count = EXCLUDED.operation_count,
-				tx_type = EXCLUDED.tx_type,
-				summary_text = EXCLUDED.summary_text,
-				summary_json = EXCLUDED.summary_json,
-				primary_contract_id = EXCLUDED.primary_contract_id,
-				primary_asset_key = EXCLUDED.primary_asset_key,
-				primary_amount_stroops = EXCLUDED.primary_amount_stroops,
-				memo_type = EXCLUDED.memo_type,
-				memo_value = EXCLUDED.memo_value,
-				account_sequence = EXCLUDED.account_sequence,
-				is_soroban = EXCLUDED.is_soroban,
-				cpu_insns = EXCLUDED.cpu_insns,
-				read_bytes = EXCLUDED.read_bytes,
-				write_bytes = EXCLUDED.write_bytes,
-				transaction_id = EXCLUDED.transaction_id,
-				tx_envelope = COALESCE(EXCLUDED.tx_envelope, sv_transactions_recent.tx_envelope),
-				tx_result = COALESCE(EXCLUDED.tx_result, sv_transactions_recent.tx_result),
-				tx_meta = COALESCE(EXCLUDED.tx_meta, sv_transactions_recent.tx_meta),
-				tx_fee_meta = COALESCE(EXCLUDED.tx_fee_meta, sv_transactions_recent.tx_fee_meta),
-				tx_signers = COALESCE(EXCLUDED.tx_signers, sv_transactions_recent.tx_signers)
-		`,
+		_, err = tx.Exec(ctx, transactionsRecentUpsertSQL,
 			r.TransactionHash,
 			r.LedgerSequence,
 			r.CreatedAt,

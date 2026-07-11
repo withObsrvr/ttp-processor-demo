@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -38,6 +39,15 @@ func (r *HorizonFeeStatsReader) GetFeeStats(ctx context.Context) (*protocol.FeeS
 		stats, err := r.getFeeStatsFromTables(ctx, r.hot.db, "ledgers_row_v2", "transactions_row_v2")
 		if err == nil {
 			return stats, nil
+		}
+		// Cold "last 5 ledgers" trail the tip by the flush lag, so only serve them
+		// when hot genuinely has no data or lacks the tables — not to paper over a
+		// failing hot tier, which would silently hand wallets stale fee guidance.
+		if !errors.Is(err, sql.ErrNoRows) && !isSchemaGapError(err) {
+			return nil, fmt.Errorf("horizon fee stats hot: %w", err)
+		}
+		if r.cold != nil {
+			logTierFallback("horizon_fee_stats", "hot", "cold", err)
 		}
 	}
 	if r.cold != nil {

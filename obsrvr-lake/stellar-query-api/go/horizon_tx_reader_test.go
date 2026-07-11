@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"regexp"
@@ -10,6 +12,7 @@ import (
 	"time"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
+	"github.com/stellar/go-stellar-sdk/network"
 	"github.com/stellar/go-stellar-sdk/xdr"
 )
 
@@ -43,6 +46,9 @@ func TestHorizonTransactionReaderBuildsProtocolTransaction(t *testing.T) {
 	}
 	defer db.Close()
 
+	// Realistic history-loader-backfilled row: text memos are stored
+	// base64-encoded with memo_type "text_base64".
+	textEnvelopeXDR := horizonTestEnvelopeXDR(xdr.Memo{Type: xdr.MemoTypeMemoText, Text: strPtr("hello")})
 	closedAt := time.Date(2026, 7, 9, 15, 4, 0, 0, time.UTC)
 	mock.ExpectQuery(regexp.QuoteMeta(horizonHotTransactionQuery)).
 		WithArgs("txhash").
@@ -58,9 +64,9 @@ func TestHorizonTransactionReaderBuildsProtocolTransaction(t *testing.T) {
 			true,
 			int64(2),
 			"text_base64",
-			"hello",
+			"aGVsbG8=",
 			closedAt,
-			"AAAA-envelope",
+			textEnvelopeXDR,
 			"AAAA-result",
 			"AAAA-meta",
 			"AAAA-fee-meta",
@@ -81,14 +87,14 @@ func TestHorizonTransactionReaderBuildsProtocolTransaction(t *testing.T) {
 	if got.Ledger != 123 || got.Account != "GACCOUNT" || got.AccountSequence != 99 {
 		t.Fatalf("transaction account/ledger fields = %+v", got)
 	}
-	if got.EnvelopeXdr != "AAAA-envelope" || got.ResultXdr != "AAAA-result" || got.FeeMetaXdr != "AAAA-fee-meta" {
+	if got.EnvelopeXdr != textEnvelopeXDR || got.ResultXdr != "AAAA-result" || got.FeeMetaXdr != "AAAA-fee-meta" {
 		t.Fatalf("xdr fields = envelope:%q result:%q fee:%q", got.EnvelopeXdr, got.ResultXdr, got.FeeMetaXdr)
 	}
 	if len(got.Signatures) != 2 || got.Signatures[0] != "sig1" || got.Signatures[1] != "sig2" {
 		t.Fatalf("signatures = %#v", got.Signatures)
 	}
-	if got.MemoType != "text" || got.Memo != "hello" {
-		t.Fatalf("memo = type:%q value:%q", got.MemoType, got.Memo)
+	if got.MemoType != "text" || got.Memo != "hello" || got.MemoBytes != "aGVsbG8=" {
+		t.Fatalf("memo = type:%q value:%q bytes:%q", got.MemoType, got.Memo, got.MemoBytes)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)
@@ -163,12 +169,7 @@ func TestHorizonTransactionPreconditionsFromEnvelopeXDR(t *testing.T) {
 			},
 		},
 	}
-	envelopeXDR, err := xdr.MarshalBase64(envelope)
-	if err != nil {
-		t.Fatalf("MarshalBase64: %v", err)
-	}
-
-	got := horizonTransactionPreconditions(envelopeXDR)
+	got := horizonTransactionPreconditions(envelope)
 	if got == nil {
 		t.Fatal("preconditions = nil")
 	}
@@ -212,7 +213,7 @@ func TestHorizonTransactionReaderUsesIndexLedgerHintForColdLookup(t *testing.T) 
 			"none",
 			nil,
 			closedAt,
-			"AAAA-envelope",
+			horizonTestEnvelopeNoMemoXDR,
 			"AAAA-result",
 			"AAAA-meta",
 			"AAAA-fee-meta",
@@ -265,7 +266,7 @@ func TestHorizonTransactionReaderUsesProvidedLedgerHintForColdLookup(t *testing.
 			"none",
 			nil,
 			closedAt,
-			"AAAA-envelope",
+			horizonTestEnvelopeNoMemoXDR,
 			"AAAA-result",
 			"AAAA-meta",
 			"AAAA-fee-meta",
@@ -316,7 +317,7 @@ func TestHorizonTransactionReaderUsesProvidedLedgerHintForHotLookup(t *testing.T
 			"none",
 			nil,
 			closedAt,
-			"AAAA-envelope",
+			horizonTestEnvelopeNoMemoXDR,
 			"AAAA-result",
 			"AAAA-meta",
 			"AAAA-fee-meta",
@@ -363,7 +364,7 @@ func TestHorizonTransactionReaderUsesTransactionIDAndLedgerForHotLookup(t *testi
 			"none",
 			nil,
 			closedAt,
-			"AAAA-envelope",
+			horizonTestEnvelopeNoMemoXDR,
 			"AAAA-result",
 			"AAAA-meta",
 			"AAAA-fee-meta",
@@ -410,7 +411,7 @@ func TestHorizonTransactionReaderUsesServingTransactionIDLookupFirst(t *testing.
 			"none",
 			nil,
 			closedAt,
-			"AAAA-envelope",
+			horizonTestEnvelopeNoMemoXDR,
 			"AAAA-result",
 			"AAAA-meta",
 			"AAAA-fee-meta",
@@ -428,7 +429,7 @@ func TestHorizonTransactionReaderUsesServingTransactionIDLookupFirst(t *testing.
 		t.Fatalf("GetTransactionByIDAtLedger: %v", err)
 	}
 
-	if got.PT != "3388729196544" || got.Hash != "txhash" || got.EnvelopeXdr != "AAAA-envelope" {
+	if got.PT != "3388729196544" || got.Hash != "txhash" || got.EnvelopeXdr != horizonTestEnvelopeNoMemoXDR {
 		t.Fatalf("transaction = pt:%q hash:%q envelope:%q", got.PT, got.Hash, got.EnvelopeXdr)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -510,7 +511,7 @@ func TestHorizonTransactionReaderFallsBackWhenServingResourceSchemaMissing(t *te
 			"none",
 			nil,
 			closedAt,
-			"AAAA-envelope",
+			horizonTestEnvelopeNoMemoXDR,
 			"AAAA-result",
 			"AAAA-meta",
 			"AAAA-fee-meta",
@@ -561,7 +562,7 @@ func TestHorizonTransactionReaderFallsBackWhenIndexLookupFails(t *testing.T) {
 			"none",
 			nil,
 			closedAt,
-			"AAAA-envelope",
+			horizonTestEnvelopeNoMemoXDR,
 			"AAAA-result",
 			"AAAA-meta",
 			"AAAA-fee-meta",
@@ -597,6 +598,7 @@ func TestParseHorizonSignatures(t *testing.T) {
 		{name: "json", raw: sql.NullString{String: `["sig1","sig2"]`, Valid: true}, want: []string{"sig1", "sig2"}},
 		{name: "postgres array", raw: sql.NullString{String: `{sig1,sig2}`, Valid: true}, want: []string{"sig1", "sig2"}},
 		{name: "empty", raw: sql.NullString{String: `[]`, Valid: true}, want: nil},
+		{name: "malformed json refused", raw: sql.NullString{String: `["sig1",`, Valid: true}, want: nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -611,6 +613,194 @@ func TestParseHorizonSignatures(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHorizonTransactionRowMemoVariants(t *testing.T) {
+	memoHash := xdr.Hash{0x01, 0x02, 0x03}
+	tests := []struct {
+		name          string
+		memo          xdr.Memo
+		wantType      string
+		wantMemo      string
+		wantMemoBytes string
+	}{
+		{
+			name:     "none",
+			memo:     xdr.Memo{Type: xdr.MemoTypeMemoNone},
+			wantType: "none",
+		},
+		{
+			name:          "text served decoded with memo bytes",
+			memo:          xdr.Memo{Type: xdr.MemoTypeMemoText, Text: strPtr("hello")},
+			wantType:      "text",
+			wantMemo:      "hello",
+			wantMemoBytes: "aGVsbG8=",
+		},
+		{
+			name:     "id",
+			memo:     xdr.Memo{Type: xdr.MemoTypeMemoId, Id: uint64Ptr(42)},
+			wantType: "id",
+			wantMemo: "42",
+		},
+		{
+			name:     "hash served base64 not hex",
+			memo:     xdr.Memo{Type: xdr.MemoTypeMemoHash, Hash: &memoHash},
+			wantType: "hash",
+			wantMemo: base64.StdEncoding.EncodeToString(memoHash[:]),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			row := horizonTestRow(horizonTestEnvelopeXDR(tt.memo))
+			got, err := row.toProtocol()
+			if err != nil {
+				t.Fatalf("toProtocol: %v", err)
+			}
+			if got.MemoType != tt.wantType || got.Memo != tt.wantMemo || got.MemoBytes != tt.wantMemoBytes {
+				t.Fatalf("memo = type:%q value:%q bytes:%q, want type:%q value:%q bytes:%q",
+					got.MemoType, got.Memo, got.MemoBytes, tt.wantType, tt.wantMemo, tt.wantMemoBytes)
+			}
+		})
+	}
+}
+
+func TestHorizonTransactionRowRejectsUndecodableEnvelope(t *testing.T) {
+	row := horizonTestRow("AAAA-not-an-envelope")
+	_, err := row.toProtocol()
+	if !errors.Is(err, errHorizonTransactionXDRUnavailable) {
+		t.Fatalf("error = %v, want errHorizonTransactionXDRUnavailable", err)
+	}
+}
+
+func TestHorizonTransactionRowFeeBump(t *testing.T) {
+	const passphrase = "Test SDF Network ; September 2015"
+	feeSource := "GBTHMMFWTAPFAHRGS33LKETZYJKBTNEENRN47EDZMZPT2BNCJO47GVQG"
+	innerTx := xdr.Transaction{
+		SourceAccount: xdr.MustMuxedAddress("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"),
+		Fee:           100,
+		SeqNum:        99,
+		Cond:          xdr.Preconditions{Type: xdr.PreconditionTypePrecondNone},
+		Memo:          xdr.Memo{Type: xdr.MemoTypeMemoNone},
+		Operations:    []xdr.Operation{},
+	}
+	envelope := xdr.TransactionEnvelope{
+		Type: xdr.EnvelopeTypeEnvelopeTypeTxFeeBump,
+		FeeBump: &xdr.FeeBumpTransactionEnvelope{
+			Tx: xdr.FeeBumpTransaction{
+				FeeSource: xdr.MustMuxedAddress(feeSource),
+				Fee:       400,
+				InnerTx: xdr.FeeBumpTransactionInnerTx{
+					Type: xdr.EnvelopeTypeEnvelopeTypeTx,
+					V1: &xdr.TransactionV1Envelope{
+						Tx:         innerTx,
+						Signatures: []xdr.DecoratedSignature{{Signature: []byte("inner-sig")}},
+					},
+				},
+			},
+			Signatures: []xdr.DecoratedSignature{{Signature: []byte("outer-sig")}},
+		},
+	}
+	envelopeXDR, err := xdr.MarshalBase64(envelope)
+	if err != nil {
+		t.Fatalf("MarshalBase64: %v", err)
+	}
+	outerSig := base64.StdEncoding.EncodeToString([]byte("outer-sig"))
+	innerSig := base64.StdEncoding.EncodeToString([]byte("inner-sig"))
+	innerHashBytes, err := network.HashTransaction(innerTx, passphrase)
+	if err != nil {
+		t.Fatalf("HashTransaction: %v", err)
+	}
+	wantInnerHash := hex.EncodeToString(innerHashBytes[:])
+
+	t.Run("with passphrase", func(t *testing.T) {
+		t.Setenv("NETWORK_PASSPHRASE", passphrase)
+		got, err := horizonTestRow(envelopeXDR).toProtocol()
+		if err != nil {
+			t.Fatalf("toProtocol: %v", err)
+		}
+		if got.FeeAccount != feeSource || got.Account != "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF" {
+			t.Fatalf("fee/source accounts = fee:%q source:%q", got.FeeAccount, got.Account)
+		}
+		if got.MaxFee != 400 {
+			t.Fatalf("max_fee = %d, want outer fee 400", got.MaxFee)
+		}
+		if len(got.Signatures) != 1 || got.Signatures[0] != outerSig {
+			t.Fatalf("top-level signatures = %#v, want outer", got.Signatures)
+		}
+		if got.FeeBumpTransaction == nil || got.FeeBumpTransaction.Hash != "txhash" {
+			t.Fatalf("fee_bump_transaction = %#v", got.FeeBumpTransaction)
+		}
+		if got.InnerTransaction == nil || got.InnerTransaction.Hash != wantInnerHash ||
+			got.InnerTransaction.MaxFee != 100 ||
+			len(got.InnerTransaction.Signatures) != 1 || got.InnerTransaction.Signatures[0] != innerSig {
+			t.Fatalf("inner_transaction = %#v", got.InnerTransaction)
+		}
+	})
+
+	t.Run("without passphrase still fixes fee account", func(t *testing.T) {
+		t.Setenv("NETWORK_PASSPHRASE", "")
+		got, err := horizonTestRow(envelopeXDR).toProtocol()
+		if err != nil {
+			t.Fatalf("toProtocol: %v", err)
+		}
+		if got.FeeAccount != feeSource || got.MaxFee != 400 {
+			t.Fatalf("fee account/max fee = %q/%d", got.FeeAccount, got.MaxFee)
+		}
+		if got.FeeBumpTransaction == nil || got.InnerTransaction != nil {
+			t.Fatalf("fee_bump=%#v inner=%#v, want fee_bump set and inner omitted", got.FeeBumpTransaction, got.InnerTransaction)
+		}
+	})
+}
+
+func horizonTestRow(envelopeXDR string) *horizonTransactionRow {
+	return &horizonTransactionRow{
+		LedgerSequence:  123,
+		TransactionHash: "txhash",
+		TransactionID:   sql.NullInt64{Int64: 528280977408, Valid: true},
+		SourceAccount:   sql.NullString{String: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF", Valid: true},
+		AccountSequence: sql.NullInt64{Int64: 99, Valid: true},
+		FeeCharged:      sql.NullInt64{Int64: 100, Valid: true},
+		MaxFee:          sql.NullInt64{Int64: 1000, Valid: true},
+		Successful:      sql.NullBool{Bool: true, Valid: true},
+		OperationCount:  sql.NullInt64{Int64: 2, Valid: true},
+		CreatedAt:       sql.NullTime{Time: time.Date(2026, 7, 9, 15, 4, 0, 0, time.UTC), Valid: true},
+		EnvelopeXDR:     sql.NullString{String: envelopeXDR, Valid: true},
+		ResultXDR:       sql.NullString{String: "AAAA-result", Valid: true},
+		ResultMetaXDR:   sql.NullString{String: "AAAA-meta", Valid: true},
+		FeeMetaXDR:      sql.NullString{String: "AAAA-fee-meta", Valid: true},
+		RawSignatures:   sql.NullString{String: `["sig1"]`, Valid: true},
+	}
+}
+
+func horizonTestEnvelopeXDR(memo xdr.Memo) string {
+	envelope := xdr.TransactionEnvelope{
+		Type: xdr.EnvelopeTypeEnvelopeTypeTx,
+		V1: &xdr.TransactionV1Envelope{
+			Tx: xdr.Transaction{
+				SourceAccount: xdr.MustMuxedAddress("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"),
+				Fee:           100,
+				SeqNum:        99,
+				Cond:          xdr.Preconditions{Type: xdr.PreconditionTypePrecondNone},
+				Memo:          memo,
+				Operations:    []xdr.Operation{},
+			},
+			Signatures: []xdr.DecoratedSignature{},
+		},
+	}
+	out, err := xdr.MarshalBase64(envelope)
+	if err != nil {
+		panic(err)
+	}
+	return out
+}
+
+var horizonTestEnvelopeNoMemoXDR = horizonTestEnvelopeXDR(xdr.Memo{Type: xdr.MemoTypeMemoNone})
+
+func strPtr(s string) *string { return &s }
+
+func uint64Ptr(v uint64) *xdr.Uint64 {
+	out := xdr.Uint64(v)
+	return &out
 }
 
 type fakeTransactionLocationLookup struct {

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"testing"
 )
 
@@ -118,5 +119,35 @@ func TestHorizonAccountTransactionPagingTokenPreservesServingTOIDCursor(t *testi
 	got := horizonAccountTransactionPagingToken(AccountTransaction{PagingToken: "toid-cursor"}, "desc")
 	if got != "toid-cursor" {
 		t.Fatalf("paging token = %q, want serving TOID cursor", got)
+	}
+}
+
+func TestDecodeHorizonHistoryCursorAcceptsRecordPagingToken(t *testing.T) {
+	// A Horizon client pages with a record's paging_token, which is the numeric
+	// TOID (ledger << 32 | tx-order << 12 | op-index).
+	toid := (int64(456) << 32) | (int64(3) << 12)
+	got, err := decodeHorizonHistoryCursor(strconv.FormatInt(toid, 10))
+	if err != nil {
+		t.Fatalf("decodeHorizonHistoryCursor: %v", err)
+	}
+	if got == nil || got.LedgerSequence != 456 || got.TieBreaker != strconv.FormatInt(toid, 10) {
+		t.Fatalf("cursor = %#v, want ledger 456 with TOID tie-breaker", got)
+	}
+
+	// The collection-link base64 cursor form still decodes.
+	encoded := HistoryCursor{LedgerSequence: 456, TransactionHash: "txhash", Order: "desc"}.Encode()
+	round, err := decodeHorizonHistoryCursor(encoded)
+	if err != nil || round == nil || round.LedgerSequence != 456 || round.TransactionHash != "txhash" {
+		t.Fatalf("base64 cursor = %#v err=%v", round, err)
+	}
+
+	for _, empty := range []string{"", "now"} {
+		if c, err := decodeHorizonHistoryCursor(empty); err != nil || c != nil {
+			t.Fatalf("cursor(%q) = %#v err=%v, want nil", empty, c, err)
+		}
+	}
+
+	if _, err := decodeHorizonHistoryCursor("!!not-a-cursor!!"); err == nil {
+		t.Fatal("garbage cursor should error")
 	}
 }

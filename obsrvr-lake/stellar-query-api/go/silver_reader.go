@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -236,14 +237,44 @@ func (r *SilverColdReader) GetAccountCurrent(ctx context.Context, accountID stri
 	var homeDomain, sponsor sql.NullString
 	var sequenceLedger, sequenceTime sql.NullInt64
 	var authRequired, authRevocable, authImmutable, authClawback sql.NullBool
-	err := r.db.QueryRowContext(ctx, query, accountID).Scan(
-		&acc.AccountID, &acc.Balance, &acc.SequenceNumber,
-		&acc.NumSubentries, &acc.NumSponsoring, &acc.NumSponsored,
-		&acc.LastModifiedLedger, &sequenceLedger, &sequenceTime, &acc.UpdatedAt,
-		&homeDomain, &sponsor, &authRequired, &authRevocable, &authImmutable, &authClawback,
-	)
+	scanTargets := func() []interface{} {
+		return []interface{}{
+			&acc.AccountID, &acc.Balance, &acc.SequenceNumber,
+			&acc.NumSubentries, &acc.NumSponsoring, &acc.NumSponsored,
+			&acc.LastModifiedLedger, &sequenceLedger, &sequenceTime, &acc.UpdatedAt,
+			&homeDomain, &sponsor, &authRequired, &authRevocable, &authImmutable, &authClawback,
+		}
+	}
+	err := r.db.QueryRowContext(ctx, query, accountID).Scan(scanTargets()...)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) && isSchemaGapError(err) {
+		// Cold accounts_current may predate the newer account columns; degrade to
+		// the original column set instead of failing the whole account lookup.
+		logTierFallback("cold GetAccountCurrent", "cold", "cold(null-cast new columns)", err)
+		fallbackQuery := fmt.Sprintf(`
+			SELECT
+				account_id,
+				balance,
+				sequence_number,
+				num_subentries,
+				0 AS num_sponsoring,
+				0 AS num_sponsored,
+				last_modified_ledger,
+				NULL::BIGINT AS sequence_ledger,
+				NULL::BIGINT AS sequence_time,
+				updated_at,
+				home_domain,
+				NULL::VARCHAR AS sponsor_account,
+				NULL::BOOLEAN AS auth_required,
+				NULL::BOOLEAN AS auth_revocable,
+				NULL::BOOLEAN AS auth_immutable,
+				NULL::BOOLEAN AS auth_clawback_enabled
+			FROM %s.%s.accounts_current
+			WHERE account_id = ?
+		`, r.catalogName, r.schemaName)
+		err = r.db.QueryRowContext(ctx, fallbackQuery, accountID).Scan(scanTargets()...)
+	}
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {

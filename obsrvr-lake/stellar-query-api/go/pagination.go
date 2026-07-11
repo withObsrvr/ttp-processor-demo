@@ -476,12 +476,19 @@ type EffectCursor struct {
 }
 
 // Encode encodes an effect cursor to an opaque base64 string
-// Format: ledger:tx_hash:op_index:effect_index:order (5 parts) or legacy (4 parts)
+// Format: ledger:tx_hash:op_index:effect_index[:order[:op_toid]]
+// The op_toid part is present when the cursor was produced by a Horizon-ordered
+// listing (sorted on operation_id): without it, a round-tripped cursor would
+// fall back to the composite predicate, whose key does not match the
+// operation_id sort and can skip or duplicate effects across pages.
 func (c EffectCursor) Encode() string {
 	var raw string
-	if c.Order == "" {
+	switch {
+	case c.OperationID != nil:
+		raw = fmt.Sprintf("%d:%s:%d:%d:%s:%d", c.LedgerSequence, c.TransactionHash, c.OperationIndex, c.EffectIndex, c.Order, *c.OperationID)
+	case c.Order == "":
 		raw = fmt.Sprintf("%d:%s:%d:%d", c.LedgerSequence, c.TransactionHash, c.OperationIndex, c.EffectIndex)
-	} else {
+	default:
 		raw = fmt.Sprintf("%d:%s:%d:%d:%s", c.LedgerSequence, c.TransactionHash, c.OperationIndex, c.EffectIndex, c.Order)
 	}
 	return base64.URLEncoding.EncodeToString([]byte(raw))
@@ -489,7 +496,8 @@ func (c EffectCursor) Encode() string {
 
 // DecodeEffectCursor decodes a base64 cursor string into an EffectCursor
 // Returns nil if the cursor string is empty
-// Supports both legacy format (4 parts) and new format (5 parts with order)
+// Supports the legacy 4-part format, the 5-part format with order, and the
+// 6-part format that also round-trips the operation TOID.
 func DecodeEffectCursor(cursor string) (*EffectCursor, error) {
 	if cursor == "" {
 		return nil, nil
@@ -500,9 +508,9 @@ func DecodeEffectCursor(cursor string) (*EffectCursor, error) {
 		return nil, fmt.Errorf("invalid cursor encoding: %w", err)
 	}
 
-	parts := strings.SplitN(string(decoded), ":", 5)
-	if len(parts) < 4 || len(parts) > 5 {
-		return nil, fmt.Errorf("invalid cursor format: expected ledger:tx_hash:op_index:effect_index or ledger:tx_hash:op_index:effect_index:order")
+	parts := strings.SplitN(string(decoded), ":", 6)
+	if len(parts) < 4 || len(parts) > 6 {
+		return nil, fmt.Errorf("invalid cursor format: expected ledger:tx_hash:op_index:effect_index with optional :order and :op_toid")
 	}
 
 	ledger, err := strconv.ParseInt(parts[0], 10, 64)
@@ -522,8 +530,17 @@ func DecodeEffectCursor(cursor string) (*EffectCursor, error) {
 
 	// Default order for legacy cursors (effects default to ASC)
 	order := "asc"
-	if len(parts) == 5 {
+	if len(parts) >= 5 && parts[4] != "" {
 		order = parts[4]
+	}
+
+	var operationID *int64
+	if len(parts) == 6 {
+		opID, err := strconv.ParseInt(parts[5], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid op_toid in cursor: %w", err)
+		}
+		operationID = &opID
 	}
 
 	return &EffectCursor{
@@ -531,6 +548,7 @@ func DecodeEffectCursor(cursor string) (*EffectCursor, error) {
 		TransactionHash: parts[1],
 		OperationIndex:  opIndex,
 		EffectIndex:     effectIndex,
+		OperationID:     operationID,
 		Order:           order,
 	}, nil
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"regexp"
 	"testing"
 	"time"
@@ -375,6 +376,55 @@ func TestHorizonOperationReaderUsesServingGlobalOperationsWhenCovered(t *testing
 	}
 	if ops[0].SorobanContractID == nil || *ops[0].SorobanContractID != "CCONTRACT" {
 		t.Fatalf("contract id = %v", ops[0].SorobanContractID)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestSchemaProbeDoesNotCacheTransientFailures(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	probe := "SELECT transaction_id, operation_id FROM hot.enriched_history_operations LIMIT 0"
+	// First probe fails transiently: the result must not be cached, so a second
+	// call probes again and succeeds.
+	mock.ExpectQuery(regexp.QuoteMeta(probe)).WillReturnError(errors.New("connection refused"))
+	mock.ExpectQuery(regexp.QuoteMeta(probe)).WillReturnRows(sqlmock.NewRows([]string{"transaction_id", "operation_id"}))
+
+	reader := &HorizonOperationReader{db: db, hotSchema: "hot"}
+	if reader.schemaHasOperationTOIDsCached("hot") {
+		t.Fatal("transient probe failure should report unavailable")
+	}
+	if !reader.schemaHasOperationTOIDsCached("hot") {
+		t.Fatal("second probe should succeed after transient failure")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestSchemaProbeCachesGenuineSchemaGap(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	probe := "SELECT transaction_id, operation_id FROM hot.enriched_history_operations LIMIT 0"
+	// A genuine missing-column error is conclusive: exactly one probe expected.
+	mock.ExpectQuery(regexp.QuoteMeta(probe)).
+		WillReturnError(errors.New(`ERROR: column "operation_id" does not exist (SQLSTATE 42703)`))
+
+	reader := &HorizonOperationReader{db: db, hotSchema: "hot"}
+	if reader.schemaHasOperationTOIDsCached("hot") {
+		t.Fatal("schema gap should report unavailable")
+	}
+	if reader.schemaHasOperationTOIDsCached("hot") {
+		t.Fatal("cached schema gap should stay unavailable without re-probing")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)

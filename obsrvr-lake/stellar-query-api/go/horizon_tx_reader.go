@@ -3,14 +3,18 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/stellar/go-stellar-sdk/network"
 	protocol "github.com/stellar/go-stellar-sdk/protocols/horizon"
 	"github.com/stellar/go-stellar-sdk/xdr"
 )
@@ -84,7 +88,7 @@ func (r *HorizonTransactionReader) GetTransactionByIDAtLedger(ctx context.Contex
 		if errors.Is(err, errHorizonTransactionXDRUnavailable) {
 			servingResourceErr = err
 		}
-		if err != sql.ErrNoRows && !errors.Is(err, errHorizonTransactionXDRUnavailable) && !isMissingServingTransactionResource(err) {
+		if !errors.Is(err, sql.ErrNoRows) && !errors.Is(err, errHorizonTransactionXDRUnavailable) && !isMissingServingTransactionResource(err) {
 			return nil, err
 		}
 	}
@@ -144,7 +148,7 @@ func (r *HorizonTransactionReader) getTransactionByHash(ctx context.Context, has
 		if errors.Is(err, errHorizonTransactionXDRUnavailable) {
 			servingResourceErr = err
 		}
-		if err != sql.ErrNoRows && !errors.Is(err, errHorizonTransactionXDRUnavailable) && !isMissingServingTransactionResource(err) {
+		if !errors.Is(err, sql.ErrNoRows) && !errors.Is(err, errHorizonTransactionXDRUnavailable) && !isMissingServingTransactionResource(err) {
 			return nil, err
 		}
 	}
@@ -208,18 +212,17 @@ func (r *HorizonTransactionReader) lookupLedgerHint(ctx context.Context, hash st
 	return loc.LedgerSequence
 }
 
+// isMissingServingTransactionResource reports whether the serving tier failed
+// because its schema has not been migrated yet (missing sv_transactions_recent
+// or its XDR columns). Classified by SQLSTATE/binder error, not by substring:
+// permission or constraint errors that merely mention those column names must
+// propagate, not silently reroute every lookup through hot/cold.
 func isMissingServingTransactionResource(err error) bool {
-	if err == nil {
+	if !isSchemaGapError(err) {
 		return false
 	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "sv_transactions_recent") ||
-		strings.Contains(msg, "transaction_id") ||
-		strings.Contains(msg, "tx_envelope") ||
-		strings.Contains(msg, "tx_result") ||
-		strings.Contains(msg, "tx_meta") ||
-		strings.Contains(msg, "tx_fee_meta") ||
-		strings.Contains(msg, "tx_signers")
+	logTierFallback("horizon_tx", "serving", "hot/cold", err)
+	return true
 }
 
 const horizonTransactionSelect = `
@@ -381,6 +384,15 @@ func (row *horizonTransactionRow) toProtocol() (*protocol.Transaction, error) {
 		return nil, fmt.Errorf("%w: missing %s", errHorizonTransactionXDRUnavailable, strings.Join(missing, ", "))
 	}
 
+	// A stored envelope that cannot be decoded is corrupt data. Serving the row
+	// anyway would look complete to a Horizon client while silently dropping the
+	// envelope-derived fields (memo, preconditions, fee-bump view), so refuse it
+	// the same way missing XDR is refused.
+	var envelope xdr.TransactionEnvelope
+	if err := xdr.SafeUnmarshalBase64(row.EnvelopeXDR.String, &envelope); err != nil {
+		return nil, fmt.Errorf("%w: tx_envelope undecodable: %v", errHorizonTransactionXDRUnavailable, err)
+	}
+
 	signatures := parseHorizonSignatures(row.RawSignatures)
 	tx := &protocol.Transaction{
 		ID:              row.TransactionHash,
@@ -399,26 +411,125 @@ func (row *horizonTransactionRow) toProtocol() (*protocol.Transaction, error) {
 		ResultXdr:       row.ResultXDR.String,
 		ResultMetaXdr:   row.ResultMetaXDR.String,
 		FeeMetaXdr:      row.FeeMetaXDR.String,
-		MemoType:        normalizeHorizonMemoType(row.MemoType.String),
 		Signatures:      signatures,
 	}
 	if row.SourceAccountMuxed.Valid {
 		tx.AccountMuxed = row.SourceAccountMuxed.String
 		tx.FeeAccountMuxed = row.SourceAccountMuxed.String
 	}
-	if row.Memo.Valid {
-		tx.Memo = row.Memo.String
-	}
-	tx.Preconditions = horizonTransactionPreconditions(row.EnvelopeXDR.String)
+	applyHorizonMemo(tx, envelope)
+	applyHorizonFeeBump(tx, row, envelope)
+	tx.Preconditions = horizonTransactionPreconditions(envelope)
 	return tx, nil
 }
 
-func horizonTransactionPreconditions(envelopeXDR string) *protocol.TransactionPreconditions {
-	var envelope xdr.TransactionEnvelope
-	if err := xdr.SafeUnmarshalBase64(envelopeXDR, &envelope); err != nil {
-		return nil
+// applyHorizonMemo derives memo fields from the decoded envelope rather than the
+// stored memo columns: streaming-ingested rows store text memos as raw text while
+// history-loader backfill stores them base64-encoded (memo_type "text_base64"),
+// and both writers store hash/return memos hex-encoded where Horizon serves
+// base64. The envelope is the one representation every storage generation shares.
+func applyHorizonMemo(tx *protocol.Transaction, envelope xdr.TransactionEnvelope) {
+	memo := envelope.Memo()
+	switch memo.Type {
+	case xdr.MemoTypeMemoNone:
+		tx.MemoType = "none"
+	case xdr.MemoTypeMemoText:
+		tx.MemoType = "text"
+		if text, ok := memo.GetText(); ok {
+			tx.Memo = text
+			tx.MemoBytes = base64.StdEncoding.EncodeToString([]byte(text))
+		}
+	case xdr.MemoTypeMemoId:
+		tx.MemoType = "id"
+		if id, ok := memo.GetId(); ok {
+			tx.Memo = strconv.FormatUint(uint64(id), 10)
+		}
+	case xdr.MemoTypeMemoHash:
+		tx.MemoType = "hash"
+		if hash, ok := memo.GetHash(); ok {
+			tx.Memo = base64.StdEncoding.EncodeToString(hash[:])
+		}
+	case xdr.MemoTypeMemoReturn:
+		tx.MemoType = "return"
+		if ret, ok := memo.GetRetHash(); ok {
+			tx.Memo = base64.StdEncoding.EncodeToString(ret[:])
+		}
 	}
+}
 
+// applyHorizonFeeBump populates the fee-bump view of a transaction. Bronze rows
+// store the outer hash but the inner source account, sequence, max fee, and
+// signatures (see stellar-postgres-ingester populateTransactionXDRFields), so
+// everything outer-specific comes from the envelope: the fee account, the outer
+// (replacement) max fee, and the outer signatures, which Horizon reports at the
+// top level when a fee-bump transaction is fetched by its outer hash.
+func applyHorizonFeeBump(tx *protocol.Transaction, row *horizonTransactionRow, envelope xdr.TransactionEnvelope) {
+	if !envelope.IsFeeBump() {
+		return
+	}
+	feeSource := envelope.FeeBumpAccount()
+	tx.FeeAccount = feeSource.ToAccountId().Address()
+	tx.FeeAccountMuxed = ""
+	tx.FeeAccountMuxedID = 0
+	if feeSource.Type == xdr.CryptoKeyTypeKeyTypeMuxedEd25519 {
+		if addr, err := feeSource.GetAddress(); err == nil {
+			tx.FeeAccountMuxed = addr
+			tx.FeeAccountMuxedID = uint64(feeSource.Med25519.Id)
+		}
+	}
+	tx.MaxFee = envelope.FeeBumpFee()
+	outerSignatures := encodeDecoratedSignatures(envelope.FeeBumpSignatures())
+	innerSignatures := encodeDecoratedSignatures(envelope.Signatures())
+	if len(outerSignatures) > 0 {
+		tx.Signatures = outerSignatures
+	}
+	tx.FeeBumpTransaction = &protocol.FeeBumpTransaction{
+		Hash:       row.TransactionHash,
+		Signatures: outerSignatures,
+	}
+	innerHash := strings.TrimSpace(row.InnerTransactionHash.String)
+	if innerHash == "" {
+		innerHash = computeFeeBumpInnerHash(envelope)
+	}
+	if innerHash == "" {
+		// Without a stored inner hash or NETWORK_PASSPHRASE we cannot derive the
+		// inner hash, and an inner_transaction block with an empty hash would read
+		// as corrupt to a Horizon client.
+		log.Printf("horizon_tx path=fee_bump_inner_hash_unavailable tx=%s (set NETWORK_PASSPHRASE to derive inner hashes)", row.TransactionHash)
+		return
+	}
+	tx.InnerTransaction = &protocol.InnerTransaction{
+		Hash:       innerHash,
+		MaxFee:     int64(envelope.Fee()),
+		Signatures: innerSignatures,
+	}
+}
+
+func computeFeeBumpInnerHash(envelope xdr.TransactionEnvelope) string {
+	passphrase := os.Getenv("NETWORK_PASSPHRASE")
+	if passphrase == "" {
+		return ""
+	}
+	inner := envelope.MustFeeBump().Tx.InnerTx
+	if inner.Type != xdr.EnvelopeTypeEnvelopeTypeTx || inner.V1 == nil {
+		return ""
+	}
+	hash, err := network.HashTransaction(inner.V1.Tx, passphrase)
+	if err != nil {
+		return ""
+	}
+	return hex.EncodeToString(hash[:])
+}
+
+func encodeDecoratedSignatures(signatures []xdr.DecoratedSignature) []string {
+	out := make([]string, 0, len(signatures))
+	for _, sig := range signatures {
+		out = append(out, base64.StdEncoding.EncodeToString(sig.Signature))
+	}
+	return out
+}
+
+func horizonTransactionPreconditions(envelope xdr.TransactionEnvelope) *protocol.TransactionPreconditions {
 	cond := envelope.Preconditions()
 	out := &protocol.TransactionPreconditions{}
 	hasFields := false
@@ -515,15 +626,19 @@ func parseHorizonSignatures(raw sql.NullString) []string {
 		return nil
 	}
 
-	var jsonValues []string
-	if strings.HasPrefix(value, "[") && json.Unmarshal([]byte(value), &jsonValues) == nil {
-		return compactStrings(jsonValues)
+	if strings.HasPrefix(value, "[") {
+		var jsonValues []string
+		if json.Unmarshal([]byte(value), &jsonValues) == nil {
+			return compactStrings(jsonValues)
+		}
+		// Malformed JSON: refuse rather than comma-split into mangled signature
+		// strings; missingMandatoryFields then reports tx_signers unavailable.
+		return nil
 	}
 
+	// Postgres text[] literal form: {sig1,sig2}
 	value = strings.TrimPrefix(value, "{")
 	value = strings.TrimSuffix(value, "}")
-	value = strings.TrimPrefix(value, "[")
-	value = strings.TrimSuffix(value, "]")
 	parts := strings.Split(value, ",")
 	out := make([]string, 0, len(parts))
 	for _, part := range parts {
@@ -545,14 +660,4 @@ func compactStrings(values []string) []string {
 		}
 	}
 	return out
-}
-
-func normalizeHorizonMemoType(memoType string) string {
-	if memoType == "" {
-		return "none"
-	}
-	if memoType == "text_base64" {
-		return "text"
-	}
-	return memoType
 }

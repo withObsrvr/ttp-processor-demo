@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sort"
 	"strconv"
 	"strings"
@@ -285,6 +286,10 @@ func (h *SilverHotReader) GetServingContractStorageSummary(ctx context.Context, 
 	summary.UpdatedAt = updatedAt.UTC().Format(time.RFC3339)
 	if coverage, err := h.GetServingWatermark(ctx, "serving.sv_contract_storage_summary"); err == nil {
 		summary.Coverage = coverage
+	} else {
+		// Coverage is how this API discloses incompleteness; dropping it turns
+		// "unknown data quality" into an unqualified answer.
+		log.Printf("serving watermark lookup failed table=serving.sv_contract_storage_summary err=%v", err)
 	}
 	return &summary, nil
 }
@@ -344,6 +349,8 @@ func (h *SilverHotReader) GetServingContractActivitySummary(ctx context.Context,
 	summary.UpdatedAt = updatedAt.UTC().Format(time.RFC3339)
 	if coverage, err := h.GetServingWatermark(ctx, "serving.sv_contract_activity_summary"); err == nil {
 		summary.Coverage = coverage
+	} else {
+		log.Printf("serving watermark lookup failed table=serving.sv_contract_activity_summary err=%v", err)
 	}
 	return &summary, nil
 }
@@ -405,6 +412,13 @@ func (h *SilverHotReader) GetServingAccountCurrent(ctx context.Context, accountI
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
+		if !isSchemaGapError(err) {
+			// Only a genuinely missing column/table may reroute to the legacy
+			// (narrower) query; degrading on transient errors would silently drop
+			// the newer account fields the legacy projection lacks.
+			return nil, err
+		}
+		logTierFallback("serving GetServingAccountCurrent", "serving", "serving(legacy columns)", err)
 		return h.getServingAccountCurrentLegacy(ctx, accountID)
 	}
 
@@ -563,6 +577,12 @@ func (h *SilverHotReader) GetServingAccountBalances(ctx context.Context, account
 		ORDER BY balance_stroops DESC, asset_code ASC
 	`, accountID)
 	if err != nil {
+		if !isSchemaGapError(err) {
+			// The legacy projection drops liabilities/sponsor/clawback fields;
+			// only take it when the newer columns genuinely don't exist yet.
+			return nil, err
+		}
+		logTierFallback("serving GetServingAccountBalances", "serving", "serving(legacy columns)", err)
 		return h.getServingAccountBalancesLegacy(ctx, accountID)
 	}
 	defer rows.Close()
@@ -1468,11 +1488,12 @@ func (h *SilverHotReader) GetServingTransactionOperations(ctx context.Context, f
 	}
 
 	var status string
+	var completeThru int64
 	err := h.db.QueryRowContext(ctx, `
-		SELECT status
+		SELECT status, complete_thru
 		FROM serving.sv_watermarks
 		WHERE table_name = 'serving.sv_operations_by_account'
-	`).Scan(&status)
+	`).Scan(&status, &completeThru)
 	if err == sql.ErrNoRows {
 		return nil, "", false, false, nil
 	}
@@ -1480,6 +1501,16 @@ func (h *SilverHotReader) GetServingTransactionOperations(ctx context.Context, f
 		return nil, "", false, false, fmt.Errorf("serving transaction operations watermark: %w", err)
 	}
 	if status != "complete" {
+		return nil, "", false, false, nil
+	}
+	// Same freshness gate as GetServingOperations: a transaction newer than
+	// complete_thru is not projected yet, and answering for it would return an
+	// empty-but-covered page the caller never falls back from.
+	latestLedger, err := h.GetServingLatestLedgerSequence(ctx)
+	if err != nil {
+		return nil, "", false, false, fmt.Errorf("serving latest ledger for transaction operations: %w", err)
+	}
+	if !servingFeedFreshEnough(completeThru, latestLedger) {
 		return nil, "", false, false, nil
 	}
 
@@ -1534,6 +1565,13 @@ func (h *SilverHotReader) GetServingTransactionOperations(ctx context.Context, f
 	ops, nextCursor, hasMore, err := scanServingOperations(rows, limit, filters.Order)
 	if err != nil {
 		return nil, "", false, true, err
+	}
+	if len(ops) == 0 && filters.Cursor == nil {
+		// Every transaction has at least one operation, so an empty first page
+		// means either the transaction is outside the projected window or (for
+		// payments_only) genuinely has no payments. Report not-covered and let
+		// the caller answer from the authoritative enriched-operations path.
+		return nil, "", false, false, nil
 	}
 	return ops, nextCursor, hasMore, true, nil
 }
@@ -1775,6 +1813,10 @@ func (h *SilverHotReader) GetServingAccountEffects(ctx context.Context, filters 
 		return nil, "", false, false, nil
 	}
 
+	// Deliberately no freshness gate here: account-scoped effect cold fallback
+	// is too expensive for interactive Horizon pages, so a complete but slightly
+	// stale serving feed gives callers a bounded page instead of turning
+	// live-tip lag into a 504.
 	startLedger := completeFrom
 	endLedger := completeThru
 	if filters.LedgerSequence > 0 {
@@ -1783,15 +1825,6 @@ func (h *SilverHotReader) GetServingAccountEffects(ctx context.Context, filters 
 		}
 		startLedger = filters.LedgerSequence
 		endLedger = filters.LedgerSequence
-	} else {
-		latestLedger, err := h.GetServingLatestLedgerSequence(ctx)
-		if err != nil {
-			return nil, "", false, false, fmt.Errorf("serving latest ledger for account effects: %w", err)
-		}
-		_ = latestLedger
-		// Account-scoped effect cold fallback is too expensive for interactive Horizon
-		// pages. A complete but slightly stale serving feed gives callers a bounded
-		// page instead of turning live-tip lag into a 504.
 	}
 
 	limit := filters.Limit

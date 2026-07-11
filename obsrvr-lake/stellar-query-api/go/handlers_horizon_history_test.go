@@ -11,6 +11,7 @@ import (
 
 	"github.com/gorilla/mux"
 	protocol "github.com/stellar/go-stellar-sdk/protocols/horizon"
+	hoperations "github.com/stellar/go-stellar-sdk/protocols/horizon/operations"
 	"github.com/stellar/go-stellar-sdk/toid"
 )
 
@@ -307,4 +308,95 @@ func TestDecodeHorizonOperationCursorAcceptsNumericPagingToken(t *testing.T) {
 	if cursor == nil || cursor.LedgerSequence != 123 || cursor.OperationIndex != id {
 		t.Fatalf("cursor = %+v, want ledger 123 operation id %d", cursor, id)
 	}
+}
+
+func TestDecodeHorizonOperationCursorRejectsLegacySilverCursor(t *testing.T) {
+	// A /silver base64 cursor carries a per-transaction operation index; feeding
+	// it into the Horizon TOID comparison would return a silently wrong page.
+	legacy := OperationCursor{LedgerSequence: 456, OperationIndex: 3, Order: "desc"}.Encode()
+	if _, err := decodeHorizonOperationCursor(legacy); err == nil {
+		t.Fatal("legacy base64 cursor must be rejected on Horizon endpoints")
+	}
+
+	toidCursor, err := decodeHorizonOperationCursor("1958505086976")
+	if err != nil || toidCursor == nil || toidCursor.OperationIndex != 1958505086976 || toidCursor.LedgerSequence != 456 {
+		t.Fatalf("TOID cursor = %#v err=%v", toidCursor, err)
+	}
+
+	for _, empty := range []string{"", "now"} {
+		if c, err := decodeHorizonOperationCursor(empty); err != nil || c != nil {
+			t.Fatalf("cursor(%q) = %#v err=%v, want nil", empty, c, err)
+		}
+	}
+}
+
+func TestHorizonOperationRecordPopulatesPaymentFamilyTypes(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/horizon-compat/operations", nil)
+	amount := "2.5000000"
+	dest := "GDEST"
+	code := "USDC"
+	issuer := "GISSUER"
+
+	baseOp := EnrichedOperation{
+		TransactionHash: "txhash",
+		OperationID:     1958505086976,
+		LedgerSequence:  456,
+		SourceAccount:   "GSOURCE",
+		Destination:     &dest,
+		Amount:          &amount,
+		AssetCode:       &code,
+		AssetIssuer:     &issuer,
+		TxSuccessful:    true,
+	}
+
+	t.Run("create_account", func(t *testing.T) {
+		op := baseOp
+		op.Type = 0
+		record, ok := horizonOperationRecord(req, op, "asc").(hoperations.CreateAccount)
+		if !ok {
+			t.Fatalf("record type = %T, want CreateAccount", horizonOperationRecord(req, op, "asc"))
+		}
+		if record.StartingBalance != amount || record.Funder != "GSOURCE" || record.Account != "GDEST" {
+			t.Fatalf("create_account = %#v", record)
+		}
+	})
+
+	t.Run("path_payment_strict_receive", func(t *testing.T) {
+		op := baseOp
+		op.Type = 2
+		record, ok := horizonOperationRecord(req, op, "asc").(hoperations.PathPayment)
+		if !ok {
+			t.Fatalf("record type = %T, want PathPayment", horizonOperationRecord(req, op, "asc"))
+		}
+		if record.From != "GSOURCE" || record.To != "GDEST" || record.Amount != amount || record.Code != "USDC" {
+			t.Fatalf("path_payment = %#v", record)
+		}
+		if record.Path == nil {
+			t.Fatal("path must be an empty array, not null")
+		}
+	})
+
+	t.Run("account_merge", func(t *testing.T) {
+		op := baseOp
+		op.Type = 8
+		record, ok := horizonOperationRecord(req, op, "asc").(hoperations.AccountMerge)
+		if !ok {
+			t.Fatalf("record type = %T, want AccountMerge", horizonOperationRecord(req, op, "asc"))
+		}
+		if record.Account != "GSOURCE" || record.Into != "GDEST" {
+			t.Fatalf("account_merge = %#v", record)
+		}
+	})
+
+	t.Run("path_payment_strict_send", func(t *testing.T) {
+		op := baseOp
+		op.Type = 13
+		record, ok := horizonOperationRecord(req, op, "asc").(hoperations.PathPaymentStrictSend)
+		if !ok {
+			t.Fatalf("record type = %T, want PathPaymentStrictSend", horizonOperationRecord(req, op, "asc"))
+		}
+		if record.From != "GSOURCE" || record.To != "GDEST" || record.Amount != amount {
+			t.Fatalf("path_payment_strict_send = %#v", record)
+		}
+	})
 }

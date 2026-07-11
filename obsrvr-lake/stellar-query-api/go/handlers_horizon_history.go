@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -165,6 +166,11 @@ func (h *HorizonCompatHandlers) HandleTransactionEffects(w http.ResponseWriter, 
 		cancel()
 		if err == nil && tx != nil && tx.Ledger > 0 {
 			filters.LedgerSequence = int64(tx.Ledger)
+		} else if err != nil && !errors.Is(err, errHorizonTransactionNotFound) {
+			// The lookup only provides the ledger bound; proceed unbounded, but a
+			// failing lookup would otherwise be visible only as mysteriously slow
+			// effect queries.
+			log.Printf("horizon_effects path=tx_ledger_hint_error tx=%s err=%v; querying without ledger bound", hash, err)
 		}
 	}
 	h.handleEffectCollection(w, r, filters)
@@ -241,14 +247,20 @@ func decodeHorizonOperationCursor(raw string) (*OperationCursor, error) {
 	if raw == "now" {
 		return nil, nil
 	}
-	if id, err := strconv.ParseInt(raw, 10, 64); err == nil && id > 0 {
-		parsed := toid.Parse(id)
-		return &OperationCursor{
-			LedgerSequence: int64(parsed.LedgerSequence),
-			OperationIndex: id,
-		}, nil
+	// Horizon operation paging tokens are numeric TOIDs (that is all this layer
+	// ever emits). Do NOT fall back to the legacy base64 ledger:op_index cursor:
+	// its op_index is a per-transaction index, and funneling it into the TOID
+	// comparison would silently return a wrong page. /silver cursors belong to
+	// the /silver endpoints.
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id <= 0 {
+		return nil, fmt.Errorf("cursor %q is not a Horizon operation paging token", raw)
 	}
-	return DecodeOperationCursor(raw)
+	parsed := toid.Parse(id)
+	return &OperationCursor{
+		LedgerSequence: int64(parsed.LedgerSequence),
+		OperationIndex: id,
+	}, nil
 }
 
 func decodeHorizonEffectCursor(raw string) (*EffectCursor, error) {
@@ -292,17 +304,56 @@ func parseHorizonEffectPair(raw string) (int64, int64, bool, error) {
 
 func horizonOperationRecord(r *http.Request, op EnrichedOperation, order string) hoperations.Operation {
 	base := horizonOperationBase(r, op, order)
-	if op.Type == int32(xdr.OperationTypePayment) {
-		payment := hoperations.Payment{
+	switch xdr.OperationType(op.Type) {
+	case xdr.OperationTypeCreateAccount:
+		return hoperations.CreateAccount{
+			Base:            base,
+			StartingBalance: derefString(op.Amount),
+			Funder:          op.SourceAccount,
+			Account:         derefString(op.Destination),
+		}
+	case xdr.OperationTypePayment:
+		return hoperations.Payment{
 			Base:   base,
 			Asset:  horizonAsset(op.AssetCode, op.AssetIssuer),
 			From:   op.SourceAccount,
 			To:     derefString(op.Destination),
 			Amount: derefString(op.Amount),
 		}
-		return payment
-	}
-	if op.Type == int32(xdr.OperationTypeInvokeHostFunction) {
+	// Path payments are part of the /payments predicate; rendering them as bare
+	// Base records would hand SDK clients zero-valued amounts with no unmarshal
+	// error. The enriched columns carry the destination leg (from/to/asset/
+	// amount); the source leg (source_amount/source_max/destination_min, path)
+	// is not captured at ingest and is emitted empty.
+	case xdr.OperationTypePathPaymentStrictReceive:
+		return hoperations.PathPayment{
+			Payment: hoperations.Payment{
+				Base:   base,
+				Asset:  horizonAsset(op.AssetCode, op.AssetIssuer),
+				From:   op.SourceAccount,
+				To:     derefString(op.Destination),
+				Amount: derefString(op.Amount),
+			},
+			Path: []hbase.Asset{},
+		}
+	case xdr.OperationTypePathPaymentStrictSend:
+		return hoperations.PathPaymentStrictSend{
+			Payment: hoperations.Payment{
+				Base:   base,
+				Asset:  horizonAsset(op.AssetCode, op.AssetIssuer),
+				From:   op.SourceAccount,
+				To:     derefString(op.Destination),
+				Amount: derefString(op.Amount),
+			},
+			Path: []hbase.Asset{},
+		}
+	case xdr.OperationTypeAccountMerge:
+		return hoperations.AccountMerge{
+			Base:    base,
+			Account: op.SourceAccount,
+			Into:    derefString(op.Destination),
+		}
+	case xdr.OperationTypeInvokeHostFunction:
 		return hoperations.InvokeHostFunction{
 			Base:                base,
 			Function:            horizonHostFunctionName(op),

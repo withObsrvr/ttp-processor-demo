@@ -48,20 +48,34 @@ Collection routes accept Horizon-style pagination parameters:
 | `/fee_stats` | GET | implemented | hot/cold ledger and transaction fee data |
 | `/ledgers` | GET | implemented | hot/cold ledger data |
 | `/ledgers/{sequence}` | GET | implemented | exact hot/cold ledger lookup with `ledger_range` pruning |
-| `/transactions/{hash}` | GET | implemented | serving `sv_transactions_recent` first, then bounded hot/cold Bronze fallback |
+| `/transactions/{hash}` | GET | implemented | serving `sv_transactions_recent` first, then hot/cold Bronze fallback (ledger-bounded when the transaction location index resolves the hash; otherwise an unbounded cold scan) |
 | `/transactions/{hash}/operations` | GET | implemented | serving `sv_operations_by_account` first, then enriched operations fallback |
 | `/transactions/{hash}/payments` | GET | implemented | serving `sv_operations_by_account` first, payment subset, then fallback |
 | `/transactions/{hash}/effects` | GET | implemented | effects |
 | `/accounts/{id}` | GET | implemented | current account state, balances, signers |
-| `/accounts/{id}/transactions` | GET | implemented | account transaction feed plus Horizon transaction hydration |
+| `/accounts/{id}/transactions` | GET | implemented | account transaction feed (serving path requires `ACCOUNT_TX_FEED_ENABLED=true`, default off) plus Horizon transaction hydration |
 | `/accounts/{id}/operations` | GET | implemented | serving `sv_operations_by_account` first, then unified enriched operations fallback |
-| `/accounts/{id}/payments` | GET | implemented | serving `sv_operations_by_account` first, payment subset, then fallback |
+| `/accounts/{id}/payments` | GET | implemented | serving `sv_effects_by_account` payment-effect TOIDs hydrated from `sv_operations_by_account`, then fallback |
 | `/accounts/{id}/effects` | GET | implemented | serving `sv_effects_by_account` first, then unified effects fallback |
 | `/operations` | GET | implemented | serving `sv_operations_by_account` first, then enriched operations fallback |
 | `/operations/{id}` | GET | implemented | serving `sv_operations_by_account` first, then enriched operation by TOID fallback |
 | `/operations/{id}/effects` | GET | implemented | effects filtered by operation TOID |
 | `/payments` | GET | implemented | serving `sv_operations_by_account` first, payment subset, then fallback |
 | `/effects` | GET | implemented | effects |
+
+## Operational Notes
+
+- `ACCOUNT_TX_FEED_ENABLED=true` enables the serving fast path for
+  `/accounts/{id}/transactions`; it defaults to off, in which case the route
+  answers through the slower federated reader.
+- `NETWORK_PASSPHRASE` must be set to derive fee-bump `inner_transaction`
+  hashes; without it fee-bump transactions omit the `inner_transaction` block.
+- `cursor=now` is treated as "no cursor": equivalent to Horizon for
+  `order=desc`, but for `order=asc` this returns from the oldest available
+  history where Horizon would return an empty page until new ledgers close.
+- Emitted `_links` may reference routes this layer does not implement yet
+  (account offers/trades/data, ledger sub-collections, global
+  `/transactions`); following those links returns 404.
 
 ## Cycle 5B Transaction Hydration
 

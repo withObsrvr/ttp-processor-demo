@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math/big"
@@ -349,14 +350,46 @@ func (r *UnifiedDuckDBReader) GetAccountCurrent(ctx context.Context, accountID s
 	var homeDomain, sponsor sql.NullString
 	var sequenceLedger, sequenceTime sql.NullInt64
 	var authRequired, authRevocable, authImmutable, authClawback sql.NullBool
-	err := r.db.QueryRowContext(ctx, query, accountID).Scan(
-		&acc.AccountID, &acc.Balance, &acc.SequenceNumber,
-		&acc.NumSubentries, &acc.NumSponsoring, &acc.NumSponsored,
-		&acc.LastModifiedLedger, &sequenceLedger, &sequenceTime, &acc.UpdatedAt,
-		&homeDomain, &sponsor, &authRequired, &authRevocable, &authImmutable, &authClawback,
-	)
+	scanTargets := func() []interface{} {
+		return []interface{}{
+			&acc.AccountID, &acc.Balance, &acc.SequenceNumber,
+			&acc.NumSubentries, &acc.NumSponsoring, &acc.NumSponsored,
+			&acc.LastModifiedLedger, &sequenceLedger, &sequenceTime, &acc.UpdatedAt,
+			&homeDomain, &sponsor, &authRequired, &authRevocable, &authImmutable, &authClawback,
+		}
+	}
+	err := r.db.QueryRowContext(ctx, query, accountID).Scan(scanTargets()...)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) && isSchemaGapError(err) {
+		// Cold accounts_current predates the newer account columns on some
+		// deployments; without this fallback the whole UNION errors and the
+		// long-standing /silver account routes 500 instead of degrading.
+		logTierFallback("unified GetAccountCurrent", "hot+cold", "hot+cold(null-cast cold columns)", err)
+		fallbackQuery := fmt.Sprintf(`
+			SELECT account_id, balance, sequence_number, num_subentries,
+			       num_sponsoring, num_sponsored, last_modified_ledger,
+			       sequence_ledger, sequence_time, updated_at, home_domain,
+			       sponsor_account, auth_required, auth_revocable, auth_immutable, auth_clawback_enabled
+			FROM (
+				SELECT account_id, balance, sequence_number, num_subentries,
+				       num_sponsoring, num_sponsored, last_modified_ledger,
+				       sequence_ledger, sequence_time, updated_at, home_domain,
+				       sponsor_account, auth_required, auth_revocable, auth_immutable, auth_clawback_enabled
+				FROM %s.accounts_current WHERE account_id = $1
+				UNION ALL
+				SELECT account_id, balance, sequence_number, num_subentries,
+				       0 AS num_sponsoring, 0 AS num_sponsored, last_modified_ledger,
+				       NULL::BIGINT AS sequence_ledger, NULL::BIGINT AS sequence_time, updated_at, home_domain,
+				       NULL::VARCHAR AS sponsor_account, NULL::BOOLEAN AS auth_required, NULL::BOOLEAN AS auth_revocable,
+				       NULL::BOOLEAN AS auth_immutable, NULL::BOOLEAN AS auth_clawback_enabled
+				FROM %s.accounts_current WHERE account_id = $1
+			) combined
+			ORDER BY last_modified_ledger DESC
+			LIMIT 1
+		`, r.hotSchema, r.coldSchema)
+		err = r.db.QueryRowContext(ctx, fallbackQuery, accountID).Scan(scanTargets()...)
+	}
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
@@ -3108,33 +3141,38 @@ func shouldQueryAccountEffectsByTier(filters EffectFilters) bool {
 }
 
 func (r *UnifiedDuckDBReader) getAccountEffectsByTier(ctx context.Context, whereClause, orderDir string, argNum int, args []interface{}, limit int, order string, horizonOrder bool) ([]SilverEffect, string, bool, error) {
+	// getEffectsFromSchema returns sql.ErrNoRows for an unconfigured tier (empty
+	// schema); that is the only error a tier may absorb. A tier that exists but
+	// fails must fail the page: returning the other tier's rows as a complete
+	// page would tell a paging client the account's history ends where the
+	// failed tier's data begins.
 	hotEffects, hotNext, hotHasMore, hotErr := r.getEffectsFromSchema(ctx, r.hotSchema, whereClause, orderDir, argNum, args, limit, order, horizonOrder)
 	if hotErr == nil {
 		if hotHasMore || len(hotEffects) >= limit {
 			return hotEffects, hotNext, hotHasMore, nil
 		}
 		remaining := limit - len(hotEffects)
-		if remaining > 0 {
-			coldEffects, coldNext, coldHasMore, coldErr := r.getEffectsFromSchema(ctx, r.coldSchema, whereClause, orderDir, argNum, args, remaining, order, horizonOrder)
-			if coldErr == nil {
-				combined := append(hotEffects, coldEffects...)
-				if coldHasMore {
-					return combined, coldNext, true, nil
-				}
-				return combined, "", false, nil
+		coldEffects, coldNext, coldHasMore, coldErr := r.getEffectsFromSchema(ctx, r.coldSchema, whereClause, orderDir, argNum, args, remaining, order, horizonOrder)
+		if coldErr == nil {
+			combined := append(hotEffects, coldEffects...)
+			if coldHasMore {
+				return combined, coldNext, true, nil
 			}
+			return combined, "", false, nil
 		}
-		if len(hotEffects) > 0 {
+		if errors.Is(coldErr, sql.ErrNoRows) {
+			// No cold tier configured: the hot page is the complete answer.
 			return hotEffects, "", false, nil
 		}
+		return nil, "", false, fmt.Errorf("unified GetEffects account cold continuation: %w", coldErr)
+	}
+	if !errors.Is(hotErr, sql.ErrNoRows) {
+		return nil, "", false, fmt.Errorf("unified GetEffects account hot: %w", hotErr)
 	}
 
 	coldEffects, coldNext, coldHasMore, coldErr := r.getEffectsFromSchema(ctx, r.coldSchema, whereClause, orderDir, argNum, args, limit, order, horizonOrder)
 	if coldErr == nil {
 		return coldEffects, coldNext, coldHasMore, nil
-	}
-	if hotErr != nil {
-		return nil, "", false, fmt.Errorf("unified GetEffects account hot=%v cold=%w", hotErr, coldErr)
 	}
 	return nil, "", false, fmt.Errorf("unified GetEffects account cold: %w", coldErr)
 }

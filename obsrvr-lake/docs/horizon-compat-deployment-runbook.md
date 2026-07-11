@@ -128,7 +128,8 @@ Record the image digests in the rollout note.
 Apply the additive PostgreSQL migrations before restarting live writers:
 
 ```bash
-psql "$BRONZE_POSTGRES_DSN" -f obsrvr-lake/stellar-postgres-ingester/migrations/008_add_account_sequence_ledger_time.sql
+psql "$BRONZE_POSTGRES_DSN" -f obsrvr-lake/stellar-postgres-ingester/migrations/008_add_transaction_xdr_fields.sql
+psql "$BRONZE_POSTGRES_DSN" -f obsrvr-lake/stellar-postgres-ingester/migrations/009_add_account_sequence_ledger_time.sql
 psql "$SILVER_POSTGRES_DSN" -f obsrvr-lake/silver-realtime-transformer/migrations/010_add_account_sequence_ledger_time.sql
 ```
 
@@ -172,7 +173,7 @@ where table_schema = 'serving'
   and column_name in (
     'sequence_ledger',
     'sequence_time',
-    'sponsor_account',
+    'sponsor',
     'auth_required',
     'auth_revocable',
     'auth_immutable',
@@ -398,10 +399,20 @@ backfill. This version prefers `serving.sv_transactions_recent` for Horizon
 transaction hydration and returns `503 data_unavailable` rather than partial
 transaction resources when required XDR is missing.
 
-Nomad example:
+Required environment on the `stellar-query-api` job:
+
+- `ACCOUNT_TX_FEED_ENABLED=true` — the `/accounts/{id}/transactions` serving
+  feed path is gated on this flag and it defaults to **off**; without it every
+  request silently takes the slower federated path.
+- `NETWORK_PASSPHRASE` — e.g. `Test SDF Network ; September 2015`. Needed to
+  derive fee-bump inner transaction hashes; without it fee-bump transactions
+  are served without their `inner_transaction` block (logged at request time).
+
+Nomad example (the jobspec lives in the infra repository under
+`nomad/obsrvr-lake/`):
 
 ```bash
-nomad job run nomad/stellar-query-api.nomad
+nomad job run stellar-query-api.nomad
 nomad job status stellar-query-api
 ```
 

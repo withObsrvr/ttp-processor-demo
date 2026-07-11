@@ -37,6 +37,8 @@ func (h *HorizonCompatHandlers) HandleAccount(w http.ResponseWriter, r *http.Req
 		switch {
 		case errors.Is(err, errHorizonAccountNotFound):
 			renderHorizonProblem(w, r, horizonProblem(http.StatusNotFound, "not_found", "Resource Missing", "Account not found."))
+		case errors.Is(err, errHorizonAccountDataUnavailable):
+			renderHorizonProblem(w, r, horizonProblem(http.StatusServiceUnavailable, "data_unavailable", "Data Unavailable", err.Error()))
 		case isQueryTimeout(err):
 			renderHorizonProblem(w, r, horizonProblem(http.StatusGatewayTimeout, "timeout", "Timeout", err.Error()))
 		default:
@@ -275,6 +277,17 @@ func populateHorizonLedgerLinks(r *http.Request, ledger *protocol.Ledger) {
 func decodeHorizonHistoryCursor(raw string) (*HistoryCursor, error) {
 	if raw == "" || raw == "now" {
 		return nil, nil
+	}
+	// Horizon clients page with a record's paging_token, which for transactions
+	// is the numeric TOID. The serving feed pages exactly on the TOID tie-breaker;
+	// the federated fallback pages at ledger granularity (the TOID's high 32 bits),
+	// which can skip same-ledger sibling transactions only when serving coverage
+	// is unavailable.
+	if toid, err := strconv.ParseInt(raw, 10, 64); err == nil && toid > 0 {
+		return &HistoryCursor{
+			LedgerSequence: toid >> 32,
+			TieBreaker:     raw,
+		}, nil
 	}
 	return DecodeHistoryCursor(raw)
 }

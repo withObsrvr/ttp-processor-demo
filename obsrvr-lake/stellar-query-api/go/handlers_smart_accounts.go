@@ -443,8 +443,18 @@ func (h *SmartWalletHandlers) queryServingSmartAccountState(ctx context.Context,
 		if closedAt.Valid {
 			rule.ClosedAt = &closedAt.Time
 		}
-		rule.Signers = parseServingSmartAccountSigners(signersJSON)
-		rule.Policies = parseServingSmartAccountPolicies(policiesJSON)
+		signers, err := parseServingSmartAccountSigners(signersJSON)
+		if err != nil {
+			// Corrupt signer/policy JSON must not render a rule with empty
+			// signers — that misstates the account's security configuration.
+			return nil, fmt.Errorf("contract %s context rule %d: %w", contractID, rule.ContextRuleID, err)
+		}
+		rule.Signers = signers
+		policies, err := parseServingSmartAccountPolicies(policiesJSON)
+		if err != nil {
+			return nil, fmt.Errorf("contract %s context rule %d: %w", contractID, rule.ContextRuleID, err)
+		}
+		rule.Policies = policies
 		rules = append(rules, rule)
 	}
 	if err := rows.Err(); err != nil {
@@ -516,7 +526,7 @@ func scanSmartAccountContractSummary(scanner smartAccountSummaryScanner) (SmartA
 	return summary, nil
 }
 
-func parseServingSmartAccountSigners(raw string) []SmartAccountSignerRow {
+func parseServingSmartAccountSigners(raw string) ([]SmartAccountSignerRow, error) {
 	var rows []SmartAccountSignerRow
 	type signerJSON struct {
 		SignerID           *int64 `json:"signer_id"`
@@ -528,9 +538,13 @@ func parseServingSmartAccountSigners(raw string) []SmartAccountSignerRow {
 		TransactionHash    string `json:"transaction_hash"`
 		RegistryResolved   bool   `json:"registry_resolved"`
 	}
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == "null" || trimmed == "[]" {
+		return nil, nil
+	}
 	var parsed []signerJSON
-	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-		return rows
+	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
+		return nil, fmt.Errorf("signers_json unparseable: %w", err)
 	}
 	for _, p := range parsed {
 		rows = append(rows, SmartAccountSignerRow{
@@ -544,10 +558,10 @@ func parseServingSmartAccountSigners(raw string) []SmartAccountSignerRow {
 			RegistryResolved:   p.RegistryResolved,
 		})
 	}
-	return rows
+	return rows, nil
 }
 
-func parseServingSmartAccountPolicies(raw string) []SmartAccountPolicyRow {
+func parseServingSmartAccountPolicies(raw string) ([]SmartAccountPolicyRow, error) {
 	var rows []SmartAccountPolicyRow
 	type policyJSON struct {
 		PolicyID           *int64           `json:"policy_id"`
@@ -557,9 +571,13 @@ func parseServingSmartAccountPolicies(raw string) []SmartAccountPolicyRow {
 		TransactionHash    string           `json:"transaction_hash"`
 		RegistryResolved   bool             `json:"registry_resolved"`
 	}
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == "null" || trimmed == "[]" {
+		return nil, nil
+	}
 	var parsed []policyJSON
-	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-		return rows
+	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
+		return nil, fmt.Errorf("policies_json unparseable: %w", err)
 	}
 	for _, p := range parsed {
 		rows = append(rows, SmartAccountPolicyRow{
@@ -571,7 +589,7 @@ func parseServingSmartAccountPolicies(raw string) []SmartAccountPolicyRow {
 			RegistryResolved:   p.RegistryResolved,
 		})
 	}
-	return rows
+	return rows, nil
 }
 
 func (h *SmartWalletHandlers) querySmartAccountSummaries(ctx context.Context, matchPredicate string, args []any, limit int) ([]SmartAccountContractSummary, error) {

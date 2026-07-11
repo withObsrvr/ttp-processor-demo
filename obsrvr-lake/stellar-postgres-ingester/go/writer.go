@@ -164,28 +164,32 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 		ledgerData.EraID = input.EraID
 		ledgerData.VersionLabel = versionLabel
 
-		// Extract transactions via library
-		transactionXDRByHash, xdrErr := buildTransactionXDRByHash(input.LCM, input.NetworkPassphrase)
-		if xdrErr != nil {
-			log.Printf("Warning: Failed to extract transaction XDR for ledger %d: %v", rawLedger.Sequence, xdrErr)
+		// Extract transactions via library. Both extractions must fail the batch:
+		// warn-and-continue here writes transaction rows with NULL XDR (or no
+		// rows at all) and then commits and advances the checkpoint, leaving a
+		// permanent gap nothing ever re-ingests — the Horizon reader can only
+		// surface it later as an unexplained 503. Failing the batch keeps the
+		// checkpoint behind so the ledger is retried.
+		transactionXDRByHash, err := buildTransactionXDRByHash(input.LCM, input.NetworkPassphrase)
+		if err != nil {
+			return fmt.Errorf("failed to extract transaction XDR for ledger %d: %w", rawLedger.Sequence, err)
 		}
 		libTransactions, err := extract.ExtractTransactions(input)
 		if err != nil {
-			log.Printf("Warning: Failed to extract transactions for ledger %d: %v", rawLedger.Sequence, err)
-		} else {
-			for _, r := range libTransactions {
-				row := convertTransaction(r)
-				if xdrFields, ok := transactionXDRByHash[row.TransactionHash]; ok {
-					row.TxEnvelope = xdrFields.TxEnvelope
-					row.TxResult = xdrFields.TxResult
-					row.TxMeta = xdrFields.TxMeta
-					row.TxFeeMeta = xdrFields.TxFeeMeta
-					row.TxSigners = xdrFields.TxSigners
-				}
-				row.EraID = input.EraID
-				row.VersionLabel = versionLabel
-				allTransactions = append(allTransactions, row)
+			return fmt.Errorf("failed to extract transactions for ledger %d: %w", rawLedger.Sequence, err)
+		}
+		for _, r := range libTransactions {
+			row := convertTransaction(r)
+			if xdrFields, ok := transactionXDRByHash[row.TransactionHash]; ok {
+				row.TxEnvelope = xdrFields.TxEnvelope
+				row.TxResult = xdrFields.TxResult
+				row.TxMeta = xdrFields.TxMeta
+				row.TxFeeMeta = xdrFields.TxFeeMeta
+				row.TxSigners = xdrFields.TxSigners
 			}
+			row.EraID = input.EraID
+			row.VersionLabel = versionLabel
+			allTransactions = append(allTransactions, row)
 		}
 
 		// Extract operations via library + soroban counting

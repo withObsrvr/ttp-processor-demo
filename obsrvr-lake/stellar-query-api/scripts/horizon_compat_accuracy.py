@@ -159,12 +159,19 @@ def summarize(kind: str, body: Any) -> dict[str, Any]:
 
 
 def compare(kind: str, obs_status: int, obs_body: Any, hor_status: int, hor_body: Any) -> tuple[str, str]:
+    # Status 0 means the request never reached the server (DNS/TLS/refused).
+    # A run that could not fetch anything has verified nothing — it must never
+    # gate a rollout green ("both status=0" used to compare equal and pass).
+    if obs_status == 0 or hor_status == 0:
+        return "fail", f"network failure obsrvr={obs_status} horizon={hor_status}"
     if obs_status != hor_status:
         if hor_status == 200 and obs_status != 200:
             return "fail", f"status obsrvr={obs_status} horizon={hor_status}"
         return "partial", f"status obsrvr={obs_status} horizon={hor_status}"
     if obs_status != 200:
-        return "pass", f"both status={obs_status}"
+        # Matching non-200s (e.g. both 404 on a rotted fixture) compared no data;
+        # that is at most inconclusive, never a pass.
+        return "partial", f"no data compared: both status={obs_status}"
 
     obs = summarize(kind, obs_body)
     hor = summarize(kind, hor_body)
@@ -264,8 +271,16 @@ def main() -> int:
             }
         )
 
-    ok = all(result["verdict"] == "pass" for result in results)
-    output = {"ok": ok, "results": results}
+    compared = sum(
+        1
+        for result in results
+        if result["obsrvr_status"] == 200 and result["horizon_status"] == 200
+    )
+    # ok requires every route to pass AND real 200-vs-200 comparisons to have
+    # happened; a run that compared nothing must not green-light a rollout even
+    # if a future change relaxes per-route verdicts.
+    ok = compared > 0 and all(result["verdict"] == "pass" for result in results)
+    output = {"ok": ok, "compared_200": compared, "results": results}
     if args.json:
         print(json.dumps(output, indent=2, sort_keys=True))
     else:

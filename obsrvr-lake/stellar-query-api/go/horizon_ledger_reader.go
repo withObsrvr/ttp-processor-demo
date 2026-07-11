@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
+	"strings"
 	"time"
 
 	protocol "github.com/stellar/go-stellar-sdk/protocols/horizon"
@@ -301,8 +303,21 @@ func int64FromMap(row map[string]interface{}, key string) int64 {
 	case nil:
 		return 0
 	default:
-		n, _ := strconv.ParseInt(fmt.Sprint(v), 10, 64)
-		return n
+		s := fmt.Sprint(v)
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return n
+		}
+		// Numeric columns (total_coins, fee_pool) can arrive as decimal-formatted
+		// strings. Truncate on the decimal point instead of via float64 — stroop
+		// totals exceed float64's exact-integer range — and never silently return
+		// 0 for a value that was present.
+		if intPart, _, found := strings.Cut(s, "."); found {
+			if n, err := strconv.ParseInt(intPart, 10, 64); err == nil {
+				return n
+			}
+		}
+		log.Printf("horizon_ledger int64FromMap: unparseable %s=%q", key, s)
+		return 0
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -14,7 +15,13 @@ import (
 	hbase "github.com/stellar/go-stellar-sdk/protocols/horizon/base"
 )
 
-var errHorizonAccountNotFound = errors.New("horizon account not found")
+var (
+	errHorizonAccountNotFound = errors.New("horizon account not found")
+	// errHorizonAccountDataUnavailable marks an account whose row exists but whose
+	// security-relevant fields (sequence, signers) could not be read faithfully.
+	// Handlers map it to 503 rather than serving fabricated defaults.
+	errHorizonAccountDataUnavailable = errors.New("horizon account data unavailable")
+)
 
 type HorizonAccountReader struct {
 	hot     *SilverHotReader
@@ -41,7 +48,89 @@ func (r *HorizonAccountReader) GetHorizonAccount(ctx context.Context, accountID 
 		return nil, errHorizonAccountNotFound
 	}
 
-	sequence, _ := strconv.ParseInt(acc.SequenceNumber, 10, 64)
+	out, err := buildHorizonAccountShell(acc, accountID)
+	if err != nil {
+		return nil, err
+	}
+	if r.hot != nil && out.SequenceLedger > 0 {
+		if closedAt, err := r.hot.GetServingLedgerClosedAt(ctx, int64(out.SequenceLedger)); err == nil && !closedAt.IsZero() {
+			out.SequenceTime = strconv.FormatInt(closedAt.Unix(), 10)
+		}
+	}
+
+	var balances *AccountBalancesResponse
+	if r.hot != nil {
+		servingBalances, err := r.hot.GetServingAccountBalances(ctx, accountID)
+		if err != nil {
+			if r.unified == nil {
+				return nil, fmt.Errorf("horizon account balances: %w", err)
+			}
+			log.Printf("horizon_account path=serving_balances_error account=%s err=%v; falling back to unified", accountID, err)
+		} else if servingBalances != nil {
+			balances = servingBalances
+		}
+	}
+	if balances == nil && r.unified != nil {
+		unifiedBalances, err := r.unified.GetAccountBalances(ctx, accountID)
+		if err != nil {
+			return nil, fmt.Errorf("horizon account balances: %w", err)
+		}
+		balances = unifiedBalances
+	}
+	out.Balances = horizonBalances(balances)
+	if len(out.Balances) == 0 {
+		// The native balance lives on the account row itself — the same synthesis
+		// Horizon performs from the account entry. An account with no trustline
+		// rows still has its XLM balance; the account row was read successfully.
+		out.Balances = []protocol.Balance{{
+			Balance: horizonBalanceAmount(acc.Balance),
+			Asset:   hbase.Asset{Type: "native"},
+		}}
+	}
+
+	signersResolved := false
+	if r.hot != nil {
+		signers, err := r.hotAccountSigners(ctx, accountID)
+		if err != nil {
+			if r.unified == nil {
+				return nil, fmt.Errorf("horizon account signers: %w", err)
+			}
+			log.Printf("horizon_account path=hot_signers_error account=%s err=%v; falling back to unified", accountID, err)
+		} else if signers != nil {
+			applyHorizonSigners(out, signers)
+			signersResolved = true
+		}
+	}
+	if !signersResolved && r.unified != nil {
+		signers, err := r.unified.GetAccountSigners(ctx, accountID)
+		if err != nil {
+			return nil, fmt.Errorf("horizon account signers: %w", err)
+		}
+		if signers != nil {
+			applyHorizonSigners(out, signers)
+			signersResolved = true
+		}
+	}
+	if !signersResolved {
+		// Never fabricate a default signer: reporting a weight-1 master key for an
+		// account whose signers we could not read misstates spendability — a master
+		// weight of 0 is exactly how multisig accounts get locked. An empty-but-read
+		// signer list (signersResolved) is served as-is; an unreadable one is refused.
+		return nil, fmt.Errorf("%w: signers unreadable for account %s", errHorizonAccountDataUnavailable, accountID)
+	}
+
+	return out, nil
+}
+
+// buildHorizonAccountShell maps the current-account row onto the Horizon account
+// resource, minus balances and signers (which come from their own sources).
+func buildHorizonAccountShell(acc *AccountCurrent, accountID string) (*protocol.Account, error) {
+	// Clients build their next transaction from this sequence; a parse failure
+	// silently coerced to 0 would produce unsubmittable transactions.
+	sequence, err := strconv.ParseInt(acc.SequenceNumber, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("%w: account %s sequence %q unparseable: %v", errHorizonAccountDataUnavailable, accountID, acc.SequenceNumber, err)
+	}
 	out := &protocol.Account{
 		ID:                 acc.AccountID,
 		AccountID:          acc.AccountID,
@@ -85,56 +174,6 @@ func (r *HorizonAccountReader) GetHorizonAccount(ctx context.Context, accountID 
 			out.SequenceTime = strconv.FormatInt(ts.Unix(), 10)
 		}
 	}
-	if r.hot != nil && out.SequenceLedger > 0 {
-		if closedAt, err := r.hot.GetServingLedgerClosedAt(ctx, int64(out.SequenceLedger)); err == nil && !closedAt.IsZero() {
-			out.SequenceTime = strconv.FormatInt(closedAt.Unix(), 10)
-		}
-	}
-
-	var balances *AccountBalancesResponse
-	if r.hot != nil {
-		if servingBalances, err := r.hot.GetServingAccountBalances(ctx, accountID); err == nil && servingBalances != nil {
-			balances = servingBalances
-		} else if r.unified == nil {
-			return nil, fmt.Errorf("horizon account balances: %w", err)
-		}
-	}
-	if balances == nil && r.unified != nil {
-		unifiedBalances, err := r.unified.GetAccountBalances(ctx, accountID)
-		if err != nil {
-			return nil, fmt.Errorf("horizon account balances: %w", err)
-		}
-		balances = unifiedBalances
-	}
-	out.Balances = horizonBalances(balances)
-	if r.hot != nil {
-		if signers, err := r.hotAccountSigners(ctx, accountID); err == nil && signers != nil {
-			applyHorizonSigners(out, signers)
-		} else if r.unified == nil {
-			return nil, fmt.Errorf("horizon account signers: %w", err)
-		}
-	}
-	if len(out.Signers) == 0 && r.unified != nil {
-		signers, err := r.unified.GetAccountSigners(ctx, accountID)
-		if err != nil {
-			return nil, fmt.Errorf("horizon account signers: %w", err)
-		}
-		applyHorizonSigners(out, signers)
-	}
-	if len(out.Balances) == 0 {
-		out.Balances = []protocol.Balance{{
-			Balance: horizonBalanceAmount(acc.Balance),
-			Asset:   hbase.Asset{Type: "native"},
-		}}
-	}
-	if len(out.Signers) == 0 {
-		out.Signers = []protocol.Signer{{
-			Key:    accountID,
-			Type:   "ed25519_public_key",
-			Weight: 1,
-		}}
-	}
-
 	return out, nil
 }
 
@@ -185,11 +224,7 @@ func (r *HorizonAccountReader) currentAccount(ctx context.Context, accountID str
 }
 
 func isUnifiedAccountCurrentSequenceSchemaGap(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "sequence_ledger") || strings.Contains(msg, "sequence_time")
+	return isSchemaGapError(err)
 }
 
 func horizonAccountCurrentNeedsUnifiedFill(acc *AccountCurrent) bool {
@@ -271,7 +306,11 @@ func (r *HorizonAccountReader) hotAccountSigners(ctx context.Context, accountID 
 
 	var signers []AccountSigner
 	if signersJSON != "" && signersJSON != "[]" {
-		_ = json.Unmarshal([]byte(signersJSON), &signers)
+		if err := json.Unmarshal([]byte(signersJSON), &signers); err != nil {
+			// Corrupt signers JSON must not degrade to "no extra signers" — that
+			// changes who can spend from the account.
+			return nil, fmt.Errorf("accounts_current.signers unparseable for %s: %w", accountID, err)
+		}
 	}
 	if masterWeight > 0 {
 		hasMaster := false

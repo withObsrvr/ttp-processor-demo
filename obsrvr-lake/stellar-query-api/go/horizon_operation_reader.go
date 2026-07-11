@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -277,25 +278,34 @@ func (r *HorizonOperationReader) schemaHasOperationTOIDsCached(schema string) bo
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	available = r.schemaHasOperationTOIDs(ctx, schema)
+	available, conclusive := r.schemaHasOperationTOIDs(ctx, schema)
 
-	r.schemaCapsMu.Lock()
-	r.schemaCaps[schema] = available
-	r.schemaCapsMu.Unlock()
+	// Only cache conclusive probes. Caching a transient failure (startup race,
+	// lock, probe timeout) would silently disable this storage tier for the
+	// lifetime of the process.
+	if conclusive {
+		r.schemaCapsMu.Lock()
+		r.schemaCaps[schema] = available
+		r.schemaCapsMu.Unlock()
+	}
 	return available
 }
 
-func (r *HorizonOperationReader) schemaHasOperationTOIDs(ctx context.Context, schema string) bool {
+func (r *HorizonOperationReader) schemaHasOperationTOIDs(ctx context.Context, schema string) (available, conclusive bool) {
 	if strings.TrimSpace(schema) == "" {
-		return false
+		return false, true
 	}
 	rows, err := r.db.QueryContext(ctx, fmt.Sprintf(
 		"SELECT transaction_id, operation_id FROM %s.enriched_history_operations LIMIT 0", schema))
 	if err != nil {
-		return false
+		if isSchemaGapError(err) {
+			return false, true
+		}
+		log.Printf("horizon_ops path=toid_probe_error schema=%s err=%v (tier treated unavailable for this request only)", schema, err)
+		return false, false
 	}
 	_ = rows.Close()
-	return true
+	return true, true
 }
 
 func horizonOperationArm(schema, whereClause string, source int) string {

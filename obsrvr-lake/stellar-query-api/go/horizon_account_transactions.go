@@ -12,7 +12,9 @@ type horizonServingAccountTransactionReader interface {
 
 // HorizonAccountTransactionReader keeps the Horizon compatibility route on the
 // same account transaction serving feed as the silver route, with the federated
-// reader as a compatibility fallback for uncovered ranges.
+// reader as a compatibility fallback for uncovered ranges. The serving path is
+// gated on ACCOUNT_TX_FEED_ENABLED (default off): without it every request
+// takes the federated path.
 type HorizonAccountTransactionReader struct {
 	serving   horizonServingAccountTransactionReader
 	federated horizonAccountTransactionReader

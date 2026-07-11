@@ -218,3 +218,40 @@ func TestCursorIsOpaque(t *testing.T) {
 		t.Error("Decoded values don't match original")
 	}
 }
+
+func TestEffectCursorRoundTripsOperationID(t *testing.T) {
+	opID := int64(1958505086976)
+	original := EffectCursor{
+		LedgerSequence:  456,
+		TransactionHash: "abc123",
+		OperationIndex:  2,
+		EffectIndex:     3,
+		OperationID:     &opID,
+		Order:           "desc",
+	}
+	decoded, err := DecodeEffectCursor(original.Encode())
+	if err != nil {
+		t.Fatalf("DecodeEffectCursor: %v", err)
+	}
+	if decoded.OperationID == nil || *decoded.OperationID != opID {
+		t.Fatalf("OperationID = %v, want %d — a dropped TOID makes the paging predicate diverge from the operation_id sort", decoded.OperationID, opID)
+	}
+	if decoded.LedgerSequence != 456 || decoded.TransactionHash != "abc123" || decoded.OperationIndex != 2 || decoded.EffectIndex != 3 || decoded.Order != "desc" {
+		t.Fatalf("decoded = %#v", decoded)
+	}
+}
+
+func TestEffectCursorLegacyFormatsStillDecode(t *testing.T) {
+	// 5-part (with order) and 4-part (legacy) cursors must keep decoding with a
+	// nil OperationID.
+	fivePart := EffectCursor{LedgerSequence: 456, TransactionHash: "abc", OperationIndex: 1, EffectIndex: 2, Order: "desc"}
+	decoded, err := DecodeEffectCursor(fivePart.Encode())
+	if err != nil || decoded.OperationID != nil || decoded.Order != "desc" || decoded.EffectIndex != 2 {
+		t.Fatalf("5-part decode = %#v err=%v", decoded, err)
+	}
+	fourPart := EffectCursor{LedgerSequence: 456, TransactionHash: "abc", OperationIndex: 1, EffectIndex: 2}
+	decoded, err = DecodeEffectCursor(fourPart.Encode())
+	if err != nil || decoded.OperationID != nil || decoded.Order != "asc" {
+		t.Fatalf("4-part decode = %#v err=%v", decoded, err)
+	}
+}

@@ -38,7 +38,7 @@ func TestHorizonTransactionHandlerReturnsHALTransaction(t *testing.T) {
 			"none",
 			nil,
 			time.Date(2026, 7, 9, 15, 4, 0, 0, time.UTC),
-			"AAAA-envelope",
+			horizonTestEnvelopeNoMemoXDR,
 			"AAAA-result",
 			"AAAA-meta",
 			"AAAA-fee-meta",
@@ -120,7 +120,7 @@ func TestHorizonAccountTransactionsHydratesServingTransactionResource(t *testing
 			"none",
 			nil,
 			closedAt,
-			"AAAA-envelope",
+			horizonTestEnvelopeNoMemoXDR,
 			"AAAA-result",
 			"AAAA-meta",
 			"AAAA-fee-meta",
@@ -171,7 +171,7 @@ func TestHorizonAccountTransactionsHydratesServingTransactionResource(t *testing
 		t.Fatalf("records = %#v", body.Embedded.Records)
 	}
 	got := body.Embedded.Records[0]
-	if got.Hash != "txhash" || got.EnvelopeXDR != "AAAA-envelope" || got.ResultXDR != "AAAA-result" || got.ResultMetaXDR != "AAAA-meta" || got.FeeMetaXDR != "AAAA-fee-meta" {
+	if got.Hash != "txhash" || got.EnvelopeXDR != horizonTestEnvelopeNoMemoXDR || got.ResultXDR != "AAAA-result" || got.ResultMetaXDR != "AAAA-meta" || got.FeeMetaXDR != "AAAA-fee-meta" {
 		t.Fatalf("record = %+v", got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
