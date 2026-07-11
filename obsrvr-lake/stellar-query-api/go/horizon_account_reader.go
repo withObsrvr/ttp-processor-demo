@@ -55,6 +55,8 @@ func (r *HorizonAccountReader) GetHorizonAccount(ctx context.Context, accountID 
 	}
 	if acc.SequenceLedger > 0 {
 		out.SequenceLedger = uint32(acc.SequenceLedger)
+	} else if acc.LastModifiedLedger > 0 {
+		out.SequenceLedger = uint32(acc.LastModifiedLedger)
 	}
 	if acc.SequenceTime > 0 {
 		out.SequenceTime = strconv.FormatInt(acc.SequenceTime, 10)
@@ -79,6 +81,9 @@ func (r *HorizonAccountReader) GetHorizonAccount(ctx context.Context, accountID 
 	}
 	if ts := parseOptionalHorizonTime(acc.UpdatedAt); ts != nil {
 		out.LastModifiedTime = ts
+		if out.SequenceTime == "" {
+			out.SequenceTime = strconv.FormatInt(ts.Unix(), 10)
+		}
 	}
 
 	var balances *AccountBalancesResponse
