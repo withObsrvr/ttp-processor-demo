@@ -236,7 +236,7 @@ func TestHorizonOperationReaderUsesSACEffectsForServingAccountPayments(t *testin
 			AddRow("complete", int64(1), int64(25)))
 	mock.ExpectQuery("SELECT COALESCE\\(MAX\\(ledger_sequence\\), 0\\) FROM serving.sv_ledger_stats_recent").
 		WillReturnRows(sqlmock.NewRows([]string{"latest"}).AddRow(int64(25)))
-	mock.ExpectQuery("(?s)WITH payment_operation_ids AS .*serving\\.sv_effects_by_account.*JOIN serving\\.sv_operations_by_account o").
+	mock.ExpectQuery("(?s)WITH classic_ids AS .*sac_ids AS .*serving\\.sv_effects_by_account.*JOIN serving\\.sv_operations_by_account o").
 		WithArgs("GA", int64(1), int64(25), 2).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"operation_toid", "tx_hash", "ledger_sequence", "closed_at", "source_account",

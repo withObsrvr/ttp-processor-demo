@@ -1307,28 +1307,40 @@ func (h *SilverHotReader) GetServingAccountOperations(ctx context.Context, filte
 	args := []interface{}{filters.AccountID, startLedger, endLedger}
 	arg := 4
 	if filters.PaymentsOnly {
-		cursorClause := ""
+		classicCursorClause := ""
+		sacCursorClause := ""
 		if filters.Cursor != nil {
-			cursorClause = fmt.Sprintf("AND o.operation_toid %s $%d", cursorOp, arg)
+			classicCursorClause = fmt.Sprintf("AND operation_toid %s $%d", cursorOp, arg)
+			sacCursorClause = fmt.Sprintf("AND e.operation_toid %s $%d", cursorOp, arg)
 			args = append(args, filters.Cursor.OperationIndex)
 			arg++
 		}
 		args = append(args, requestLimit)
 
 		query := fmt.Sprintf(`
-			WITH payment_operation_ids AS (
+			WITH classic_ids AS (
 				SELECT operation_toid, true AS prefer_account
 				FROM serving.sv_operations_by_account
 				WHERE account_id = $1
 				  AND ledger_sequence BETWEEN $2 AND $3
 				  AND %s
-				UNION ALL
+				  %s
+				ORDER BY operation_toid %s
+				LIMIT $%d
+			), sac_ids AS (
 				SELECT DISTINCT e.operation_toid, false AS prefer_account
 				FROM serving.sv_effects_by_account e
 				WHERE e.account_id = $1
 				  AND e.ledger_sequence BETWEEN $2 AND $3
 				  AND e.operation_toid IS NOT NULL
 				  AND %s
+				  %s
+				ORDER BY e.operation_toid %s
+				LIMIT $%d
+			), payment_operation_ids AS (
+				SELECT operation_toid, prefer_account FROM classic_ids
+				UNION ALL
+				SELECT operation_toid, prefer_account FROM sac_ids
 			), candidate_ops AS (
 				SELECT DISTINCT ON (o.operation_toid)
 				       o.operation_toid, o.tx_hash, o.ledger_sequence, o.closed_at, o.source_account,
@@ -1347,8 +1359,14 @@ func (h *SilverHotReader) GetServingAccountOperations(ctx context.Context, filte
 			ORDER BY operation_toid %s
 			LIMIT $%d`,
 			horizonServingPaymentOperationPredicate,
+			classicCursorClause,
+			orderDir,
+			arg,
 			horizonServingSACPaymentEffectPredicate,
-			cursorClause,
+			sacCursorClause,
+			orderDir,
+			arg,
+			"",
 			orderDir,
 			orderDir,
 			arg,
