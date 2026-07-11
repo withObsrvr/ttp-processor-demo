@@ -1308,16 +1308,12 @@ func (h *SilverHotReader) GetServingAccountOperations(ctx context.Context, filte
 	args := []interface{}{filters.AccountID, startLedger, endLedger}
 	arg := 4
 	if filters.PaymentsOnly {
-		candidateLimit := requestLimit * 2
-		classicIDs, err := h.getServingAccountClassicPaymentOperationIDs(ctx, filters, startLedger, endLedger, cursorOp, orderDir, candidateLimit)
-		if err != nil {
-			return nil, "", false, true, err
-		}
+		candidateLimit := requestLimit * 4
 		sacIDs, err := h.getServingAccountSACPaymentOperationIDs(ctx, filters, startLedger, endLedger, cursorOp, orderDir, candidateLimit)
 		if err != nil {
 			return nil, "", false, true, err
 		}
-		ids := mergeServingOperationIDs(filters.Order, requestLimit, classicIDs, sacIDs)
+		ids := mergeServingOperationIDs(filters.Order, requestLimit, sacIDs)
 		ops, nextCursor, hasMore, err := h.getServingOperationsByIDs(ctx, ids, filters.AccountID, orderDir, limit, filters.Order)
 		if err != nil {
 			return nil, "", false, true, err
@@ -1355,34 +1351,8 @@ func (h *SilverHotReader) GetServingAccountOperations(ctx context.Context, filte
 	return ops, nextCursor, hasMore, true, nil
 }
 
-func (h *SilverHotReader) getServingAccountClassicPaymentOperationIDs(ctx context.Context, filters OperationFilters, startLedger, endLedger int64, cursorOp, orderDir string, limit int) ([]int64, error) {
-	where := []string{"account_id = $1", "ledger_sequence BETWEEN $2 AND $3", horizonServingPaymentOperationPredicate}
-	args := []interface{}{filters.AccountID, startLedger, endLedger}
-	arg := 4
-	if filters.Cursor != nil {
-		where = append(where, fmt.Sprintf("operation_toid %s $%d", cursorOp, arg))
-		args = append(args, filters.Cursor.OperationIndex)
-		arg++
-	}
-	args = append(args, limit)
-
-	query := fmt.Sprintf(`
-		SELECT operation_toid
-		FROM serving.sv_operations_by_account
-		WHERE %s
-		ORDER BY operation_toid %s
-		LIMIT $%d`, strings.Join(where, " AND "), orderDir, arg)
-
-	rows, err := h.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("serving account classic payment ids: %w", err)
-	}
-	defer rows.Close()
-	return scanInt64Column(rows)
-}
-
 func (h *SilverHotReader) getServingAccountSACPaymentOperationIDs(ctx context.Context, filters OperationFilters, startLedger, endLedger int64, cursorOp, orderDir string, limit int) ([]int64, error) {
-	where := []string{"e.account_id = $1", "e.ledger_sequence BETWEEN $2 AND $3", "e.operation_toid IS NOT NULL", horizonServingSACPaymentEffectPredicate}
+	where := []string{"e.account_id = $1", "e.ledger_sequence BETWEEN $2 AND $3", "e.operation_toid IS NOT NULL", horizonServingAccountPaymentEffectPredicate}
 	args := []interface{}{filters.AccountID, startLedger, endLedger}
 	arg := 4
 	if filters.Cursor != nil {

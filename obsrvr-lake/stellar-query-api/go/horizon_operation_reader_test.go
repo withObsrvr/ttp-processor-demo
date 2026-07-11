@@ -178,14 +178,11 @@ func TestHorizonOperationReaderUsesServingAccountOperationsWhenCovered(t *testin
 			AddRow("complete", int64(1), int64(20)))
 	mock.ExpectQuery("SELECT COALESCE\\(MAX\\(ledger_sequence\\), 0\\) FROM serving.sv_ledger_stats_recent").
 		WillReturnRows(sqlmock.NewRows([]string{"latest"}).AddRow(int64(20)))
-	mock.ExpectQuery("SELECT operation_toid").
-		WithArgs("GA", int64(1), int64(20), 4).
+	mock.ExpectQuery("SELECT DISTINCT e.operation_toid").
+		WithArgs("GA", int64(1), int64(20), 8).
 		WillReturnRows(sqlmock.NewRows([]string{"operation_toid"}).
 			AddRow(operationID).
 			AddRow(nextOperationID))
-	mock.ExpectQuery("SELECT DISTINCT e.operation_toid").
-		WithArgs("GA", int64(1), int64(20), 4).
-		WillReturnRows(sqlmock.NewRows([]string{"operation_toid"}))
 	mock.ExpectQuery("WHERE operation_toid = ANY").
 		WithArgs(sqlmock.AnyArg(), "GA", 2).
 		WillReturnRows(sqlmock.NewRows([]string{
@@ -244,11 +241,8 @@ func TestHorizonOperationReaderUsesSACEffectsForServingAccountPayments(t *testin
 			AddRow("complete", int64(1), int64(25)))
 	mock.ExpectQuery("SELECT COALESCE\\(MAX\\(ledger_sequence\\), 0\\) FROM serving.sv_ledger_stats_recent").
 		WillReturnRows(sqlmock.NewRows([]string{"latest"}).AddRow(int64(25)))
-	mock.ExpectQuery("SELECT operation_toid").
-		WithArgs("GA", int64(1), int64(25), 4).
-		WillReturnRows(sqlmock.NewRows([]string{"operation_toid"}))
 	mock.ExpectQuery("SELECT DISTINCT e.operation_toid").
-		WithArgs("GA", int64(1), int64(25), 4).
+		WithArgs("GA", int64(1), int64(25), 8).
 		WillReturnRows(sqlmock.NewRows([]string{"operation_toid"}).AddRow(operationID))
 	mock.ExpectQuery("WHERE operation_toid = ANY").
 		WithArgs(sqlmock.AnyArg(), "GA", 2).
