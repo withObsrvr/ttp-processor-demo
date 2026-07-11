@@ -336,3 +336,35 @@ func TestHorizonAccountCurrentFallsBackToHotSilverOnUnifiedTimeout(t *testing.T)
 		t.Fatalf("account = %#v, want hot-silver fallback result", account)
 	}
 }
+
+func TestGetServingAccountCurrentToleratesNullCounters(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	// Backfilled serving rows carry NULL num_subentries/num_sponsoring/
+	// num_sponsored; a dormant account's root lookup must not fail on them.
+	updatedAt := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	mock.ExpectQuery("FROM serving.sv_accounts_current").
+		WithArgs("GDORMANT").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"account_id", "balance_stroops", "sequence_number", "num_subentries",
+			"num_sponsoring", "num_sponsored", "last_modified_ledger", "sequence_ledger",
+			"sequence_time", "updated_at", "home_domain", "created_at", "sponsor",
+			"auth_required", "auth_revocable", "auth_immutable", "auth_clawback_enabled",
+		}).AddRow("GDORMANT", int64(100000000000), int64(13743955476742144), nil, nil, nil, int64(3200014), nil, nil, updatedAt, nil, nil, nil, nil, nil, nil, nil))
+
+	reader := &SilverHotReader{db: db}
+	acc, err := reader.GetServingAccountCurrent(context.Background(), "GDORMANT")
+	if err != nil {
+		t.Fatalf("GetServingAccountCurrent: %v", err)
+	}
+	if acc == nil || acc.AccountID != "GDORMANT" || acc.NumSubentries != 0 || acc.NumSponsoring != 0 {
+		t.Fatalf("account = %#v", acc)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}

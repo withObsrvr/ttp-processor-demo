@@ -385,6 +385,10 @@ func (h *SilverHotReader) GetServingAccountCurrent(ctx context.Context, accountI
 	var acc AccountCurrent
 	var balance sql.NullInt64
 	var seq sql.NullInt64
+	// Backfilled serving rows can carry NULL counters (num_subentries,
+	// num_sponsoring, num_sponsored); scan them null-tolerant so a dormant
+	// account doesn't fail the whole serving read.
+	var numSubentries, numSponsoring, numSponsored sql.NullInt64
 	var seqLedger, seqTime sql.NullInt64
 	var updatedAt sql.NullTime
 	var homeDomain, createdAt, sponsor sql.NullString
@@ -393,9 +397,9 @@ func (h *SilverHotReader) GetServingAccountCurrent(ctx context.Context, accountI
 		&acc.AccountID,
 		&balance,
 		&seq,
-		&acc.NumSubentries,
-		&acc.NumSponsoring,
-		&acc.NumSponsored,
+		&numSubentries,
+		&numSponsoring,
+		&numSponsored,
 		&acc.LastModifiedLedger,
 		&seqLedger,
 		&seqTime,
@@ -422,6 +426,9 @@ func (h *SilverHotReader) GetServingAccountCurrent(ctx context.Context, accountI
 		return h.getServingAccountCurrentLegacy(ctx, accountID)
 	}
 
+	acc.NumSubentries = numSubentries.Int64
+	acc.NumSponsoring = numSponsoring.Int64
+	acc.NumSponsored = numSponsored.Int64
 	if balance.Valid {
 		acc.Balance = strconv.FormatInt(balance.Int64, 10)
 	}
