@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1307,78 +1308,17 @@ func (h *SilverHotReader) GetServingAccountOperations(ctx context.Context, filte
 	args := []interface{}{filters.AccountID, startLedger, endLedger}
 	arg := 4
 	if filters.PaymentsOnly {
-		classicCursorClause := ""
-		sacCursorClause := ""
-		if filters.Cursor != nil {
-			classicCursorClause = fmt.Sprintf("AND operation_toid %s $%d", cursorOp, arg)
-			sacCursorClause = fmt.Sprintf("AND e.operation_toid %s $%d", cursorOp, arg)
-			args = append(args, filters.Cursor.OperationIndex)
-			arg++
-		}
-		args = append(args, requestLimit)
-
-		query := fmt.Sprintf(`
-			WITH classic_ids AS (
-				SELECT operation_toid, true AS prefer_account
-				FROM serving.sv_operations_by_account
-				WHERE account_id = $1
-				  AND ledger_sequence BETWEEN $2 AND $3
-				  AND %s
-				  %s
-				ORDER BY operation_toid %s
-				LIMIT $%d
-			), sac_ids AS (
-				SELECT DISTINCT e.operation_toid, false AS prefer_account
-				FROM serving.sv_effects_by_account e
-				WHERE e.account_id = $1
-				  AND e.ledger_sequence BETWEEN $2 AND $3
-				  AND e.operation_toid IS NOT NULL
-				  AND %s
-				  %s
-				ORDER BY e.operation_toid %s
-				LIMIT $%d
-			), payment_operation_ids AS (
-				SELECT operation_toid, prefer_account FROM classic_ids
-				UNION ALL
-				SELECT operation_toid, prefer_account FROM sac_ids
-			), candidate_ops AS (
-				SELECT DISTINCT ON (o.operation_toid)
-				       o.operation_toid, o.tx_hash, o.ledger_sequence, o.closed_at, o.source_account,
-				       o.type_code, o.type_name, o.destination_account, o.asset_key, o.amount_stroops,
-				       o.successful, o.is_payment_op, o.is_soroban_op, o.contract_id, o.function_name
-				FROM payment_operation_ids p
-				JOIN serving.sv_operations_by_account o ON o.operation_toid = p.operation_toid
-				WHERE o.ledger_sequence BETWEEN $2 AND $3
-				  %s
-				ORDER BY o.operation_toid %s, p.prefer_account DESC, (o.account_id = $1) DESC, o.account_id ASC
-			)
-			SELECT operation_toid, tx_hash, ledger_sequence, closed_at, source_account,
-			       type_code, type_name, destination_account, asset_key, amount_stroops,
-			       successful, is_payment_op, is_soroban_op, contract_id, function_name
-			FROM candidate_ops
-			ORDER BY operation_toid %s
-			LIMIT $%d`,
-			horizonServingPaymentOperationPredicate,
-			classicCursorClause,
-			orderDir,
-			arg,
-			horizonServingSACPaymentEffectPredicate,
-			sacCursorClause,
-			orderDir,
-			arg,
-			"",
-			orderDir,
-			orderDir,
-			arg,
-		)
-
-		rows, err := h.db.QueryContext(ctx, query, args...)
+		candidateLimit := requestLimit * 2
+		classicIDs, err := h.getServingAccountClassicPaymentOperationIDs(ctx, filters, startLedger, endLedger, cursorOp, orderDir, candidateLimit)
 		if err != nil {
-			return nil, "", false, true, fmt.Errorf("serving account operations: %w", err)
+			return nil, "", false, true, err
 		}
-		defer rows.Close()
-
-		ops, nextCursor, hasMore, err := scanServingOperations(rows, limit, filters.Order)
+		sacIDs, err := h.getServingAccountSACPaymentOperationIDs(ctx, filters, startLedger, endLedger, cursorOp, orderDir, candidateLimit)
+		if err != nil {
+			return nil, "", false, true, err
+		}
+		ids := mergeServingOperationIDs(filters.Order, requestLimit, classicIDs, sacIDs)
+		ops, nextCursor, hasMore, err := h.getServingOperationsByIDs(ctx, ids, filters.AccountID, orderDir, limit, filters.Order)
 		if err != nil {
 			return nil, "", false, true, err
 		}
@@ -1413,6 +1353,121 @@ func (h *SilverHotReader) GetServingAccountOperations(ctx context.Context, filte
 		return nil, "", false, true, err
 	}
 	return ops, nextCursor, hasMore, true, nil
+}
+
+func (h *SilverHotReader) getServingAccountClassicPaymentOperationIDs(ctx context.Context, filters OperationFilters, startLedger, endLedger int64, cursorOp, orderDir string, limit int) ([]int64, error) {
+	where := []string{"account_id = $1", "ledger_sequence BETWEEN $2 AND $3", horizonServingPaymentOperationPredicate}
+	args := []interface{}{filters.AccountID, startLedger, endLedger}
+	arg := 4
+	if filters.Cursor != nil {
+		where = append(where, fmt.Sprintf("operation_toid %s $%d", cursorOp, arg))
+		args = append(args, filters.Cursor.OperationIndex)
+		arg++
+	}
+	args = append(args, limit)
+
+	query := fmt.Sprintf(`
+		SELECT operation_toid
+		FROM serving.sv_operations_by_account
+		WHERE %s
+		ORDER BY operation_toid %s
+		LIMIT $%d`, strings.Join(where, " AND "), orderDir, arg)
+
+	rows, err := h.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("serving account classic payment ids: %w", err)
+	}
+	defer rows.Close()
+	return scanInt64Column(rows)
+}
+
+func (h *SilverHotReader) getServingAccountSACPaymentOperationIDs(ctx context.Context, filters OperationFilters, startLedger, endLedger int64, cursorOp, orderDir string, limit int) ([]int64, error) {
+	where := []string{"e.account_id = $1", "e.ledger_sequence BETWEEN $2 AND $3", "e.operation_toid IS NOT NULL", horizonServingSACPaymentEffectPredicate}
+	args := []interface{}{filters.AccountID, startLedger, endLedger}
+	arg := 4
+	if filters.Cursor != nil {
+		where = append(where, fmt.Sprintf("e.operation_toid %s $%d", cursorOp, arg))
+		args = append(args, filters.Cursor.OperationIndex)
+		arg++
+	}
+	args = append(args, limit)
+
+	query := fmt.Sprintf(`
+		SELECT DISTINCT e.operation_toid
+		FROM serving.sv_effects_by_account e
+		WHERE %s
+		ORDER BY e.operation_toid %s
+		LIMIT $%d`, strings.Join(where, " AND "), orderDir, arg)
+
+	rows, err := h.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("serving account SAC payment ids: %w", err)
+	}
+	defer rows.Close()
+	return scanInt64Column(rows)
+}
+
+func (h *SilverHotReader) getServingOperationsByIDs(ctx context.Context, ids []int64, preferredAccountID, orderDir string, limit int, order string) ([]EnrichedOperation, string, bool, error) {
+	if len(ids) == 0 {
+		return nil, "", false, nil
+	}
+	query := fmt.Sprintf(`
+		SELECT DISTINCT ON (operation_toid)
+		       operation_toid, tx_hash, ledger_sequence, closed_at, source_account,
+		       type_code, type_name, destination_account, asset_key, amount_stroops,
+		       successful, is_payment_op, is_soroban_op, contract_id, function_name
+		FROM serving.sv_operations_by_account
+		WHERE operation_toid = ANY($1)
+		ORDER BY operation_toid %s, (account_id = $2) DESC, account_id ASC
+		LIMIT $3`, orderDir)
+
+	rows, err := h.db.QueryContext(ctx, query, pq.Array(ids), preferredAccountID, limit+1)
+	if err != nil {
+		return nil, "", false, fmt.Errorf("serving operations by ids: %w", err)
+	}
+	defer rows.Close()
+	return scanServingOperations(rows, limit, order)
+}
+
+func scanInt64Column(rows *sql.Rows) ([]int64, error) {
+	var out []int64
+	for rows.Next() {
+		var value int64
+		if err := rows.Scan(&value); err != nil {
+			return nil, err
+		}
+		out = append(out, value)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func mergeServingOperationIDs(order string, max int, groups ...[]int64) []int64 {
+	if max <= 0 {
+		max = 1
+	}
+	seen := make(map[int64]struct{}, max)
+	candidates := make([]int64, 0, max)
+	for _, group := range groups {
+		for _, id := range group {
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			candidates = append(candidates, id)
+		}
+	}
+	if order == "asc" {
+		sort.Slice(candidates, func(i, j int) bool { return candidates[i] < candidates[j] })
+	} else {
+		sort.Slice(candidates, func(i, j int) bool { return candidates[i] > candidates[j] })
+	}
+	if len(candidates) > max {
+		candidates = candidates[:max]
+	}
+	return candidates
 }
 
 // GetServingTransactionOperations serves Horizon transaction operation/payment
