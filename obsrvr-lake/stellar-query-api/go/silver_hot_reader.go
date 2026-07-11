@@ -12,6 +12,7 @@ import (
 
 	"github.com/lib/pq"
 	"github.com/stellar/go-stellar-sdk/amount"
+	"github.com/stellar/go-stellar-sdk/toid"
 	"github.com/stellar/go-stellar-sdk/xdr"
 )
 
@@ -1729,6 +1730,113 @@ func (h *SilverHotReader) GetServingAccountEffects(ctx context.Context, filters 
 	effects, err := scanSilverEffects(rows)
 	if err != nil {
 		return nil, "", false, true, fmt.Errorf("serving account effects: %w", err)
+	}
+
+	hasMore := len(effects) > limit
+	if hasMore {
+		effects = effects[:limit]
+	}
+
+	nextCursor := ""
+	if hasMore && len(effects) > 0 {
+		last := effects[len(effects)-1]
+		nextCursor = EffectCursor{
+			LedgerSequence:  last.LedgerSequence,
+			TransactionHash: last.TransactionHash,
+			OperationIndex:  last.OperationIndex,
+			EffectIndex:     last.EffectIndex,
+			OperationID:     last.OperationID,
+			Order:           filters.Order,
+		}.Encode()
+	}
+	return effects, nextCursor, hasMore, true, nil
+}
+
+// GetServingOperationEffects serves exact Horizon operation effect pages from
+// the materialized effect feed when the operation TOID is covered.
+func (h *SilverHotReader) GetServingOperationEffects(ctx context.Context, filters EffectFilters) ([]SilverEffect, string, bool, bool, error) {
+	if filters.OperationID == nil || filters.AccountID != "" || filters.TransactionHash != "" {
+		return nil, "", false, false, nil
+	}
+
+	ledgerSequence := filters.LedgerSequence
+	if ledgerSequence <= 0 {
+		ledgerSequence = int64(toid.Parse(*filters.OperationID).LedgerSequence)
+	}
+	if ledgerSequence <= 0 {
+		return nil, "", false, false, nil
+	}
+
+	var status string
+	var completeFrom, completeThru int64
+	err := h.db.QueryRowContext(ctx, `
+		SELECT status, complete_from, complete_thru
+		FROM serving.sv_watermarks
+		WHERE table_name = 'serving.sv_effects_by_account'
+	`).Scan(&status, &completeFrom, &completeThru)
+	if err == sql.ErrNoRows {
+		return nil, "", false, false, nil
+	}
+	if err != nil {
+		return nil, "", false, false, fmt.Errorf("serving operation effects watermark: %w", err)
+	}
+	if status != "complete" || ledgerSequence < completeFrom || ledgerSequence > completeThru {
+		return nil, "", false, false, nil
+	}
+
+	limit := filters.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	requestLimit := limit + 1
+	orderDir, cursorOp := "ASC", ">"
+	if filters.Order == "desc" {
+		orderDir, cursorOp = "DESC", "<"
+	}
+
+	where := []string{"operation_toid = $1"}
+	args := []interface{}{*filters.OperationID}
+	arg := 2
+	if filters.Cursor != nil {
+		if filters.HorizonOrder && filters.Cursor.OperationID != nil {
+			where = append(where, fmt.Sprintf("(operation_toid, effect_index) %s ($%d, $%d)", cursorOp, arg, arg+1))
+			args = append(args, *filters.Cursor.OperationID, filters.Cursor.EffectIndex)
+			arg += 2
+		} else {
+			where = append(where, fmt.Sprintf("(ledger_sequence, tx_hash, op_index, effect_index) %s ($%d, $%d, $%d, $%d)", cursorOp, arg, arg+1, arg+2, arg+3))
+			args = append(args, filters.Cursor.LedgerSequence, filters.Cursor.TransactionHash, filters.Cursor.OperationIndex, filters.Cursor.EffectIndex)
+			arg += 4
+		}
+	}
+	args = append(args, requestLimit)
+
+	orderBy := fmt.Sprintf("ledger_sequence %s, tx_hash %s, op_index %s, effect_index %s", orderDir, orderDir, orderDir, orderDir)
+	if filters.HorizonOrder {
+		orderBy = fmt.Sprintf("operation_toid %s, effect_index %s", orderDir, orderDir)
+	}
+
+	query := fmt.Sprintf(`
+		SELECT ledger_sequence, tx_hash AS transaction_hash, op_index AS operation_index, effect_index,
+		       operation_toid AS operation_id, COALESCE(effect_type, 0), COALESCE(effect_type_name, ''), account_id,
+		       amount, asset_code, asset_issuer, asset_type,
+		       details_json::text,
+		       trustline_limit, authorize_flag, clawback_flag,
+		       signer_account, signer_weight, offer_id, seller_account,
+		       closed_at AS created_at
+		FROM serving.sv_effects_by_account
+		WHERE %s
+		ORDER BY %s
+		LIMIT $%d`, strings.Join(where, " AND "), orderBy, arg)
+
+	rows, err := h.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, "", false, true, fmt.Errorf("serving operation effects: %w", err)
+	}
+	defer rows.Close()
+
+	effects, err := scanSilverEffects(rows)
+	if err != nil {
+		return nil, "", false, true, fmt.Errorf("serving operation effects: %w", err)
 	}
 
 	hasMore := len(effects) > limit

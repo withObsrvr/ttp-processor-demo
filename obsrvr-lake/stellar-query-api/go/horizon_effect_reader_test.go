@@ -291,6 +291,54 @@ func TestHorizonEffectReaderUsesServingTransactionEffectsWhenCovered(t *testing.
 	}
 }
 
+func TestHorizonEffectReaderUsesServingOperationEffectsWhenCovered(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	operationID := toid.New(100, 1, 1).ToInt64()
+	closedAt := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+
+	mock.ExpectQuery("FROM serving.sv_watermarks").
+		WillReturnRows(sqlmock.NewRows([]string{"status", "complete_from", "complete_thru"}).
+			AddRow("complete", int64(1), int64(200)))
+	mock.ExpectQuery("FROM serving.sv_effects_by_account").
+		WithArgs(operationID, 2).
+		WillReturnRows(sqlmock.NewRows(horizonEffectColumns).
+			AddRow(
+				int64(100), "txhash", 0, 0,
+				operationID, 2, "account_credited", "GA",
+				"2.5000000", "USD", "GISSUER", "credit_alphanum4",
+				nil, nil, nil, nil, nil, nil, nil, nil,
+				closedAt,
+			))
+
+	reader := NewHorizonEffectReader(
+		&UnifiedDuckDBReader{db: db, hotSchema: "hot", coldSchema: "cold"},
+		&SilverHotReader{db: db, network: "testnet"},
+	)
+	effects, _, hasMore, err := reader.GetEffects(context.Background(), EffectFilters{
+		OperationID:  &operationID,
+		Limit:        1,
+		Order:        "desc",
+		HorizonOrder: true,
+	})
+	if err != nil {
+		t.Fatalf("GetEffects: %v", err)
+	}
+	if hasMore {
+		t.Fatalf("hasMore = true, want false")
+	}
+	if len(effects) != 1 || effects[0].OperationID == nil || *effects[0].OperationID != operationID {
+		t.Fatalf("effects = %+v", effects)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
 func TestHorizonEffectReaderUsesStaleServingAccountEffectsWhenComplete(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
