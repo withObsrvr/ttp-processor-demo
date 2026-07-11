@@ -865,3 +865,81 @@ Recommended next order:
    assigned to the same accounts/contracts Horizon uses.
 4. Make the accuracy harness live-tip-aware or add frozen-ledger comparison
    routes so one-ledger ingestion skew does not appear as a parity regression.
+
+## Review-Fix Rollout Retest - 2026-07-11
+
+Two review batches (the multi-agent PR #91 review and the Codex follow-up)
+were fixed, committed (`7a8293e..8bd7e77`), and rolled out to testnet on
+2026-07-11. Five services were rebuilt and redeployed:
+
+| Service | Image |
+| --- | --- |
+| stellar-query-api | `withobsrvr/stellar-query-api:horizon-review-fixes-dbc056d-20260711144019` |
+| stellar-postgres-ingester | `withobsrvr/stellar-postgres-ingester:horizon-compat-e271fdf-20260711142246` |
+| serving-projection-processor (both jobs) | `withobsrvr/serving-projection-processor:horizon-review-fixes-e271fdf-20260711142403` |
+| postgres-ducklake-flusher | `withobsrvr/postgres-ducklake-flusher:dl154-e271fdf-20260711135156` |
+| silver-cold-flusher | `withobsrvr/silver-cold-flusher:account-seq-cols-8bd7e77-20260711145221` |
+
+Data-plane changes applied during the rollout:
+
+- Bronze migration 009 (`accounts_snapshot_v1.sequence_ledger/sequence_time`)
+  had never been applied to testnet hot Postgres; applied manually. The
+  ingester now populates both columns (verified 688/688 on fresh rows), so
+  account `sequence_ledger`/`sequence_time` now carry real chain values
+  end-to-end instead of inferred ones.
+- Cold silver `accounts_current` gained the same two columns via the
+  silver-cold-flusher's startup migrations, closing the unified account
+  lookup's cold-arm binder error.
+- Cold bronze `accounts_snapshot_v1` gained the columns via the
+  postgres-ducklake-flusher migrations, and that table now flushes with an
+  explicit column list (positional flushes would have shifted values after
+  `sequence_number`).
+
+Correctness fixes now live on the public surface (from the review batches):
+text/hash/return memos decode correctly (envelope-derived, with
+`memo_bytes`), fee-bump transactions report the real `fee_account` plus
+`fee_bump_transaction`/`inner_transaction` blocks, record `paging_token`s
+round-trip through `?cursor=` on account transactions, `create_account` /
+`account_merge` / path payments render typed records with amounts, locked
+accounts serve their true signer sets, and the balances projector removes
+closed-trustline and merged-account rows (`trustline_removed` /
+`account_removed` effects).
+
+The accuracy harness itself was hardened in this pass: network failures
+(status 0) and matching non-200s no longer count as passes, and `ok`
+requires real 200-vs-200 comparisons (`compared_200` is now reported).
+
+### Gate results
+
+Two back-to-back runs, both `compared_200 = 16/16`, zero hard failures:
+
+- Run 1: 14 pass, 2 partial (`account`, `payments_latest`)
+- Run 2: 10 pass, 6 partial (`fee_stats`, `ledgers_latest`, `account`,
+  `account_transactions`, `operations_latest`, `payments_latest`)
+
+Every partial in both runs is live-tip skew, not a data error: `fee_stats`
+`last_ledger` differs by exactly one ledger, latest-collection first records
+sit in adjacent ledgers, and the fixture account currently transacts every
+ledger, so its `sequence` reads one apart between the two sequentially
+sampled APIs (obsrvr trails Horizon by ~1 ledger of ingest+transform
+latency). Which routes flip partial depends solely on ledger-close timing —
+run 1 and run 2 disagree on route verdicts for identical deployments.
+
+### Status vs. the 2026-07-10 recommendations
+
+1. Account root sequence fields: **done** — `sequence_ledger`/`sequence_time`
+   now serve real chain values (the remaining sampled diff is tip lag on a
+   busy fixture account).
+2. Soroban payment classification (`invoke_host_function` with contract asset
+   balance changes as payment-class): **still open** in the data plane; it did
+   not surface in these samples.
+3. Account-effect semantics (TTL/admin effects vs Horizon's assignment):
+   **still open**; `account_effects` passed both runs on current samples.
+4. Live-tip-aware harness: **now the dominant noise source** — every observed
+   partial is timing skew. A dormant fixture account and frozen-ledger
+   comparisons for latest-tip routes would make the gate deterministic.
+
+Operational note: the first cold-tier request after a query-api deploy can
+504 while DuckLake attaches and warms (~4s); it self-heals on the next
+request. The unified account lookup is capped at 1.5s and falls back to hot
+silver (logged) when the cold `accounts_current` scan exceeds it.
