@@ -2850,6 +2850,11 @@ func (r *UnifiedDuckDBReader) GetEffects(ctx context.Context, filters EffectFilt
 		}
 		argNum++
 	}
+	if filters.MaxEffectType > 0 {
+		conditions = append(conditions, fmt.Sprintf("effect_type <= $%d", argNum))
+		args = append(args, filters.MaxEffectType)
+		argNum++
+	}
 
 	// Ledger filter
 	if filters.LedgerSequence > 0 {

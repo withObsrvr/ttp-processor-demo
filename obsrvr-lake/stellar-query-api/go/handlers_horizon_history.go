@@ -18,6 +18,7 @@ import (
 )
 
 const horizonInvokeContractHostFunction = "HostFunctionTypeHostFunctionTypeInvokeContract"
+const maxHorizonEffectType = 97
 
 func (h *HorizonCompatHandlers) HandleOperations(w http.ResponseWriter, r *http.Request) {
 	h.handleOperationCollection(w, r, OperationFilters{})
@@ -199,6 +200,7 @@ func (h *HorizonCompatHandlers) handleEffectCollection(w http.ResponseWriter, r 
 	filters.Order = page.Order
 	filters.Cursor = cursor
 	filters.HorizonOrder = true
+	filters.MaxEffectType = maxHorizonEffectType
 
 	ctx, cancel := withInteractiveQueryTimeout(r.Context())
 	defer cancel()

@@ -221,6 +221,105 @@ func TestHorizonOperationReaderUsesServingAccountOperationsWhenCovered(t *testin
 	}
 }
 
+func TestHorizonOperationReaderUsesSACEffectsForServingAccountPayments(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	operationID := toid.New(25, 1, 1).ToInt64()
+	closedAt := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+
+	mock.ExpectQuery("FROM serving.sv_watermarks").
+		WillReturnRows(sqlmock.NewRows([]string{"status", "complete_from", "complete_thru"}).
+			AddRow("complete", int64(1), int64(25)))
+	mock.ExpectQuery("SELECT COALESCE\\(MAX\\(ledger_sequence\\), 0\\) FROM serving.sv_ledger_stats_recent").
+		WillReturnRows(sqlmock.NewRows([]string{"latest"}).AddRow(int64(25)))
+	mock.ExpectQuery("(?s)FROM serving\\.sv_operations_by_account o.*serving\\.sv_effects_by_account").
+		WithArgs("GA", int64(1), int64(25), 2).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"operation_toid", "tx_hash", "ledger_sequence", "closed_at", "source_account",
+			"type_code", "type_name", "destination_account", "asset_key", "amount_stroops",
+			"successful", "is_payment_op", "is_soroban_op", "contract_id", "function_name",
+		}).AddRow(operationID, "txhash", int64(25), closedAt, "GSOURCE", int64(24), "invoke_host_function", nil, "USD:GISSUER", int64(25000000), true, false, true, "CCONTRACT", "transfer"))
+
+	reader := NewHorizonOperationReader(
+		&UnifiedDuckDBReader{db: db, hotSchema: "hot", coldSchema: "cold"},
+		&SilverHotReader{db: db, network: "testnet"},
+	)
+	ops, _, hasMore, err := reader.GetEnrichedOperationsWithCursor(context.Background(), OperationFilters{
+		AccountID:    "GA",
+		PaymentsOnly: true,
+		Limit:        1,
+		Order:        "desc",
+	})
+	if err != nil {
+		t.Fatalf("GetEnrichedOperationsWithCursor: %v", err)
+	}
+	if hasMore {
+		t.Fatalf("hasMore = true, want false")
+	}
+	if len(ops) != 1 || ops[0].OperationID != operationID || ops[0].Type != 24 {
+		t.Fatalf("ops = %+v", ops)
+	}
+	if ops[0].IsPaymentOp {
+		t.Fatalf("IsPaymentOp = true, want false to prove SAC effect predicate supplied the payment match")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestHorizonOperationReaderUsesSACEffectsForServingGlobalPayments(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	operationID := toid.New(30, 1, 1).ToInt64()
+	closedAt := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+
+	mock.ExpectQuery("FROM serving.sv_watermarks").
+		WillReturnRows(sqlmock.NewRows([]string{"status", "complete_thru"}).
+			AddRow("complete", int64(30)))
+	mock.ExpectQuery("SELECT COALESCE\\(MAX\\(ledger_sequence\\), 0\\) FROM serving.sv_ledger_stats_recent").
+		WillReturnRows(sqlmock.NewRows([]string{"latest"}).AddRow(int64(30)))
+	mock.ExpectQuery("(?s)FROM serving\\.sv_operations_by_account o.*serving\\.sv_effects_by_account").
+		WithArgs(2).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"operation_toid", "tx_hash", "ledger_sequence", "closed_at", "source_account",
+			"type_code", "type_name", "destination_account", "asset_key", "amount_stroops",
+			"successful", "is_payment_op", "is_soroban_op", "contract_id", "function_name",
+		}).AddRow(operationID, "txhash", int64(30), closedAt, "GSOURCE", int64(24), "invoke_host_function", nil, "USD:GISSUER", int64(25000000), true, false, true, "CCONTRACT", "transfer"))
+
+	reader := NewHorizonOperationReader(
+		&UnifiedDuckDBReader{db: db, hotSchema: "hot", coldSchema: "cold"},
+		&SilverHotReader{db: db, network: "testnet"},
+	)
+	ops, _, hasMore, err := reader.GetEnrichedOperationsWithCursor(context.Background(), OperationFilters{
+		PaymentsOnly: true,
+		Limit:        1,
+		Order:        "desc",
+	})
+	if err != nil {
+		t.Fatalf("GetEnrichedOperationsWithCursor: %v", err)
+	}
+	if hasMore {
+		t.Fatalf("hasMore = true, want false")
+	}
+	if len(ops) != 1 || ops[0].OperationID != operationID || ops[0].Type != 24 {
+		t.Fatalf("ops = %+v", ops)
+	}
+	if ops[0].IsPaymentOp {
+		t.Fatalf("IsPaymentOp = true, want false to prove SAC effect predicate supplied the payment match")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
 func TestHorizonOperationReaderUsesServingGlobalOperationsWhenCovered(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

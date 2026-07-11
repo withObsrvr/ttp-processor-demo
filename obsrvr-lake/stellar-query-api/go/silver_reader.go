@@ -86,23 +86,23 @@ func (r *SilverColdReader) Close() error {
 // ============================================
 
 type AccountCurrent struct {
-	AccountID            string  `json:"account_id"`
-	Balance              string  `json:"balance"`
-	SequenceNumber       string  `json:"sequence_number"`
-	NumSubentries        int64   `json:"num_subentries"`
-	NumSponsoring        int64   `json:"num_sponsoring,omitempty"`
-	NumSponsored         int64   `json:"num_sponsored,omitempty"`
-	LastModifiedLedger   int64   `json:"last_modified_ledger"`
-	SequenceLedger       int64   `json:"sequence_ledger,omitempty"`
-	SequenceTime         int64   `json:"sequence_time,omitempty"`
-	UpdatedAt            string  `json:"updated_at"`
-	HomeDomain           *string `json:"home_domain,omitempty"`
-	CreatedAt            *string `json:"created_at,omitempty"`
-	Sponsor              *string `json:"sponsor,omitempty"`
-	AuthRequired         *bool   `json:"auth_required,omitempty"`
-	AuthRevocable        *bool   `json:"auth_revocable,omitempty"`
-	AuthImmutable        *bool   `json:"auth_immutable,omitempty"`
-	AuthClawbackEnabled  *bool   `json:"auth_clawback_enabled,omitempty"`
+	AccountID           string  `json:"account_id"`
+	Balance             string  `json:"balance"`
+	SequenceNumber      string  `json:"sequence_number"`
+	NumSubentries       int64   `json:"num_subentries"`
+	NumSponsoring       int64   `json:"num_sponsoring,omitempty"`
+	NumSponsored        int64   `json:"num_sponsored,omitempty"`
+	LastModifiedLedger  int64   `json:"last_modified_ledger"`
+	SequenceLedger      int64   `json:"sequence_ledger,omitempty"`
+	SequenceTime        int64   `json:"sequence_time,omitempty"`
+	UpdatedAt           string  `json:"updated_at"`
+	HomeDomain          *string `json:"home_domain,omitempty"`
+	CreatedAt           *string `json:"created_at,omitempty"`
+	Sponsor             *string `json:"sponsor,omitempty"`
+	AuthRequired        *bool   `json:"auth_required,omitempty"`
+	AuthRevocable       *bool   `json:"auth_revocable,omitempty"`
+	AuthImmutable       *bool   `json:"auth_immutable,omitempty"`
+	AuthClawbackEnabled *bool   `json:"auth_clawback_enabled,omitempty"`
 }
 
 type AccountSnapshot struct {
@@ -135,19 +135,19 @@ type AccountSignersResponse struct {
 
 // Balance represents a single balance (XLM or trustline)
 type Balance struct {
-	AssetType                           string  `json:"asset_type"`
-	AssetCode                           string  `json:"asset_code"`
-	AssetIssuer                         *string `json:"asset_issuer,omitempty"`
-	Balance                             string  `json:"balance"`
-	BalanceStroops                      int64   `json:"balance_stroops"`
-	Limit                               *string `json:"limit,omitempty"`
-	BuyingLiabilities                   *string `json:"buying_liabilities,omitempty"`
-	SellingLiabilities                  *string `json:"selling_liabilities,omitempty"`
-	IsAuthorized                        *bool   `json:"is_authorized,omitempty"`
-	IsAuthorizedToMaintainLiabilities   *bool   `json:"is_authorized_to_maintain_liabilities,omitempty"`
-	IsClawbackEnabled                   *bool   `json:"is_clawback_enabled,omitempty"`
-	Sponsor                             *string `json:"sponsor,omitempty"`
-	LastModifiedLedger                  *int64  `json:"last_modified_ledger,omitempty"`
+	AssetType                         string  `json:"asset_type"`
+	AssetCode                         string  `json:"asset_code"`
+	AssetIssuer                       *string `json:"asset_issuer,omitempty"`
+	Balance                           string  `json:"balance"`
+	BalanceStroops                    int64   `json:"balance_stroops"`
+	Limit                             *string `json:"limit,omitempty"`
+	BuyingLiabilities                 *string `json:"buying_liabilities,omitempty"`
+	SellingLiabilities                *string `json:"selling_liabilities,omitempty"`
+	IsAuthorized                      *bool   `json:"is_authorized,omitempty"`
+	IsAuthorizedToMaintainLiabilities *bool   `json:"is_authorized_to_maintain_liabilities,omitempty"`
+	IsClawbackEnabled                 *bool   `json:"is_clawback_enabled,omitempty"`
+	Sponsor                           *string `json:"sponsor,omitempty"`
+	LastModifiedLedger                *int64  `json:"last_modified_ledger,omitempty"`
 }
 
 // AccountBalancesResponse contains all balances for an account
@@ -1424,6 +1424,7 @@ type EffectFilters struct {
 	Cursor          *EffectCursor
 	Order           string // "asc" or "desc" (default: "asc" for backward compatibility)
 	HorizonOrder    bool   // order/page by operation_id,effect_index for Horizon compatibility
+	MaxEffectType   int    // optional upper bound used by Horizon compatibility
 }
 
 // EffectTypeCount represents an effect type with its count

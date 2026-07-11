@@ -1308,7 +1308,17 @@ func (h *SilverHotReader) GetServingAccountOperations(ctx context.Context, filte
 	args := []interface{}{filters.AccountID, startLedger, endLedger}
 	arg := 4
 	if filters.PaymentsOnly {
-		where = append(where, "is_payment_op = true")
+		sacPaymentExists := fmt.Sprintf(`EXISTS (
+			SELECT 1
+			FROM serving.sv_effects_by_account e
+			WHERE e.account_id = $1
+			  AND e.operation_toid = o.operation_toid
+			  AND e.ledger_sequence BETWEEN $2 AND $3
+			  AND %s
+		)`, horizonServingSACPaymentEffectPredicate)
+		where[0] = fmt.Sprintf("(o.account_id = $1 OR %s)", sacPaymentExists)
+		where[1] = "o.ledger_sequence BETWEEN $2 AND $3"
+		where = append(where, fmt.Sprintf("(%s OR %s)", horizonServingPaymentOperationPredicateQualified, sacPaymentExists))
 	}
 	if filters.Cursor != nil {
 		where = append(where, fmt.Sprintf("operation_toid %s $%d", cursorOp, arg))
@@ -1317,14 +1327,26 @@ func (h *SilverHotReader) GetServingAccountOperations(ctx context.Context, filte
 	}
 	args = append(args, requestLimit)
 
-	query := fmt.Sprintf(`
-		SELECT operation_toid, tx_hash, ledger_sequence, closed_at, source_account,
+	selectClause := `SELECT operation_toid, tx_hash, ledger_sequence, closed_at, source_account,
 		       type_code, type_name, destination_account, asset_key, amount_stroops,
-		       successful, is_payment_op, is_soroban_op, contract_id, function_name
-		FROM serving.sv_operations_by_account
+		       successful, is_payment_op, is_soroban_op, contract_id, function_name`
+	fromClause := "FROM serving.sv_operations_by_account"
+	orderBy := fmt.Sprintf("operation_toid %s", orderDir)
+	if filters.PaymentsOnly {
+		selectClause = `SELECT DISTINCT ON (operation_toid)
+		       operation_toid, tx_hash, ledger_sequence, closed_at, source_account,
+		       type_code, type_name, destination_account, asset_key, amount_stroops,
+		       successful, is_payment_op, is_soroban_op, contract_id, function_name`
+		fromClause = "FROM serving.sv_operations_by_account o"
+		orderBy = fmt.Sprintf("operation_toid %s, (account_id = $1) DESC, account_id ASC", orderDir)
+	}
+
+	query := fmt.Sprintf(`
+		%s
+		%s
 		WHERE %s
-		ORDER BY operation_toid %s
-		LIMIT $%d`, strings.Join(where, " AND "), orderDir, arg)
+		ORDER BY %s
+		LIMIT $%d`, selectClause, fromClause, strings.Join(where, " AND "), orderBy, arg)
 
 	rows, err := h.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -1376,8 +1398,17 @@ func (h *SilverHotReader) GetServingTransactionOperations(ctx context.Context, f
 	where := []string{"tx_hash = $1"}
 	args := []interface{}{filters.TxHash}
 	arg := 2
+	fromClause := "FROM serving.sv_operations_by_account"
 	if filters.PaymentsOnly {
-		where = append(where, horizonServingPaymentOperationPredicate)
+		fromClause = "FROM serving.sv_operations_by_account o"
+		sacPaymentExists := fmt.Sprintf(`EXISTS (
+			SELECT 1
+			FROM serving.sv_effects_by_account e
+			WHERE e.operation_toid = o.operation_toid
+			  AND e.tx_hash = $1
+			  AND %s
+		)`, horizonServingSACPaymentEffectPredicate)
+		where = append(where, fmt.Sprintf("(%s OR %s)", horizonServingPaymentOperationPredicateQualified, sacPaymentExists))
 	}
 	if filters.Cursor != nil {
 		where = append(where, fmt.Sprintf("operation_toid %s $%d", cursorOp, arg))
@@ -1391,10 +1422,10 @@ func (h *SilverHotReader) GetServingTransactionOperations(ctx context.Context, f
 		       operation_toid, tx_hash, ledger_sequence, closed_at, source_account,
 		       type_code, type_name, destination_account, asset_key, amount_stroops,
 		       successful, is_payment_op, is_soroban_op, contract_id, function_name
-		FROM serving.sv_operations_by_account
+		%s
 		WHERE %s
 		ORDER BY operation_toid %s, account_id ASC
-		LIMIT $%d`, strings.Join(where, " AND "), orderDir, arg)
+		LIMIT $%d`, fromClause, strings.Join(where, " AND "), orderDir, arg)
 
 	rows, err := h.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -1454,8 +1485,16 @@ func (h *SilverHotReader) GetServingOperations(ctx context.Context, filters Oper
 	where := []string{"1=1"}
 	args := []interface{}{}
 	arg := 1
+	fromClause := "FROM serving.sv_operations_by_account"
 	if filters.PaymentsOnly {
-		where = append(where, horizonServingPaymentOperationPredicate)
+		fromClause = "FROM serving.sv_operations_by_account o"
+		sacPaymentExists := fmt.Sprintf(`EXISTS (
+			SELECT 1
+			FROM serving.sv_effects_by_account e
+			WHERE e.operation_toid = o.operation_toid
+			  AND %s
+		)`, horizonServingSACPaymentEffectPredicate)
+		where = append(where, fmt.Sprintf("(%s OR %s)", horizonServingPaymentOperationPredicateQualified, sacPaymentExists))
 	}
 	if filters.StartLedger > 0 {
 		where = append(where, fmt.Sprintf("ledger_sequence >= $%d", arg))
@@ -1479,10 +1518,10 @@ func (h *SilverHotReader) GetServingOperations(ctx context.Context, filters Oper
 		       operation_toid, tx_hash, ledger_sequence, closed_at, source_account,
 		       type_code, type_name, destination_account, asset_key, amount_stroops,
 		       successful, is_payment_op, is_soroban_op, contract_id, function_name
-		FROM serving.sv_operations_by_account
+		%s
 		WHERE %s
 		ORDER BY operation_toid %s, account_id ASC
-		LIMIT $%d`, strings.Join(where, " AND "), orderDir, arg)
+		LIMIT $%d`, fromClause, strings.Join(where, " AND "), orderDir, arg)
 
 	rows, err := h.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -1680,6 +1719,11 @@ func (h *SilverHotReader) GetServingAccountEffects(ctx context.Context, filters 
 		}
 		arg++
 	}
+	if filters.MaxEffectType > 0 {
+		where = append(where, fmt.Sprintf("effect_type <= $%d", arg))
+		args = append(args, filters.MaxEffectType)
+		arg++
+	}
 	if !filters.StartTime.IsZero() {
 		where = append(where, fmt.Sprintf("closed_at >= $%d", arg))
 		args = append(args, filters.StartTime)
@@ -1797,6 +1841,11 @@ func (h *SilverHotReader) GetServingOperationEffects(ctx context.Context, filter
 	where := []string{"operation_toid = $1"}
 	args := []interface{}{*filters.OperationID}
 	arg := 2
+	if filters.MaxEffectType > 0 {
+		where = append(where, fmt.Sprintf("effect_type <= $%d", arg))
+		args = append(args, filters.MaxEffectType)
+		arg++
+	}
 	if filters.Cursor != nil {
 		if filters.HorizonOrder && filters.Cursor.OperationID != nil {
 			where = append(where, fmt.Sprintf("(operation_toid, effect_index) %s ($%d, $%d)", cursorOp, arg, arg+1))
@@ -1897,6 +1946,11 @@ func (h *SilverHotReader) GetServingTransactionEffects(ctx context.Context, filt
 	where := []string{"tx_hash = $1", "ledger_sequence = $2"}
 	args := []interface{}{filters.TransactionHash, filters.LedgerSequence}
 	arg := 3
+	if filters.MaxEffectType > 0 {
+		where = append(where, fmt.Sprintf("effect_type <= $%d", arg))
+		args = append(args, filters.MaxEffectType)
+		arg++
+	}
 	if filters.Cursor != nil {
 		if filters.HorizonOrder && filters.Cursor.OperationID != nil {
 			where = append(where, fmt.Sprintf("(operation_toid, effect_index) %s ($%d, $%d)", cursorOp, arg, arg+1))
@@ -4531,6 +4585,11 @@ func (h *SilverHotReader) GetEffects(ctx context.Context, filters EffectFilters)
 			conditions = append(conditions, fmt.Sprintf("effect_type_string = $%d", argNum))
 			args = append(args, filters.EffectType)
 		}
+		argNum++
+	}
+	if filters.MaxEffectType > 0 {
+		conditions = append(conditions, fmt.Sprintf("effect_type <= $%d", argNum))
+		args = append(args, filters.MaxEffectType)
 		argNum++
 	}
 

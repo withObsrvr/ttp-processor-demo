@@ -292,6 +292,9 @@ func TestHorizonTransactionEffectsAddsLedgerFilterWhenTransactionFound(t *testin
 	if effectReader.filters.TransactionHash != "txhash" || effectReader.filters.LedgerSequence != 3177525 {
 		t.Fatalf("filters = %+v", effectReader.filters)
 	}
+	if effectReader.filters.MaxEffectType != maxHorizonEffectType {
+		t.Fatalf("MaxEffectType = %d", effectReader.filters.MaxEffectType)
+	}
 }
 
 func TestDecodeHorizonOperationCursorAcceptsNumericPagingToken(t *testing.T) {
