@@ -42,7 +42,7 @@ python3 obsrvr-lake/stellar-query-api/scripts/horizon_compat_smoke.py \
   --timeout 20 --json
 ```
 
-Final smoke result: `ok=true`.
+Final smoke result after the last query-api rollout: `ok=true`.
 
 Final accuracy command:
 
@@ -51,50 +51,50 @@ python3 obsrvr-lake/stellar-query-api/scripts/horizon_compat_accuracy.py \
   --timeout 20 --json
 ```
 
-Final accuracy summary:
+Final accuracy summary after deploying `7fffc99`:
 
 | Route | Verdict | Current behavior |
 | --- | --- | --- |
-| `/fee_stats` | Partial | `200`; latest ledger or capacity can differ by live-tip timing/calculation |
-| `/ledgers?limit=1&order=desc` | Partial | `200`; live tip can lag SDF Horizon by a few ledgers |
+| `/fee_stats` | Partial | `200`; latest ledger/capacity can differ in live-tip comparison because the two APIs are sampled sequentially |
+| `/ledgers?limit=1&order=desc` | Partial | `200`; live latest ledger can differ by a few ledgers during the test |
 | `/ledgers/3177525` | Pass | `200`; historical exact ledger now matches tested fields |
-| `/accounts/{id}` | Partial | `200`; account current-state still lacks Horizon-exact balance/sequence fields |
+| `/accounts/{id}` | Pass | `200`; tested sequence, sequence ledger/time, last modified ledger, and balance count match |
 | `/accounts/{id}/transactions?limit=1&order=desc` | Pass | `200`; transaction XDR/signatures present |
 | `/transactions/{hash}` | Pass | `200`; core transaction fields and XDR fields present |
 | `/transactions/{hash}/operations?limit=5` | Pass | `200`; record count and core operation fields match |
 | `/transactions/{hash}/effects?limit=5` | Pass | `200`; tested fixture has zero effects on both sides |
-| `/operations?limit=1&order=desc` | Partial | `200`; no timeout, but live latest row can differ and Soroban detail shape is not Horizon-exact |
-| `/operations/{id}` | Partial | `200`; operation exists, but Soroban function/parameter formatting differs from Horizon |
+| `/operations?limit=1&order=desc` | Pass | `200`; selected fields match; Soroban `parameters` remain less hydrated than Horizon |
+| `/operations/{id}` | Pass | `200`; selected fields match; Soroban `parameters` remain less hydrated than Horizon |
 | `/operations/{id}/effects?limit=5` | Pass | `200`; tested fixture has zero effects on both sides |
-| `/payments?limit=1&order=desc` | Partial | `200`; Horizon payment semantics/order differ from Obsrvr payment-op projection |
-| `/effects?limit=1&order=desc` | Partial | `200`; effect ID/paging token format differs |
+| `/payments?limit=1&order=desc` | Partial | `200`; unbounded live latest row can differ between sequential Obsrvr/Horizon samples; account and bounded payment checks pass |
+| `/effects?limit=1&order=desc` | Pass | `200`; Horizon-style effect ID and paging token match tested fields |
 | `/accounts/{id}/operations?limit=3&order=desc` | Pass | `200`; tested count and core fields match |
-| `/accounts/{id}/payments?limit=3&order=desc` | Partial | `200`; payment semantics/order differ |
-| `/accounts/{id}/effects?limit=3&order=desc` | Partial | `200`; account effect ordering and ID format differ |
+| `/accounts/{id}/payments?limit=3&order=desc` | Pass | `200`; Soroban balance-change payment operations are included for the tested account |
+| `/accounts/{id}/effects?limit=3&order=desc` | Pass | `200`; account effect ordering and Horizon IDs match tested fields |
 
-The remaining work is compatibility quality, not route availability. The next
+The remaining partials are not hard endpoint defects from this pass. They are
+live latest-page comparisons against SDF Horizon, where the two APIs are sampled
+sequentially and the latest ledger/payment can change between requests. The next
 parity cycle should focus on:
 
-- Horizon account root current-state parity: trustline balances, sequence
-  ledger/time, liabilities, sponsor fields, auth flags, and balance
-  last-modified ledger.
+- Live-tip-aware accuracy checks: compare latest collections at a frozen cursor
+  or bounded ledger instead of treating moving latest pages as deterministic.
 - Horizon Soroban operation resource formatting: preserve Horizon's generic
   host-function naming and parameter list when strict drop-in compatibility is
   required.
-- Payment and effect semantics: Horizon's `/payments` includes payment-like
-  Soroban effects differently than the current `is_payment_op` projection, and
-  effect IDs/paging tokens need Horizon formatting.
-- Live-tip comparison tolerance: public accuracy checks against SDF Horizon can
-  report partials when Obsrvr is one or two ledgers behind during the test.
+- Strict JSON-field policy: decide whether compat routes should hide Obsrvr-only
+  extension fields when they are harmless but not Horizon-exact.
+- Customer route inventory: run this same harness against the specific routes,
+  filters, cursor patterns, and SDK calls used by the migrating Horizon user.
 
 Deployed images for this closeout:
 
 | Service | Image tag | Digest |
 | --- | --- | --- |
-| `stellar-query-api` | `cycle5b-horizon-f4973a1-20260710-ledger-timeout` | `sha256:d4a5336e11ff0f2748f5b798b3e944b74c5b769ddb53c2e9c6e960afe3ae8614` |
+| `stellar-query-api` | `horizon-sequence-time-7fffc99-20260711010212` | `sha256:30f81e0c31ba4bfe67aa109521adec8737b35ee77c4f0e05764a5015d0cf259e` |
+| `serving-cold-backfill` | `account-balances-repair-8e4bd98-20260710232153` | `sha256:44171d674d85a7beca2189f6243eee836e9240a8bcef582fc15d6190044e56f4` |
+| `serving-projection-processor` | `horizon-account-balances-1ca6d97-20260710221224` | `sha256:2879f8af64df2bbca1477d63b5a1339fc7a0632322b9ab75b3297200ba9a360a` |
 | `account-index-transformer` | `cycle5b-horizon-f4973a1-20260710-account-feed-indexes` | `sha256:a94ea5c1e3133965c637490c69b16c7a53b25096ed34cbb827933744b6ccb2e1` |
-| `serving-cold-backfill` | `cycle5b-horizon-f4973a1-20260710-effects` | previously deployed for effects and by-account catch-up |
-| `serving-projection-processor` | `cycle5b-horizon-f4973a1-20260710-effects` | previously deployed for effects schema/projection support |
 
 Operational changes made during closeout:
 
@@ -109,6 +109,25 @@ Operational changes made during closeout:
 - Created and verified valid Postgres indexes:
   `sv_operations_by_account_operation_idx` and
   `sv_operations_by_account_payment_page_idx`.
+- Repaired `serving.sv_account_balances_current` with the cold backfill path
+  after fixing schema/order/dedup issues; the repair populated `3446606`
+  current balance rows.
+- Updated Horizon account response assembly to prefer
+  `serving.sv_ledger_stats_recent.closed_at` for `sequence_time`, removing the
+  stable one-second mismatch for the sampled account.
+- Updated Horizon effect routes to filter to Horizon effect types and use the
+  serving effects feed for transaction, operation, account, and recent effect
+  pages where coverage is complete.
+- Updated Horizon payment routes so account payments derive candidates from
+  payment-like account effects, including Soroban contract credit/debit effects.
+
+Latest query-api deployment:
+
+```text
+Nomad deployment: 48e7341b
+Nomad job version: 84
+Commit: 7fffc99
+```
 
 Final serving watermark check:
 
