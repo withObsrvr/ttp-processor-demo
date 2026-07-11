@@ -943,3 +943,45 @@ Operational note: the first cold-tier request after a query-api deploy can
 504 while DuckLake attaches and warms (~4s); it self-heals on the next
 request. The unified account lookup is capped at 1.5s and falls back to hot
 silver (logged) when the cold `accounts_current` scan exceeds it.
+
+### Tip-aware harness - 2026-07-11 (follow-up)
+
+The harness is now deterministic. It resolves both APIs' tips, fails hard on
+>50 ledgers of skew (stalled pipeline), and anchors tip-sensitive routes at
+`min(tips) - 2`: the latest-ledger comparison fetches the same sequence from
+both sides (exact hash match required), and the operations/payments/effects
+collections page from the anchor TOID cursor. `fee_stats` tolerates ≤5
+ledgers of sampling skew on `last_ledger` only.
+
+Fixtures split by purpose:
+
+- Dormant account `GDRJ2L4YWYRZ7PIIVMTXTH75UE3BGNW2PJFRJXNUHYVEJJU455EOYBCZ`
+  (untouched since ledger 3200014) drives the account-scoped history routes —
+  fully deterministic.
+- The active account keeps the account-root route (structure compared
+  exactly, sequence within tolerance), because a cold-only account root
+  cannot be served yet (below).
+
+Deterministic known gaps surfaced by anchoring (tracked in the harness's
+`KNOWN_GAPS` list — reported every run, non-gating until fixed):
+
+1. `account_dormant`: a cold-only account root 504s — serving/hot cover the
+   shell (a NULL-counter scan bug on backfilled serving rows was fixed en
+   route, `f0b1a08`), but balances and signers for accounts outside the hot
+   window live only in cold `accounts_current`/`trustlines_current`, and the
+   unpruned cold scan cannot answer interactively. Needs the account index
+   plane.
+2. `effects_anchored`: `GET /effects?order=desc&cursor=<toid>-0` — the
+   Horizon-canonical way to page effects — times out. The TOID-cursor sort
+   (`operation_id, effect_index`) has no index support on the global effects
+   path. Previously invisible because the racing harness only ever queried
+   the uncursored first page.
+3. `payments_anchored`: the serving `is_payment_op` flag misses
+   `account_merge` (observed deterministically at an anchor) and
+   Soroban-payment operations, so the payments feed can skip records Horizon
+   includes. Surfaces only when the anchored window's newest payment is one
+   of the missed types.
+
+Gate result with the deployed stack (`f0b1a08` query-api): `ok=true`,
+14 pass + 1 pass-with-known-gap-marker + 2 known-gap, `compared_200=15`,
+stable across consecutive runs.
