@@ -1304,22 +1304,70 @@ func (h *SilverHotReader) GetServingAccountOperations(ctx context.Context, filte
 		endLedger = completeThru
 	}
 
-	where := []string{"account_id = $1", "ledger_sequence BETWEEN $2 AND $3"}
 	args := []interface{}{filters.AccountID, startLedger, endLedger}
 	arg := 4
 	if filters.PaymentsOnly {
-		sacPaymentExists := fmt.Sprintf(`EXISTS (
-			SELECT 1
-			FROM serving.sv_effects_by_account e
-			WHERE e.account_id = $1
-			  AND e.operation_toid = o.operation_toid
-			  AND e.ledger_sequence BETWEEN $2 AND $3
-			  AND %s
-		)`, horizonServingSACPaymentEffectPredicate)
-		where[0] = fmt.Sprintf("(o.account_id = $1 OR %s)", sacPaymentExists)
-		where[1] = "o.ledger_sequence BETWEEN $2 AND $3"
-		where = append(where, fmt.Sprintf("(%s OR %s)", horizonServingPaymentOperationPredicateQualified, sacPaymentExists))
+		cursorClause := ""
+		if filters.Cursor != nil {
+			cursorClause = fmt.Sprintf("AND o.operation_toid %s $%d", cursorOp, arg)
+			args = append(args, filters.Cursor.OperationIndex)
+			arg++
+		}
+		args = append(args, requestLimit)
+
+		query := fmt.Sprintf(`
+			WITH payment_operation_ids AS (
+				SELECT operation_toid, true AS prefer_account
+				FROM serving.sv_operations_by_account
+				WHERE account_id = $1
+				  AND ledger_sequence BETWEEN $2 AND $3
+				  AND %s
+				UNION ALL
+				SELECT DISTINCT e.operation_toid, false AS prefer_account
+				FROM serving.sv_effects_by_account e
+				WHERE e.account_id = $1
+				  AND e.ledger_sequence BETWEEN $2 AND $3
+				  AND e.operation_toid IS NOT NULL
+				  AND %s
+			), candidate_ops AS (
+				SELECT DISTINCT ON (o.operation_toid)
+				       o.operation_toid, o.tx_hash, o.ledger_sequence, o.closed_at, o.source_account,
+				       o.type_code, o.type_name, o.destination_account, o.asset_key, o.amount_stroops,
+				       o.successful, o.is_payment_op, o.is_soroban_op, o.contract_id, o.function_name
+				FROM payment_operation_ids p
+				JOIN serving.sv_operations_by_account o ON o.operation_toid = p.operation_toid
+				WHERE o.ledger_sequence BETWEEN $2 AND $3
+				  %s
+				ORDER BY o.operation_toid %s, p.prefer_account DESC, (o.account_id = $1) DESC, o.account_id ASC
+			)
+			SELECT operation_toid, tx_hash, ledger_sequence, closed_at, source_account,
+			       type_code, type_name, destination_account, asset_key, amount_stroops,
+			       successful, is_payment_op, is_soroban_op, contract_id, function_name
+			FROM candidate_ops
+			ORDER BY operation_toid %s
+			LIMIT $%d`,
+			horizonServingPaymentOperationPredicate,
+			horizonServingSACPaymentEffectPredicate,
+			cursorClause,
+			orderDir,
+			orderDir,
+			arg,
+		)
+
+		rows, err := h.db.QueryContext(ctx, query, args...)
+		if err != nil {
+			return nil, "", false, true, fmt.Errorf("serving account operations: %w", err)
+		}
+		defer rows.Close()
+
+		ops, nextCursor, hasMore, err := scanServingOperations(rows, limit, filters.Order)
+		if err != nil {
+			return nil, "", false, true, err
+		}
+		return ops, nextCursor, hasMore, true, nil
 	}
+
+	where := []string{"account_id = $1", "ledger_sequence BETWEEN $2 AND $3"}
 	if filters.Cursor != nil {
 		where = append(where, fmt.Sprintf("operation_toid %s $%d", cursorOp, arg))
 		args = append(args, filters.Cursor.OperationIndex)
@@ -1327,26 +1375,14 @@ func (h *SilverHotReader) GetServingAccountOperations(ctx context.Context, filte
 	}
 	args = append(args, requestLimit)
 
-	selectClause := `SELECT operation_toid, tx_hash, ledger_sequence, closed_at, source_account,
-		       type_code, type_name, destination_account, asset_key, amount_stroops,
-		       successful, is_payment_op, is_soroban_op, contract_id, function_name`
-	fromClause := "FROM serving.sv_operations_by_account"
-	orderBy := fmt.Sprintf("operation_toid %s", orderDir)
-	if filters.PaymentsOnly {
-		selectClause = `SELECT DISTINCT ON (operation_toid)
-		       operation_toid, tx_hash, ledger_sequence, closed_at, source_account,
-		       type_code, type_name, destination_account, asset_key, amount_stroops,
-		       successful, is_payment_op, is_soroban_op, contract_id, function_name`
-		fromClause = "FROM serving.sv_operations_by_account o"
-		orderBy = fmt.Sprintf("operation_toid %s, (account_id = $1) DESC, account_id ASC", orderDir)
-	}
-
 	query := fmt.Sprintf(`
-		%s
-		%s
+		SELECT operation_toid, tx_hash, ledger_sequence, closed_at, source_account,
+		       type_code, type_name, destination_account, asset_key, amount_stroops,
+		       successful, is_payment_op, is_soroban_op, contract_id, function_name
+		FROM serving.sv_operations_by_account
 		WHERE %s
-		ORDER BY %s
-		LIMIT $%d`, selectClause, fromClause, strings.Join(where, " AND "), orderBy, arg)
+		ORDER BY operation_toid %s
+		LIMIT $%d`, strings.Join(where, " AND "), orderDir, arg)
 
 	rows, err := h.db.QueryContext(ctx, query, args...)
 	if err != nil {
