@@ -118,6 +118,23 @@ func (c *DuckDBClient) applySilverMigrations() error {
 			),
 		},
 		{
+			// Account sequence metadata (silver hot migration 010). Without these
+			// the query API's unified hot+cold account lookup binder-errors on the
+			// cold arm and degrades to its hot-silver fallback on every request.
+			name: "accounts_current.sequence_ledger",
+			sql: fmt.Sprintf(
+				`ALTER TABLE %s.%s.accounts_current ADD COLUMN IF NOT EXISTS sequence_ledger BIGINT`,
+				c.config.CatalogName, c.config.SchemaName,
+			),
+		},
+		{
+			name: "accounts_current.sequence_time",
+			sql: fmt.Sprintf(
+				`ALTER TABLE %s.%s.accounts_current ADD COLUMN IF NOT EXISTS sequence_time BIGINT`,
+				c.config.CatalogName, c.config.SchemaName,
+			),
+		},
+		{
 			name: "contract_invocations_raw.era_id",
 			sql: fmt.Sprintf(
 				`ALTER TABLE %s.%s.contract_invocations_raw ADD COLUMN IF NOT EXISTS era_id VARCHAR`,
