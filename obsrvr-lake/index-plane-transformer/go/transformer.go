@@ -240,6 +240,13 @@ func (t *Transformer) runTransformationCycle() error {
 			return fmt.Errorf("retention gap detected and allow_retention_gap_start=false: %s", retentionGapMessage)
 		}
 		log.Printf("⚠️  retention gap detected but continuing because allow_retention_gap_start=true: %s", retentionGapMessage)
+		if advancedCheckpoint, shouldAdvance := checkpointAtHotBoundary(lastLedger, minLedger); shouldAdvance {
+			if err := t.checkpoint.Save(ctx, advancedCheckpoint); err != nil {
+				return fmt.Errorf("failed to advance checkpoint over hot retention gap: %w", err)
+			}
+			lastLedger = advancedCheckpoint
+			log.Printf("📍 Advanced checkpoint to oldest hot ledger boundary: %d", lastLedger)
+		}
 	}
 
 	// Check if there's new data to process
@@ -399,4 +406,11 @@ func describeRetentionGap(lastLedger, minLedger int64) (bool, string) {
 		return true, fmt.Sprintf("checkpoint ledger %d is behind oldest hot ledger %d", lastLedger, minLedger)
 	}
 	return false, ""
+}
+
+func checkpointAtHotBoundary(lastLedger, minLedger int64) (int64, bool) {
+	if minLedger > 1 && lastLedger < minLedger-1 {
+		return minLedger - 1, true
+	}
+	return lastLedger, false
 }

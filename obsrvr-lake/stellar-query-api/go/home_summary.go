@@ -190,7 +190,7 @@ func (h *ExplorerHomeSummaryHandler) HandleExplorerSummary(w http.ResponseWriter
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	ctx, cancel := withHomeSummaryQueryTimeout(r.Context())
 	defer cancel()
 
 	dataSource := "silver_hot_plus_unified_silver"

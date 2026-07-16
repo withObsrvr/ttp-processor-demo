@@ -36,6 +36,7 @@ type AccountLedgerIndexReader struct {
 	coverageMu               sync.Mutex
 	coverageCache            AccountLedgerIndexCoverage
 	coverageCacheRefreshedAt time.Time
+	warmup                   *OptionalWarmupStatus
 }
 
 type AccountLedgerIndexCoverage struct {
@@ -131,20 +132,21 @@ func (r *UnifiedDuckDBReader) AttachAccountLedgerIndex(config IndexConfig) error
 		partitionSize:         accountLedgerIndexPartitionSize(),
 		canPrune:              accountLedgerIndexPruningEnabled(),
 	}
-
-	warmCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	var cnt int64
-	warmQuery := "SELECT COUNT(*) FROM account_index_db.index.account_ledger_index"
-	warmDB := r.db
-	if source == "postgres" {
-		warmQuery = "SELECT COUNT(*) FROM index.account_ledger_index"
-		warmDB = catalogDB
-	}
-	if err := warmDB.QueryRowContext(warmCtx, warmQuery).Scan(&cnt); err != nil {
-		log.Printf("Account ledger index warm-up query failed (non-fatal): %v", err)
+	warmupEnabled := reader.canPrune || accountTransactionFeedEnabled()
+	reader.warmup = newOptionalWarmupStatus(warmupEnabled)
+	if warmupEnabled {
+		warmQuery := "SELECT 1 FROM account_index_db.index.account_ledger_index LIMIT 1"
+		warmDB := r.db
+		if source == "postgres" {
+			warmQuery = "SELECT 1 FROM index.account_ledger_index LIMIT 1"
+			warmDB = catalogDB
+		}
+		startOptionalWarmup("Account ledger index", true, optionalIndexWarmupTimeout, reader.warmup, func(ctx context.Context) error {
+			var marker int
+			return warmDB.QueryRowContext(ctx, warmQuery).Scan(&marker)
+		})
 	} else {
-		log.Printf("Account ledger index reader warmed up (source=%s account_ledger_index: %d rows)", source, cnt)
+		log.Printf("Account ledger index warm-up skipped because pruning and serving feed are disabled")
 	}
 	if !reader.canPrune {
 		log.Printf("Account ledger index attached, but pruning is disabled; set ACCOUNT_LEDGER_INDEX_ENABLE_PRUNING=true after backfill coverage is complete")
@@ -172,6 +174,13 @@ func accountLedgerIndexPruningEnabled() bool {
 
 func (air *AccountLedgerIndexReader) CanPrune() bool {
 	return air != nil && air.canPrune
+}
+
+func (air *AccountLedgerIndexReader) WarmupStatus() *OptionalWarmupStatus {
+	if air == nil {
+		return nil
+	}
+	return air.warmup
 }
 
 // initialAccountIndexCoverage seeds per-request coverage metadata before any

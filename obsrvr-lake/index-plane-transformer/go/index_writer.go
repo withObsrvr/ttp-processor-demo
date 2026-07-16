@@ -5,10 +5,13 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	_ "github.com/duckdb/duckdb-go/v2"
 )
+
+const tempTransactionInsertChunkSize = 500
 
 // IndexWriter writes transaction index data to Index Plane DuckLake
 type IndexWriter struct {
@@ -250,37 +253,25 @@ func (iw *IndexWriter) WriteTransactions(ctx context.Context, transactions []Tra
 		WHERE false
 	`
 
-	if _, err := iw.db.Exec(createTempSQL); err != nil {
+	if _, err := iw.db.ExecContext(ctx, createTempSQL); err != nil {
 		return 0, fmt.Errorf("failed to create temp table: %w", err)
 	}
 
 	// Clear temp table
-	if _, err := iw.db.Exec("DELETE FROM temp_tx_index"); err != nil {
+	if _, err := iw.db.ExecContext(ctx, "DELETE FROM temp_tx_index"); err != nil {
 		return 0, fmt.Errorf("failed to clear temp table: %w", err)
 	}
 
-	// Build VALUES list for bulk insert
 	createdAt := time.Now()
-	valuesList := ""
-	for i, tx := range transactions {
-		if i > 0 {
-			valuesList += ", "
+	for start := 0; start < len(transactions); start += tempTransactionInsertChunkSize {
+		end := start + tempTransactionInsertChunkSize
+		if end > len(transactions) {
+			end = len(transactions)
 		}
-		valuesList += fmt.Sprintf("('%s', %d, %d, %t, '%s', %d, '%s')",
-			tx.TxHash,
-			tx.LedgerSequence,
-			tx.OperationCount,
-			tx.Successful,
-			tx.ClosedAt.UTC().Format("2006-01-02 15:04:05"),
-			tx.LedgerRange,
-			createdAt.UTC().Format("2006-01-02 15:04:05"),
-		)
-	}
-
-	// Insert into temp table
-	insertTempSQL := fmt.Sprintf("INSERT INTO temp_tx_index VALUES %s", valuesList)
-	if _, err := iw.db.Exec(insertTempSQL); err != nil {
-		return 0, fmt.Errorf("failed to insert into temp table: %w", err)
+		query, args := buildTempTransactionInsert(transactions[start:end], createdAt)
+		if _, err := iw.db.ExecContext(ctx, query, args...); err != nil {
+			return 0, fmt.Errorf("failed to insert temp transaction chunk %d-%d: %w", start, end, err)
+		}
 	}
 
 	// Copy only rows that are not already present in the target table.
@@ -293,7 +284,7 @@ func (iw *IndexWriter) WriteTransactions(ctx context.Context, transactions []Tra
 		  ON existing.tx_hash = t.tx_hash
 		WHERE existing.tx_hash IS NULL
 	`, fullTableName, fullTableName)
-	result, err := iw.db.Exec(copySQL)
+	result, err := iw.db.ExecContext(ctx, copySQL)
 	if err != nil {
 		return 0, fmt.Errorf("failed to copy to DuckLake table: %w", err)
 	}
@@ -310,6 +301,30 @@ func (iw *IndexWriter) WriteTransactions(ctx context.Context, transactions []Tra
 	log.Printf("✅ Inserted %d transactions into %s (skipped_existing=%d)", rowsAffected, fullTableName, skipped)
 
 	return rowsAffected, nil
+}
+
+func buildTempTransactionInsert(transactions []TransactionIndex, createdAt time.Time) (string, []any) {
+	var query strings.Builder
+	query.Grow(len("INSERT INTO temp_tx_index VALUES ") + len(transactions)*24)
+	query.WriteString("INSERT INTO temp_tx_index VALUES ")
+
+	args := make([]any, 0, len(transactions)*7)
+	for i, tx := range transactions {
+		if i > 0 {
+			query.WriteString(", ")
+		}
+		query.WriteString("(?, ?, ?, ?, ?, ?, ?)")
+		args = append(args,
+			tx.TxHash,
+			tx.LedgerSequence,
+			tx.OperationCount,
+			tx.Successful,
+			tx.ClosedAt.UTC(),
+			tx.LedgerRange,
+			createdAt.UTC(),
+		)
+	}
+	return query.String(), args
 }
 
 // FlushInlinedData consolidates inlined rows from the catalog into Parquet files on S3.

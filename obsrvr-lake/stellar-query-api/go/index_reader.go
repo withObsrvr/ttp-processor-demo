@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
 	"time"
 
 	_ "github.com/duckdb/duckdb-go/v2"
@@ -17,6 +16,7 @@ type IndexReader struct {
 	catalogName string
 	schemaName  string
 	tableName   string
+	warmup      *OptionalWarmupStatus
 }
 
 // TxLocation represents a transaction location in the Index Plane
@@ -93,21 +93,12 @@ func NewIndexReader(config IndexConfig) (*IndexReader, error) {
 		catalogName: "testnet_catalog",
 		schemaName:  "index",
 		tableName:   "tx_hash_index",
+		warmup:      newOptionalWarmupStatus(true),
 	}
-
-	// Warm up DuckDB by scanning the table to load Parquet file metadata + row groups.
-	// Bounded to 60s to avoid blocking startup indefinitely.
-	warmCtx, warmCancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer warmCancel()
-	var cnt int64
-	if err := db.QueryRowContext(warmCtx, "SELECT COUNT(*) FROM testnet_catalog.index.tx_hash_index").Scan(&cnt); err != nil {
-		log.Printf("Index warm-up query failed (non-fatal): %v", err)
-	} else {
-		log.Printf("Index reader warmed up (tx_hash_index: %d rows)", cnt)
-	}
-	if _, err := db.ExecContext(warmCtx, "SELECT ledger_range, MIN(tx_hash) FROM testnet_catalog.index.tx_hash_index GROUP BY ledger_range"); err != nil {
-		log.Printf("Index warm-up partition scan failed (non-fatal): %v", err)
-	}
+	startOptionalWarmup("Transaction index", true, optionalIndexWarmupTimeout, reader.warmup, func(ctx context.Context) error {
+		var marker int
+		return db.QueryRowContext(ctx, "SELECT 1 FROM testnet_catalog.index.tx_hash_index LIMIT 1").Scan(&marker)
+	})
 
 	return reader, nil
 }
@@ -238,7 +229,15 @@ func (ir *IndexReader) GetIndexStats(ctx context.Context) (map[string]interface{
 		"max_ledger":         maxLedger,
 		"ledger_coverage":    maxLedger - minLedger + 1,
 		"last_updated":       lastUpdated.Format(time.RFC3339),
+		"warmup":             ir.warmup.Snapshot(),
 	}, nil
+}
+
+func (ir *IndexReader) WarmupStatus() *OptionalWarmupStatus {
+	if ir == nil {
+		return nil
+	}
+	return ir.warmup
 }
 
 // Close closes the database connection

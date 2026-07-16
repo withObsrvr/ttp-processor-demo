@@ -164,8 +164,9 @@ func mainWithSilver() {
 
 	// Create Contract Event Index reader if configured
 	var contractIndexHandlers *ContractIndexHandlers
+	var contractIndexReader *ContractIndexReader
 	if config.ContractIndex != nil && config.ContractIndex.Enabled {
-		contractIndexReader, err := NewContractIndexReader(*config.ContractIndex)
+		contractIndexReader, err = NewContractIndexReader(*config.ContractIndex)
 		if err != nil {
 			log.Printf("⚠️  Failed to create Contract Event Index reader: %v", err)
 			log.Println("     Contract Event Index endpoints will be disabled")
@@ -191,6 +192,7 @@ func mainWithSilver() {
 		indexHandlers:         indexHandlers,
 		indexReader:           indexReader,
 		contractIndexHandlers: contractIndexHandlers,
+		contractIndexReader:   contractIndexReader,
 		readerMode:            readerMode,
 	}
 
