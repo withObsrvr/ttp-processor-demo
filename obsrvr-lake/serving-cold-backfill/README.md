@@ -75,6 +75,21 @@ sv_contract_calls_recent
 sv_tx_receipts
 ```
 
+`sv_transactions_recent` includes the Cycle 5B Horizon transaction hydration
+fields:
+
+```text
+transaction_id
+tx_envelope
+tx_result
+tx_meta
+tx_fee_meta
+tx_signers
+```
+
+Use `--feed-projections sv_transactions_recent --skip-current` to rebuild only
+that serving table for Horizon compatibility rollout work.
+
 Each implemented feed projection uses chunked idempotent delete+insert
 semantics and records `serving.sv_backfill_manifest` rows per
 `run_id/projection/network/chunk`.
@@ -98,6 +113,11 @@ for the materialized serving table. After all enabled feed and current
 projections verify, the component writes `serving.sv_projection_checkpoints`
 for every enabled projection to `--end-ledger`.
 
+For `sv_contract_storage_current`, first rebuild Silver cold
+`contract_data_current` and `ttl_current` to the same as-of ledger. The serving
+replacement is the authoritative handoff to the incremental `contract_storage`
+projector; never seed it from the pruned hot current-state tables.
+
 The broader contract still lists every required first-release serving table:
 
 ```text
@@ -108,6 +128,9 @@ sv_events_recent
 sv_explorer_events_recent
 sv_contract_calls_recent
 sv_tx_receipts
+sv_transactions_by_account
+sv_operations_by_account
+sv_effects_by_account
 sv_accounts_current
 sv_account_balances_current
 sv_network_stats_current
@@ -143,3 +166,25 @@ and classified extra tables.
 make test
 make build
 ```
+
+## Horizon Compatibility Backfill Smoke
+
+After a transaction-recent backfill, verify the checkpoint:
+
+```sql
+select projection_name, network, last_ledger_sequence, last_closed_at, updated_at
+from serving.sv_projection_checkpoints
+where projection_name = 'sv_transactions_recent';
+```
+
+Then run the public compatibility smoke:
+
+```bash
+python3 ../stellar-query-api/scripts/horizon_compat_smoke.py \
+  --base-url https://obsrvr-lake-testnet.withobsrvr.com/api/v1/horizon-compat \
+  --account GBTHMMFWTAPFAHRGS33LKETZYJKBTNEENRN47EDZMZPT2BNCJO47GVQG \
+  --tx-hash 366bc4543a8fe66e09c021af35377c78df6e90e57f85582a0aad1617fcc027e8
+```
+
+See `../docs/horizon-compat-deployment-runbook.md` for the full rollout
+sequence.

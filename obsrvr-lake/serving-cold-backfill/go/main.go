@@ -152,19 +152,21 @@ type Backfiller struct {
 }
 
 type FeedProjection struct {
-	Name        string
-	TargetTable string
-	RangeCol    string
-	KeyExprs    []string
-	SelectSQL   func(*Backfiller, Chunk) string
+	Name          string
+	TargetTable   string
+	RangeCol      string
+	KeyExprs      []string
+	InsertColumns []string
+	SelectSQL     func(*Backfiller, Chunk) string
 }
 
 type CurrentProjection struct {
-	Name         string
-	TargetTable  string
-	MaxLedgerCol string
-	KeyExprs     []string
-	SelectSQL    func(*Backfiller) string
+	Name          string
+	TargetTable   string
+	MaxLedgerCol  string
+	KeyExprs      []string
+	InsertColumns []string
+	SelectSQL     func(*Backfiller) string
 	// PostgresNative runs this projection's DDL/DELETE/INSERT server-side in Postgres via
 	// postgres_execute instead of through DuckDB. Use for aggregates over LARGE serving tables
 	// (e.g. sv_assets_current GROUP BY over ~163M-row sv_account_balances_current) — pulling
@@ -488,6 +490,7 @@ func requiredProjections(schema string) []Projection {
 		{Name: "sv_tx_receipts", TargetTable: table("sv_tx_receipts"), Source: "bronze transactions/operations/effects + silver enriched rows", Mode: "recent_range_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_transactions_by_account", TargetTable: table("sv_transactions_by_account"), Source: "silver.enriched_history_operations + bronze operations_row_v2 TOID", Mode: "full_history_chunk_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_operations_by_account", TargetTable: table("sv_operations_by_account"), Source: "silver.enriched_history_operations + bronze operations_row_v2 TOID", Mode: "full_history_chunk_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
+		{Name: "sv_effects_by_account", TargetTable: table("sv_effects_by_account"), Source: "silver.effects + bronze operations_row_v2 TOID", Mode: "full_history_chunk_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_accounts_current", TargetTable: table("sv_accounts_current"), Source: "silver.accounts_current", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_account_balances_current", TargetTable: table("sv_account_balances_current"), Source: "silver.address_balances_current / silver.native_balances_current", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_network_stats_current", TargetTable: table("sv_network_stats_current"), Source: "silver.enriched_ledgers + aggregate counts", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
@@ -495,8 +498,10 @@ func requiredProjections(schema string) []Projection {
 		{Name: "sv_asset_stats_current", TargetTable: table("sv_asset_stats_current"), Source: "sv_account_balances_current aggregates", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_contracts_current", TargetTable: table("sv_contracts_current"), Source: "silver.contract_metadata + silver.contract_data_current", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_contract_storage_current", TargetTable: table("sv_contract_storage_current"), Source: "silver.contract_data_current + silver.ttl_current", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
+		{Name: "sv_contract_storage_summary", TargetTable: table("sv_contract_storage_summary"), Source: "serving.sv_contract_storage_current aggregates", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_contract_stats_current", TargetTable: table("sv_contract_stats_current"), Source: "silver.contract_invocations_raw / contract events", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_contract_function_stats_current", TargetTable: table("sv_contract_function_stats_current"), Source: "silver.contract_invocations_raw grouped by contract/function", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
+		{Name: "sv_contract_activity_summary", TargetTable: table("sv_contract_activity_summary"), Source: "serving contract calls/storage summaries", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 	}
 }
 
@@ -536,26 +541,54 @@ func checkpointPlan(cfg Config, projections []Projection) []Checkpoint {
 func feedProjections() []FeedProjection {
 	return []FeedProjection{
 		{Name: "sv_ledger_stats_recent", TargetTable: "sv_ledger_stats_recent", RangeCol: "ledger_sequence", KeyExprs: []string{"ledger_sequence"}, SelectSQL: selectLedgerStatsRecent},
-		{Name: "sv_transactions_recent", TargetTable: "sv_transactions_recent", RangeCol: "ledger_sequence", KeyExprs: []string{"tx_hash"}, SelectSQL: selectTransactionsRecent},
+		{Name: "sv_transactions_recent", TargetTable: "sv_transactions_recent", RangeCol: "ledger_sequence", KeyExprs: []string{"tx_hash"}, InsertColumns: []string{
+			"tx_hash", "ledger_sequence", "created_at", "source_account",
+			"fee_charged_stroops", "max_fee_stroops", "successful", "operation_count",
+			"tx_type", "summary_text", "summary_json", "primary_contract_id",
+			"primary_asset_key", "primary_amount_stroops", "memo_type", "memo_value",
+			"account_sequence", "is_soroban", "cpu_insns", "mem_bytes", "read_bytes",
+			"write_bytes", "transaction_id", "tx_envelope", "tx_result", "tx_meta",
+			"tx_fee_meta", "tx_signers", "ingested_at",
+		}, SelectSQL: selectTransactionsRecent},
 		{Name: "sv_operations_recent", TargetTable: "sv_operations_recent", RangeCol: "ledger_sequence", KeyExprs: []string{"operation_id"}, SelectSQL: selectOperationsRecent},
 		{Name: "sv_contract_calls_recent", TargetTable: "sv_contract_calls_recent", RangeCol: "ledger_sequence", KeyExprs: []string{"call_id"}, SelectSQL: selectContractCallsRecent},
 		{Name: "sv_tx_receipts", TargetTable: "sv_tx_receipts", RangeCol: "ledger_sequence", KeyExprs: []string{"tx_hash"}, SelectSQL: selectTxReceipts},
 		{Name: "sv_transactions_by_account", TargetTable: "sv_transactions_by_account", RangeCol: "ledger_sequence", KeyExprs: []string{"account_id", "toid"}, SelectSQL: selectTransactionsByAccount},
 		{Name: "sv_operations_by_account", TargetTable: "sv_operations_by_account", RangeCol: "ledger_sequence", KeyExprs: []string{"account_id", "operation_toid"}, SelectSQL: selectOperationsByAccount},
+		{Name: "sv_effects_by_account", TargetTable: "sv_effects_by_account", RangeCol: "ledger_sequence", KeyExprs: []string{"account_id", "ledger_sequence", "tx_hash", "op_index", "effect_index"}, SelectSQL: selectEffectsByAccount},
 	}
 }
 
 func currentProjections() []CurrentProjection {
 	return []CurrentProjection{
 		{Name: "sv_accounts_current", TargetTable: "sv_accounts_current", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"account_id"}, SelectSQL: selectAccountsCurrent},
-		{Name: "sv_account_balances_current", TargetTable: "sv_account_balances_current", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"account_id", "asset_key"}, SelectSQL: selectAccountBalancesCurrent},
+		{Name: "sv_account_balances_current", TargetTable: "sv_account_balances_current", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"account_id", "asset_key"}, InsertColumns: []string{
+			"account_id",
+			"asset_key",
+			"asset_code",
+			"asset_issuer",
+			"asset_type",
+			"balance_stroops",
+			"balance_display",
+			"limit_stroops",
+			"buying_liabilities_stroops",
+			"selling_liabilities_stroops",
+			"is_authorized",
+			"is_authorized_to_maintain_liabilities",
+			"is_clawback_enabled",
+			"sponsor",
+			"last_modified_ledger",
+			"updated_at",
+		}, SelectSQL: selectAccountBalancesCurrent},
 		{Name: "sv_network_stats_current", TargetTable: "sv_network_stats_current", MaxLedgerCol: "latest_ledger", KeyExprs: []string{"network"}, SelectSQL: selectNetworkStatsCurrent},
 		{Name: "sv_assets_current", TargetTable: "sv_assets_current", KeyExprs: []string{"asset_key"}, SelectSQL: selectAssetsCurrent, PostgresNative: true},
 		{Name: "sv_asset_stats_current", TargetTable: "sv_asset_stats_current", KeyExprs: []string{"asset_key"}, SelectSQL: selectAssetStatsCurrent, PostgresNative: true},
 		{Name: "sv_contracts_current", TargetTable: "sv_contracts_current", MaxLedgerCol: "deploy_ledger", KeyExprs: []string{"contract_id"}, SelectSQL: selectContractsCurrent},
 		{Name: "sv_contract_storage_current", TargetTable: "sv_contract_storage_current", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"contract_id", "key_hash"}, SelectSQL: selectContractStorageCurrent},
+		{Name: "sv_contract_storage_summary", TargetTable: "sv_contract_storage_summary", MaxLedgerCol: "latest_ledger", KeyExprs: []string{"contract_id"}, SelectSQL: selectContractStorageSummary},
 		{Name: "sv_contract_stats_current", TargetTable: "sv_contract_stats_current", KeyExprs: []string{"contract_id"}, SelectSQL: selectContractStatsCurrent},
 		{Name: "sv_contract_function_stats_current", TargetTable: "sv_contract_function_stats_current", KeyExprs: []string{"contract_id", "function_name"}, SelectSQL: selectContractFunctionStatsCurrent},
+		{Name: "sv_contract_activity_summary", TargetTable: "sv_contract_activity_summary", MaxLedgerCol: "last_seen_ledger", KeyExprs: []string{"contract_id"}, SelectSQL: selectContractActivitySummary},
 	}
 }
 
@@ -635,7 +668,7 @@ func (b *Backfiller) replaceFeedProjection(ctx context.Context, chunk Chunk, pro
 		_ = tx.Rollback()
 		return 0, fmt.Errorf("delete %s %d..%d: %w", projection.Name, chunk.Start, chunk.End, err)
 	}
-	insertSQL := fmt.Sprintf("INSERT INTO %s %s", b.servingTable(projection.TargetTable), projection.SelectSQL(b, chunk))
+	insertSQL := fmt.Sprintf("INSERT INTO %s%s %s", b.servingTable(projection.TargetTable), insertColumnsSQL(projection.InsertColumns), projection.SelectSQL(b, chunk))
 	if _, err := tx.ExecContext(ctx, insertSQL); err != nil {
 		_ = tx.Rollback()
 		return 0, fmt.Errorf("insert %s %d..%d: %w", projection.Name, chunk.Start, chunk.End, err)
@@ -652,6 +685,17 @@ func (b *Backfiller) replaceFeedProjection(ctx context.Context, chunk Chunk, pro
 		return 0, err
 	}
 	return rows, nil
+}
+
+func insertColumnsSQL(columns []string) string {
+	if len(columns) == 0 {
+		return ""
+	}
+	out := make([]string, 0, len(columns))
+	for _, column := range columns {
+		out = append(out, ident(column))
+	}
+	return " (" + strings.Join(out, ", ") + ")"
 }
 
 // toPostgresNative rewrites DuckDB SQL that targets the attached Postgres catalog into native
@@ -686,7 +730,7 @@ func (b *Backfiller) replaceCurrentProjectionPG(ctx context.Context, chunk Chunk
 	if err := b.pgExec(ctx, "DELETE FROM "+tgt); err != nil {
 		return 0, fmt.Errorf("delete %s: %w", projection.Name, err)
 	}
-	if err := b.pgExec(ctx, fmt.Sprintf("INSERT INTO %s %s", tgt, sel)); err != nil {
+	if err := b.pgExec(ctx, fmt.Sprintf("INSERT INTO %s%s %s", tgt, insertColumnsSQL(projection.InsertColumns), sel)); err != nil {
 		return 0, fmt.Errorf("insert %s: %w", projection.Name, err)
 	}
 	rows, err := b.countCurrentRows(ctx, projection) // small result table; DuckDB read is cheap
@@ -720,7 +764,7 @@ func (b *Backfiller) replaceCurrentProjection(ctx context.Context, out io.Writer
 		_ = tx.Rollback()
 		return 0, fmt.Errorf("delete %s: %w", projection.Name, err)
 	}
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s %s", b.servingTable(projection.TargetTable), projection.SelectSQL(b))); err != nil {
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s%s %s", b.servingTable(projection.TargetTable), insertColumnsSQL(projection.InsertColumns), projection.SelectSQL(b))); err != nil {
 		_ = tx.Rollback()
 		return 0, fmt.Errorf("insert %s: %w", projection.Name, err)
 	}
@@ -770,7 +814,7 @@ func (b *Backfiller) replaceCurrentProjectionBucketed(ctx context.Context, out i
 			_ = tx.Rollback()
 			return 0, fmt.Errorf("delete %s bucket %d: %w", projection.Name, i, err)
 		}
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s SELECT * FROM %s", target, ident(stage))); err != nil {
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s%s SELECT * FROM %s", target, insertColumnsSQL(projection.InsertColumns), ident(stage))); err != nil {
 			_ = tx.Rollback()
 			return 0, fmt.Errorf("insert %s bucket %d: %w", projection.Name, i, err)
 		}
@@ -827,8 +871,17 @@ func (b *Backfiller) ensureTargetIndexes(ctx context.Context, targetTable string
 		statements = []string{
 			fmt.Sprintf("CREATE UNIQUE INDEX IF NOT EXISTS sv_operations_by_account_uq ON %s (account_id, operation_toid)", table),
 			fmt.Sprintf("CREATE INDEX IF NOT EXISTS sv_operations_by_account_page_idx ON %s (account_id, operation_toid DESC)", table),
+			fmt.Sprintf("CREATE INDEX IF NOT EXISTS sv_operations_by_account_operation_idx ON %s (operation_toid)", table),
 			fmt.Sprintf("CREATE INDEX IF NOT EXISTS sv_operations_by_account_tx_idx ON %s (tx_hash, op_index)", table),
 			fmt.Sprintf("CREATE INDEX IF NOT EXISTS sv_operations_by_account_ledger_idx ON %s (ledger_sequence)", table),
+		}
+	case "sv_effects_by_account":
+		statements = []string{
+			fmt.Sprintf("CREATE UNIQUE INDEX IF NOT EXISTS sv_effects_by_account_uq ON %s (account_id, ledger_sequence, tx_hash, op_index, effect_index)", table),
+			fmt.Sprintf("CREATE INDEX IF NOT EXISTS sv_effects_by_account_page_idx ON %s (account_id, ledger_sequence DESC, tx_hash DESC, op_index DESC, effect_index DESC)", table),
+			fmt.Sprintf("CREATE INDEX IF NOT EXISTS sv_effects_by_account_operation_idx ON %s (operation_toid)", table),
+			fmt.Sprintf("CREATE INDEX IF NOT EXISTS sv_effects_by_account_tx_idx ON %s (tx_hash, op_index)", table),
+			fmt.Sprintf("CREATE INDEX IF NOT EXISTS sv_effects_by_account_ledger_idx ON %s (ledger_sequence)", table),
 		}
 	}
 	for _, stmt := range statements {
@@ -1075,13 +1128,9 @@ func (b *Backfiller) writeProjectionCheckpoints(ctx context.Context, projectionN
 			return fmt.Errorf("insert checkpoint %s: %w", name, err)
 		}
 		tableName := b.cfg.ServingSchema + "." + name
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE table_name=%s", b.servingTable("sv_watermarks"), q(tableName))); err != nil {
+		if err := b.extendWatermark(ctx, tx, tableName); err != nil {
 			_ = tx.Rollback()
-			return fmt.Errorf("delete watermark %s: %w", name, err)
-		}
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s VALUES (%s, 'complete', %d, %d, current_timestamp)", b.servingTable("sv_watermarks"), q(tableName), b.cfg.Start, b.cfg.End)); err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("insert watermark %s: %w", name, err)
+			return fmt.Errorf("extend watermark %s: %w", name, err)
 		}
 		consumerTable := fmt.Sprintf("%s.%s", b.opsSchemaRef(), ident("consumers"))
 		if _, err := tx.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE pipeline=%s AND source_table=%s", consumerTable, q(b.cfg.Component()), q(tableName))); err != nil {
@@ -1098,6 +1147,43 @@ func (b *Backfiller) writeProjectionCheckpoints(ctx context.Context, projectionN
 		return fmt.Errorf("commit checkpoint handoff: %w", err)
 	}
 	return nil
+}
+
+func (b *Backfiller) extendWatermark(ctx context.Context, tx *sql.Tx, tableName string) error {
+	watermarkTable := b.servingTable("sv_watermarks")
+	var status string
+	var completeFrom, completeThru int64
+	err := tx.QueryRowContext(ctx, fmt.Sprintf(
+		"SELECT status, complete_from, complete_thru FROM %s WHERE table_name=%s",
+		watermarkTable, q(tableName),
+	)).Scan(&status, &completeFrom, &completeThru)
+	if err == sql.ErrNoRows {
+		_, err = tx.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO %s VALUES (%s, 'complete', %d, %d, current_timestamp)",
+			watermarkTable, q(tableName), b.cfg.Start, b.cfg.End,
+		))
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	if status != "complete" {
+		return fmt.Errorf("existing watermark status is %q", status)
+	}
+	if b.cfg.Start > completeThru+1 || b.cfg.End < completeFrom-1 {
+		return fmt.Errorf("range %d..%d is not contiguous with existing coverage %d..%d", b.cfg.Start, b.cfg.End, completeFrom, completeThru)
+	}
+	if b.cfg.Start < completeFrom {
+		completeFrom = b.cfg.Start
+	}
+	if b.cfg.End > completeThru {
+		completeThru = b.cfg.End
+	}
+	_, err = tx.ExecContext(ctx, fmt.Sprintf(
+		"UPDATE %s SET status='complete', complete_from=%d, complete_thru=%d, updated_at=current_timestamp WHERE table_name=%s",
+		watermarkTable, completeFrom, completeThru, q(tableName),
+	))
+	return err
 }
 
 func feedProjectionNames(feed []FeedProjection) []string {
@@ -1119,6 +1205,12 @@ func currentProjectionNames(current []CurrentProjection) []string {
 func (b *Backfiller) retentionPredicate(timeExpr string) string {
 	return fmt.Sprintf("%s >= COALESCE((SELECT MAX(ledger_closed_at) - INTERVAL %d DAY FROM %s WHERE network=%s AND ledger_sequence <= %d), %s)",
 		timeExpr, b.cfg.RetentionDays, b.silverTable("enriched_ledgers"), q(b.cfg.Network), b.cfg.End, timeExpr)
+}
+
+func (b *Backfiller) transactionRetentionPredicate(timeExpr string) string {
+	source := b.bronzeTable("transactions_row_v2")
+	return fmt.Sprintf("%s >= COALESCE((SELECT MAX(created_at) - INTERVAL %d DAY FROM %s WHERE ledger_sequence <= %d), %s)",
+		timeExpr, b.cfg.RetentionDays, source, b.cfg.End, timeExpr)
 }
 
 func selectLedgerStatsRecent(b *Backfiller, chunk Chunk) string {
@@ -1146,10 +1238,11 @@ func selectTransactionsRecent(b *Backfiller, chunk Chunk) string {
 		(soroban_contract_id IS NOT NULL) AS is_soroban,
 		soroban_resources_instructions AS cpu_insns, NULL::BIGINT AS mem_bytes,
 		soroban_resources_read_bytes AS read_bytes, soroban_resources_write_bytes AS write_bytes,
+		transaction_id, tx_envelope, tx_result, tx_meta, tx_fee_meta, tx_signers,
 		current_timestamp AS ingested_at
 		FROM %s
 		WHERE ledger_sequence BETWEEN %d AND %d AND %s`,
-		b.bronzeTable("transactions_row_v2"), chunk.Start, chunk.End, b.retentionPredicate("created_at"))
+		b.bronzeTable("transactions_row_v2"), chunk.Start, chunk.End, b.transactionRetentionPredicate("created_at"))
 }
 
 func selectOperationsRecent(b *Backfiller, chunk Chunk) string {
@@ -1304,25 +1397,134 @@ func selectOperationsByAccount(b *Backfiller, chunk Chunk) string {
 		b.bronzeTable("operations_row_v2"))
 }
 
+func selectEffectsByAccount(b *Backfiller, chunk Chunk) string {
+	return fmt.Sprintf(`SELECT
+			e.account_id,
+			e.ledger_sequence,
+			e.transaction_hash AS tx_hash,
+			e.operation_index AS op_index,
+			e.effect_index,
+			COALESCE(e.operation_id, bo.operation_id) AS operation_toid,
+			e.effect_type,
+			e.effect_type_string AS effect_type_name,
+			e.amount,
+			e.asset_code,
+			e.asset_issuer,
+			e.asset_type,
+			CASE WHEN e.details_json IS NULL OR e.details_json = '' THEN NULL ELSE e.details_json END AS details_json,
+			e.trustline_limit,
+			e.authorize_flag,
+			e.clawback_flag,
+			e.signer_account,
+			e.signer_weight,
+			e.offer_id,
+			e.seller_account,
+			e.created_at AS closed_at,
+			current_timestamp AS materialized_at
+		FROM %s e
+		LEFT JOIN %s bo ON bo.ledger_sequence = e.ledger_sequence
+			AND bo.transaction_hash = e.transaction_hash
+			AND bo.operation_index = e.operation_index
+		WHERE e.ledger_sequence BETWEEN %d AND %d
+			AND e.account_id IS NOT NULL
+			AND e.account_id <> ''`,
+		b.silverTable("effects"), b.bronzeTable("operations_row_v2"), chunk.Start, chunk.End)
+}
+
 func selectAccountsCurrent(b *Backfiller) string {
-	return fmt.Sprintf(`SELECT account_id, TRY_CAST(balance AS BIGINT) AS balance_stroops,
-		sequence_number, num_subentries, created_at, last_modified_ledger, updated_at,
-		home_domain, master_weight, low_threshold, med_threshold, high_threshold,
+	return fmt.Sprintf(`WITH ranked AS (
+			SELECT *,
+				ROW_NUMBER() OVER (
+					PARTITION BY account_id
+					ORDER BY last_modified_ledger DESC, COALESCE(updated_at, TIMESTAMP '1970-01-01') DESC, COALESCE(sequence_number, 0) DESC
+				) AS rn
+			FROM %s
+			WHERE last_modified_ledger <= %d
+		)
+		SELECT account_id, TRY_CAST(ROUND(TRY_CAST(balance AS DOUBLE) * 10000000) AS BIGINT) AS balance_stroops,
+		sequence_number, num_subentries, num_sponsoring, num_sponsored,
+		created_at, last_modified_ledger, sequence_ledger, sequence_time, updated_at,
+		home_domain, sponsor_account AS sponsor, master_weight, low_threshold, med_threshold, high_threshold,
+		auth_required, auth_revocable, auth_immutable, auth_clawback_enabled,
 		COALESCE(signers, '[]') AS signers_json, false AS is_smart_account,
 		NULL::VARCHAR AS smart_account_type, ledger_range AS first_seen_ledger
-		FROM %s WHERE network=%s AND last_modified_ledger <= %d`,
-		b.silverTable("accounts_current"), q(b.cfg.Network), b.cfg.End)
+		FROM ranked WHERE rn = 1`,
+		b.silverTable("accounts_current"), b.cfg.End)
 }
 
 func selectAccountBalancesCurrent(b *Backfiller) string {
-	return fmt.Sprintf(`SELECT owner_address AS account_id, asset_key,
-		COALESCE(asset_code, CASE WHEN asset_type='native' THEN 'XLM' ELSE asset_key END) AS asset_code,
-		asset_issuer, asset_type, TRY_CAST(balance_raw AS BIGINT) AS balance_stroops,
-		TRY_CAST(balance_display AS DECIMAL(38,7)) AS balance_display,
-		NULL::BIGINT AS limit_stroops, NULL::BOOLEAN AS is_authorized,
-		last_updated_ledger AS last_modified_ledger, updated_at
-		FROM %s WHERE network=%s AND last_updated_ledger <= %d`,
-		b.silverTable("address_balances_current"), q(b.cfg.Network), b.cfg.End)
+	return fmt.Sprintf(`WITH native_ranked AS (
+			SELECT *,
+				ROW_NUMBER() OVER (
+					PARTITION BY account_id
+					ORDER BY last_modified_ledger DESC, COALESCE(updated_at, TIMESTAMP '1970-01-01') DESC, COALESCE(sequence_number, 0) DESC
+				) AS rn
+			FROM %s
+			WHERE last_modified_ledger <= %d
+		), trustline_shaped AS (
+			SELECT account_id,
+				CASE
+					WHEN liquidity_pool_id IS NOT NULL AND liquidity_pool_id <> '' THEN 'POOL:' || liquidity_pool_id
+					ELSE COALESCE(asset_code, '') || ':' || COALESCE(asset_issuer, '')
+				END AS asset_key,
+				COALESCE(asset_code, '') AS asset_code,
+				asset_issuer,
+				asset_type,
+				balance,
+				trust_line_limit,
+				buying_liabilities,
+				selling_liabilities,
+				flags,
+				sponsor,
+				last_modified_ledger,
+				updated_at
+			FROM %s
+			WHERE last_modified_ledger <= %d
+		), trustline_ranked AS (
+			SELECT *,
+				ROW_NUMBER() OVER (
+					PARTITION BY account_id, asset_key
+					ORDER BY last_modified_ledger DESC, COALESCE(updated_at, TIMESTAMP '1970-01-01') DESC
+				) AS rn
+			FROM trustline_shaped
+		)
+		SELECT account_id,
+		'XLM' AS asset_key,
+		'XLM' AS asset_code,
+		NULL::VARCHAR AS asset_issuer,
+		'native' AS asset_type,
+		TRY_CAST(ROUND(TRY_CAST(balance AS DOUBLE) * 10000000) AS BIGINT) AS balance_stroops,
+		TRY_CAST(balance AS DECIMAL(38,7)) AS balance_display,
+		NULL::BIGINT AS limit_stroops,
+		NULL::BIGINT AS buying_liabilities_stroops,
+		NULL::BIGINT AS selling_liabilities_stroops,
+		NULL::BOOLEAN AS is_authorized,
+		NULL::BOOLEAN AS is_authorized_to_maintain_liabilities,
+		NULL::BOOLEAN AS is_clawback_enabled,
+		NULL::VARCHAR AS sponsor,
+		last_modified_ledger,
+		COALESCE(updated_at, current_timestamp) AS updated_at
+		FROM native_ranked WHERE rn = 1
+		UNION ALL
+		SELECT account_id,
+		asset_key,
+		asset_code,
+		asset_issuer,
+		asset_type,
+		balance AS balance_stroops,
+		TRY_CAST(balance AS DECIMAL(38,7)) / 10000000 AS balance_display,
+		trust_line_limit AS limit_stroops,
+		buying_liabilities AS buying_liabilities_stroops,
+		selling_liabilities AS selling_liabilities_stroops,
+		(flags & 1) <> 0 AS is_authorized,
+		(flags & 2) <> 0 AS is_authorized_to_maintain_liabilities,
+		(flags & 4) <> 0 AS is_clawback_enabled,
+		sponsor,
+		last_modified_ledger,
+		COALESCE(updated_at, current_timestamp) AS updated_at
+		FROM trustline_ranked WHERE rn = 1`,
+		b.silverTable("accounts_current"), b.cfg.End,
+		b.silverTable("trustlines_current"), b.cfg.End)
 }
 
 func selectNetworkStatsCurrent(b *Backfiller) string {
@@ -1473,6 +1675,24 @@ func selectContractStorageCurrent(b *Backfiller) string {
 		b.silverTable("contract_data_current"), b.cfg.End, b.silverTable("ttl_current"), q(b.cfg.Network), b.cfg.End, b.cfg.End)
 }
 
+func selectContractStorageSummary(b *Backfiller) string {
+	return fmt.Sprintf(`SELECT
+			contract_id,
+			COUNT(*)::BIGINT AS total_entries,
+			COUNT(*) FILTER (WHERE expired = false)::BIGINT AS live_entries,
+			COUNT(*) FILTER (WHERE expired = true)::BIGINT AS expired_entries,
+			0::BIGINT AS deleted_entries,
+			COUNT(*) FILTER (WHERE type = 'persistent')::BIGINT AS persistent_entries,
+			COUNT(*) FILTER (WHERE type = 'temporary')::BIGINT AS temporary_entries,
+			COUNT(*) FILTER (WHERE type = 'instance')::BIGINT AS instance_entries,
+			COALESCE(SUM(size_bytes), 0)::BIGINT AS total_size_bytes,
+			MAX(last_modified_ledger) AS latest_ledger,
+			MAX(closed_at) AS latest_closed_at,
+			current_timestamp AS updated_at
+		FROM %s
+		GROUP BY contract_id`, b.servingTable("sv_contract_storage_current"))
+}
+
 func selectContractStatsCurrent(b *Backfiller) string {
 	return fmt.Sprintf(`WITH latest AS (
 			SELECT closed_at FROM %s ORDER BY ledger_sequence DESC LIMIT 1
@@ -1513,6 +1733,58 @@ func selectContractFunctionStatsCurrent(b *Backfiller) string {
 		current_timestamp AS updated_at
 		FROM %s, latest GROUP BY contract_id, COALESCE(function_name, '')`,
 		b.servingTable("sv_ledger_stats_recent"), b.servingTable("sv_contract_calls_recent"))
+}
+
+func selectContractActivitySummary(b *Backfiller) string {
+	return fmt.Sprintf(`WITH latest AS (
+			SELECT closed_at FROM %s ORDER BY ledger_sequence DESC LIMIT 1
+		), inv AS (
+			SELECT
+				contract_id,
+				MIN(ledger_sequence) AS first_seen_ledger,
+				MAX(ledger_sequence) AS last_seen_ledger,
+				MIN(created_at) AS first_seen_at,
+				MAX(created_at) AS last_seen_at,
+				COUNT(*) FILTER (WHERE created_at >= latest.closed_at - INTERVAL 1 DAY) AS invocation_count_24h,
+				COUNT(*) FILTER (WHERE created_at >= latest.closed_at - INTERVAL 7 DAY) AS invocation_count_7d,
+				COUNT(*) FILTER (WHERE created_at >= latest.closed_at - INTERVAL 30 DAY) AS invocation_count_30d,
+				COUNT(*) AS invocation_count_all,
+				COUNT(DISTINCT caller_account) FILTER (WHERE created_at >= latest.closed_at - INTERVAL 30 DAY) AS unique_callers_30d,
+				COUNT(*) FILTER (WHERE successful AND created_at >= latest.closed_at - INTERVAL 30 DAY) AS successful_invocations_30d,
+				COUNT(*) FILTER (WHERE NOT successful AND created_at >= latest.closed_at - INTERVAL 30 DAY) AS failed_invocations_30d
+			FROM %s, latest
+			GROUP BY contract_id
+		), ids AS (
+			SELECT contract_id FROM inv
+			UNION
+			SELECT contract_id FROM %s
+		)
+		SELECT
+			ids.contract_id,
+			inv.first_seen_ledger,
+			inv.last_seen_ledger,
+			inv.first_seen_at,
+			inv.last_seen_at,
+			COALESCE(inv.invocation_count_24h, 0)::BIGINT AS invocation_count_24h,
+			COALESCE(inv.invocation_count_7d, 0)::BIGINT AS invocation_count_7d,
+			COALESCE(inv.invocation_count_30d, 0)::BIGINT AS invocation_count_30d,
+			COALESCE(inv.invocation_count_all, 0)::BIGINT AS invocation_count_all,
+			0::BIGINT AS event_count_24h,
+			0::BIGINT AS event_count_7d,
+			0::BIGINT AS event_count_30d,
+			COALESCE(inv.unique_callers_30d, 0)::BIGINT AS unique_callers_30d,
+			COALESCE(inv.successful_invocations_30d, 0)::BIGINT AS successful_invocations_30d,
+			COALESCE(inv.failed_invocations_30d, 0)::BIGINT AS failed_invocations_30d,
+			CASE
+				WHEN COALESCE(inv.invocation_count_30d, 0) > 0 THEN 'invoked_contract'
+				WHEN css.contract_id IS NOT NULL THEN 'storage_only'
+				ELSE 'unknown'
+			END AS activity_classification,
+			current_timestamp AS updated_at
+		FROM ids
+		LEFT JOIN inv ON inv.contract_id = ids.contract_id
+		LEFT JOIN %s css ON css.contract_id = ids.contract_id`,
+		b.servingTable("sv_ledger_stats_recent"), b.servingTable("sv_contract_calls_recent"), b.servingTable("sv_contract_storage_summary"), b.servingTable("sv_contract_storage_summary"))
 }
 
 func PlanChunks(start, end, size int64) []Chunk {

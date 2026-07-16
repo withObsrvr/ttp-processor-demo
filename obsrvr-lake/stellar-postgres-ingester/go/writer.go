@@ -5,12 +5,14 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"log"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/stellar/go-stellar-sdk/ingest"
 	"github.com/stellar/go-stellar-sdk/xdr"
 	extract "github.com/withObsrvr/stellar-extract"
 	pb "github.com/withObsrvr/ttp-processor-demo/stellar-live-source-datalake/go/gen/raw_ledger_service"
@@ -162,17 +164,32 @@ func (w *Writer) WriteBatch(ctx context.Context, rawLedgers []*pb.RawLedger) err
 		ledgerData.EraID = input.EraID
 		ledgerData.VersionLabel = versionLabel
 
-		// Extract transactions via library
+		// Extract transactions via library. Both extractions must fail the batch:
+		// warn-and-continue here writes transaction rows with NULL XDR (or no
+		// rows at all) and then commits and advances the checkpoint, leaving a
+		// permanent gap nothing ever re-ingests — the Horizon reader can only
+		// surface it later as an unexplained 503. Failing the batch keeps the
+		// checkpoint behind so the ledger is retried.
+		transactionXDRByHash, err := buildTransactionXDRByHash(input.LCM, input.NetworkPassphrase)
+		if err != nil {
+			return fmt.Errorf("failed to extract transaction XDR for ledger %d: %w", rawLedger.Sequence, err)
+		}
 		libTransactions, err := extract.ExtractTransactions(input)
 		if err != nil {
-			log.Printf("Warning: Failed to extract transactions for ledger %d: %v", rawLedger.Sequence, err)
-		} else {
-			for _, r := range libTransactions {
-				row := convertTransaction(r)
-				row.EraID = input.EraID
-				row.VersionLabel = versionLabel
-				allTransactions = append(allTransactions, row)
+			return fmt.Errorf("failed to extract transactions for ledger %d: %w", rawLedger.Sequence, err)
+		}
+		for _, r := range libTransactions {
+			row := convertTransaction(r)
+			if xdrFields, ok := transactionXDRByHash[row.TransactionHash]; ok {
+				row.TxEnvelope = xdrFields.TxEnvelope
+				row.TxResult = xdrFields.TxResult
+				row.TxMeta = xdrFields.TxMeta
+				row.TxFeeMeta = xdrFields.TxFeeMeta
+				row.TxSigners = xdrFields.TxSigners
 			}
+			row.EraID = input.EraID
+			row.VersionLabel = versionLabel
+			allTransactions = append(allTransactions, row)
 		}
 
 		// Extract operations via library + soroban counting
@@ -1035,6 +1052,33 @@ func convertTransaction(r extract.TransactionData) TransactionData {
 	}
 }
 
+func buildTransactionXDRByHash(lcm xdr.LedgerCloseMeta, networkPassphrase string) (map[string]TransactionData, error) {
+	reader, err := ingest.NewLedgerTransactionReaderFromLedgerCloseMeta(networkPassphrase, lcm)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+
+	out := make(map[string]TransactionData)
+	for {
+		tx, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		hash := hex.EncodeToString(tx.Result.TransactionHash[:])
+		row := TransactionData{}
+		if err := populateTransactionXDRFields(tx, &row); err != nil {
+			return nil, err
+		}
+		out[hash] = row
+	}
+	return out, nil
+}
+
 func convertOperation(r extract.OperationData) OperationData {
 	return OperationData{
 		TransactionHash:       r.TransactionHash,
@@ -1510,18 +1554,24 @@ func (w *Writer) insertTransactions(ctx context.Context, tx pgx.Tx, transactions
 			max_fee, successful, transaction_result_code, operation_count,
 			memo_type, memo, created_at, account_sequence, ledger_range,
 			era_id, version_label,
-			signatures_count, new_account, rent_fee_charged,
+			signatures_count, tx_envelope, tx_result, tx_meta, tx_fee_meta, tx_signers,
+			new_account, rent_fee_charged,
 			soroban_resources_instructions, soroban_resources_read_bytes,
 			soroban_resources_write_bytes
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
 			$11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-			$21, $22
+			$21, $22, $23, $24, $25, $26, $27
 		)
 		ON CONFLICT (ledger_sequence, transaction_hash) DO UPDATE SET
 			transaction_id = EXCLUDED.transaction_id,
 			successful = EXCLUDED.successful,
 			fee_charged = EXCLUDED.fee_charged,
+			tx_envelope = COALESCE(EXCLUDED.tx_envelope, transactions_row_v2.tx_envelope),
+			tx_result = COALESCE(EXCLUDED.tx_result, transactions_row_v2.tx_result),
+			tx_meta = COALESCE(EXCLUDED.tx_meta, transactions_row_v2.tx_meta),
+			tx_fee_meta = COALESCE(EXCLUDED.tx_fee_meta, transactions_row_v2.tx_fee_meta),
+			tx_signers = COALESCE(EXCLUDED.tx_signers, transactions_row_v2.tx_signers),
 			rent_fee_charged = EXCLUDED.rent_fee_charged,
 			soroban_resources_instructions = EXCLUDED.soroban_resources_instructions,
 			soroban_resources_read_bytes = EXCLUDED.soroban_resources_read_bytes,
@@ -1539,6 +1589,11 @@ func (w *Writer) insertTransactions(ctx context.Context, tx pgx.Tx, transactions
 		// strings get the same treatment defensively.
 		txData.Memo = sanitizeStringPtr(txData.Memo)
 		txData.MemoType = sanitizeStringPtr(txData.MemoType)
+		txData.TxEnvelope = sanitizeStringPtr(txData.TxEnvelope)
+		txData.TxResult = sanitizeStringPtr(txData.TxResult)
+		txData.TxMeta = sanitizeStringPtr(txData.TxMeta)
+		txData.TxFeeMeta = sanitizeStringPtr(txData.TxFeeMeta)
+		txData.TxSigners = sanitizeStringPtr(txData.TxSigners)
 		batch.Queue(query,
 			txData.LedgerSequence,
 			txData.TransactionHash,
@@ -1557,6 +1612,11 @@ func (w *Writer) insertTransactions(ctx context.Context, tx pgx.Tx, transactions
 			txData.EraID,
 			txData.VersionLabel,
 			txData.SignaturesCount,
+			txData.TxEnvelope,
+			txData.TxResult,
+			txData.TxMeta,
+			txData.TxFeeMeta,
+			txData.TxSigners,
 			txData.NewAccount,
 			txData.RentFeeCharged,
 			txData.SorobanResourcesInstructions,
@@ -1806,7 +1866,7 @@ func (w *Writer) insertAccounts(ctx context.Context, tx pgx.Tx, accounts []Accou
 	query := `
 		INSERT INTO accounts_snapshot_v1 (
 			account_id, ledger_sequence, closed_at, balance,
-			sequence_number, num_subentries, num_sponsoring, num_sponsored, home_domain,
+			sequence_number, sequence_ledger, sequence_time, num_subentries, num_sponsoring, num_sponsored, home_domain,
 			master_weight, low_threshold, med_threshold, high_threshold,
 			flags, auth_required, auth_revocable, auth_immutable, auth_clawback_enabled,
 			signers, sponsor_account,
@@ -1814,11 +1874,13 @@ func (w *Writer) insertAccounts(ctx context.Context, tx pgx.Tx, accounts []Accou
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
 			$11, $12, $13, $14, $15, $16, $17, $18,
-			$19, $20, $21, $22, $23, $24, $25
+			$19, $20, $21, $22, $23, $24, $25, $26, $27
 		)
 		ON CONFLICT (account_id, ledger_sequence) DO UPDATE SET
 			balance = EXCLUDED.balance,
 			sequence_number = EXCLUDED.sequence_number,
+			sequence_ledger = EXCLUDED.sequence_ledger,
+			sequence_time = EXCLUDED.sequence_time,
 			num_subentries = EXCLUDED.num_subentries,
 			flags = EXCLUDED.flags,
 			updated_at = EXCLUDED.updated_at,
@@ -1840,6 +1902,8 @@ func (w *Writer) insertAccounts(ctx context.Context, tx pgx.Tx, accounts []Accou
 			acct.ClosedAt,
 			acct.Balance,
 			acct.SequenceNumber,
+			acct.SequenceLedger,
+			acct.SequenceTime,
 			acct.NumSubentries,
 			acct.NumSponsoring,
 			acct.NumSponsored,

@@ -76,16 +76,32 @@ Per-projector visibility now includes:
 - `serving.sv_assets_current`
 - `serving.sv_asset_stats_current`
 - `serving.sv_contracts_current`
+- `serving.sv_contract_storage_current`
+- `serving.sv_contract_storage_summary`
 - `serving.sv_contract_stats_current`
 - `serving.sv_contract_function_stats_current`
 - `serving.sv_operations_recent`
 - `serving.sv_events_recent`
 - `serving.sv_contract_calls_recent`
+- `serving.sv_transactions_by_account`
+- `serving.sv_operations_by_account`
+- `serving.sv_effects_by_account`
 
 Current status of recent-feed projectors:
 - `contract_calls_recent` now runs incrementally with checkpointed upserts plus 30-day retention cleanup
 - `operations_recent` now runs incrementally with checkpointed upserts plus 30-day retention cleanup
 - `events_recent` now runs incrementally with checkpointed upserts plus 30-day retention cleanup
+- `effects_by_account` runs incrementally after a full `sv_effects_by_account`
+  backfill watermark exists, preserving complete-history semantics for Horizon
+  account effects.
+- `contract_storage` runs incrementally after authoritative cold current-state
+  and serving snapshots establish the handoff watermark. It upserts changed
+  entries, applies TTL changes, and consumes guarded deletion/eviction
+  tombstones; it never rebuilds serving state from the pruned hot window.
+- `transactions_recent` includes Horizon transaction hydration columns:
+  `transaction_id`, `tx_envelope`, `tx_result`, `tx_meta`, `tx_fee_meta`,
+  and `tx_signers`. These fields let `stellar-query-api` hydrate Horizon
+  transaction resources from serving without scanning Bronze on the request path.
 
 These power the first fast-path explorer surfaces and establish the projector/checkpoint pattern for the rest of the serving architecture.
 
@@ -99,6 +115,8 @@ These power the first fast-path explorer surfaces and establish the projector/ch
 - `/silver/assets/{asset}/stats`
 - `/silver/contracts/top`
 - `/silver/contracts/{id}/metadata`
+- `/api/v1/horizon-compat/transactions/{hash}`
+- `/api/v1/horizon-compat/accounts/{id}/transactions`
 
 ## Documentation
 
@@ -107,3 +125,4 @@ Read these before extending the service:
 - `../docs/minimal-serving-schema.sql`
 - `../docs/minimal-serving-projection-plan.md`
 - `../docs/serving-layer-implementation-notes.md`
+- `../docs/horizon-compat-deployment-runbook.md`

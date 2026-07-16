@@ -2794,6 +2794,11 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/v1/silver/accounts/{id}/transactions": {
+            "get": {
+                "responses": {}
+            }
+        },
         "/api/v1/silver/address/{addr}/events": {
             "get": {
                 "description": "Returns CAP-67 events where the address appears as sender (from) or receiver (to)",
@@ -2861,7 +2866,7 @@ const docTemplate = `{
                         }
                     },
                     "400": {
-                        "description": "Missing address",
+                        "description": "Invalid address or parameters",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -2922,6 +2927,57 @@ const docTemplate = `{
                         }
                     }
                 }
+            }
+        },
+        "/api/v1/silver/addresses/{addr}/balances": {
+            "get": {
+                "description": "Returns XLM, classic trustlines, and arbitrary Soroban token holdings for a Stellar address",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Accounts"
+                ],
+                "summary": "Get unified address balances",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Stellar account or contract address",
+                        "name": "addr",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Unified address balances",
+                        "schema": {
+                            "$ref": "#/definitions/main.UnifiedAddressBalancesResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Missing or invalid address",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/silver/addresses/{addr}/balances/history": {
+            "get": {
+                "responses": {}
             }
         },
         "/api/v1/silver/assets": {
@@ -5340,6 +5396,215 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/v1/silver/smart-accounts/lookup/address/{address}": {
+            "get": {
+                "description": "Returns smart-account contracts where a Stellar account or contract address is an active signer. This serving-backed endpoint is the preferred interactive lookup for \"which smart accounts can this signer operate?\".",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Smart Accounts"
+                ],
+                "summary": "Lookup smart accounts by signer address",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Signer address, usually a Stellar G... account or C... contract address",
+                        "name": "address",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default 100, max 500)",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/main.SmartAccountLookupResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/silver/smart-accounts/lookup/credential/{credential_id}": {
+            "get": {
+                "description": "Returns smart-account contracts where a credential/passkey identifier is an active signer. This serving-backed endpoint is the preferred interactive reverse lookup for passkey-controlled OpenZeppelin smart accounts.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Smart Accounts"
+                ],
+                "summary": "Lookup smart accounts by credential",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Credential/passkey identifier. Hex, base64, and base64url inputs are normalized where possible.",
+                        "name": "credential_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default 100, max 500)",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/main.SmartAccountLookupResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/silver/smart-accounts/stats": {
+            "get": {
+                "description": "Returns counts and coverage metadata for the serving-backed smart-account authorization projection. Use this endpoint to verify replay/serving coverage before trusting missing smart-account lookup results.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Smart Accounts"
+                ],
+                "summary": "Get smart-account serving statistics",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/main.SmartAccountStatsResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/silver/smart-accounts/{contract_id}/rules": {
+            "get": {
+                "description": "Returns active context rules, signers, credential signers, address signers, and policy rows for one smart-account contract. This serving-backed endpoint is the preferred primary source for Prism-style smart-account pages.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Smart Accounts"
+                ],
+                "summary": "Get smart-account authorization state",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Smart-account contract address (C...)",
+                        "name": "contract_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Optional context rule id filter",
+                        "name": "context_rule_id",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/main.SmartAccountStateResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/silver/smart-wallet/{contract_id}": {
             "get": {
                 "description": "Heuristically detects if a contract implements SEP-50 smart wallet by checking for __check_auth events and signer storage",
@@ -6912,10 +7177,28 @@ const docTemplate = `{
                 "balance_stroops": {
                     "type": "integer"
                 },
+                "buying_liabilities": {
+                    "type": "string"
+                },
                 "is_authorized": {
                     "type": "boolean"
                 },
+                "is_authorized_to_maintain_liabilities": {
+                    "type": "boolean"
+                },
+                "is_clawback_enabled": {
+                    "type": "boolean"
+                },
+                "last_modified_ledger": {
+                    "type": "integer"
+                },
                 "limit": {
+                    "type": "string"
+                },
+                "selling_liabilities": {
+                    "type": "string"
+                },
+                "sponsor": {
                     "type": "string"
                 }
             }
@@ -8868,6 +9151,250 @@ const docTemplate = `{
                 }
             }
         },
+        "main.ServingCoverageMetadata": {
+            "type": "object",
+            "properties": {
+                "complete_from": {
+                    "type": "integer"
+                },
+                "complete_thru": {
+                    "type": "integer"
+                },
+                "source": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.SmartAccountContextRuleRow": {
+            "type": "object",
+            "properties": {
+                "active": {
+                    "type": "boolean"
+                },
+                "closed_at": {
+                    "type": "string"
+                },
+                "context_rule_id": {
+                    "type": "integer"
+                },
+                "event_type": {
+                    "type": "string"
+                },
+                "last_modified_ledger": {
+                    "type": "integer"
+                },
+                "metadata": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "policies": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.SmartAccountPolicyRow"
+                    }
+                },
+                "signers": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.SmartAccountSignerRow"
+                    }
+                },
+                "transaction_hash": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.SmartAccountContractSummary": {
+            "type": "object",
+            "properties": {
+                "active_policy_count": {
+                    "type": "integer"
+                },
+                "active_signer_count": {
+                    "type": "integer"
+                },
+                "address_signer_count": {
+                    "type": "integer"
+                },
+                "context_rule_count": {
+                    "type": "integer"
+                },
+                "context_rule_ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "contract_id": {
+                    "type": "string"
+                },
+                "credential_signer_count": {
+                    "type": "integer"
+                },
+                "first_seen_ledger": {
+                    "type": "integer"
+                },
+                "last_modified_ledger": {
+                    "type": "integer"
+                },
+                "wallet_type": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.SmartAccountLookupResponse": {
+            "type": "object",
+            "properties": {
+                "contracts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.SmartAccountContractSummary"
+                    }
+                },
+                "count": {
+                    "type": "integer"
+                },
+                "coverage": {
+                    "$ref": "#/definitions/main.ServingCoverageMetadata"
+                },
+                "lookup": {
+                    "type": "string"
+                },
+                "lookup_type": {
+                    "type": "string"
+                },
+                "normalized": {
+                    "type": "string"
+                },
+                "source": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.SmartAccountPolicyRow": {
+            "type": "object",
+            "properties": {
+                "install_params": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "last_modified_ledger": {
+                    "type": "integer"
+                },
+                "policy_address": {
+                    "type": "string"
+                },
+                "policy_id": {
+                    "type": "integer"
+                },
+                "registry_resolved": {
+                    "type": "boolean"
+                },
+                "transaction_hash": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.SmartAccountSignerRow": {
+            "type": "object",
+            "properties": {
+                "credential_id": {
+                    "type": "string"
+                },
+                "last_modified_ledger": {
+                    "type": "integer"
+                },
+                "raw_bytes": {
+                    "type": "string"
+                },
+                "registry_resolved": {
+                    "type": "boolean"
+                },
+                "signer_address": {
+                    "type": "string"
+                },
+                "signer_id": {
+                    "type": "integer"
+                },
+                "signer_type": {
+                    "type": "string"
+                },
+                "transaction_hash": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.SmartAccountStateResponse": {
+            "type": "object",
+            "properties": {
+                "context_rule_id": {
+                    "type": "integer"
+                },
+                "context_rules": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.SmartAccountContextRuleRow"
+                    }
+                },
+                "contract_id": {
+                    "type": "string"
+                },
+                "count": {
+                    "type": "integer"
+                },
+                "coverage": {
+                    "$ref": "#/definitions/main.ServingCoverageMetadata"
+                },
+                "source": {
+                    "type": "string"
+                },
+                "summary": {
+                    "$ref": "#/definitions/main.SmartAccountContractSummary"
+                }
+            }
+        },
+        "main.SmartAccountStatsResponse": {
+            "type": "object",
+            "properties": {
+                "active_policy_count": {
+                    "type": "integer"
+                },
+                "active_rule_count": {
+                    "type": "integer"
+                },
+                "active_signer_count": {
+                    "type": "integer"
+                },
+                "address_signer_count": {
+                    "type": "integer"
+                },
+                "contract_count": {
+                    "type": "integer"
+                },
+                "coverage": {
+                    "$ref": "#/definitions/main.ServingCoverageMetadata"
+                },
+                "credential_count": {
+                    "type": "integer"
+                },
+                "last_modified_ledger": {
+                    "type": "integer"
+                },
+                "source": {
+                    "type": "string"
+                }
+            }
+        },
         "main.SmartWalletAccountSection": {
             "type": "object",
             "properties": {
@@ -9794,6 +10321,79 @@ const docTemplate = `{
                 "type": {
                     "description": "transfer, mint, burn, swap, contract_call, create_account, payment, etc.",
                     "type": "string"
+                }
+            }
+        },
+        "main.UnifiedAddressBalance": {
+            "type": "object",
+            "properties": {
+                "asset_code": {
+                    "type": "string"
+                },
+                "asset_issuer": {
+                    "type": "string"
+                },
+                "asset_type": {
+                    "type": "string"
+                },
+                "balance": {
+                    "type": "string"
+                },
+                "balance_raw": {
+                    "type": "string"
+                },
+                "balance_source": {
+                    "type": "string"
+                },
+                "contract_id": {
+                    "type": "string"
+                },
+                "decimals": {
+                    "type": "integer"
+                },
+                "decimals_source": {
+                    "type": "string"
+                },
+                "last_updated_at": {
+                    "type": "string"
+                },
+                "last_updated_ledger": {
+                    "type": "integer"
+                },
+                "symbol": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.UnifiedAddressBalancesResponse": {
+            "type": "object",
+            "properties": {
+                "address": {
+                    "type": "string"
+                },
+                "balances": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.UnifiedAddressBalance"
+                    }
+                },
+                "partial": {
+                    "type": "boolean"
+                },
+                "sources": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "total_balances": {
+                    "type": "integer"
+                },
+                "warnings": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 }
             }
         },

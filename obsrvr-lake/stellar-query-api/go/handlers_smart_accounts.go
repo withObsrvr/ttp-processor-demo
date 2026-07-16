@@ -23,6 +23,7 @@ type SmartAccountLookupResponse struct {
 	Lookup     string                        `json:"lookup"`
 	Normalized string                        `json:"normalized"`
 	Source     string                        `json:"source"`
+	Coverage   *ServingCoverageMetadata      `json:"coverage,omitempty"`
 	Contracts  []SmartAccountContractSummary `json:"contracts"`
 	Count      int                           `json:"count"`
 }
@@ -46,6 +47,7 @@ type SmartAccountContractSummary struct {
 type SmartAccountStateResponse struct {
 	ContractID    string                       `json:"contract_id"`
 	Source        string                       `json:"source"`
+	Coverage      *ServingCoverageMetadata     `json:"coverage,omitempty"`
 	Summary       SmartAccountContractSummary  `json:"summary"`
 	ContextRules  []SmartAccountContextRuleRow `json:"context_rules"`
 	ContextRuleID *int64                       `json:"context_rule_id,omitempty"`
@@ -85,18 +87,30 @@ type SmartAccountPolicyRow struct {
 }
 
 type SmartAccountStatsResponse struct {
-	Source             string `json:"source"`
-	ContractCount      int64  `json:"contract_count"`
-	ActiveRuleCount    int64  `json:"active_rule_count"`
-	ActiveSignerCount  int64  `json:"active_signer_count"`
-	CredentialCount    int64  `json:"credential_count"`
-	AddressSignerCount int64  `json:"address_signer_count"`
-	ActivePolicyCount  int64  `json:"active_policy_count"`
-	LastModifiedLedger *int64 `json:"last_modified_ledger,omitempty"`
+	Source             string                   `json:"source"`
+	Coverage           *ServingCoverageMetadata `json:"coverage,omitempty"`
+	ContractCount      int64                    `json:"contract_count"`
+	ActiveRuleCount    int64                    `json:"active_rule_count"`
+	ActiveSignerCount  int64                    `json:"active_signer_count"`
+	CredentialCount    int64                    `json:"credential_count"`
+	AddressSignerCount int64                    `json:"address_signer_count"`
+	ActivePolicyCount  int64                    `json:"active_policy_count"`
+	LastModifiedLedger *int64                   `json:"last_modified_ledger,omitempty"`
 }
 
 // HandleSmartAccountLookupByCredential serves GET
 // /api/v1/silver/smart-accounts/lookup/credential/{credential_id}.
+// @Summary Lookup smart accounts by credential
+// @Description Returns smart-account contracts where a credential/passkey identifier is an active signer. This serving-backed endpoint is the preferred interactive reverse lookup for passkey-controlled OpenZeppelin smart accounts.
+// @Tags Smart Accounts
+// @Produce json
+// @Param credential_id path string true "Credential/passkey identifier. Hex, base64, and base64url inputs are normalized where possible."
+// @Param limit query int false "Page size (default 100, max 500)"
+// @Success 200 {object} SmartAccountLookupResponse
+// @Failure 400 {object} map[string]interface{}
+// @Failure 503 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
+// @Router /api/v1/silver/smart-accounts/lookup/credential/{credential_id} [get]
 func (h *SmartWalletHandlers) HandleSmartAccountLookupByCredential(w http.ResponseWriter, r *http.Request) {
 	if h.hotReader == nil {
 		respondError(w, "silver_hot reader not available", http.StatusServiceUnavailable)
@@ -113,6 +127,19 @@ func (h *SmartWalletHandlers) HandleSmartAccountLookupByCredential(w http.Respon
 	defer cancel()
 
 	limit := parseIntParam(r, "limit", 100, 1, 500)
+	if contracts, coverage, err := h.queryServingSmartAccountSummaries(ctx, "credential", credential, limit); err == nil && (coverage != nil || len(contracts) > 0) {
+		respondJSON(w, SmartAccountLookupResponse{
+			LookupType: "credential",
+			Lookup:     raw,
+			Normalized: credential,
+			Source:     "serving.sv_smart_account_signers",
+			Coverage:   coverage,
+			Contracts:  contracts,
+			Count:      len(contracts),
+		})
+		return
+	}
+
 	contracts, err := h.querySmartAccountSummaries(ctx, "credential_id = $1", []any{credential}, limit)
 	if err != nil {
 		respondError(w, err.Error(), http.StatusInternalServerError)
@@ -130,6 +157,17 @@ func (h *SmartWalletHandlers) HandleSmartAccountLookupByCredential(w http.Respon
 
 // HandleSmartAccountLookupByAddress serves GET
 // /api/v1/silver/smart-accounts/lookup/address/{address}.
+// @Summary Lookup smart accounts by signer address
+// @Description Returns smart-account contracts where a Stellar account or contract address is an active signer. This serving-backed endpoint is the preferred interactive lookup for "which smart accounts can this signer operate?".
+// @Tags Smart Accounts
+// @Produce json
+// @Param address path string true "Signer address, usually a Stellar G... account or C... contract address"
+// @Param limit query int false "Page size (default 100, max 500)"
+// @Success 200 {object} SmartAccountLookupResponse
+// @Failure 400 {object} map[string]interface{}
+// @Failure 503 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
+// @Router /api/v1/silver/smart-accounts/lookup/address/{address} [get]
 func (h *SmartWalletHandlers) HandleSmartAccountLookupByAddress(w http.ResponseWriter, r *http.Request) {
 	if h.hotReader == nil {
 		respondError(w, "silver_hot reader not available", http.StatusServiceUnavailable)
@@ -145,6 +183,19 @@ func (h *SmartWalletHandlers) HandleSmartAccountLookupByAddress(w http.ResponseW
 	defer cancel()
 
 	limit := parseIntParam(r, "limit", 100, 1, 500)
+	if contracts, coverage, err := h.queryServingSmartAccountSummaries(ctx, "address", raw, limit); err == nil && (coverage != nil || len(contracts) > 0) {
+		respondJSON(w, SmartAccountLookupResponse{
+			LookupType: "address",
+			Lookup:     raw,
+			Normalized: raw,
+			Source:     "serving.sv_smart_account_signers",
+			Coverage:   coverage,
+			Contracts:  contracts,
+			Count:      len(contracts),
+		})
+		return
+	}
+
 	contracts, err := h.querySmartAccountSummaries(ctx, "LOWER(signer_address) = LOWER($1)", []any{raw}, limit)
 	if err != nil {
 		respondError(w, err.Error(), http.StatusInternalServerError)
@@ -161,6 +212,18 @@ func (h *SmartWalletHandlers) HandleSmartAccountLookupByAddress(w http.ResponseW
 }
 
 // HandleSmartAccountState serves GET /api/v1/silver/smart-accounts/{contract_id}/rules.
+// @Summary Get smart-account authorization state
+// @Description Returns active context rules, signers, credential signers, address signers, and policy rows for one smart-account contract. This serving-backed endpoint is the preferred primary source for Prism-style smart-account pages.
+// @Tags Smart Accounts
+// @Produce json
+// @Param contract_id path string true "Smart-account contract address (C...)"
+// @Param context_rule_id query int false "Optional context rule id filter"
+// @Success 200 {object} SmartAccountStateResponse
+// @Failure 400 {object} map[string]interface{}
+// @Failure 404 {object} map[string]interface{}
+// @Failure 503 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
+// @Router /api/v1/silver/smart-accounts/{contract_id}/rules [get]
 func (h *SmartWalletHandlers) HandleSmartAccountState(w http.ResponseWriter, r *http.Request) {
 	if h.hotReader == nil {
 		respondError(w, "silver_hot reader not available", http.StatusServiceUnavailable)
@@ -185,6 +248,11 @@ func (h *SmartWalletHandlers) HandleSmartAccountState(w http.ResponseWriter, r *
 		ruleFilter = &parsed
 	}
 
+	if state, err := h.queryServingSmartAccountState(ctx, contractID, ruleFilter); err == nil && state != nil {
+		respondJSON(w, state)
+		return
+	}
+
 	state, err := h.querySmartAccountState(ctx, contractID, ruleFilter)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -198,6 +266,14 @@ func (h *SmartWalletHandlers) HandleSmartAccountState(w http.ResponseWriter, r *
 }
 
 // HandleSmartAccountStats serves GET /api/v1/silver/smart-accounts/stats.
+// @Summary Get smart-account serving statistics
+// @Description Returns counts and coverage metadata for the serving-backed smart-account authorization projection. Use this endpoint to verify replay/serving coverage before trusting missing smart-account lookup results.
+// @Tags Smart Accounts
+// @Produce json
+// @Success 200 {object} SmartAccountStatsResponse
+// @Failure 503 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
+// @Router /api/v1/silver/smart-accounts/stats [get]
 func (h *SmartWalletHandlers) HandleSmartAccountStats(w http.ResponseWriter, r *http.Request) {
 	if h.hotReader == nil {
 		respondError(w, "silver_hot reader not available", http.StatusServiceUnavailable)
@@ -205,6 +281,11 @@ func (h *SmartWalletHandlers) HandleSmartAccountStats(w http.ResponseWriter, r *
 	}
 	ctx, cancel := withInteractiveQueryTimeout(r.Context())
 	defer cancel()
+
+	if stats, err := h.queryServingSmartAccountStats(ctx); err == nil && stats != nil {
+		respondJSON(w, stats)
+		return
+	}
 
 	var stats SmartAccountStatsResponse
 	stats.Source = "silver.smart_account_state"
@@ -268,6 +349,289 @@ func (h *SmartWalletHandlers) HandleSmartAccountStats(w http.ResponseWriter, r *
 		stats.LastModifiedLedger = &last.Int64
 	}
 	respondJSON(w, stats)
+}
+
+func (h *SmartWalletHandlers) queryServingSmartAccountSummaries(ctx context.Context, identityType, identityValue string, limit int) ([]SmartAccountContractSummary, *ServingCoverageMetadata, error) {
+	coverage, err := h.hotReader.GetServingWatermark(ctx, "serving.sv_smart_account_signers")
+	if err != nil {
+		return nil, nil, err
+	}
+	predicate := "s.identity_type = $1 AND s.identity_value = $2"
+	args := []any{identityType, identityValue, limit}
+	if identityType == "address" {
+		predicate = "s.identity_type = $1 AND LOWER(s.identity_value) = LOWER($2)"
+	}
+	rows, err := h.hotReader.db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT
+			c.contract_id,
+			c.wallet_type,
+			c.context_rule_count,
+			c.active_signer_count,
+			c.credential_signer_count,
+			c.address_signer_count,
+			c.active_policy_count,
+			c.context_rule_ids,
+			c.first_seen_ledger,
+			c.last_modified_ledger
+		FROM serving.sv_smart_account_signers s
+		JOIN serving.sv_smart_account_contracts c ON c.contract_id = s.contract_id
+		WHERE %s
+		ORDER BY c.last_modified_ledger DESC NULLS LAST, c.contract_id
+		LIMIT $3
+	`, predicate), args...)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+
+	out := make([]SmartAccountContractSummary, 0, limit)
+	for rows.Next() {
+		summary, err := scanSmartAccountContractSummary(rows)
+		if err != nil {
+			return nil, nil, err
+		}
+		out = append(out, summary)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	return out, coverage, nil
+}
+
+func (h *SmartWalletHandlers) queryServingSmartAccountStats(ctx context.Context) (*SmartAccountStatsResponse, error) {
+	coverage, err := h.hotReader.GetServingWatermark(ctx, "serving.sv_smart_account_contracts")
+	if err != nil {
+		return nil, err
+	}
+	if coverage == nil {
+		return nil, nil
+	}
+	var stats SmartAccountStatsResponse
+	stats.Source = "serving.sv_smart_account_contracts"
+	stats.Coverage = coverage
+	var last sql.NullInt64
+	err = h.hotReader.db.QueryRowContext(ctx, `
+		SELECT
+			COUNT(*)::bigint,
+			COALESCE(SUM(context_rule_count), 0)::bigint,
+			COALESCE(SUM(active_signer_count), 0)::bigint,
+			(SELECT COUNT(*)::bigint FROM serving.sv_smart_account_signers WHERE identity_type = 'credential'),
+			(SELECT COUNT(*)::bigint FROM serving.sv_smart_account_signers WHERE identity_type = 'address'),
+			COALESCE(SUM(active_policy_count), 0)::bigint,
+			MAX(last_modified_ledger)
+		FROM serving.sv_smart_account_contracts
+	`).Scan(&stats.ContractCount, &stats.ActiveRuleCount, &stats.ActiveSignerCount, &stats.CredentialCount, &stats.AddressSignerCount, &stats.ActivePolicyCount, &last)
+	if err != nil {
+		return nil, err
+	}
+	if last.Valid {
+		stats.LastModifiedLedger = &last.Int64
+	}
+	return &stats, nil
+}
+
+func (h *SmartWalletHandlers) queryServingSmartAccountState(ctx context.Context, contractID string, ruleFilter *int64) (*SmartAccountStateResponse, error) {
+	coverage, err := h.hotReader.GetServingWatermark(ctx, "serving.sv_smart_account_rules_current")
+	if err != nil {
+		return nil, err
+	}
+	if coverage == nil {
+		return nil, nil
+	}
+	summary, err := h.queryServingSmartAccountSummaryByContract(ctx, contractID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	args := []any{contractID}
+	ruleWhere := ""
+	if ruleFilter != nil {
+		args = append(args, *ruleFilter)
+		ruleWhere = " AND context_rule_id = $2"
+	}
+	rows, err := h.hotReader.db.QueryContext(ctx, `
+		SELECT
+			context_rule_id,
+			COALESCE(metadata::text, ''),
+			COALESCE(event_type, ''),
+			last_modified_ledger,
+			COALESCE(transaction_hash, ''),
+			closed_at,
+			signers_json::text,
+			policies_json::text
+		FROM serving.sv_smart_account_rules_current
+		WHERE contract_id = $1`+ruleWhere+`
+		ORDER BY context_rule_id
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	rules := []SmartAccountContextRuleRow{}
+	for rows.Next() {
+		var rule SmartAccountContextRuleRow
+		var metadata sql.NullString
+		var closedAt sql.NullTime
+		var signersJSON, policiesJSON string
+		if err := rows.Scan(&rule.ContextRuleID, &metadata, &rule.EventType, &rule.LastModifiedLedger, &rule.TransactionHash, &closedAt, &signersJSON, &policiesJSON); err != nil {
+			return nil, err
+		}
+		rule.Active = true
+		rule.Metadata = smartAccountRawJSON(metadata)
+		if closedAt.Valid {
+			rule.ClosedAt = &closedAt.Time
+		}
+		signers, err := parseServingSmartAccountSigners(signersJSON)
+		if err != nil {
+			// Corrupt signer/policy JSON must not render a rule with empty
+			// signers — that misstates the account's security configuration.
+			return nil, fmt.Errorf("contract %s context rule %d: %w", contractID, rule.ContextRuleID, err)
+		}
+		rule.Signers = signers
+		policies, err := parseServingSmartAccountPolicies(policiesJSON)
+		if err != nil {
+			return nil, fmt.Errorf("contract %s context rule %d: %w", contractID, rule.ContextRuleID, err)
+		}
+		rule.Policies = policies
+		rules = append(rules, rule)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(rules) == 0 && ruleFilter == nil {
+		return nil, nil
+	}
+	return &SmartAccountStateResponse{
+		ContractID:    contractID,
+		Source:        "serving.sv_smart_account_rules_current",
+		Coverage:      coverage,
+		Summary:       summary,
+		ContextRules:  rules,
+		ContextRuleID: ruleFilter,
+		Count:         len(rules),
+	}, nil
+}
+
+func (h *SmartWalletHandlers) queryServingSmartAccountSummaryByContract(ctx context.Context, contractID string) (SmartAccountContractSummary, error) {
+	row := h.hotReader.db.QueryRowContext(ctx, `
+		SELECT
+			contract_id,
+			wallet_type,
+			context_rule_count,
+			active_signer_count,
+			credential_signer_count,
+			address_signer_count,
+			active_policy_count,
+			context_rule_ids,
+			first_seen_ledger,
+			last_modified_ledger
+		FROM serving.sv_smart_account_contracts
+		WHERE contract_id = $1
+	`, contractID)
+	return scanSmartAccountContractSummary(row)
+}
+
+type smartAccountSummaryScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanSmartAccountContractSummary(scanner smartAccountSummaryScanner) (SmartAccountContractSummary, error) {
+	var summary SmartAccountContractSummary
+	var ruleIDs pq.Int64Array
+	var first sql.NullInt64
+	var last sql.NullInt64
+	if err := scanner.Scan(
+		&summary.ContractID,
+		&summary.WalletType,
+		&summary.ContextRuleCount,
+		&summary.ActiveSignerCount,
+		&summary.CredentialSignerCount,
+		&summary.AddressSignerCount,
+		&summary.ActivePolicyCount,
+		&ruleIDs,
+		&first,
+		&last,
+	); err != nil {
+		return summary, err
+	}
+	summary.ContextRuleIDs = []int64(ruleIDs)
+	if first.Valid {
+		summary.FirstSeenLedger = &first.Int64
+	}
+	if last.Valid && last.Int64 > 0 {
+		summary.LastModifiedLedger = &last.Int64
+	}
+	return summary, nil
+}
+
+func parseServingSmartAccountSigners(raw string) ([]SmartAccountSignerRow, error) {
+	var rows []SmartAccountSignerRow
+	type signerJSON struct {
+		SignerID           *int64 `json:"signer_id"`
+		SignerType         string `json:"signer_type"`
+		SignerAddress      string `json:"signer_address"`
+		CredentialID       string `json:"credential_id"`
+		RawBytes           string `json:"raw_bytes"`
+		LastModifiedLedger int64  `json:"last_modified_ledger"`
+		TransactionHash    string `json:"transaction_hash"`
+		RegistryResolved   bool   `json:"registry_resolved"`
+	}
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == "null" || trimmed == "[]" {
+		return nil, nil
+	}
+	var parsed []signerJSON
+	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
+		return nil, fmt.Errorf("signers_json unparseable: %w", err)
+	}
+	for _, p := range parsed {
+		rows = append(rows, SmartAccountSignerRow{
+			SignerID:           p.SignerID,
+			SignerType:         p.SignerType,
+			SignerAddress:      p.SignerAddress,
+			CredentialID:       p.CredentialID,
+			RawBytes:           p.RawBytes,
+			LastModifiedLedger: p.LastModifiedLedger,
+			TransactionHash:    p.TransactionHash,
+			RegistryResolved:   p.RegistryResolved,
+		})
+	}
+	return rows, nil
+}
+
+func parseServingSmartAccountPolicies(raw string) ([]SmartAccountPolicyRow, error) {
+	var rows []SmartAccountPolicyRow
+	type policyJSON struct {
+		PolicyID           *int64           `json:"policy_id"`
+		PolicyAddress      string           `json:"policy_address"`
+		InstallParams      *json.RawMessage `json:"install_params"`
+		LastModifiedLedger int64            `json:"last_modified_ledger"`
+		TransactionHash    string           `json:"transaction_hash"`
+		RegistryResolved   bool             `json:"registry_resolved"`
+	}
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == "null" || trimmed == "[]" {
+		return nil, nil
+	}
+	var parsed []policyJSON
+	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
+		return nil, fmt.Errorf("policies_json unparseable: %w", err)
+	}
+	for _, p := range parsed {
+		rows = append(rows, SmartAccountPolicyRow{
+			PolicyID:           p.PolicyID,
+			PolicyAddress:      p.PolicyAddress,
+			InstallParams:      p.InstallParams,
+			LastModifiedLedger: p.LastModifiedLedger,
+			TransactionHash:    p.TransactionHash,
+			RegistryResolved:   p.RegistryResolved,
+		})
+	}
+	return rows, nil
 }
 
 func (h *SmartWalletHandlers) querySmartAccountSummaries(ctx context.Context, matchPredicate string, args []any, limit int) ([]SmartAccountContractSummary, error) {

@@ -184,6 +184,48 @@ func TestProjectorVerificationFailures(t *testing.T) {
 	}
 }
 
+func TestContractDataCurrentMigratesLegacyTargetNetwork(t *testing.T) {
+	ctx := context.Background()
+	db := openFixtureDB(t)
+	defer db.Close()
+	if _, err := db.Exec(`CREATE SCHEMA silver`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE silver.contract_data_snapshot_v1 (
+		contract_id VARCHAR, ledger_key_hash VARCHAR, contract_durability VARCHAR,
+		asset_type VARCHAR, asset_code VARCHAR, asset_issuer VARCHAR, contract_data_xdr VARCHAR,
+		last_modified_ledger BIGINT, ledger_sequence BIGINT, closed_at TIMESTAMP,
+		deleted BOOLEAN, ledger_range BIGINT
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE silver.contract_data_current (
+		contract_id VARCHAR, key_hash VARCHAR, durability VARCHAR,
+		asset_type VARCHAR, asset_code VARCHAR, asset_issuer VARCHAR, data_value VARCHAR,
+		last_modified_ledger BIGINT, ledger_sequence BIGINT, closed_at TIMESTAMP,
+		created_at TIMESTAMP, ledger_range BIGINT, updated_at TIMESTAMP
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO silver.contract_data_current (contract_id, key_hash) VALUES ('CC1', 'K1')`); err != nil {
+		t.Fatal(err)
+	}
+
+	projector := NewProjectorWithDB(db, Config{Network: "testnet", Start: 3, End: 5, SilverSchema: "silver"})
+	projection := executableCurrentProjections()[3]
+	if err := projector.ensureTargetTable(ctx, projection); err != nil {
+		t.Fatalf("ensureTargetTable: %v", err)
+	}
+
+	var network sql.NullString
+	if err := db.QueryRow(`SELECT network FROM silver.contract_data_current WHERE contract_id='CC1'`).Scan(&network); err != nil {
+		t.Fatal(err)
+	}
+	if network.Valid {
+		t.Fatalf("legacy row network = %q, want NULL until bounded publication replaces it", network.String)
+	}
+}
+
 func TestPublishBucketsRecordedAndResumable(t *testing.T) {
 	ctx := context.Background()
 	db := openFixtureDB(t)
@@ -437,7 +479,8 @@ func loadCurrentProjectorFixture(t *testing.T, ctx context.Context, db *sql.DB) 
 		`CREATE SCHEMA silver`,
 		`CREATE TABLE silver.accounts_snapshot (
 			network VARCHAR, account_id VARCHAR, ledger_sequence BIGINT, closed_at TIMESTAMP,
-			balance VARCHAR, sequence_number BIGINT, num_subentries INTEGER, num_sponsoring INTEGER,
+			balance VARCHAR, sequence_number BIGINT, sequence_ledger BIGINT, sequence_time BIGINT,
+			num_subentries INTEGER, num_sponsoring INTEGER,
 			num_sponsored INTEGER, home_domain VARCHAR, master_weight INTEGER, low_threshold INTEGER,
 			med_threshold INTEGER, high_threshold INTEGER, flags INTEGER, auth_required BOOLEAN,
 			auth_revocable BOOLEAN, auth_immutable BOOLEAN, auth_clawback_enabled BOOLEAN, signers VARCHAR,
@@ -457,10 +500,10 @@ func loadCurrentProjectorFixture(t *testing.T, ctx context.Context, db *sql.DB) 
 			amount VARCHAR, price VARCHAR, flags INTEGER, created_at TIMESTAMP, ledger_range BIGINT,
 			era_id VARCHAR, version_label VARCHAR
 		)`,
-		`CREATE TABLE silver.contract_data_changes (
-			network VARCHAR, contract_id VARCHAR, key_hash VARCHAR, contract_key_type VARCHAR,
+		`CREATE TABLE silver.contract_data_snapshot_v1 (
+			contract_id VARCHAR, ledger_key_hash VARCHAR,
 			contract_durability VARCHAR, asset_type VARCHAR, asset_code VARCHAR, asset_issuer VARCHAR,
-			balance_holder VARCHAR, balance VARCHAR, data_value VARCHAR, last_modified_ledger BIGINT,
+			contract_data_xdr VARCHAR, last_modified_ledger BIGINT,
 			ledger_sequence BIGINT, closed_at TIMESTAMP, deleted BOOLEAN, ledger_range BIGINT
 		)`,
 		`CREATE TABLE silver.ttl_snapshot_v1 (
@@ -474,10 +517,10 @@ func loadCurrentProjectorFixture(t *testing.T, ctx context.Context, db *sql.DB) 
 			balance VARCHAR, ledger_sequence BIGINT, ledger_closed_at TIMESTAMP, deleted BOOLEAN, ledger_range BIGINT
 		)`,
 		`INSERT INTO silver.accounts_snapshot VALUES
-			('mainnet','GA1',3,'2026-01-01 00:00:03','100',10,1,0,0,NULL,1,1,1,1,0,false,false,false,false,NULL,NULL,'2026-01-01 00:00:03','2026-01-01 00:00:03',3,'era','v1'),
-			('mainnet','GA1',4,'2026-01-01 00:00:04','200',11,1,0,0,NULL,1,1,1,1,0,false,false,false,false,NULL,NULL,'2026-01-01 00:00:03','2026-01-01 00:00:04',4,'era','v1'),
-			('mainnet','GA1',8,'2026-01-01 00:00:08','999',12,1,0,0,NULL,1,1,1,1,0,false,false,false,false,NULL,NULL,'2026-01-01 00:00:03','2026-01-01 00:00:08',8,'era','v1'),
-			('mainnet','GA2',3,'2026-01-01 00:00:03','50',20,1,0,0,NULL,1,1,1,1,0,false,false,false,false,NULL,NULL,'2026-01-01 00:00:03','2026-01-01 00:00:03',3,'era','v1')`,
+			('mainnet','GA1',3,'2026-01-01 00:00:03','100',10,3,3,1,0,0,NULL,1,1,1,1,0,false,false,false,false,NULL,NULL,'2026-01-01 00:00:03','2026-01-01 00:00:03',3,'era','v1'),
+			('mainnet','GA1',4,'2026-01-01 00:00:04','200',11,4,4,1,0,0,NULL,1,1,1,1,0,false,false,false,false,NULL,NULL,'2026-01-01 00:00:03','2026-01-01 00:00:04',4,'era','v1'),
+			('mainnet','GA1',8,'2026-01-01 00:00:08','999',12,8,8,1,0,0,NULL,1,1,1,1,0,false,false,false,false,NULL,NULL,'2026-01-01 00:00:03','2026-01-01 00:00:08',8,'era','v1'),
+			('mainnet','GA2',3,'2026-01-01 00:00:03','50',20,3,3,1,0,0,NULL,1,1,1,1,0,false,false,false,false,NULL,NULL,'2026-01-01 00:00:03','2026-01-01 00:00:03',3,'era','v1')`,
 		`INSERT INTO silver.trustlines_snapshot VALUES
 			('mainnet','GA1','USD','ISSUER','credit_alphanum4','1.5','100','0','0',true,false,false,3,'2026-01-01 00:00:03',3,'era','v1'),
 			('mainnet','GA1','USD','ISSUER','credit_alphanum4','2.5','100','0','0',true,true,false,5,'2026-01-01 00:00:05',5,'era','v1'),
@@ -486,12 +529,12 @@ func loadCurrentProjectorFixture(t *testing.T, ctx context.Context, db *sql.DB) 
 			('mainnet',1,'GA1',3,'2026-01-01 00:00:03','credit_alphanum4','USD','ISSUER','native',NULL,NULL,'100','1/2',0,'2026-01-01 00:00:03',3,'era','v1'),
 			('mainnet',1,'GA1',4,'2026-01-01 00:00:04','credit_alphanum4','USD','ISSUER','native',NULL,NULL,'200','1/2',0,'2026-01-01 00:00:04',4,'era','v1'),
 			('mainnet',2,'GA2',8,'2026-01-01 00:00:08','credit_alphanum4','EUR','ISSUER2','native',NULL,NULL,'300','1/3',0,'2026-01-01 00:00:08',8,'era','v1')`,
-		`INSERT INTO silver.contract_data_changes VALUES
-			('mainnet','CC1','K1','instance','persistent','credit_alphanum4','USD','ISSUER','GA1','10','value1',3,3,'2026-01-01 00:00:03',false,3),
-			('mainnet','CC1','K1','instance','persistent','credit_alphanum4','USD','ISSUER','GA1','20','value2',4,4,'2026-01-01 00:00:04',false,4),
-			('mainnet','CC1','K2','instance','persistent','credit_alphanum4','USD','ISSUER','GA1','20','old',4,4,'2026-01-01 00:00:04',false,4),
-			('mainnet','CC1','K2','instance','persistent','credit_alphanum4','USD','ISSER','GA1','20','deleted',5,5,'2026-01-01 00:00:05',true,5),
-			('mainnet','CC2','K1','instance','persistent','credit_alphanum4','EUR','ISSUER2','GA2','20','future',8,8,'2026-01-01 00:00:08',false,8)`,
+		`INSERT INTO silver.contract_data_snapshot_v1 VALUES
+			('CC1','K1','persistent','credit_alphanum4','USD','ISSUER','value1',3,3,'2026-01-01 00:00:03',false,3),
+			('CC1','K1','persistent','credit_alphanum4','USD','ISSUER','value2',4,4,'2026-01-01 00:00:04',false,4),
+			('CC1','K2','persistent','credit_alphanum4','USD','ISSUER','old',4,4,'2026-01-01 00:00:04',false,4),
+			('CC1','K2','persistent','credit_alphanum4','USD','ISSER','deleted',5,5,'2026-01-01 00:00:05',true,5),
+			('CC2','K1','persistent','credit_alphanum4','EUR','ISSUER2','future',8,8,'2026-01-01 00:00:08',false,8)`,
 		`INSERT INTO silver.ttl_snapshot_v1 VALUES
 			('TK1',8,3,0,false,'2026-01-01 00:00:03',3,'2026-01-01 00:00:03',3,'era','v1'),
 			('TK1',10,4,0,false,'2026-01-01 00:00:04',4,'2026-01-01 00:00:04',4,'era','v1'),

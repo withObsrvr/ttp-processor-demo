@@ -363,7 +363,60 @@ curl -H "Authorization: Api-Key $API_KEY" \
 
 These additional endpoints cover search, market data, and advanced contract analysis.
 
-### 11. Universal Search
+### 11. Get Smart Account Authorization Rules
+
+**Question:** What signers, credentials, and policies control this OpenZeppelin smart account?
+
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/smart-accounts/CCQBQIAG2E2L5NOIML2SGAJYMXPID3MAQNII5USMENID3SDJ4ATOU2HG/rules"
+```
+
+**Response:**
+```json
+{
+  "contract_id": "CCQBQIAG2E2L5NOIML2SGAJYMXPID3MAQNII5USMENID3SDJ4ATOU2HG",
+  "source": "serving.sv_smart_account_rules_current",
+  "summary": {
+    "contract_id": "CCQBQIAG2E2L5NOIML2SGAJYMXPID3MAQNII5USMENID3SDJ4ATOU2HG",
+    "wallet_type": "openzeppelin",
+    "context_rule_count": 3,
+    "active_signer_count": 7,
+    "credential_signer_count": 3,
+    "address_signer_count": 5,
+    "active_policy_count": 2,
+    "context_rule_ids": [0, 3, 4]
+  },
+  "context_rules": [
+    {
+      "context_rule_id": 3,
+      "active": true,
+      "signers": [
+        {
+          "signer_address": "G...",
+          "credential_id": "9ca5204617ab254b6b21cbae8a30c42377d0cd4f",
+          "registry_resolved": true
+        }
+      ],
+      "policies": [
+        {
+          "policy_address": "CAF4...",
+          "registry_resolved": true
+        }
+      ]
+    }
+  ],
+  "count": 3
+}
+```
+
+**When to use:** Smart account explorer pages, signer audits, passkey/credential analysis, and OpenZeppelin policy review.
+
+> **Tip:** Check `/silver/smart-accounts/stats` first if a result is unexpectedly empty. Missing rows are only meaningful when serving coverage is current.
+
+---
+
+### 12. Universal Search
 
 **Question:** I have an address/hash/ledger number — what is it?
 
@@ -376,7 +429,7 @@ curl -H "Authorization: Api-Key $API_KEY" \
 
 ---
 
-### 12. Get Trading Pairs and Latest Prices
+### 13. Get Trading Pairs and Latest Prices
 
 **Question:** What markets are active on the DEX, and what's the current price?
 
@@ -394,7 +447,7 @@ curl -H "Authorization: Api-Key $API_KEY" \
 
 ---
 
-### 13. Get Raw Contract Events
+### 14. Get Raw Contract Events
 
 **Question:** What events has this contract emitted (including diagnostic events)?
 
@@ -407,7 +460,7 @@ curl -H "Authorization: Api-Key $API_KEY" \
 
 ---
 
-### 14. Positional Topic Filtering
+### 15. Positional Topic Filtering
 
 **Question:** Find all transfer events where a specific address is the receiver.
 
@@ -461,7 +514,11 @@ Now that you've run these queries, explore:
 | Positional topic filter | `/silver/events/generic?topic0=transfer&topic2=G...` | Filter by topic position |
 | Contract events | `/silver/events/contract/{id}` | Per-contract events |
 | Tx diffs | `/silver/tx/{hash}/diffs` | Balance changes |
-| Smart wallet | `/silver/smart-wallet/{id}` | SEP-50 detection |
+| Smart account rules | `/silver/smart-accounts/{id}/rules` | OpenZeppelin rules, signers, credentials, policies |
+| Smart account signer lookup | `/silver/smart-accounts/lookup/address/{address}` | Find smart accounts controlled by an address |
+| Smart account credential lookup | `/silver/smart-accounts/lookup/credential/{id}` | Find smart accounts controlled by a credential |
+| Smart account stats | `/silver/smart-accounts/stats` | Serving coverage and freshness |
+| Smart wallet | `/silver/smart-wallet/{id}` | Legacy SEP-50/basic detection |
 | Fee stats | `/silver/stats/fees` | Fee percentiles & surge detection |
 | Soroban stats | `/silver/stats/soroban` | Soroban runtime metrics |
 | Ledger fees | `/silver/ledgers/{seq}/fees` | Per-ledger fee histogram |

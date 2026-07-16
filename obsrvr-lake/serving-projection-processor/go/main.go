@@ -38,7 +38,7 @@ func buildProjectors(cfg *Config, bronze, silver, serving *pgxpool.Pool, checkpo
 		projectors = append(projectors, NewContractsCurrentProjector(network, silver, serving))
 	}
 	if cfg.Projectors.ContractStorage.Enabled {
-		projectors = append(projectors, NewContractStorageProjector(network, silver, serving))
+		projectors = append(projectors, NewContractStorageProjector(network, cfg.Projectors.ContractStorage.BatchSize, silver, serving, checkpoints))
 	}
 	if cfg.Projectors.SmartAccounts.Enabled {
 		projectors = append(projectors, NewSmartAccountsProjector(network, silver, serving))
@@ -60,6 +60,9 @@ func buildProjectors(cfg *Config, bronze, silver, serving *pgxpool.Pool, checkpo
 	}
 	if cfg.Projectors.TxReceipts.Enabled {
 		projectors = append(projectors, NewTxReceiptsProjector(network, cfg.Projectors.TxReceipts.BatchSize, bronze, silver, serving, checkpoints))
+	}
+	if cfg.Projectors.EffectsByAccount.Enabled {
+		projectors = append(projectors, NewEffectsByAccountProjector(network, cfg.Projectors.EffectsByAccount.BatchSize, silver, serving, checkpoints))
 	}
 	return projectors
 }

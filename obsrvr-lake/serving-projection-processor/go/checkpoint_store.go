@@ -49,3 +49,21 @@ func (s *CheckpointStore) Save(ctx context.Context, tx pgx.Tx, projectorName, ne
 	}
 	return nil
 }
+
+func saveServingWatermark(ctx context.Context, tx pgx.Tx, tableName string, completeFrom, completeThru int64) error {
+	_, err := tx.Exec(ctx, `
+		INSERT INTO serving.sv_watermarks (
+			table_name, status, complete_from, complete_thru, updated_at
+		) VALUES ($1, 'complete', $2, $3, now())
+		ON CONFLICT (table_name)
+		DO UPDATE SET
+			status = EXCLUDED.status,
+			complete_from = EXCLUDED.complete_from,
+			complete_thru = EXCLUDED.complete_thru,
+			updated_at = now()
+	`, tableName, completeFrom, completeThru)
+	if err != nil {
+		return fmt.Errorf("save serving watermark for %s: %w", tableName, err)
+	}
+	return nil
+}

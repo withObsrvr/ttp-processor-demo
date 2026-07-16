@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -86,14 +87,23 @@ func (r *SilverColdReader) Close() error {
 // ============================================
 
 type AccountCurrent struct {
-	AccountID          string  `json:"account_id"`
-	Balance            string  `json:"balance"`
-	SequenceNumber     string  `json:"sequence_number"`
-	NumSubentries      int64   `json:"num_subentries"`
-	LastModifiedLedger int64   `json:"last_modified_ledger"`
-	UpdatedAt          string  `json:"updated_at"`
-	HomeDomain         *string `json:"home_domain,omitempty"`
-	CreatedAt          *string `json:"created_at,omitempty"`
+	AccountID           string  `json:"account_id"`
+	Balance             string  `json:"balance"`
+	SequenceNumber      string  `json:"sequence_number"`
+	NumSubentries       int64   `json:"num_subentries"`
+	NumSponsoring       int64   `json:"num_sponsoring,omitempty"`
+	NumSponsored        int64   `json:"num_sponsored,omitempty"`
+	LastModifiedLedger  int64   `json:"last_modified_ledger"`
+	SequenceLedger      int64   `json:"sequence_ledger,omitempty"`
+	SequenceTime        int64   `json:"sequence_time,omitempty"`
+	UpdatedAt           string  `json:"updated_at"`
+	HomeDomain          *string `json:"home_domain,omitempty"`
+	CreatedAt           *string `json:"created_at,omitempty"`
+	Sponsor             *string `json:"sponsor,omitempty"`
+	AuthRequired        *bool   `json:"auth_required,omitempty"`
+	AuthRevocable       *bool   `json:"auth_revocable,omitempty"`
+	AuthImmutable       *bool   `json:"auth_immutable,omitempty"`
+	AuthClawbackEnabled *bool   `json:"auth_clawback_enabled,omitempty"`
 }
 
 type AccountSnapshot struct {
@@ -126,13 +136,19 @@ type AccountSignersResponse struct {
 
 // Balance represents a single balance (XLM or trustline)
 type Balance struct {
-	AssetType      string  `json:"asset_type"`
-	AssetCode      string  `json:"asset_code"`
-	AssetIssuer    *string `json:"asset_issuer,omitempty"`
-	Balance        string  `json:"balance"`
-	BalanceStroops int64   `json:"balance_stroops"`
-	Limit          *string `json:"limit,omitempty"`
-	IsAuthorized   *bool   `json:"is_authorized,omitempty"`
+	AssetType                         string  `json:"asset_type"`
+	AssetCode                         string  `json:"asset_code"`
+	AssetIssuer                       *string `json:"asset_issuer,omitempty"`
+	Balance                           string  `json:"balance"`
+	BalanceStroops                    int64   `json:"balance_stroops"`
+	Limit                             *string `json:"limit,omitempty"`
+	BuyingLiabilities                 *string `json:"buying_liabilities,omitempty"`
+	SellingLiabilities                *string `json:"selling_liabilities,omitempty"`
+	IsAuthorized                      *bool   `json:"is_authorized,omitempty"`
+	IsAuthorizedToMaintainLiabilities *bool   `json:"is_authorized_to_maintain_liabilities,omitempty"`
+	IsClawbackEnabled                 *bool   `json:"is_clawback_enabled,omitempty"`
+	Sponsor                           *string `json:"sponsor,omitempty"`
+	LastModifiedLedger                *int64  `json:"last_modified_ledger,omitempty"`
 }
 
 // AccountBalancesResponse contains all balances for an account
@@ -201,22 +217,64 @@ func (r *SilverColdReader) GetAccountCurrent(ctx context.Context, accountID stri
 			balance,
 			sequence_number,
 			num_subentries,
+			num_sponsoring,
+			num_sponsored,
 			last_modified_ledger,
+			sequence_ledger,
+			sequence_time,
 			updated_at,
-			home_domain
+			home_domain,
+			sponsor_account,
+			auth_required,
+			auth_revocable,
+			auth_immutable,
+			auth_clawback_enabled
 		FROM %s.%s.accounts_current
 		WHERE account_id = ?
 	`, r.catalogName, r.schemaName)
 
 	var acc AccountCurrent
-	var homeDomain sql.NullString
-	err := r.db.QueryRowContext(ctx, query, accountID).Scan(
-		&acc.AccountID, &acc.Balance, &acc.SequenceNumber,
-		&acc.NumSubentries, &acc.LastModifiedLedger, &acc.UpdatedAt,
-		&homeDomain,
-	)
+	var homeDomain, sponsor sql.NullString
+	var sequenceLedger, sequenceTime sql.NullInt64
+	var authRequired, authRevocable, authImmutable, authClawback sql.NullBool
+	scanTargets := func() []interface{} {
+		return []interface{}{
+			&acc.AccountID, &acc.Balance, &acc.SequenceNumber,
+			&acc.NumSubentries, &acc.NumSponsoring, &acc.NumSponsored,
+			&acc.LastModifiedLedger, &sequenceLedger, &sequenceTime, &acc.UpdatedAt,
+			&homeDomain, &sponsor, &authRequired, &authRevocable, &authImmutable, &authClawback,
+		}
+	}
+	err := r.db.QueryRowContext(ctx, query, accountID).Scan(scanTargets()...)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) && isSchemaGapError(err) {
+		// Cold accounts_current may predate the newer account columns; degrade to
+		// the original column set instead of failing the whole account lookup.
+		logTierFallback("cold GetAccountCurrent", "cold", "cold(null-cast new columns)", err)
+		fallbackQuery := fmt.Sprintf(`
+			SELECT
+				account_id,
+				balance,
+				sequence_number,
+				num_subentries,
+				0 AS num_sponsoring,
+				0 AS num_sponsored,
+				last_modified_ledger,
+				NULL::BIGINT AS sequence_ledger,
+				NULL::BIGINT AS sequence_time,
+				updated_at,
+				home_domain,
+				NULL::VARCHAR AS sponsor_account,
+				NULL::BOOLEAN AS auth_required,
+				NULL::BOOLEAN AS auth_revocable,
+				NULL::BOOLEAN AS auth_immutable,
+				NULL::BOOLEAN AS auth_clawback_enabled
+			FROM %s.%s.accounts_current
+			WHERE account_id = ?
+		`, r.catalogName, r.schemaName)
+		err = r.db.QueryRowContext(ctx, fallbackQuery, accountID).Scan(scanTargets()...)
+	}
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
@@ -225,6 +283,27 @@ func (r *SilverColdReader) GetAccountCurrent(ctx context.Context, accountID stri
 
 	if homeDomain.Valid && homeDomain.String != "" {
 		acc.HomeDomain = &homeDomain.String
+	}
+	if sponsor.Valid && sponsor.String != "" {
+		acc.Sponsor = &sponsor.String
+	}
+	if sequenceLedger.Valid {
+		acc.SequenceLedger = sequenceLedger.Int64
+	}
+	if sequenceTime.Valid {
+		acc.SequenceTime = sequenceTime.Int64
+	}
+	if authRequired.Valid {
+		acc.AuthRequired = &authRequired.Bool
+	}
+	if authRevocable.Valid {
+		acc.AuthRevocable = &authRevocable.Bool
+	}
+	if authImmutable.Valid {
+		acc.AuthImmutable = &authImmutable.Bool
+	}
+	if authClawback.Valid {
+		acc.AuthClawbackEnabled = &authClawback.Bool
 	}
 
 	return &acc, nil
@@ -1369,11 +1448,14 @@ type EffectFilters struct {
 	EffectType      string // Can be int (as string) or effect type name
 	LedgerSequence  int64
 	TransactionHash string
+	OperationID     *int64
 	StartTime       time.Time
 	EndTime         time.Time
 	Limit           int
 	Cursor          *EffectCursor
 	Order           string // "asc" or "desc" (default: "asc" for backward compatibility)
+	HorizonOrder    bool   // order/page by operation_id,effect_index for Horizon compatibility
+	MaxEffectType   int    // optional upper bound used by Horizon compatibility
 }
 
 // EffectTypeCount represents an effect type with its count

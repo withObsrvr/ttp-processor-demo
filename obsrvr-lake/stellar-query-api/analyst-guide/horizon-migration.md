@@ -8,32 +8,45 @@ Important:
 - Query API is **read-only**
 - Query API requires an API key
 - not every Horizon route has a 1:1 equivalent yet
+- Horizon-shaped routes now live under `/api/v1/horizon-compat`
 - where a direct equivalent is missing, this guide points to the closest supported route or marks it unsupported
 
 ## Quick Reference
 
 | What You Need | Horizon | Query API | Coverage |
 |---------------|---------|-----------|----------|
-| Account current state | `/accounts/{id}` | `/silver/accounts/current?account_id={id}` | Partial |
+| Account current state | `/accounts/{id}` | `/horizon-compat/accounts/{id}` | Full for implemented account fields |
 | Account balances / trustlines | embedded in `/accounts/{id}` | `/silver/accounts/{id}/balances` | Full |
 | Account offers | `/accounts/{id}/offers` | `/silver/accounts/{id}/offers` | Full |
 | Assets list | `/assets` | `/silver/assets` | Full |
 | Asset holders | `/assets?...` + client logic | `/silver/assets/{asset}/holders` | Full |
 | Asset stats | none | `/silver/assets/{asset}/stats` | Query API only |
 | Top accounts | none | `/silver/accounts/top` | Query API only |
-| Ledgers list | `/ledgers` | Not currently available as a silver route | Not supported |
-| Single ledger | `/ledgers/{seq}` | `/silver/ledgers/{seq}` or `/silver/ledger/{seq}` | Full |
+| Ledgers list | `/ledgers` | `/horizon-compat/ledgers` | Full for implemented ledger fields |
+| Single ledger | `/ledgers/{seq}` | `/horizon-compat/ledgers/{seq}` | Full for implemented ledger fields |
 | Transactions list | `/transactions` | Not currently available as a silver route | Not supported |
+| Transaction detail | `/transactions/{hash}` | `/horizon-compat/transactions/{hash}` | Full for implemented transaction fields |
 | Transaction decode | none | `/silver/tx/{hash}/decoded` | Query API only |
 | Transaction full receipt | none | `/silver/tx/{hash}/full` | Query API only |
 | Transaction diffs | none | `/silver/tx/{hash}/diffs` | Query API only |
-| Transaction effects | `/transactions/{hash}/effects` | `/silver/tx/{hash}/effects` or `/silver/effects/transaction/{tx_hash}` | Full |
-| Effects list | `/effects` | `/silver/effects` | Full |
+| Transaction operations | `/transactions/{hash}/operations` | `/horizon-compat/transactions/{hash}/operations` | Full for implemented operation types |
+| Transaction payments | `/transactions/{hash}/payments` | `/horizon-compat/transactions/{hash}/payments` | Full for implemented payment operation types |
+| Transaction effects | `/transactions/{hash}/effects` | `/horizon-compat/transactions/{hash}/effects` | Full for implemented effect types |
+| Account transactions | `/accounts/{id}/transactions` | `/horizon-compat/accounts/{id}/transactions` | Full with Cycle 5B transaction hydration |
+| Account operations | `/accounts/{id}/operations` | `/horizon-compat/accounts/{id}/operations` | Full for implemented operation types |
+| Account payments | `/accounts/{id}/payments` | `/horizon-compat/accounts/{id}/payments` | Full for implemented payment operation types |
+| Account effects | `/accounts/{id}/effects` | `/horizon-compat/accounts/{id}/effects` | Full for implemented effect types |
+| Operations list | `/operations` | `/horizon-compat/operations` | Full for implemented operation types |
+| Operation detail | `/operations/{id}` | `/horizon-compat/operations/{id}` | Full for implemented operation types |
+| Operation effects | `/operations/{id}/effects` | `/horizon-compat/operations/{id}/effects` | Full for implemented effect types |
+| Payments list | `/payments` | `/horizon-compat/payments` | Full for implemented payment operation types |
+| Effects list | `/effects` | `/horizon-compat/effects` | Full for implemented effect types |
 | Trades list | `/trades` | `/silver/trades` | Full |
 | Offers list | `/offers` | `/silver/offers` | Full |
 | Liquidity pools | `/liquidity_pools` | `/silver/liquidity-pools` | Partial |
 | Claimable balances | `/claimable_balances` | `/silver/claimable-balances` | Partial |
 | Fee stats | `/fee_stats` | `/silver/stats/fees` | Partial |
+| Fee stats, Horizon shape | `/fee_stats` | `/horizon-compat/fee_stats` | Full for implemented fee stat fields |
 | Top contracts | none | `/silver/contracts/top` or `/silver/stats/contracts` | Query API only |
 | Contract metadata | none | `/silver/contracts/{id}/metadata` | Query API only |
 | Contract recent calls | none | `/silver/contracts/{id}/recent-calls` | Query API only |
@@ -54,6 +67,16 @@ https://horizon-testnet.stellar.org
 **Obsrvr Gateway Query API**
 ```
 https://gateway.withobsrvr.com/lake/v1/testnet
+```
+
+**Horizon-compatible prefix**
+```
+https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/horizon-compat
+```
+
+**Direct testnet Query API**
+```
+https://obsrvr-lake-testnet.withobsrvr.com/api/v1/horizon-compat
 ```
 
 **Authentication**
@@ -77,10 +100,14 @@ curl "https://horizon.stellar.org/accounts/GABC..."
 **Query API**
 ```bash
 curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/silver/accounts/current?account_id=GABC..."
+  "$GATEWAY/api/v1/horizon-compat/accounts/GABC..."
 ```
 
-> Query API does not currently expose a deployed `/silver/accounts/{id}` route.
+Silver alternative:
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "$GATEWAY/api/v1/silver/accounts/current?account_id=GABC..."
+```
 
 ### Get Account Balances / Trustlines
 
@@ -108,11 +135,26 @@ curl -H "Authorization: Api-Key $API_KEY" \
   "$GATEWAY/api/v1/silver/accounts/GABC.../offers"
 ```
 
-### Account Transactions / Operations / Effects / Trades
+### Account Transactions / Operations / Payments / Effects
 
-These Horizon-style account subresources are **not currently deployed** as 1:1 routes.
+These Horizon-style account subresources are deployed under the compatibility
+prefix:
 
-Use these supported alternatives instead:
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "$GATEWAY/api/v1/horizon-compat/accounts/GABC.../transactions?limit=10&order=desc"
+
+curl -H "Authorization: Api-Key $API_KEY" \
+  "$GATEWAY/api/v1/horizon-compat/accounts/GABC.../operations?limit=10&order=desc"
+
+curl -H "Authorization: Api-Key $API_KEY" \
+  "$GATEWAY/api/v1/horizon-compat/accounts/GABC.../payments?limit=10&order=desc"
+
+curl -H "Authorization: Api-Key $API_KEY" \
+  "$GATEWAY/api/v1/horizon-compat/accounts/GABC.../effects?limit=10&order=desc"
+```
+
+Silver alternatives:
 - account activity timeline:
   - `/api/v1/silver/accounts/{id}/activity`
 - effects filtered by account:
@@ -170,7 +212,10 @@ curl "https://horizon.stellar.org/ledgers?limit=10&order=desc"
 ```
 
 **Query API**
-Not currently available as a deployed silver route.
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "$GATEWAY/api/v1/horizon-compat/ledgers?limit=10&order=desc"
+```
 
 ### Get Ledger by Sequence
 
@@ -182,11 +227,14 @@ curl "https://horizon.stellar.org/ledgers/54930000"
 **Query API**
 ```bash
 curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/silver/ledgers/54930000"
+  "$GATEWAY/api/v1/horizon-compat/ledgers/54930000"
 ```
 
-Compatibility alias:
+Silver alternatives:
 ```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "$GATEWAY/api/v1/silver/ledgers/54930000"
+
 curl -H "Authorization: Api-Key $API_KEY" \
   "$GATEWAY/api/v1/silver/ledger/54930000"
 ```
@@ -211,6 +259,16 @@ Not currently available as a deployed silver route.
 
 ### Get Transaction Receipt / Decode
 
+**Horizon detail**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "$GATEWAY/api/v1/horizon-compat/transactions/{hash}"
+```
+
+The Horizon-compatible transaction detail route returns the transaction XDR
+fields and signatures expected by Horizon clients where the underlying Bronze or
+serving data is available.
+
 **Query API**
 ```bash
 curl -H "Authorization: Api-Key $API_KEY" \
@@ -233,22 +291,31 @@ curl "https://horizon.stellar.org/transactions/abc123.../effects"
 **Query API**
 ```bash
 curl -H "Authorization: Api-Key $API_KEY" \
-  "$GATEWAY/api/v1/silver/tx/abc123.../effects"
+  "$GATEWAY/api/v1/horizon-compat/transactions/abc123.../effects"
 ```
 
-Also supported:
+Silver alternatives:
 ```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "$GATEWAY/api/v1/silver/tx/abc123.../effects"
+
 curl -H "Authorization: Api-Key $API_KEY" \
   "$GATEWAY/api/v1/silver/effects/transaction/abc123..."
 ```
 
 ### Get Transaction Operations
 
-A direct deployed `/silver/transactions/{hash}/operations` route is not currently available.
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "$GATEWAY/api/v1/horizon-compat/transactions/{hash}/operations?limit=10"
+```
 
-Closest alternatives:
-- `/api/v1/silver/tx/{hash}/decoded`
-- `/api/v1/silver/tx/{hash}/full`
+Payments-only view:
+
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "$GATEWAY/api/v1/horizon-compat/transactions/{hash}/payments?limit=10"
+```
 
 ---
 
@@ -264,12 +331,29 @@ curl "https://horizon.stellar.org/operations?limit=20"
 **Query API**
 ```bash
 curl -H "Authorization: Api-Key $API_KEY" \
+  "$GATEWAY/api/v1/horizon-compat/operations?limit=20"
+```
+
+Silver alternative:
+
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
   "$GATEWAY/api/v1/silver/operations/enriched?limit=20"
 ```
 
 ### Get Operation by ID
 
-A direct deployed `/silver/operations/{id}` route is not currently available.
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "$GATEWAY/api/v1/horizon-compat/operations/{id}"
+```
+
+### Get Operation Effects
+
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "$GATEWAY/api/v1/horizon-compat/operations/{id}/effects?limit=20"
+```
 
 ---
 
@@ -283,6 +367,13 @@ curl "https://horizon.stellar.org/effects?limit=20"
 ```
 
 **Query API**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "$GATEWAY/api/v1/horizon-compat/effects?limit=20"
+```
+
+Silver alternative:
+
 ```bash
 curl -H "Authorization: Api-Key $API_KEY" \
   "$GATEWAY/api/v1/silver/effects?limit=20"

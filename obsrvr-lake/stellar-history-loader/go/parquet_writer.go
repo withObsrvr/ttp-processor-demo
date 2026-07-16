@@ -143,6 +143,11 @@ type ParquetTransaction struct {
 	AccountSequence              int64   `parquet:"account_sequence"`
 	LedgerRange                  uint32  `parquet:"ledger_range"`
 	SignaturesCount              int32   `parquet:"signatures_count"`
+	TxEnvelope                   *string `parquet:"tx_envelope,optional"`
+	TxResult                     *string `parquet:"tx_result,optional"`
+	TxMeta                       *string `parquet:"tx_meta,optional"`
+	TxFeeMeta                    *string `parquet:"tx_fee_meta,optional"`
+	TxSigners                    *string `parquet:"tx_signers,optional"`
 	NewAccount                   bool    `parquet:"new_account"`
 	TimeboundsMinTime            *int64  `parquet:"timebounds_min_time,optional"`
 	TimeboundsMaxTime            *int64  `parquet:"timebounds_max_time,optional"`
@@ -278,6 +283,8 @@ type ParquetAccount struct {
 	ClosedAt            int64   `parquet:"closed_at,timestamp(microsecond)"`
 	Balance             string  `parquet:"balance"`
 	SequenceNumber      uint64  `parquet:"sequence_number"`
+	SequenceLedger      uint32  `parquet:"sequence_ledger"`
+	SequenceTime        uint64  `parquet:"sequence_time"`
 	NumSubentries       uint32  `parquet:"num_subentries"`
 	NumSponsoring       uint32  `parquet:"num_sponsoring"`
 	NumSponsored        uint32  `parquet:"num_sponsored"`
@@ -696,6 +703,11 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 				AccountSequence:              t.AccountSequence,
 				LedgerRange:                  t.LedgerRange,
 				SignaturesCount:              int32(t.SignaturesCount),
+				TxEnvelope:                   t.TxEnvelope,
+				TxResult:                     t.TxResult,
+				TxMeta:                       t.TxMeta,
+				TxFeeMeta:                    t.TxFeeMeta,
+				TxSigners:                    t.TxSigners,
 				NewAccount:                   t.NewAccount,
 				TimeboundsMinTime:            t.TimeboundsMinTime,
 				TimeboundsMaxTime:            t.TimeboundsMaxTime,
@@ -903,6 +915,8 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 				ClosedAt:            a.ClosedAt.UnixMicro(),
 				Balance:             a.Balance,
 				SequenceNumber:      a.SequenceNumber,
+				SequenceLedger:      a.SequenceLedger,
+				SequenceTime:        a.SequenceTime,
 				NumSubentries:       a.NumSubentries,
 				NumSponsoring:       a.NumSponsoring,
 				NumSponsored:        a.NumSponsored,
@@ -934,32 +948,7 @@ func (pw *ParquetWriterFull) WriteBatch(batch *BatchData) error {
 	if len(batch.ContractEvents) > 0 {
 		rows := make([]ParquetContractEvent, len(batch.ContractEvents))
 		for i, e := range batch.ContractEvents {
-			rows[i] = ParquetContractEvent{
-				EventID:                  e.EventID,
-				ContractID:               e.ContractID,
-				LedgerSequence:           e.LedgerSequence,
-				TransactionHash:          e.TransactionHash,
-				ClosedAt:                 e.ClosedAt.UnixMicro(),
-				EventType:                e.EventType,
-				InSuccessfulContractCall: e.InSuccessfulContractCall,
-				Successful:               e.Successful,
-				ContractEventXDR:         e.ContractEventXDR,
-				TopicsJSON:               e.TopicsJSON,
-				TopicsDecoded:            e.TopicsDecoded,
-				DataXDR:                  e.DataXDR,
-				DataDecoded:              e.DataDecoded,
-				TopicCount:               e.TopicCount,
-				Topic0Decoded:            e.Topic0Decoded,
-				Topic1Decoded:            e.Topic1Decoded,
-				Topic2Decoded:            e.Topic2Decoded,
-				Topic3Decoded:            e.Topic3Decoded,
-				OperationIndex:           e.OperationIndex,
-				EventIndex:               e.EventIndex,
-				CreatedAt:                e.CreatedAt.UnixMicro(),
-				LedgerRange:              e.LedgerRange,
-				EraID:                    e.EraID,
-				PipelineVersion:          pw.pipelineVersion,
-			}
+			rows[i] = parquetContractEventFromData(e, pw.pipelineVersion)
 		}
 		if err := pw.contractEvents.Write(rows, func(r ParquetContractEvent) uint32 { return r.LedgerRange }); err != nil {
 			return fmt.Errorf("write contract_events: %w", err)

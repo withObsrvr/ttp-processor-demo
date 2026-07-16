@@ -12,6 +12,8 @@ import (
 func main() {
 	// Parse command-line flags
 	configPath := flag.String("config", "config.yaml", "Path to configuration file")
+	flushOnce := flag.Bool("flush-once", false, "Run one flush cycle and exit")
+	finalFlushOnShutdown := flag.Bool("final-flush-on-shutdown", false, "Run one final flush after SIGINT/SIGTERM before exiting")
 	flag.Parse()
 
 	// Load configuration
@@ -31,6 +33,19 @@ func main() {
 		log.Fatalf("Failed to create flusher: %v", err)
 	}
 	defer flusher.Close()
+
+	runFlush := func(reason string) error {
+		log.Printf("🔄 Starting %s flush...", reason)
+		return flusher.ExecuteFlush()
+	}
+
+	if *flushOnce {
+		if err := runFlush("one-shot"); err != nil {
+			log.Fatalf("One-shot flush failed: %v", err)
+		}
+		log.Println("One-shot flush complete; exiting")
+		return
+	}
 
 	// Start health server
 	healthServer := NewHealthServer(config.Service.HealthPort, config.Service.FlushInterval(), flusher.GetDuckDB())
@@ -52,8 +67,7 @@ func main() {
 	log.Printf("⏱️  Next flush in %v", config.Service.FlushInterval())
 
 	// Run initial flush immediately
-	log.Println("🔍 Running initial flush...")
-	if err := flusher.ExecuteFlush(); err != nil {
+	if err := runFlush("initial"); err != nil {
 		log.Printf("⚠️  Initial flush error: %v", err)
 	}
 
@@ -65,8 +79,7 @@ func main() {
 	for {
 		select {
 		case <-ticker.C:
-			log.Println("⏰ Flush interval elapsed, starting flush...")
-			if err := flusher.ExecuteFlush(); err != nil {
+			if err := runFlush("scheduled"); err != nil {
 				log.Printf("❌ Flush error: %v", err)
 			}
 
@@ -76,10 +89,13 @@ func main() {
 
 		case <-shutdownChan:
 			log.Println("🛑 Shutdown signal received")
-			log.Println("🔄 Performing final flush...")
 
-			if err := flusher.ExecuteFlush(); err != nil {
-				log.Printf("⚠️  Final flush error: %v", err)
+			if *finalFlushOnShutdown {
+				if err := runFlush("shutdown"); err != nil {
+					log.Printf("⚠️  Final flush error: %v", err)
+				}
+			} else {
+				log.Println("Skipping final flush on shutdown; use -flush-once for controlled catch-up flushes")
 			}
 
 			log.Println("👋 Shutting down gracefully")

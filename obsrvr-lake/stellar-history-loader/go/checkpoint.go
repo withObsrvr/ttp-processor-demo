@@ -16,6 +16,7 @@ type CheckpointData struct {
 	Workers     int                     `json:"workers"`
 	StorageType string                  `json:"storage_type"`
 	Bucket      string                  `json:"bucket"`
+	OnlyTables  string                  `json:"only_tables,omitempty"`
 	Shards      map[int]ShardCheckpoint `json:"shards"`
 	StartedAt   time.Time               `json:"started_at"`
 	LastUpdated time.Time               `json:"last_updated"`
@@ -50,6 +51,7 @@ func NewCheckpointManager(outputDir string, config OrchestratorConfig) (*Checkpo
 			Workers:     config.NumWorkers,
 			StorageType: config.StorageType,
 			Bucket:      config.Bucket,
+			OnlyTables:  tableSetKey(config.OnlyTables),
 			Shards:      make(map[int]ShardCheckpoint),
 			StartedAt:   time.Now(),
 			LastUpdated: time.Now(),
@@ -61,7 +63,8 @@ func NewCheckpointManager(outputDir string, config OrchestratorConfig) (*Checkpo
 		// Validate it matches current config
 		if existing.StartLedger == config.StartLedger &&
 			existing.EndLedger == config.EndLedger &&
-			existing.Workers == config.NumWorkers {
+			existing.Workers == config.NumWorkers &&
+			existing.OnlyTables == tableSetKey(config.OnlyTables) {
 			cm.data = *existing
 			return cm, nil
 		}

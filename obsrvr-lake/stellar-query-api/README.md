@@ -8,6 +8,7 @@ Unified query API for Stellar blockchain data across Bronze (raw), Silver (analy
 - **[Data Model](./analyst-guide/data-model.md)** - Bronze/Silver/Semantic layers and Hot/Cold storage explained
 - **[API Reference](./analyst-guide/common-queries.md)** - Complete endpoint documentation with examples
 - **[Horizon Migration](./analyst-guide/horizon-migration.md)** - Side-by-side Horizon vs Query API mappings
+- **[Horizon Compatibility API](./docs/HORIZON_COMPAT_API.md)** - Horizon-shaped `/api/v1/horizon-compat` route reference
 - **[nebu for Analysts](./analyst-guide/nebu-for-analysts.md)** - Power user CLI guide
 - **[vs Hubble](./analyst-guide/vs-hubble.md)** - When to use which tool
 - **[Events API](./docs/EVENTS_API.md)** - Semantic token-transfer events vs raw generic contract events
@@ -47,6 +48,38 @@ All endpoints return JSON. See the [full API reference](./analyst-guide/common-q
 | `GET /api/v1/bronze/offers` | Raw DEX offer snapshots |
 | `GET /api/v1/bronze/contract_events` | Raw Soroban contract events |
 | `GET /api/v1/bronze/stats` | Network statistics (freshest data) |
+
+### Horizon Compatibility Layer
+
+Horizon-shaped, read-only endpoints for migration work. These routes use
+Horizon SDK response structs where implemented, but keep the internal Query API
+prefix:
+
+`/api/v1/horizon-compat`
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/v1/horizon-compat/fee_stats` | Horizon fee stats |
+| `GET /api/v1/horizon-compat/ledgers` | Ledger collection |
+| `GET /api/v1/horizon-compat/ledgers/{sequence}` | Ledger detail |
+| `GET /api/v1/horizon-compat/transactions/{hash}` | Transaction detail with XDR/signatures |
+| `GET /api/v1/horizon-compat/transactions/{hash}/operations` | Transaction operations |
+| `GET /api/v1/horizon-compat/transactions/{hash}/payments` | Transaction payments |
+| `GET /api/v1/horizon-compat/transactions/{hash}/effects` | Transaction effects |
+| `GET /api/v1/horizon-compat/accounts/{id}` | Account detail |
+| `GET /api/v1/horizon-compat/accounts/{id}/transactions` | Account transaction history |
+| `GET /api/v1/horizon-compat/accounts/{id}/operations` | Account operation history |
+| `GET /api/v1/horizon-compat/accounts/{id}/payments` | Account payment history |
+| `GET /api/v1/horizon-compat/accounts/{id}/effects` | Account effects |
+| `GET /api/v1/horizon-compat/operations` | Operations collection |
+| `GET /api/v1/horizon-compat/operations/{id}` | Operation detail |
+| `GET /api/v1/horizon-compat/operations/{id}/effects` | Operation effects |
+| `GET /api/v1/horizon-compat/payments` | Payments collection |
+| `GET /api/v1/horizon-compat/effects` | Effects collection |
+
+See [Horizon Compatibility API](./docs/HORIZON_COMPAT_API.md) for current
+route status, paging parameters, unsupported Horizon route families, and the
+Cycle 5B transaction hydration notes.
 
 ### Silver Layer (Analytics-Ready)
 

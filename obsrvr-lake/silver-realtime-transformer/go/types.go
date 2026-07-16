@@ -200,6 +200,8 @@ type AccountCurrentRow struct {
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
 	LastModifiedLedger  int64
+	SequenceLedger      sql.NullInt64
+	SequenceTime        sql.NullInt64
 	LedgerRange         int64
 	EraID               sql.NullString
 	VersionLabel        sql.NullString
@@ -212,6 +214,8 @@ type AccountSnapshotRow struct {
 	ClosedAt            time.Time
 	Balance             string
 	SequenceNumber      int64
+	SequenceLedger      sql.NullInt64
+	SequenceTime        sql.NullInt64
 	NumSubentries       int
 	NumSponsoring       int
 	NumSponsored        int
@@ -739,7 +743,8 @@ func (row *AccountCurrentRow) Values() []interface{} {
 		row.MasterWeight, row.LowThreshold, row.MedThreshold, row.HighThreshold,
 		row.Flags, row.AuthRequired, row.AuthRevocable, row.AuthImmutable, row.AuthClawbackEnabled,
 		row.Signers, row.SponsorAccount, row.CreatedAt, row.UpdatedAt,
-		row.LastModifiedLedger, row.LedgerRange, row.EraID, row.VersionLabel,
+		row.LastModifiedLedger, row.SequenceLedger, row.SequenceTime,
+		row.LedgerRange, row.EraID, row.VersionLabel,
 	}
 }
 
@@ -748,6 +753,7 @@ func (row *AccountCurrentRow) Values() []interface{} {
 func (row *AccountSnapshotRow) Values() []interface{} {
 	return []interface{}{
 		row.AccountID, row.LedgerSequence, row.ClosedAt, row.Balance, row.SequenceNumber,
+		row.SequenceLedger, row.SequenceTime,
 		row.NumSubentries, row.NumSponsoring, row.NumSponsored, row.HomeDomain,
 		row.MasterWeight, row.LowThreshold, row.MedThreshold, row.HighThreshold,
 		row.Flags, row.AuthRequired, row.AuthRevocable, row.AuthImmutable, row.AuthClawbackEnabled,

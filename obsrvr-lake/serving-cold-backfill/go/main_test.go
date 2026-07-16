@@ -26,8 +26,8 @@ func TestPlanChunksDeterministic(t *testing.T) {
 
 func TestRequiredProjectionContractIncludesCheckpointTargets(t *testing.T) {
 	got := requiredProjections("serving")
-	if len(got) != 18 {
-		t.Fatalf("required projection count = %d, want 18", len(got))
+	if len(got) != 21 {
+		t.Fatalf("required projection count = %d, want 21", len(got))
 	}
 	checkpointed := 0
 	for _, p := range got {
@@ -41,8 +41,8 @@ func TestRequiredProjectionContractIncludesCheckpointTargets(t *testing.T) {
 			t.Fatalf("%s checkpoint=%v class=%s, want false/blocked_source_mapping", p.Name, p.Checkpoint, p.InitialClass)
 		}
 	}
-	if checkpointed != 16 {
-		t.Fatalf("checkpointed projection count = %d, want 16", checkpointed)
+	if checkpointed != 19 {
+		t.Fatalf("checkpointed projection count = %d, want 19", checkpointed)
 	}
 }
 
@@ -64,6 +64,54 @@ func TestAssignedChunkOverridesChunkPlan(t *testing.T) {
 	if len(got) != 1 || got[0].Start != 23 || got[0].End != 32 {
 		t.Fatalf("PlannedChunks() = %+v, want assigned chunk 23..32", got)
 	}
+}
+
+func TestCurrentProjectionUsesInsertColumnList(t *testing.T) {
+	ctx := context.Background()
+	db := openBackfillFixtureDB(t)
+	defer db.Close()
+
+	cfg := Config{
+		Network:       "testnet",
+		Start:         3,
+		End:           6,
+		ServingSchema: "serving",
+	}
+	backfiller := NewBackfillerWithDB(db, cfg)
+	if err := backfiller.ensureServingSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := backfiller.ensureManifest(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE serving.current_projection_order_test (
+			account_id VARCHAR NOT NULL,
+			updated_at TIMESTAMP NOT NULL,
+			is_authorized BOOLEAN
+		)
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	projection := CurrentProjection{
+		Name:          "current_projection_order_test",
+		TargetTable:   "current_projection_order_test",
+		InsertColumns: []string{"account_id", "is_authorized", "updated_at"},
+		SelectSQL: func(*Backfiller) string {
+			return `SELECT 'GA1' AS account_id, true AS is_authorized, TIMESTAMP '2026-07-10 00:00:00' AS updated_at`
+		},
+	}
+
+	var out bytes.Buffer
+	rows, err := backfiller.replaceCurrentProjection(ctx, &out, Chunk{Start: 3, End: 6}, projection)
+	if err != nil {
+		t.Fatalf("replaceCurrentProjection: %v\n%s", err, out.String())
+	}
+	if rows != 1 {
+		t.Fatalf("rows = %d, want 1", rows)
+	}
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.current_projection_order_test WHERE account_id='GA1' AND is_authorized=true AND updated_at=TIMESTAMP '2026-07-10 00:00:00'`, 1)
 }
 
 func TestClassifiedOptionalTablesAreDocumented(t *testing.T) {
@@ -121,13 +169,17 @@ func TestFeedBackfillRerunResumeNoDuplicates(t *testing.T) {
 
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_ledger_stats_recent`, 4)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_transactions_recent`, 3)
+	assertBackfillCount(t, db, `SELECT transaction_id FROM serving.sv_transactions_recent WHERE tx_hash='tx3' AND tx_envelope='env3' AND tx_result='res3' AND tx_meta='meta3' AND tx_fee_meta='fee3' AND tx_signers='["sig3"]'`, transactionTOID(3, 1))
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_operations_recent`, 4)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_contract_calls_recent`, 2)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_tx_receipts`, 3)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_transactions_by_account`, 6)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_operations_by_account`, 7)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_effects_by_account`, 4)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_accounts_current`, 2)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_account_balances_current`, 3)
+	assertBackfillCount(t, db, `SELECT balance_stroops FROM serving.sv_account_balances_current WHERE account_id='GA1' AND asset_key='XLM'`, 10000000000)
+	assertBackfillCount(t, db, `SELECT balance_stroops FROM serving.sv_account_balances_current WHERE account_id='GA2' AND asset_key='USD:ISSUER'`, 50000000)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_network_stats_current`, 1)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_assets_current`, 2)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_asset_stats_current`, 2)
@@ -136,19 +188,27 @@ func TestFeedBackfillRerunResumeNoDuplicates(t *testing.T) {
 	assertBackfillString(t, db, `SELECT type FROM serving.sv_contract_storage_current WHERE key_hash='K2'`, "instance")
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_contract_storage_current WHERE key_hash='K1' AND ttl_remaining=4 AND expired=false`, 1)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_contract_storage_current WHERE key_hash='K2' AND ttl_remaining=-1 AND expired=true`, 1)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_contract_storage_summary`, 1)
+	assertBackfillCount(t, db, `SELECT live_entries FROM serving.sv_contract_storage_summary WHERE contract_id='CC1'`, 1)
+	assertBackfillCount(t, db, `SELECT expired_entries FROM serving.sv_contract_storage_summary WHERE contract_id='CC1'`, 1)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_contract_stats_current`, 1)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_contract_function_stats_current`, 1)
-	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_backfill_manifest WHERE status='completed'`, 23)
-	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_projection_checkpoints WHERE last_ledger_sequence=6`, 16)
-	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_watermarks WHERE status='complete' AND complete_thru=6`, 16)
-	assertBackfillCount(t, db, `SELECT COUNT(*) FROM ops.consumers WHERE pipeline='serving-cold-backfill' AND checkpoint=6`, 16)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_contract_activity_summary`, 1)
+	assertBackfillString(t, db, `SELECT activity_classification FROM serving.sv_contract_activity_summary WHERE contract_id='CC1'`, "invoked_contract")
+	assertBackfillCount(t, db, `SELECT invocation_count_7d FROM serving.sv_contract_activity_summary WHERE contract_id='CC1'`, 2)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_backfill_manifest WHERE status='completed'`, 27)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_projection_checkpoints WHERE last_ledger_sequence=6`, 19)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_watermarks WHERE status='complete' AND complete_thru=6`, 19)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM ops.consumers WHERE pipeline='serving-cold-backfill' AND checkpoint=6`, 19)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM (SELECT tx_hash, COUNT(*) n FROM serving.sv_transactions_recent GROUP BY tx_hash HAVING COUNT(*) > 1)`, 0)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM (SELECT operation_id, COUNT(*) n FROM serving.sv_operations_recent GROUP BY operation_id HAVING COUNT(*) > 1)`, 0)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM (SELECT account_id, toid, COUNT(*) n FROM serving.sv_transactions_by_account GROUP BY account_id, toid HAVING COUNT(*) > 1)`, 0)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM (SELECT account_id, operation_toid, COUNT(*) n FROM serving.sv_operations_by_account GROUP BY account_id, operation_toid HAVING COUNT(*) > 1)`, 0)
-	assertBackfillCount(t, db, `SELECT COUNT(*) FROM duckdb_indexes() WHERE index_name IN ('sv_transactions_by_account_page_idx', 'sv_operations_by_account_page_idx')`, 2)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM (SELECT account_id, ledger_sequence, tx_hash, op_index, effect_index, COUNT(*) n FROM serving.sv_effects_by_account GROUP BY account_id, ledger_sequence, tx_hash, op_index, effect_index HAVING COUNT(*) > 1)`, 0)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM duckdb_indexes() WHERE index_name IN ('sv_transactions_by_account_page_idx', 'sv_operations_by_account_page_idx', 'sv_effects_by_account_page_idx')`, 3)
 	assertBackfillCount(t, db, `SELECT toid FROM serving.sv_transactions_by_account WHERE account_id='GA1' AND tx_hash='tx3'`, transactionTOID(3, 1))
 	assertBackfillCount(t, db, `SELECT operation_toid FROM serving.sv_operations_by_account WHERE account_id='GA1' AND tx_hash='tx3'`, operationTOID(3, 1, 1))
+	assertBackfillCount(t, db, `SELECT operation_toid FROM serving.sv_effects_by_account WHERE account_id='GA1' AND tx_hash='tx3' AND effect_index=0`, operationTOID(3, 1, 1))
 	assertBackfillString(t, db, `SELECT typeof(involved_accounts) FROM serving.sv_tx_receipts LIMIT 1`, "VARCHAR[]")
 	assertBackfillCount(t, db, `SELECT total_calls_24h FROM serving.sv_contract_stats_current WHERE contract_id='CC1'`, 1)
 	assertBackfillCount(t, db, `SELECT total_calls_7d FROM serving.sv_contract_stats_current WHERE contract_id='CC1'`, 2)
@@ -166,8 +226,8 @@ func TestFeedBackfillRerunResumeNoDuplicates(t *testing.T) {
 		t.Fatalf("resume skipped chunks = %d, want 2\n%s", got, out.String())
 	}
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_transactions_recent`, 3)
-	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_backfill_manifest WHERE status='completed'`, 23)
-	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_projection_checkpoints WHERE last_ledger_sequence=6`, 16)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_backfill_manifest WHERE status='completed'`, 27)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_projection_checkpoints WHERE last_ledger_sequence=6`, 19)
 }
 
 func TestByAccountOnlyProjectionSelection(t *testing.T) {
@@ -208,6 +268,64 @@ func TestByAccountOnlyProjectionSelection(t *testing.T) {
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_watermarks WHERE status='complete' AND complete_thru=6`, 2)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM ops.consumers WHERE pipeline='serving-cold-backfill' AND checkpoint=6`, 2)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM duckdb_tables() WHERE schema_name='serving' AND table_name='sv_transactions_recent'`, 0)
+}
+
+func TestCheckpointHandoffExtendsContiguousWatermark(t *testing.T) {
+	ctx := context.Background()
+	db := openBackfillFixtureDB(t)
+	defer db.Close()
+	loadBackfillFixture(t, ctx, db)
+
+	backfiller := NewBackfillerWithDB(db, Config{
+		Network:       "mainnet",
+		Start:         7,
+		End:           8,
+		ServingSchema: "serving",
+	})
+	if err := backfiller.ensureServingSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := backfiller.ensureManifest(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO serving.sv_watermarks VALUES ('serving.sv_transactions_by_account', 'complete', 3, 6, current_timestamp)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := backfiller.writeProjectionCheckpoints(ctx, []string{"sv_transactions_by_account"}); err != nil {
+		t.Fatalf("writeProjectionCheckpoints: %v", err)
+	}
+
+	assertBackfillCount(t, db, `SELECT complete_from FROM serving.sv_watermarks WHERE table_name='serving.sv_transactions_by_account'`, 3)
+	assertBackfillCount(t, db, `SELECT complete_thru FROM serving.sv_watermarks WHERE table_name='serving.sv_transactions_by_account'`, 8)
+}
+
+func TestCheckpointHandoffRejectsWatermarkGap(t *testing.T) {
+	ctx := context.Background()
+	db := openBackfillFixtureDB(t)
+	defer db.Close()
+	loadBackfillFixture(t, ctx, db)
+
+	backfiller := NewBackfillerWithDB(db, Config{
+		Network:       "mainnet",
+		Start:         8,
+		End:           9,
+		ServingSchema: "serving",
+	})
+	if err := backfiller.ensureServingSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := backfiller.ensureManifest(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO serving.sv_watermarks VALUES ('serving.sv_transactions_by_account', 'complete', 3, 6, current_timestamp)`); err != nil {
+		t.Fatal(err)
+	}
+	err := backfiller.writeProjectionCheckpoints(ctx, []string{"sv_transactions_by_account"})
+	if err == nil || !strings.Contains(err.Error(), "not contiguous") {
+		t.Fatalf("writeProjectionCheckpoints error = %v, want non-contiguous range error", err)
+	}
+
+	assertBackfillCount(t, db, `SELECT complete_thru FROM serving.sv_watermarks WHERE table_name='serving.sv_transactions_by_account'`, 6)
 }
 
 func TestUnknownProjectionSelectionFails(t *testing.T) {
@@ -276,7 +394,8 @@ func loadBackfillFixture(t *testing.T, ctx context.Context, db *sql.DB) {
 			transaction_hash VARCHAR, ledger_sequence BIGINT, created_at TIMESTAMP, source_account VARCHAR,
 			fee_charged BIGINT, max_fee BIGINT, successful BOOLEAN, operation_count INTEGER,
 			soroban_contract_id VARCHAR, memo_type VARCHAR, memo VARCHAR, account_sequence BIGINT,
-			soroban_resources_instructions BIGINT, soroban_resources_read_bytes BIGINT, soroban_resources_write_bytes BIGINT
+			soroban_resources_instructions BIGINT, soroban_resources_read_bytes BIGINT, soroban_resources_write_bytes BIGINT,
+			transaction_id BIGINT, tx_envelope VARCHAR, tx_result VARCHAR, tx_meta VARCHAR, tx_fee_meta VARCHAR, tx_signers VARCHAR
 		)`,
 		`CREATE TABLE bronze.operations_row_v2 (
 			transaction_hash VARCHAR, ledger_sequence BIGINT, operation_index INTEGER,
@@ -288,16 +407,32 @@ func loadBackfillFixture(t *testing.T, ctx context.Context, db *sql.DB) {
 			destination VARCHAR, asset VARCHAR, amount VARCHAR, contract_id VARCHAR, function_name VARCHAR,
 			tx_successful BOOLEAN, is_payment_op BOOLEAN, is_soroban_op BOOLEAN
 		)`,
+		`CREATE TABLE silver.effects (
+			ledger_sequence BIGINT, transaction_hash VARCHAR, operation_index INTEGER, effect_index INTEGER,
+			operation_id BIGINT, effect_type INTEGER, effect_type_string VARCHAR, account_id VARCHAR,
+			amount VARCHAR, asset_code VARCHAR, asset_issuer VARCHAR, asset_type VARCHAR,
+			details_json VARCHAR, trustline_limit VARCHAR, authorize_flag BOOLEAN, clawback_flag BOOLEAN,
+			signer_account VARCHAR, signer_weight INTEGER, offer_id BIGINT, seller_account VARCHAR,
+			created_at TIMESTAMP, ledger_range BIGINT
+		)`,
 		`CREATE TABLE silver.contract_invocations_raw (
 			network VARCHAR, transaction_hash VARCHAR, operation_index INTEGER, ledger_sequence BIGINT,
 			closed_at TIMESTAMP, contract_id VARCHAR, source_account VARCHAR, function_name VARCHAR, successful BOOLEAN
 		)`,
 		`CREATE TABLE silver.accounts_current (
 			network VARCHAR, account_id VARCHAR, balance VARCHAR, sequence_number BIGINT,
-			num_subentries INTEGER, created_at TIMESTAMP, last_modified_ledger BIGINT,
-			updated_at TIMESTAMP, home_domain VARCHAR, master_weight INTEGER,
-			low_threshold INTEGER, med_threshold INTEGER, high_threshold INTEGER,
+			num_subentries INTEGER, num_sponsoring INTEGER, num_sponsored INTEGER,
+			created_at TIMESTAMP, last_modified_ledger BIGINT, sequence_ledger BIGINT,
+			sequence_time BIGINT, updated_at TIMESTAMP, home_domain VARCHAR, sponsor_account VARCHAR,
+			master_weight INTEGER, low_threshold INTEGER, med_threshold INTEGER, high_threshold INTEGER,
+			auth_required BOOLEAN, auth_revocable BOOLEAN, auth_immutable BOOLEAN, auth_clawback_enabled BOOLEAN,
 			signers VARCHAR, ledger_range BIGINT
+		)`,
+		`CREATE TABLE silver.trustlines_current (
+			network VARCHAR, account_id VARCHAR, asset_type VARCHAR, asset_issuer VARCHAR,
+			asset_code VARCHAR, liquidity_pool_id VARCHAR, balance BIGINT, trust_line_limit BIGINT,
+			buying_liabilities BIGINT, selling_liabilities BIGINT, flags INTEGER, sponsor VARCHAR,
+			last_modified_ledger BIGINT, updated_at TIMESTAMP
 		)`,
 		`CREATE TABLE silver.address_balances_current (
 			network VARCHAR, owner_address VARCHAR, asset_key VARCHAR, asset_code VARCHAR,
@@ -326,9 +461,9 @@ func loadBackfillFixture(t *testing.T, ctx context.Context, db *sql.DB) {
 			('mainnet',5,'2026-01-01 00:00:05','h5','h4',23,100,0,1,1),
 			('mainnet',6,'2026-01-01 00:00:06','h6','h5',23,100,1,0,0)`,
 		`INSERT INTO bronze.transactions_row_v2 VALUES
-			('tx3',3,'2026-01-01 00:00:03','GA1',100,200,true,1,NULL,'none',NULL,10,NULL,NULL,NULL),
-			('tx4',4,'2026-01-01 00:00:04','GA2',101,201,true,2,'CC1','text','memo',11,1000,10,20),
-			('tx5',5,'2026-01-01 00:00:05','GA3',102,202,false,1,NULL,'none',NULL,12,NULL,NULL,NULL)`,
+			('tx3',3,'2026-01-01 00:00:03','GA1',100,200,true,1,NULL,'none',NULL,10,NULL,NULL,NULL,12884905984,'env3','res3','meta3','fee3','["sig3"]'),
+			('tx4',4,'2026-01-01 00:00:04','GA2',101,201,true,2,'CC1','text','memo',11,1000,10,20,17179873280,'env4','res4','meta4','fee4','["sig4"]'),
+			('tx5',5,'2026-01-01 00:00:05','GA3',102,202,false,1,NULL,'none',NULL,12,NULL,NULL,NULL,21474840576,'env5','res5','meta5','fee5','["sig5"]')`,
 		`INSERT INTO bronze.operations_row_v2 VALUES
 			('tx3',3,0,1,12884905984,12884905985),
 			('tx4',4,0,1,17179873280,17179873281),
@@ -339,13 +474,23 @@ func loadBackfillFixture(t *testing.T, ctx context.Context, db *sql.DB) {
 			('mainnet','tx4',0,4,'2026-01-01 00:00:04',24,'invoke_host_function','GA2',NULL,NULL,NULL,'CC1','transfer',true,false,true),
 			('mainnet','tx4',1,4,'2026-01-01 00:00:04',1,'payment','GA2','GB2','USD:ISSUER','50',NULL,NULL,true,true,false),
 			('mainnet','tx5',0,5,'2026-01-01 00:00:05',1,'payment','GA3','GB3','native','75',NULL,NULL,false,true,false)`,
+		`INSERT INTO silver.effects VALUES
+			(3,'tx3',0,0,NULL,3,'account_debited','GA1','100','XLM',NULL,'native',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'2026-01-01 00:00:03',0),
+			(3,'tx3',0,1,NULL,2,'account_credited','GB1','100','XLM',NULL,'native',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'2026-01-01 00:00:03',0),
+			(4,'tx4',1,0,17179873282,3,'account_debited','GA2','50','USD','ISSUER','credit_alphanum4',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'2026-01-01 00:00:04',0),
+			(4,'tx4',1,1,17179873282,2,'account_credited','GB2','50','USD','ISSUER','credit_alphanum4',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'2026-01-01 00:00:04',0)`,
 		`INSERT INTO silver.contract_invocations_raw VALUES
 			('mainnet','tx3',0,3,'2025-12-30 00:00:03','CC1','GA9','transfer',true),
 			('mainnet','tx4',0,4,'2026-01-01 00:00:04','CC1','GA2','transfer',true)`,
 		`INSERT INTO silver.accounts_current VALUES
-			('mainnet','GA1','1000',10,1,'2026-01-01 00:00:03',4,'2026-01-01 00:00:04',NULL,1,1,1,1,'[]',3),
-			('mainnet','GA2','2000',11,1,'2026-01-01 00:00:04',5,'2026-01-01 00:00:05','example.com',1,1,1,1,'[]',4),
-			('mainnet','GA3','3000',12,1,'2026-01-01 00:00:08',8,'2026-01-01 00:00:08',NULL,1,1,1,1,'[]',8)`,
+			('mainnet','GA1','900',9,1,0,0,'2026-01-01 00:00:02',3,3,3,'2026-01-01 00:00:03',NULL,NULL,1,1,1,1,false,false,false,false,'[]',2),
+			('mainnet','GA1','1000',10,1,0,0,'2026-01-01 00:00:03',4,4,4,'2026-01-01 00:00:04',NULL,NULL,1,1,1,1,false,false,false,false,'[]',3),
+			('mainnet','GA2','2000',11,1,0,0,'2026-01-01 00:00:04',5,5,5,'2026-01-01 00:00:05','example.com',NULL,1,1,1,1,false,false,false,false,'[]',4),
+			('mainnet','GA3','3000',12,1,0,0,'2026-01-01 00:00:08',8,8,8,'2026-01-01 00:00:08',NULL,NULL,1,1,1,1,false,false,false,false,'[]',8)`,
+		`INSERT INTO silver.trustlines_current VALUES
+			('mainnet','GA2','credit_alphanum4','ISSUER','USD',NULL,10000000,1000000000,0,0,1,NULL,4,'2026-01-01 00:00:04'),
+			('mainnet','GA2','credit_alphanum4','ISSUER','USD',NULL,50000000,1000000000,0,0,1,NULL,5,'2026-01-01 00:00:05'),
+			('mainnet','GA3','credit_alphanum4','ISSUER2','EUR',NULL,75000000,1000000000,0,0,1,NULL,8,'2026-01-01 00:00:08')`,
 		`INSERT INTO silver.address_balances_current VALUES
 			('mainnet','GA1','native:XLM','XLM',NULL,'native','1000','0.0001000',4,'2026-01-01 00:00:04'),
 			('mainnet','GA2','native:XLM','XLM',NULL,'native','2000','0.0002000',5,'2026-01-01 00:00:05'),

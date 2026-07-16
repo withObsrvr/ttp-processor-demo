@@ -86,7 +86,7 @@ func (h *HotBufferLoader) LoadTail(ctx context.Context, tailLedgers uint32, endL
 		{
 			name:      "transactions_row_v2",
 			bronzeDir: "transactions",
-			columns:   "ledger_sequence, transaction_hash, source_account, fee_charged, max_fee, successful, transaction_result_code, operation_count, memo_type, memo, created_at, account_sequence, ledger_range, signatures_count, new_account, rent_fee_charged, soroban_resources_instructions, soroban_resources_read_bytes, soroban_resources_write_bytes",
+			columns:   "ledger_sequence, transaction_hash, source_account, fee_charged, max_fee, successful, transaction_result_code, operation_count, memo_type, memo, created_at, account_sequence, ledger_range, signatures_count, tx_envelope, tx_result, tx_meta, tx_fee_meta, tx_signers, new_account, rent_fee_charged, soroban_resources_instructions, soroban_resources_read_bytes, soroban_resources_write_bytes",
 			seqFilter: "ledger_sequence",
 		},
 		{
@@ -107,7 +107,7 @@ func (h *HotBufferLoader) LoadTail(ctx context.Context, tailLedgers uint32, endL
 		{
 			name:      "accounts_snapshot_v1",
 			bronzeDir: "accounts_snapshot",
-			columns:   "account_id, ledger_sequence, closed_at, balance, sequence_number, num_subentries, num_sponsoring, num_sponsored, home_domain, master_weight, low_threshold, med_threshold, high_threshold, flags, auth_required, auth_revocable, auth_immutable, auth_clawback_enabled, signers, sponsor_account, ledger_range",
+			columns:   "account_id, ledger_sequence, closed_at, balance, sequence_number, sequence_ledger, sequence_time, num_subentries, num_sponsoring, num_sponsored, home_domain, master_weight, low_threshold, med_threshold, high_threshold, flags, auth_required, auth_revocable, auth_immutable, auth_clawback_enabled, signers, sponsor_account, ledger_range",
 			seqFilter: "ledger_sequence",
 		},
 		{

@@ -28,6 +28,8 @@ func (app *application) registerSilverContractRoutes(router *mux.Router) {
 	router.HandleFunc("/api/v1/silver/contracts/{id}/call-summary", contractCallHandlers.HandleContractCallSummary).Methods("GET")
 	router.HandleFunc("/api/v1/silver/contracts/{id}/analytics", contractCallHandlers.HandleContractAnalyticsSummary).Methods("GET")
 	router.HandleFunc("/api/v1/silver/contracts/{id}/metadata", contractCallHandlers.HandleContractMetadata).Methods("GET")
+	router.HandleFunc("/api/v1/silver/contracts/{id}/storage/summary", silverHandlers.HandleContractStorageSummary).Methods("GET")
+	router.HandleFunc("/api/v1/silver/contracts/{id}/activity/summary", silverHandlers.HandleContractActivitySummary).Methods("GET")
 
 	if unifiedDuckDBReader != nil {
 		router.HandleFunc("/api/v1/silver/contracts/{id}/storage", silverHandlers.HandleContractStorage).Methods("GET")

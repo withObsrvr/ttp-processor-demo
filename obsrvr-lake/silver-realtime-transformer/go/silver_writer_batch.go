@@ -183,6 +183,7 @@ const unmatchedContractEventConflict = `ON CONFLICT DO NOTHING`
 
 var accountSnapshotColumns = []string{
 	"account_id", "ledger_sequence", "closed_at", "balance", "sequence_number",
+	"sequence_ledger", "sequence_time",
 	"num_subentries", "num_sponsoring", "num_sponsored", "home_domain",
 	"master_weight", "low_threshold", "med_threshold", "high_threshold",
 	"flags", "auth_required", "auth_revocable", "auth_immutable", "auth_clawback_enabled",
@@ -273,7 +274,7 @@ var accountCurrentColumns = []string{
 	"master_weight", "low_threshold", "med_threshold", "high_threshold",
 	"flags", "auth_required", "auth_revocable", "auth_immutable", "auth_clawback_enabled",
 	"signers", "sponsor_account", "created_at", "updated_at",
-	"last_modified_ledger", "ledger_range", "era_id", "version_label",
+	"last_modified_ledger", "sequence_ledger", "sequence_time", "ledger_range", "era_id", "version_label",
 }
 
 const accountCurrentConflict = `ON CONFLICT (account_id) DO UPDATE SET
@@ -296,6 +297,8 @@ const accountCurrentConflict = `ON CONFLICT (account_id) DO UPDATE SET
 	sponsor_account = EXCLUDED.sponsor_account,
 	updated_at = EXCLUDED.updated_at,
 	last_modified_ledger = EXCLUDED.last_modified_ledger,
+	sequence_ledger = EXCLUDED.sequence_ledger,
+	sequence_time = EXCLUDED.sequence_time,
 	ledger_range = EXCLUDED.ledger_range`
 
 var trustlineCurrentColumns = []string{

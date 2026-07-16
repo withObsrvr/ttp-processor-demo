@@ -2,6 +2,7 @@ package main
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -35,4 +36,21 @@ func TestBuildFlushColumnsNilOverrides(t *testing.T) {
 	if !reflect.DeepEqual(ins, want) || !reflect.DeepEqual(sel, want) {
 		t.Fatalf("ins=%v sel=%v, want %v (only shared columns, no panic on nil overrides)", ins, sel, want)
 	}
+}
+
+func TestBuildDeleteRangeSQL(t *testing.T) {
+	client := &DuckDBClient{config: &DuckLakeConfig{
+		CatalogName: "testnet_catalog",
+		SchemaName:  "silver",
+	}}
+
+	got := compactSQL(client.buildDeleteRangeSQL("token_transfers_raw", "ledger_sequence", 200, 100))
+	want := "DELETE FROM testnet_catalog.silver.token_transfers_raw WHERE ledger_sequence > 100 AND ledger_sequence <= 200"
+	if got != want {
+		t.Fatalf("delete SQL:\n got: %s\nwant: %s", got, want)
+	}
+}
+
+func compactSQL(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }

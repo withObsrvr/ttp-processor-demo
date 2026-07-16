@@ -30,10 +30,13 @@ func main() {
 	filesPerPartition := flag.Uint("files-per-partition", 64000, "Files per archive partition (GCS/S3)")
 	runValidate := flag.Bool("validate", false, "Run quality validation checks after extraction")
 	runDuckLake := flag.Bool("ducklake", false, "Push bronze Parquet to DuckLake (B2 + catalog)")
+	onlyTables := flag.String("only-tables", "", "Comma-separated extractor/source/DuckLake table names to extract; empty extracts all")
 	dlCatalog := flag.String("ducklake-catalog", "", "PostgreSQL catalog DSN for DuckLake")
 	dlDataPath := flag.String("ducklake-data-path", "", "S3/B2 bucket path (e.g., s3://obsrvr-lake-testnet/)")
 	dlMetaSchema := flag.String("ducklake-metadata-schema", "bronze_meta", "DuckLake metadata schema")
 	dlSchemaSQL := flag.String("ducklake-schema-sql", "", "Path to v3_bronze_schema.sql (optional)")
+	dlOnlyTables := flag.String("ducklake-only-tables", "", "Comma-separated source or DuckLake table names to push; defaults to --only-tables when set")
+	dlSkipTables := flag.String("ducklake-skip-tables", "", "Comma-separated source or DuckLake table names to skip during push")
 	b2KeyID := flag.String("b2-key-id", "", "B2/S3 access key ID")
 	b2KeySecret := flag.String("b2-key-secret", "", "B2/S3 secret access key")
 	b2Endpoint := flag.String("b2-endpoint", "s3.us-west-004.backblazeb2.com", "B2/S3 endpoint")
@@ -65,6 +68,12 @@ func main() {
 
 	startLedger := uint32(*start)
 	endLedger := uint32(*end)
+	extractOnlySet := parseCSVSet(*onlyTables)
+	duckLakeOnlySet := parseCSVSet(*dlOnlyTables)
+	if len(duckLakeOnlySet) == 0 && len(extractOnlySet) > 0 {
+		duckLakeOnlySet = extractOnlySet
+	}
+	duckLakeSkipSet := parseCSVSet(*dlSkipTables)
 
 	if endLedger <= startLedger {
 		log.Fatalf("--end (%d) must be greater than --start (%d)", endLedger, startLedger)
@@ -83,6 +92,15 @@ func main() {
 		// valid
 	default:
 		log.Fatalf("--storage-type must be one of: GCS, S3, FS, XDR, RPC (got %q)", *storageType)
+	}
+	if err := validateTableSelection(extractOnlySet, "only-tables"); err != nil {
+		log.Fatal(err)
+	}
+	if err := validateTableSelection(duckLakeOnlySet, "ducklake-only-tables"); err != nil {
+		log.Fatal(err)
+	}
+	if err := validateTableSelection(duckLakeSkipSet, "ducklake-skip-tables"); err != nil {
+		log.Fatal(err)
 	}
 
 	// Ensure output directory exists
@@ -127,6 +145,12 @@ func main() {
 	fmt.Printf("Storage type:      %s\n", *storageType)
 	fmt.Printf("Bucket:            %s\n", *bucket)
 	fmt.Printf("Network:           %s\n", *networkPassphrase)
+	if len(extractOnlySet) > 0 {
+		fmt.Printf("Extract tables:    %s\n", tableSetKey(extractOnlySet))
+	}
+	if len(duckLakeOnlySet) > 0 {
+		fmt.Printf("DuckLake tables:   %s\n", tableSetKey(duckLakeOnlySet))
+	}
 	fmt.Println()
 
 	// Skip extraction if only doing DuckLake push on existing output
@@ -143,6 +167,7 @@ func main() {
 			LedgersPerFile:    uint32(*ledgersPerFile),
 			FilesPerPartition: uint32(*filesPerPartition),
 			EraID:             *eraID,
+			OnlyTables:        extractOnlySet,
 		}
 
 		orchestrator := NewOrchestrator(config)
@@ -226,6 +251,8 @@ func main() {
 			BronzeSchemaSQL: *dlSchemaSQL,
 			StartLedger:     startLedger,
 			EndLedger:       endLedger,
+			OnlyTables:      duckLakeOnlySet,
+			SkipTables:      duckLakeSkipSet,
 		})
 		if err != nil {
 			fatalChunk("ducklake_setup", err, "retry_chunk")
@@ -290,6 +317,17 @@ func main() {
 			log.Printf("Flowctl completion report failed: %v", err)
 		}
 	}
+}
+
+func parseCSVSet(value string) map[string]bool {
+	result := map[string]bool{}
+	for _, part := range strings.Split(value, ",") {
+		item := strings.TrimSpace(part)
+		if item != "" {
+			result[item] = true
+		}
+	}
+	return result
 }
 
 func classifyFlowctlFailure(err error) flowctlpb.FailureClass {

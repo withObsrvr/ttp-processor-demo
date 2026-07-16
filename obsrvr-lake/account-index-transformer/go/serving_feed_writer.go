@@ -103,6 +103,8 @@ func (w *ServingFeedWriter) Ensure(ctx context.Context) error {
 		)`, w.opsTable()),
 		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s (account_id, toid DESC)`, ident(w.config.TransactionsTable+"_page_idx"), w.txTable()),
 		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s (account_id, operation_toid DESC)`, ident(w.config.OperationsTable+"_page_idx"), w.opsTable()),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s (operation_toid)`, ident(w.config.OperationsTable+"_operation_idx"), w.opsTable()),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s (account_id, operation_toid DESC) WHERE is_payment_op = true`, ident(w.config.OperationsTable+"_payment_page_idx"), w.opsTable()),
 	} {
 		if _, err := w.db.ExecContext(ctx, stmt); err != nil {
 			return err
@@ -152,14 +154,14 @@ func (w *ServingFeedWriter) Write(ctx context.Context, rows []AccountFeedRow, st
 	defer tx.Rollback()
 
 	txStmt, err := tx.PrepareContext(ctx, fmt.Sprintf(`
-		INSERT INTO %s (%s) VALUES (%s)
+		INSERT INTO %s AS target (%s) VALUES (%s)
 		ON CONFLICT (account_id, toid) DO UPDATE SET
-			source_mask = (source_mask | EXCLUDED.source_mask)::SMALLINT,
+			source_mask = (target.source_mask | EXCLUDED.source_mask)::SMALLINT,
 			successful = EXCLUDED.successful,
 			activity_type = EXCLUDED.activity_type,
-			source_account = COALESCE(source_account, EXCLUDED.source_account),
-			destination_account = COALESCE(destination_account, EXCLUDED.destination_account),
-			primary_contract_id = COALESCE(primary_contract_id, EXCLUDED.primary_contract_id),
+			source_account = COALESCE(target.source_account, EXCLUDED.source_account),
+			destination_account = COALESCE(target.destination_account, EXCLUDED.destination_account),
+			primary_contract_id = COALESCE(target.primary_contract_id, EXCLUDED.primary_contract_id),
 			operation_count = EXCLUDED.operation_count,
 			fee_charged_stroops = EXCLUDED.fee_charged_stroops,
 			memo_type = EXCLUDED.memo_type,
@@ -171,17 +173,17 @@ func (w *ServingFeedWriter) Write(ctx context.Context, rows []AccountFeedRow, st
 	defer txStmt.Close()
 
 	opStmt, err := tx.PrepareContext(ctx, fmt.Sprintf(`
-		INSERT INTO %s (%s) VALUES (%s)
+		INSERT INTO %s AS target (%s) VALUES (%s)
 		ON CONFLICT (account_id, operation_toid) DO UPDATE SET
-			source_mask = (source_mask | EXCLUDED.source_mask)::SMALLINT,
+			source_mask = (target.source_mask | EXCLUDED.source_mask)::SMALLINT,
 			type_code = EXCLUDED.type_code,
 			type_name = EXCLUDED.type_name,
-			source_account = COALESCE(source_account, EXCLUDED.source_account),
-			destination_account = COALESCE(destination_account, EXCLUDED.destination_account),
-			asset_key = EXCLUDED.asset_key,
+			source_account = COALESCE(target.source_account, EXCLUDED.source_account),
+			destination_account = COALESCE(target.destination_account, EXCLUDED.destination_account),
+			asset_key = COALESCE(target.asset_key, EXCLUDED.asset_key),
 			amount_stroops = EXCLUDED.amount_stroops,
-			contract_id = EXCLUDED.contract_id,
-			function_name = EXCLUDED.function_name,
+			contract_id = COALESCE(target.contract_id, EXCLUDED.contract_id),
+			function_name = COALESCE(target.function_name, EXCLUDED.function_name),
 			successful = EXCLUDED.successful,
 			is_payment_op = EXCLUDED.is_payment_op,
 			is_soroban_op = EXCLUDED.is_soroban_op

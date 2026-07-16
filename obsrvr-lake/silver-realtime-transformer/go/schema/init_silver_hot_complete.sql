@@ -576,6 +576,22 @@ CREATE INDEX IF NOT EXISTS idx_contract_data_asset ON contract_data_current(asse
 CREATE INDEX IF NOT EXISTS idx_contract_data_durability ON contract_data_current(durability);
 CREATE INDEX IF NOT EXISTS idx_contract_data_ledger_range ON contract_data_current(ledger_range);
 
+-- Append-only deletion stream for downstream current-state projections. The
+-- current table cannot communicate deletions because the row is removed.
+CREATE TABLE IF NOT EXISTS contract_data_deletions (
+    contract_id TEXT NOT NULL,
+    key_hash TEXT NOT NULL,
+    ledger_sequence BIGINT NOT NULL,
+    closed_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    inserted_at TIMESTAMP DEFAULT NOW(),
+    PRIMARY KEY (contract_id, key_hash, ledger_sequence)
+);
+
+CREATE INDEX IF NOT EXISTS idx_contract_data_deletions_ledger
+    ON contract_data_deletions(ledger_sequence);
+CREATE INDEX IF NOT EXISTS idx_contract_data_deletions_contract
+    ON contract_data_deletions(contract_id, key_hash, ledger_sequence DESC);
+
 -- Table: contract_code_current
 -- Current state of deployed contract WASM code (UPSERT pattern)
 CREATE TABLE IF NOT EXISTS contract_code_current (
@@ -1086,6 +1102,14 @@ CREATE TABLE IF NOT EXISTS semantic_account_summary (
 );
 CREATE INDEX IF NOT EXISTS idx_sem_acct_activity ON semantic_account_summary(last_activity DESC);
 CREATE INDEX IF NOT EXISTS idx_sem_acct_ops ON semantic_account_summary(total_operations DESC);
+
+-- Keep legacy snapshot tables compatible with the account writer. These are
+-- separate ALTER statements so startup reconciliation can upgrade an existing
+-- deployment without rebuilding its history tables.
+ALTER TABLE accounts_current ADD COLUMN IF NOT EXISTS sequence_ledger BIGINT;
+ALTER TABLE accounts_current ADD COLUMN IF NOT EXISTS sequence_time BIGINT;
+ALTER TABLE accounts_snapshot ADD COLUMN IF NOT EXISTS sequence_ledger BIGINT;
+ALTER TABLE accounts_snapshot ADD COLUMN IF NOT EXISTS sequence_time BIGINT;
 
 -- ============================================================================
 -- GRANTS AND PERMISSIONS

@@ -264,10 +264,10 @@ func (sw *SilverWriter) WriteAccountCurrent(ctx context.Context, tx *sql.Tx, row
 			master_weight, low_threshold, med_threshold, high_threshold,
 			flags, auth_required, auth_revocable, auth_immutable, auth_clawback_enabled,
 			signers, sponsor_account, created_at, updated_at,
-			last_modified_ledger, ledger_range, era_id, version_label
+			last_modified_ledger, sequence_ledger, sequence_time, ledger_range, era_id, version_label
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-			$17, $18, $19, $20, $21, $22, $23, $24
+			$17, $18, $19, $20, $21, $22, $23, $24, $25, $26
 		)
 		ON CONFLICT (account_id) DO UPDATE SET
 			balance = EXCLUDED.balance,
@@ -289,6 +289,8 @@ func (sw *SilverWriter) WriteAccountCurrent(ctx context.Context, tx *sql.Tx, row
 			sponsor_account = EXCLUDED.sponsor_account,
 			updated_at = EXCLUDED.updated_at,
 			last_modified_ledger = EXCLUDED.last_modified_ledger,
+			sequence_ledger = EXCLUDED.sequence_ledger,
+			sequence_time = EXCLUDED.sequence_time,
 			ledger_range = EXCLUDED.ledger_range
 	`
 
@@ -298,7 +300,8 @@ func (sw *SilverWriter) WriteAccountCurrent(ctx context.Context, tx *sql.Tx, row
 		row.MasterWeight, row.LowThreshold, row.MedThreshold, row.HighThreshold,
 		row.Flags, row.AuthRequired, row.AuthRevocable, row.AuthImmutable, row.AuthClawbackEnabled,
 		row.Signers, row.SponsorAccount, row.CreatedAt, row.UpdatedAt,
-		row.LastModifiedLedger, row.LedgerRange, row.EraID, row.VersionLabel,
+		row.LastModifiedLedger, row.SequenceLedger, row.SequenceTime,
+		row.LedgerRange, row.EraID, row.VersionLabel,
 	)
 
 	if err != nil {
@@ -409,6 +412,7 @@ func (sw *SilverWriter) WriteAccountSnapshot(ctx context.Context, tx *sql.Tx, ro
 	query := `
 		INSERT INTO accounts_snapshot (
 			account_id, ledger_sequence, closed_at, balance, sequence_number,
+			sequence_ledger, sequence_time,
 			num_subentries, num_sponsoring, num_sponsored, home_domain,
 			master_weight, low_threshold, med_threshold, high_threshold,
 			flags, auth_required, auth_revocable, auth_immutable, auth_clawback_enabled,
@@ -416,13 +420,14 @@ func (sw *SilverWriter) WriteAccountSnapshot(ctx context.Context, tx *sql.Tx, ro
 			ledger_range, era_id, version_label, valid_to
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-			$19, $20, $21, $22, $23, $24, $25, NULL
+			$19, $20, $21, $22, $23, $24, $25, $26, $27, NULL
 		)
 		ON CONFLICT (account_id, ledger_sequence) DO NOTHING
 	`
 
 	_, err := tx.ExecContext(ctx, query,
 		row.AccountID, row.LedgerSequence, row.ClosedAt, row.Balance, row.SequenceNumber,
+		row.SequenceLedger, row.SequenceTime,
 		row.NumSubentries, row.NumSponsoring, row.NumSponsored, row.HomeDomain,
 		row.MasterWeight, row.LowThreshold, row.MedThreshold, row.HighThreshold,
 		row.Flags, row.AuthRequired, row.AuthRevocable, row.AuthImmutable, row.AuthClawbackEnabled,

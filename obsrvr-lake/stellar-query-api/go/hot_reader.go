@@ -68,6 +68,7 @@ func (h *HotReader) QueryLedgers(ctx context.Context, start, end int64, limit in
 		orderBy = "transaction_count DESC, sequence DESC"
 	}
 
+	startRange, endRange := ledgerRangeBounds(start, end)
 	query := fmt.Sprintf(`
 		SELECT
 			sequence,
@@ -98,13 +99,57 @@ func (h *HotReader) QueryLedgers(ctx context.Context, start, end int64, limit in
 			COALESCE(ingestion_timestamp, closed_at) as created_at
 		FROM ledgers_row_v2
 		WHERE sequence >= $1 AND sequence <= $2
+		  AND ledger_range >= $3 AND ledger_range <= $4
 		ORDER BY %s
-		LIMIT $3
+		LIMIT $5
 	`, orderBy)
 
-	rows, err := h.db.QueryContext(ctx, query, start, end, limit)
+	rows, err := h.db.QueryContext(ctx, query, start, end, startRange, endRange, limit)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query ledgers: %w", err)
+	}
+
+	return rows, nil
+}
+
+func (h *HotReader) QueryLedger(ctx context.Context, sequence int64) (*sql.Rows, error) {
+	ledgerRange, _ := ledgerRangeBounds(sequence, sequence)
+	query := `
+		SELECT
+			sequence,
+			ledger_hash,
+			previous_ledger_hash,
+			transaction_count,
+			operation_count,
+			successful_tx_count,
+			failed_tx_count,
+			tx_set_operation_count,
+			closed_at,
+			total_coins,
+			fee_pool,
+			base_fee,
+			base_reserve,
+			max_tx_set_size,
+			protocol_version,
+			ledger_header,
+			soroban_fee_write1kb as soroban_fee_write_1kb,
+			node_id,
+			signature,
+			ledger_range,
+			era_id,
+			version_label,
+			soroban_op_count,
+			total_fee_charged,
+			contract_events_count,
+			COALESCE(ingestion_timestamp, closed_at) as created_at
+		FROM ledgers_row_v2
+		WHERE sequence = $1
+		  AND ledger_range = $2
+		LIMIT 1
+	`
+	rows, err := h.db.QueryContext(ctx, query, sequence, ledgerRange)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query ledger: %w", err)
 	}
 
 	return rows, nil

@@ -482,11 +482,16 @@ func (w *Worker) extractLedger(meta LedgerMeta) (*LedgerData, error) {
 	np := w.config.NetworkPassphrase
 	lr := meta.LedgerRange
 
-	resultCh := make(chan extractorResult, 21)
+	resultCh := make(chan extractorResult, len(extractorOutputDirByName))
 	var wg sync.WaitGroup
+	launched := 0
 
 	// Helper to launch an extractor goroutine
 	launch := func(name string, fn func() (*LedgerData, error)) {
+		if !w.shouldExtractTable(name) {
+			return
+		}
+		launched++
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -500,15 +505,15 @@ func (w *Worker) extractLedger(meta LedgerMeta) (*LedgerData, error) {
 	libInput.LedgerRange = lr
 	libInput.EraID = meta.EraID
 
-	// Fan out to all 21 extractors using the shared library
+	// Fan out to all extractors. Transactions use the local extractor because it
+	// carries Horizon XDR/signature fields not yet exposed by stellar-extract.
 	launch("transactions", func() (*LedgerData, error) {
-		libRows, err := extract.ExtractTransactions(libInput)
+		rows, err := extractTransactions(meta.LCM, w.config.NetworkPassphrase, meta.LedgerSequence, meta.ClosedAt, meta.LedgerRange)
 		if err != nil {
 			return nil, err
 		}
-		rows := make([]TransactionData, len(libRows))
-		for i, r := range libRows {
-			rows[i] = TransactionData(r)
+		for i := range rows {
+			rows[i].EraID = meta.EraID
 			sanitizeTransactionMemo(&rows[i])
 		}
 		return &LedgerData{Transactions: rows}, nil
@@ -543,13 +548,9 @@ func (w *Worker) extractLedger(meta LedgerMeta) (*LedgerData, error) {
 		return &LedgerData{Trades: rows}, nil
 	})
 	launch("accounts", func() (*LedgerData, error) {
-		libRows, err := extract.ExtractAccounts(libInput)
+		rows, err := extractAccounts(meta.LCM, w.config.NetworkPassphrase, meta.LedgerSequence, meta.ClosedAt, meta.LedgerRange)
 		if err != nil {
 			return nil, err
-		}
-		rows := make([]AccountData, len(libRows))
-		for i, r := range libRows {
-			rows[i] = AccountData(r)
 		}
 		return &LedgerData{Accounts: rows}, nil
 	})
@@ -649,6 +650,9 @@ func (w *Worker) extractLedger(meta LedgerMeta) (*LedgerData, error) {
 		rows := make([]ContractEventData, len(libRows))
 		for i, r := range libRows {
 			rows[i] = ContractEventData(r)
+			if repairs := sanitizeContractEventUTF8(&rows[i]); repairs > 0 {
+				log.Printf("[Worker %d] contract_events utf8_repaired ledger=%d event_id=%s repairs=%d", w.id, meta.LedgerSequence, rows[i].EventID, repairs)
+			}
 		}
 		return &LedgerData{ContractEvents: rows}, nil
 	})
@@ -730,6 +734,10 @@ func (w *Worker) extractLedger(meta LedgerMeta) (*LedgerData, error) {
 		return &LedgerData{TokenTransfers: rows}, nil
 	})
 
+	if launched == 0 {
+		return nil, fmt.Errorf("no extractors selected by --only-tables=%q", tableSetKey(w.config.OnlyTables))
+	}
+
 	// Wait for all extractors to complete, then close the results channel
 	go func() {
 		wg.Wait()
@@ -781,6 +789,15 @@ func (w *Worker) extractLedger(meta LedgerMeta) (*LedgerData, error) {
 	stampEraID(merged, meta.EraID)
 
 	return merged, nil
+}
+
+func (w *Worker) shouldExtractTable(name string) bool {
+	if len(w.config.OnlyTables) == 0 {
+		return true
+	}
+	sourceName := extractorOutputDir(name)
+	duckTableName := mapToDuckLakeTable(sourceName)
+	return tableSetIncludes(w.config.OnlyTables, name, sourceName, duckTableName)
 }
 
 // stampEraID sets the EraID field on every row in every table slice.

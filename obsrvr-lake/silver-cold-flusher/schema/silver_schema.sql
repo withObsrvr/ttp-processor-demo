@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.accounts_current (
     account_id VARCHAR,
     balance VARCHAR,
     sequence_number BIGINT,
+    sequence_ledger BIGINT,
+    sequence_time BIGINT,
     num_subentries INTEGER,
     num_sponsoring INTEGER,
     num_sponsored INTEGER,
@@ -48,6 +50,8 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.accounts_snapshot (
     closed_at TIMESTAMP,
     balance VARCHAR,
     sequence_number BIGINT,
+    sequence_ledger BIGINT,
+    sequence_time BIGINT,
     num_subentries INTEGER,
     num_sponsoring INTEGER,
     num_sponsored INTEGER,
@@ -149,6 +153,8 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.enriched_history_operations (
     operation_result_code VARCHAR,
     operation_trace_code VARCHAR,
     ledger_range BIGINT,
+    transaction_id BIGINT,
+    operation_id BIGINT,
     source_account_muxed VARCHAR,
     asset VARCHAR,
     asset_type VARCHAR,
@@ -691,6 +697,14 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.evicted_keys (
     closed_at TIMESTAMP,
     created_at TIMESTAMP,
     ledger_range BIGINT,
+    inserted_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS testnet_catalog.silver.contract_data_deletions (
+    contract_id VARCHAR,
+    key_hash VARCHAR,
+    ledger_sequence BIGINT,
+    closed_at TIMESTAMP,
     inserted_at TIMESTAMP
 );
 

@@ -24,19 +24,38 @@ create table if not exists serving.sv_accounts_current (
     balance_stroops          bigint not null,
     sequence_number          bigint,
     num_subentries           integer,
+    num_sponsoring           integer,
+    num_sponsored            integer,
     created_at               timestamptz,
     last_modified_ledger     bigint not null,
+    sequence_ledger          bigint,
+    sequence_time            bigint,
     updated_at               timestamptz not null,
     home_domain              text,
+    sponsor                  text,
     master_weight            integer,
     low_threshold            integer,
     med_threshold            integer,
     high_threshold           integer,
+    auth_required            boolean,
+    auth_revocable           boolean,
+    auth_immutable           boolean,
+    auth_clawback_enabled    boolean,
     signers_json             jsonb,
     is_smart_account         boolean not null default false,
     smart_account_type       text,
     first_seen_ledger        bigint
 );
+
+alter table serving.sv_accounts_current add column if not exists num_sponsoring integer;
+alter table serving.sv_accounts_current add column if not exists num_sponsored integer;
+alter table serving.sv_accounts_current add column if not exists sequence_ledger bigint;
+alter table serving.sv_accounts_current add column if not exists sequence_time bigint;
+alter table serving.sv_accounts_current add column if not exists sponsor text;
+alter table serving.sv_accounts_current add column if not exists auth_required boolean;
+alter table serving.sv_accounts_current add column if not exists auth_revocable boolean;
+alter table serving.sv_accounts_current add column if not exists auth_immutable boolean;
+alter table serving.sv_accounts_current add column if not exists auth_clawback_enabled boolean;
 
 create index if not exists sv_accounts_current_last_modified_idx
     on serving.sv_accounts_current (last_modified_ledger desc);
@@ -57,11 +76,22 @@ create table if not exists serving.sv_account_balances_current (
     balance_stroops          bigint not null,
     balance_display          numeric(38,7),
     limit_stroops            bigint,
+    buying_liabilities_stroops bigint,
+    selling_liabilities_stroops bigint,
     is_authorized            boolean,
+    is_authorized_to_maintain_liabilities boolean,
+    is_clawback_enabled      boolean,
+    sponsor                  text,
     last_modified_ledger     bigint not null,
     updated_at               timestamptz not null,
     primary key (account_id, asset_key)
 );
+
+alter table serving.sv_account_balances_current add column if not exists buying_liabilities_stroops bigint;
+alter table serving.sv_account_balances_current add column if not exists selling_liabilities_stroops bigint;
+alter table serving.sv_account_balances_current add column if not exists is_authorized_to_maintain_liabilities boolean;
+alter table serving.sv_account_balances_current add column if not exists is_clawback_enabled boolean;
+alter table serving.sv_account_balances_current add column if not exists sponsor text;
 
 create index if not exists sv_account_balances_current_account_idx
     on serving.sv_account_balances_current (account_id, balance_stroops desc);
@@ -153,8 +183,32 @@ create index if not exists sv_contract_storage_current_contract_idx
     on serving.sv_contract_storage_current (contract_id, expired, durability, key_hash);
 create index if not exists sv_contract_storage_current_ttl_idx
     on serving.sv_contract_storage_current (expired, live_until_ledger_seq);
+create index if not exists sv_contract_storage_current_contract_ttl_idx
+    on serving.sv_contract_storage_current (contract_id, live_until_ledger_seq);
+create index if not exists sv_contract_storage_current_key_hash_idx
+    on serving.sv_contract_storage_current (key_hash);
 create index if not exists sv_contract_storage_current_modified_idx
     on serving.sv_contract_storage_current (last_modified_ledger desc);
+
+create table if not exists serving.sv_contract_storage_summary (
+    contract_id             text primary key,
+    total_entries           bigint not null default 0,
+    live_entries            bigint not null default 0,
+    expired_entries         bigint not null default 0,
+    deleted_entries         bigint not null default 0,
+    persistent_entries      bigint not null default 0,
+    temporary_entries       bigint not null default 0,
+    instance_entries        bigint not null default 0,
+    total_size_bytes        bigint,
+    latest_ledger           bigint,
+    latest_closed_at        timestamptz,
+    updated_at              timestamptz not null
+);
+
+create index if not exists sv_contract_storage_summary_live_idx
+    on serving.sv_contract_storage_summary (live_entries desc, contract_id);
+create index if not exists sv_contract_storage_summary_latest_idx
+    on serving.sv_contract_storage_summary (latest_ledger desc);
 
 create table if not exists serving.sv_smart_account_contracts_current (
     contract_id                    text primary key,
@@ -174,6 +228,25 @@ create index if not exists sv_smart_account_contracts_wallet_idx
     on serving.sv_smart_account_contracts_current (wallet_type);
 create index if not exists sv_smart_account_contracts_modified_idx
     on serving.sv_smart_account_contracts_current (last_modified_ledger desc);
+
+create table if not exists serving.sv_smart_account_contracts (
+    contract_id                    text primary key,
+    wallet_type                    text not null default 'openzeppelin',
+    context_rule_count             integer not null default 0,
+    active_signer_count            integer not null default 0,
+    credential_signer_count        integer not null default 0,
+    address_signer_count           integer not null default 0,
+    active_policy_count            integer not null default 0,
+    context_rule_ids               bigint[] not null default '{}',
+    first_seen_ledger              bigint,
+    last_modified_ledger           bigint,
+    updated_at                     timestamptz not null
+);
+
+create index if not exists sv_smart_account_contracts_app_wallet_idx
+    on serving.sv_smart_account_contracts (wallet_type);
+create index if not exists sv_smart_account_contracts_app_modified_idx
+    on serving.sv_smart_account_contracts (last_modified_ledger desc);
 
 create table if not exists serving.sv_smart_account_rules_current (
     contract_id                    text not null,
@@ -234,6 +307,28 @@ create index if not exists sv_smart_account_addr_contract_idx
     on serving.sv_smart_account_signers_by_address (contract_id);
 create index if not exists sv_smart_account_addr_modified_idx
     on serving.sv_smart_account_signers_by_address (last_modified_ledger desc);
+
+create table if not exists serving.sv_smart_account_signers (
+    identity_type                  text not null check (identity_type in ('credential', 'address')),
+    identity_value                 text not null,
+    contract_id                    text not null,
+    wallet_type                    text not null default 'openzeppelin',
+    credential_id                  text,
+    signer_address                 text,
+    context_rule_ids               bigint[] not null default '{}',
+    signer_ids                     bigint[] not null default '{}',
+    signer_count                   integer not null default 0,
+    active_policy_count            integer not null default 0,
+    first_seen_ledger              bigint,
+    last_modified_ledger           bigint,
+    updated_at                     timestamptz not null,
+    primary key (identity_type, identity_value, contract_id)
+);
+
+create index if not exists sv_smart_account_signers_contract_idx
+    on serving.sv_smart_account_signers (contract_id);
+create index if not exists sv_smart_account_signers_modified_idx
+    on serving.sv_smart_account_signers (last_modified_ledger desc);
 
 
 create table if not exists serving.sv_offers_current (
@@ -299,14 +394,30 @@ create table if not exists serving.sv_transactions_recent (
     mem_bytes                 bigint,
     read_bytes                bigint,
     write_bytes               bigint,
+    transaction_id            bigint,
+    tx_envelope               text,
+    tx_result                 text,
+    tx_meta                   text,
+    tx_fee_meta               text,
+    tx_signers                text,
     ingested_at               timestamptz not null default now()
 );
 
 alter table serving.sv_transactions_recent
     add column if not exists summary_json jsonb;
+alter table serving.sv_transactions_recent
+    add column if not exists transaction_id bigint,
+    add column if not exists tx_envelope text,
+    add column if not exists tx_result text,
+    add column if not exists tx_meta text,
+    add column if not exists tx_fee_meta text,
+    add column if not exists tx_signers text;
 
 create index if not exists sv_transactions_recent_ledger_idx
     on serving.sv_transactions_recent (ledger_sequence desc);
+create index if not exists sv_transactions_recent_toid_idx
+    on serving.sv_transactions_recent (transaction_id)
+    where transaction_id is not null;
 create index if not exists sv_transactions_recent_created_idx
     on serving.sv_transactions_recent (created_at desc);
 create index if not exists sv_transactions_recent_source_idx
@@ -584,6 +695,33 @@ create table if not exists serving.sv_contract_function_stats_current (
 
 create index if not exists sv_contract_function_stats_current_rank_idx
     on serving.sv_contract_function_stats_current (contract_id, calls_24h desc);
+
+create table if not exists serving.sv_contract_activity_summary (
+    contract_id                       text primary key,
+    first_seen_ledger                 bigint,
+    last_seen_ledger                  bigint,
+    first_seen_at                     timestamptz,
+    last_seen_at                      timestamptz,
+    invocation_count_24h              bigint not null default 0,
+    invocation_count_7d               bigint not null default 0,
+    invocation_count_30d              bigint not null default 0,
+    invocation_count_all              bigint not null default 0,
+    event_count_24h                   bigint not null default 0,
+    event_count_7d                    bigint not null default 0,
+    event_count_30d                   bigint not null default 0,
+    unique_callers_30d                bigint not null default 0,
+    successful_invocations_30d        bigint not null default 0,
+    failed_invocations_30d            bigint not null default 0,
+    activity_classification           text not null default 'unknown',
+    updated_at                        timestamptz not null
+);
+
+create index if not exists sv_contract_activity_summary_last_seen_idx
+    on serving.sv_contract_activity_summary (last_seen_ledger desc);
+create index if not exists sv_contract_activity_summary_activity_idx
+    on serving.sv_contract_activity_summary (invocation_count_30d desc, event_count_30d desc);
+create index if not exists sv_contract_activity_summary_class_idx
+    on serving.sv_contract_activity_summary (activity_classification);
 
 
 create table if not exists serving.sv_ledger_stats_recent (
@@ -1151,12 +1289,52 @@ create table if not exists serving.sv_operations_by_account (
 
 create index if not exists sv_operations_by_account_page_idx
     on serving.sv_operations_by_account (account_id, operation_toid desc);
+create index if not exists sv_operations_by_account_operation_idx
+    on serving.sv_operations_by_account (operation_toid);
+create index if not exists sv_operations_by_account_payment_page_idx
+    on serving.sv_operations_by_account (account_id, operation_toid desc)
+    where is_payment_op = true;
 create index if not exists sv_operations_by_account_tx_idx
     on serving.sv_operations_by_account (tx_hash, op_index);
 create index if not exists sv_operations_by_account_ledger_idx
     on serving.sv_operations_by_account (ledger_sequence);
 create index if not exists sv_operations_by_account_contract_idx
     on serving.sv_operations_by_account (contract_id, operation_toid desc) where contract_id is not null;
+
+create table if not exists serving.sv_effects_by_account (
+    account_id                  text not null,
+    ledger_sequence             bigint not null,
+    tx_hash                     text not null,
+    op_index                    integer not null,
+    effect_index                integer not null,
+    operation_toid              bigint,
+    effect_type                 integer,
+    effect_type_name            text,
+    amount                      text,
+    asset_code                  text,
+    asset_issuer                text,
+    asset_type                  text,
+    details_json                jsonb,
+    trustline_limit             text,
+    authorize_flag              boolean,
+    clawback_flag               boolean,
+    signer_account              text,
+    signer_weight               integer,
+    offer_id                    bigint,
+    seller_account              text,
+    closed_at                   timestamptz not null,
+    materialized_at             timestamptz not null default now(),
+    primary key (account_id, ledger_sequence, tx_hash, op_index, effect_index)
+);
+
+create index if not exists sv_effects_by_account_page_idx
+    on serving.sv_effects_by_account (account_id, ledger_sequence desc, tx_hash desc, op_index desc, effect_index desc);
+create index if not exists sv_effects_by_account_operation_idx
+    on serving.sv_effects_by_account (operation_toid) where operation_toid is not null;
+create index if not exists sv_effects_by_account_tx_idx
+    on serving.sv_effects_by_account (tx_hash, op_index);
+create index if not exists sv_effects_by_account_ledger_idx
+    on serving.sv_effects_by_account (ledger_sequence);
 
 -- ============================================================
 -- SELF-HEAL: ensure ON CONFLICT unique indexes exist
@@ -1187,9 +1365,14 @@ begin
       ('serving.sv_tx_receipts',            'sv_tx_receipts_tx_uq',              'tx_hash'),
       ('serving.sv_transactions_by_account','sv_transactions_by_account_uq',     'account_id, toid'),
       ('serving.sv_operations_by_account',  'sv_operations_by_account_uq',       'account_id, operation_toid'),
+      ('serving.sv_effects_by_account',     'sv_effects_by_account_uq',          'account_id, ledger_sequence, tx_hash, op_index, effect_index'),
       ('serving.sv_contract_calls_recent',  'sv_contract_calls_recent_cc_uq',    'call_id'),
       ('serving.sv_events_recent',          'sv_events_recent_ev_uq',            'event_id'),
-      ('serving.sv_explorer_events_recent', 'sv_explorer_events_recent_ev_uq',   'event_id')
+      ('serving.sv_explorer_events_recent', 'sv_explorer_events_recent_ev_uq',   'event_id'),
+      ('serving.sv_contract_storage_summary','sv_contract_storage_summary_uq',    'contract_id'),
+      ('serving.sv_contract_activity_summary','sv_contract_activity_summary_uq',  'contract_id'),
+      ('serving.sv_smart_account_contracts','sv_smart_account_contracts_uq',      'contract_id'),
+      ('serving.sv_smart_account_signers',  'sv_smart_account_signers_uq',       'identity_type, identity_value, contract_id')
     ) as t(tbl, idxname, cols)
   loop
     if to_regclass(r.tbl) is null then

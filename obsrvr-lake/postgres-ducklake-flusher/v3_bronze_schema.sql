@@ -229,6 +229,8 @@ CREATE TABLE IF NOT EXISTS bronze.accounts_snapshot_v1 (
     closed_at TIMESTAMP,
     balance TEXT,
     sequence_number BIGINT,
+    sequence_ledger BIGINT,
+    sequence_time BIGINT,
     num_subentries INTEGER,
     num_sponsoring INTEGER,
     num_sponsored INTEGER,

@@ -155,6 +155,24 @@ func (c *DuckDBClient) applyBronzeMigrations(ctx context.Context) error {
 				qualified,
 			),
 		},
+		// Existing DuckLake accounts_snapshot_v1 tables predate the account
+		// sequence metadata columns (fresh catalogs get them mid-table from
+		// v3_bronze_schema.sql, upgraded ones appended here). Both orders are
+		// safe because the flusher uses an explicit column list for this table.
+		{
+			name: "accounts_snapshot_v1.sequence_ledger",
+			sql: fmt.Sprintf(
+				`ALTER TABLE %s.accounts_snapshot_v1 ADD COLUMN IF NOT EXISTS sequence_ledger BIGINT`,
+				qualified,
+			),
+		},
+		{
+			name: "accounts_snapshot_v1.sequence_time",
+			sql: fmt.Sprintf(
+				`ALTER TABLE %s.accounts_snapshot_v1 ADD COLUMN IF NOT EXISTS sequence_time BIGINT`,
+				qualified,
+			),
+		},
 	}
 
 	versionedTables := []string{

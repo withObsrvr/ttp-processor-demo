@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS bronze.transactions_row_v2 (
     tx_result TEXT,
     tx_meta TEXT,
     tx_fee_meta TEXT,
+    tx_signers TEXT,
     successful BOOLEAN,
     closed_at TIMESTAMP,
     created_at TIMESTAMP,

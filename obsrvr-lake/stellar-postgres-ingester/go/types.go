@@ -21,6 +21,11 @@ type TransactionData struct {
 	EraID                 *string
 	VersionLabel          string
 	SignaturesCount       int
+	TxEnvelope            *string
+	TxResult              *string
+	TxMeta                *string
+	TxFeeMeta             *string
+	TxSigners             *string
 	NewAccount            bool
 	// Soroban rent tracking (C13)
 	RentFeeCharged *int64
@@ -155,6 +160,8 @@ type AccountData struct {
 
 	// Account settings (5 fields)
 	SequenceNumber uint64
+	SequenceLedger uint32
+	SequenceTime   uint64
 	NumSubentries  uint32
 	NumSponsoring  uint32
 	NumSponsored   uint32

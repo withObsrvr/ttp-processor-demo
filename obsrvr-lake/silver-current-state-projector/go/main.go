@@ -493,7 +493,7 @@ func silverCurrentProjections() []Projection {
 		{Name: "accounts_current", TargetTable: "silver.accounts_current", Source: "silver.accounts_snapshot", Mode: "replace_as_of", Required: true, Status: "implemented"},
 		{Name: "trustlines_current", TargetTable: "silver.trustlines_current", Source: "silver.trustlines_snapshot", Mode: "replace_as_of", Required: true, Status: "implemented"},
 		{Name: "offers_current", TargetTable: "silver.offers_current", Source: "silver.offers_snapshot", Mode: "replace_as_of", Required: true, Status: "implemented"},
-		{Name: "contract_data_current", TargetTable: "silver.contract_data_current", Source: "silver.contract_data_changes", Mode: "replace_as_of", Required: true, Status: "implemented"},
+		{Name: "contract_data_current", TargetTable: "silver.contract_data_current", Source: "bronze.contract_data_snapshot_v1", Mode: "replace_as_of", Required: true, Status: "implemented"},
 		{Name: "native_balances_current", TargetTable: "silver.native_balances_current", Source: "silver.balance_changes", Mode: "replace_as_of", Required: true, Status: "implemented"},
 		{Name: "address_balances_current", TargetTable: "silver.address_balances_current", Source: "silver.balance_changes", Mode: "replace_as_of", Required: true, Status: "implemented"},
 		{Name: "ttl_current", TargetTable: "silver.ttl_current", Source: "bronze.ttl_snapshot_v1", Mode: "replace_as_of", Required: true, Status: "implemented"},
@@ -508,7 +508,7 @@ func executableCurrentProjections() []CurrentProjection {
 		{Name: "accounts_current", TargetTable: "accounts_current", Source: "accounts_snapshot", SourceLedgerCol: "ledger_sequence", PartitionExpr: "account_id", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"account_id"}, SelectSQL: selectAccountsCurrent, KeySQL: selectAccountsCurrentKeys},
 		{Name: "trustlines_current", TargetTable: "trustlines_current", Source: "trustlines_snapshot", SourceLedgerCol: "ledger_sequence", PartitionExpr: "concat(account_id, ':', COALESCE(asset_type, ''), ':', COALESCE(asset_code, ''), ':', COALESCE(asset_issuer, ''))", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"account_id", "asset_type", "asset_code", "asset_issuer", "liquidity_pool_id"}, SelectSQL: selectTrustlinesCurrent, KeySQL: selectTrustlinesCurrentKeys},
 		{Name: "offers_current", TargetTable: "offers_current", Source: "offers_snapshot", SourceLedgerCol: "ledger_sequence", PartitionExpr: "offer_id", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"offer_id"}, SelectSQL: selectOffersCurrent, KeySQL: selectOffersCurrentKeys},
-		{Name: "contract_data_current", TargetTable: "contract_data_current", Source: "contract_data_changes", SourceLedgerCol: "ledger_sequence", PartitionExpr: "concat(contract_id, ':', key_hash)", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"contract_id", "key_hash"}, SelectSQL: selectContractDataCurrent, KeySQL: selectContractDataCurrentKeys},
+		{Name: "contract_data_current", TargetTable: "contract_data_current", Source: "contract_data_snapshot_v1", SourceLedgerCol: "ledger_sequence", PartitionExpr: "concat(contract_id, ':', ledger_key_hash)", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"contract_id", "key_hash"}, SelectSQL: selectContractDataCurrent, KeySQL: selectContractDataCurrentKeys},
 		{Name: "ttl_current", TargetTable: "ttl_current", Source: "ttl_snapshot_v1", SourceLedgerCol: "ledger_sequence", PartitionExpr: "key_hash", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"key_hash"}, SelectSQL: selectTTLCurrent, KeySQL: selectTTLCurrentKeys},
 		{Name: "native_balances_current", TargetTable: "native_balances_current", Source: "balance_changes", SourceLedgerCol: "ledger_sequence", SourceFilter: "(asset_type = 'native' OR asset_code = 'XLM')", PartitionExpr: "address", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"account_id"}, SelectSQL: selectNativeBalancesCurrent, KeySQL: selectNativeBalancesCurrentKeys},
 		{Name: "address_balances_current", TargetTable: "address_balances_current", Source: "balance_changes", SourceLedgerCol: "ledger_sequence", PartitionExpr: "concat(address, ':', " + assetKey + ")", MaxLedgerCol: "last_updated_ledger", KeyExprs: []string{"owner_address", "asset_key"}, SelectSQL: selectAddressBalancesCurrent, KeySQL: selectAddressBalancesCurrentKeys},
@@ -645,10 +645,16 @@ func (p *Projector) ensureTargetTable(ctx context.Context, projection CurrentPro
 }
 
 func (p *Projector) ensureTargetColumns(ctx context.Context, projection CurrentProjection) error {
+	target := p.table(projection.TargetTable)
+	if projection.Name == "contract_data_current" {
+		if _, err := p.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS network VARCHAR", target)); err != nil {
+			return fmt.Errorf("migrate %s add network: %w", projection.Name, err)
+		}
+		return nil
+	}
 	if projection.Name != "ttl_current" {
 		return nil
 	}
-	target := p.table(projection.TargetTable)
 	columns := []string{
 		"network VARCHAR",
 		"key_hash VARCHAR",
@@ -769,7 +775,7 @@ func (p *Projector) publishProjection(ctx context.Context, out io.Writer, chunk 
 		if err != nil {
 			return fmt.Errorf("begin publish %s bucket %d: %w", projection.Name, i, err)
 		}
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE network = %s AND (%s) = %d", target, q(p.cfg.Network), bexpr, i)); err != nil {
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE (network = %s OR network IS NULL) AND (%s) = %d", target, q(p.cfg.Network), bexpr, i)); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("publish delete %s bucket %d: %w", projection.Name, i, err)
 		}
@@ -932,7 +938,7 @@ func selectAccountsCurrent(p *Projector, start, end int64) string {
 		num_sponsoring, num_sponsored, home_domain, master_weight, low_threshold, med_threshold,
 		high_threshold, flags, auth_required, auth_revocable, auth_immutable, auth_clawback_enabled,
 		signers, sponsor_account, created_at, COALESCE(updated_at, closed_at, current_timestamp) AS updated_at,
-		ledger_sequence AS last_modified_ledger, ledger_range, era_id, version_label
+		ledger_sequence AS last_modified_ledger, sequence_ledger, sequence_time, ledger_range, era_id, version_label
 		FROM (
 			SELECT r.* FROM (
 				SELECT arg_max(s, ROW(s.ledger_sequence, COALESCE(s.updated_at, s.closed_at))) AS r
@@ -1012,27 +1018,27 @@ func selectOffersCurrentKeys(p *Projector, start, end int64) string {
 }
 
 func selectContractDataCurrent(p *Projector, start, end int64) string {
-	return fmt.Sprintf(`SELECT network, contract_id, key_hash, contract_durability AS durability,
-		asset_type, asset_code, asset_issuer, data_value,
+	return fmt.Sprintf(`SELECT %s AS network, contract_id, ledger_key_hash AS key_hash, contract_durability AS durability,
+		asset_type, asset_code, asset_issuer, contract_data_xdr AS data_value,
 		last_modified_ledger, ledger_sequence, closed_at, closed_at AS created_at, ledger_range,
 		current_timestamp AS updated_at
 		FROM (
 			SELECT r.* FROM (
 				SELECT arg_max(s, ROW(s.ledger_sequence, s.last_modified_ledger, s.closed_at)) AS r
-				FROM %s s WHERE %s GROUP BY contract_id, key_hash
+				FROM %s s WHERE %s GROUP BY contract_id, ledger_key_hash
 			)
-		) WHERE COALESCE(deleted, false) = false`, p.table("contract_data_changes"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
+		) WHERE COALESCE(deleted, false) = false`, q(p.cfg.Network), p.bronzeTable("contract_data_snapshot_v1"), p.sourceLedgerFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
 }
 
 func selectContractDataCurrentKeys(p *Projector, start, end int64) string {
-	return fmt.Sprintf(`SELECT contract_id, key_hash FROM (
-			SELECT contract_id, key_hash, row_number() OVER (
-				PARTITION BY contract_id, key_hash
+	return fmt.Sprintf(`SELECT contract_id, ledger_key_hash AS key_hash FROM (
+			SELECT contract_id, ledger_key_hash, row_number() OVER (
+				PARTITION BY contract_id, ledger_key_hash
 				ORDER BY ledger_sequence DESC, last_modified_ledger DESC NULLS LAST, closed_at DESC NULLS LAST
 			) AS rn
 			FROM %s
 			WHERE %s
-		) WHERE rn = 1`, p.table("contract_data_changes"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
+		) WHERE rn = 1`, p.bronzeTable("contract_data_snapshot_v1"), p.sourceLedgerFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
 }
 
 func selectTTLCurrent(p *Projector, start, end int64) string {

@@ -13,25 +13,25 @@ import (
 
 // Flusher manages the high-watermark flush process
 type Flusher struct {
-	pgPool      *pgxpool.Pool
-	duckdb      *DuckDBClient
-	config      *Config
-	mu          sync.RWMutex // Protects against concurrent maintenance operations
-	flushCount  atomic.Int64
-	lastFlush   atomic.Int64 // Unix timestamp
-	lastWater   atomic.Int64 // Last watermark flushed
+	pgPool       *pgxpool.Pool
+	duckdb       *DuckDBClient
+	config       *Config
+	mu           sync.RWMutex // Protects against concurrent maintenance operations
+	flushCount   atomic.Int64
+	lastFlush    atomic.Int64 // Unix timestamp
+	lastWater    atomic.Int64 // Last watermark flushed
 	totalFlushed atomic.Int64 // Total rows flushed across all flushes
 }
 
 // FlushMetrics contains metrics from a flush operation
 type FlushMetrics struct {
-	Watermark    int64
-	RowsFlushed  int64
-	RowsDeleted  int64
-	Duration     time.Duration
+	Watermark     int64
+	RowsFlushed   int64
+	RowsDeleted   int64
+	Duration      time.Duration
 	TablesSuccess int
 	TablesFailed  int
-	VacuumRun    bool
+	VacuumRun     bool
 }
 
 // NewFlusher creates a new Flusher instance
@@ -203,6 +203,11 @@ func (f *Flusher) Flush(ctx context.Context) (*FlushMetrics, error) {
 	metrics.RowsFlushed = totalRowsFlushed
 	log.Printf("Flushed %d rows from %d tables to DuckLake", totalRowsFlushed, metrics.TablesSuccess)
 
+	if metrics.TablesFailed > 0 {
+		return metrics, fmt.Errorf("flush incomplete: %d/%d tables failed; checkpoint not advanced",
+			metrics.TablesFailed, len(tables))
+	}
+
 	// 2b. Update checkpoint after successful flush
 	if err := f.UpdateLastFlushedWatermark(ctx, watermark); err != nil {
 		return nil, fmt.Errorf("failed to update flush checkpoint: %w", err)
@@ -286,14 +291,7 @@ func (f *Flusher) deleteFromPostgresSelective(ctx context.Context, watermark int
 	var totalRowsDeleted int64
 
 	for _, tableName := range tables {
-		// Determine the sequence column name based on table type
-		sequenceColumn := "ledger_sequence"
-		switch tableName {
-		case "ledgers_row_v2":
-			sequenceColumn = "sequence"
-		case "contract_creations_v1":
-			sequenceColumn = "created_ledger"
-		}
+		sequenceColumn := sequenceColumnForTable(tableName)
 
 		deleteSQL := fmt.Sprintf("DELETE FROM %s WHERE %s <= $1;", tableName, sequenceColumn)
 

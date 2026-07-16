@@ -33,6 +33,16 @@ func TestTransformContractDataCurrentDeletesLatestDeletedRows(t *testing.T) {
 	)`); err != nil {
 		t.Fatalf("create current table: %v", err)
 	}
+	if _, err := db.Exec(`CREATE TABLE contract_data_deletions (
+		contract_id VARCHAR,
+		key_hash VARCHAR,
+		ledger_sequence BIGINT,
+		closed_at TIMESTAMP,
+		inserted_at TIMESTAMP DEFAULT NOW(),
+		PRIMARY KEY (contract_id, key_hash, ledger_sequence)
+	)`); err != nil {
+		t.Fatalf("create deletion table: %v", err)
+	}
 	insertContractDataSnapshot(t, db, "C1", "k-deleted", 10, false)
 	insertContractDataSnapshot(t, db, "C1", "k-deleted", 11, true)
 	insertContractDataSnapshot(t, db, "C1", "k-live", 12, false)
@@ -71,6 +81,12 @@ func TestTransformContractDataCurrentDeletesLatestDeletedRows(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("expected live key upserted into current table, count=%d", count)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM contract_data_deletions WHERE contract_id='C1' AND key_hash='k-deleted' AND ledger_sequence=11`).Scan(&count); err != nil {
+		t.Fatalf("count deletion tombstone: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected deletion tombstone, count=%d", count)
 	}
 }
 
@@ -185,8 +201,13 @@ func TestQueryDeletedContractDataSnapshotLatestDeletedOnHotAndCold(t *testing.T)
 			var got []string
 			for rows.Next() {
 				var contractID, keyHash string
-				if err := rows.Scan(&contractID, &keyHash); err != nil {
+				var ledgerSequence int64
+				var closedAt sql.NullTime
+				if err := rows.Scan(&contractID, &keyHash, &ledgerSequence, &closedAt); err != nil {
 					t.Fatalf("scan: %v", err)
+				}
+				if ledgerSequence != 11 || !closedAt.Valid {
+					t.Fatalf("deletion version = %d/%v, want 11/valid", ledgerSequence, closedAt.Valid)
 				}
 				got = append(got, keyHash)
 			}

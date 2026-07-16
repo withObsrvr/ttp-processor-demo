@@ -231,6 +231,7 @@ func (f *Flusher) flushAllTables(watermark, lastFlushed int64) (int64, []string,
 	tables := GetTablesToFlush()
 	totalRows := int64(0)
 	successfullyFlushed := make([]string, 0, len(tables))
+	failedTables := make([]string, 0)
 
 	pgConnStr := f.config.Postgres.ConnectionString()
 
@@ -253,6 +254,7 @@ func (f *Flusher) flushAllTables(watermark, lastFlushed int64) (int64, []string,
 		"semantic_flows_value":                true,
 		"effects":                             true,
 		"evicted_keys":                        true,
+		"contract_data_deletions":             true,
 		"trades":                              true,
 		"restored_keys":                       true,
 	}
@@ -283,12 +285,18 @@ func (f *Flusher) flushAllTables(watermark, lastFlushed int64) (int64, []string,
 
 		if err != nil {
 			log.Printf("⚠️  Failed to flush %s: %v", tableName, err)
+			failedTables = append(failedTables, tableName)
 			continue // Continue with next table
 		}
 
 		log.Printf("   ✓ Flushed %d rows from %s", rowsFlushed, tableName)
 		totalRows += rowsFlushed
 		successfullyFlushed = append(successfullyFlushed, tableName)
+	}
+
+	if len(failedTables) > 0 {
+		return totalRows, successfullyFlushed, fmt.Errorf("failed to flush %d/%d tables: %s",
+			len(failedTables), len(tables), strings.Join(failedTables, ", "))
 	}
 
 	return totalRows, successfullyFlushed, nil
@@ -317,6 +325,7 @@ func (f *Flusher) deleteFlushedData(watermark int64, tables []string) (int64, er
 		"semantic_flows_value":                true,
 		"effects":                             true,
 		"evicted_keys":                        true,
+		"contract_data_deletions":             true,
 		"trades":                              true,
 		"restored_keys":                       true,
 	}
