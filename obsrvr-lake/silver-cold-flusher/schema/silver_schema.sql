@@ -700,6 +700,14 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.evicted_keys (
     inserted_at TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS testnet_catalog.silver.contract_data_deletions (
+    contract_id VARCHAR,
+    key_hash VARCHAR,
+    ledger_sequence BIGINT,
+    closed_at TIMESTAMP,
+    inserted_at TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS testnet_catalog.silver.trades (
     ledger_sequence BIGINT,
     transaction_hash VARCHAR,

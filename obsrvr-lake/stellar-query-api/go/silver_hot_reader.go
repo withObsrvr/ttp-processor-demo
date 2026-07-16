@@ -248,11 +248,34 @@ func (h *SilverHotReader) GetServingContractStorageSummary(ctx context.Context, 
 	var latestClosedAt sql.NullTime
 	var updatedAt time.Time
 	err := h.db.QueryRowContext(ctx, `
-		SELECT contract_id, total_entries, live_entries, expired_entries, deleted_entries,
-		       persistent_entries, temporary_entries, instance_entries, total_size_bytes,
-		       latest_ledger, latest_closed_at, updated_at
-		FROM serving.sv_contract_storage_summary
-		WHERE contract_id = $1
+		WITH current_ledger AS (
+			SELECT COALESCE(MAX(ledger_sequence), 0) AS ledger_sequence
+			FROM serving.sv_ledger_stats_recent
+		), expired AS (
+			SELECT COUNT(*)::bigint AS expired_entries
+			FROM serving.sv_contract_storage_current s
+			CROSS JOIN current_ledger cl
+			WHERE s.contract_id = $1
+			  AND cl.ledger_sequence > 0
+			  AND s.live_until_ledger_seq IS NOT NULL
+			  AND s.live_until_ledger_seq < cl.ledger_sequence
+		)
+		SELECT
+			s.contract_id,
+			s.total_entries,
+			GREATEST(s.total_entries - LEAST(s.total_entries, e.expired_entries), 0)::bigint AS live_entries,
+			LEAST(s.total_entries, e.expired_entries)::bigint AS expired_entries,
+			s.deleted_entries,
+			s.persistent_entries,
+			s.temporary_entries,
+			s.instance_entries,
+			s.total_size_bytes,
+			s.latest_ledger,
+			s.latest_closed_at,
+			s.updated_at
+		FROM serving.sv_contract_storage_summary s
+		CROSS JOIN expired e
+		WHERE s.contract_id = $1
 	`, contractID).Scan(
 		&summary.ContractID,
 		&summary.TotalEntries,
@@ -466,6 +489,65 @@ func (h *SilverHotReader) GetServingAccountCurrent(ctx context.Context, accountI
 		acc.AuthClawbackEnabled = &authClawback.Bool
 	}
 	return &acc, nil
+}
+
+// GetAccountSigners returns current signer and threshold state directly from
+// silver_hot. accounts_current is keyed by account_id, so this avoids routing a
+// point lookup through the hot+cold DuckDB federation.
+func (h *SilverHotReader) GetAccountSigners(ctx context.Context, accountID string) (*AccountSignersResponse, error) {
+	var accID string
+	var signersJSON string
+	var masterWeight, lowThreshold, medThreshold, highThreshold int
+	err := h.db.QueryRowContext(ctx, `
+		SELECT
+			account_id,
+			COALESCE(signers, '[]') as signers,
+			COALESCE(master_weight, 1) as master_weight,
+			COALESCE(low_threshold, 0) as low_threshold,
+			COALESCE(med_threshold, 0) as med_threshold,
+			COALESCE(high_threshold, 0) as high_threshold
+		FROM accounts_current
+		WHERE account_id = $1
+	`, accountID).Scan(&accID, &signersJSON, &masterWeight, &lowThreshold, &medThreshold, &highThreshold)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("hot GetAccountSigners: %w", err)
+	}
+
+	return buildAccountSignersResponse(accID, signersJSON, masterWeight, lowThreshold, medThreshold, highThreshold)
+}
+
+func buildAccountSignersResponse(accountID, signersJSON string, masterWeight, lowThreshold, medThreshold, highThreshold int) (*AccountSignersResponse, error) {
+	var signers []AccountSigner
+	if signersJSON != "" && signersJSON != "[]" {
+		if err := json.Unmarshal([]byte(signersJSON), &signers); err != nil {
+			return nil, fmt.Errorf("accounts_current.signers unparseable for %s: %w", accountID, err)
+		}
+	}
+	if masterWeight > 0 {
+		hasMaster := false
+		for _, signer := range signers {
+			if signer.Key == accountID {
+				hasMaster = true
+				break
+			}
+		}
+		if !hasMaster {
+			signers = append([]AccountSigner{{
+				Key:    accountID,
+				Weight: masterWeight,
+				Type:   "ed25519_public_key",
+			}}, signers...)
+		}
+	}
+
+	response := &AccountSignersResponse{AccountID: accountID, Signers: signers}
+	response.Thresholds.LowThreshold = lowThreshold
+	response.Thresholds.MedThreshold = medThreshold
+	response.Thresholds.HighThreshold = highThreshold
+	return response, nil
 }
 
 func (h *SilverHotReader) getServingAccountCurrentLegacy(ctx context.Context, accountID string) (*AccountCurrent, error) {
@@ -1395,6 +1477,119 @@ func (h *SilverHotReader) GetServingAccountOperations(ctx context.Context, filte
 		return nil, "", false, true, err
 	}
 	return ops, nextCursor, hasMore, true, nil
+}
+
+// GetServingAccountTransfers returns recent successful payment operations from
+// the materialized by-account feed when its watermark is current.
+func (h *SilverHotReader) GetServingAccountTransfers(ctx context.Context, accountID string, startTime, endTime time.Time, limit int) ([]TokenTransfer, bool, error) {
+	if accountID == "" {
+		return nil, false, nil
+	}
+
+	var status string
+	var completeFrom, completeThru int64
+	err := h.db.QueryRowContext(ctx, `
+		SELECT status, complete_from, complete_thru
+		FROM serving.sv_watermarks
+		WHERE table_name = 'serving.sv_operations_by_account'
+	`).Scan(&status, &completeFrom, &completeThru)
+	if err == sql.ErrNoRows {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("serving account transfers watermark: %w", err)
+	}
+	if status != "complete" {
+		return nil, false, nil
+	}
+
+	latestLedger, err := h.GetServingLatestLedgerSequence(ctx)
+	if err != nil {
+		return nil, false, fmt.Errorf("serving latest ledger for account transfers: %w", err)
+	}
+	if !servingFeedFreshEnough(completeThru, latestLedger) {
+		return nil, false, nil
+	}
+
+	if limit <= 0 {
+		limit = 10
+	}
+	where := []string{
+		"account_id = $1",
+		"ledger_sequence BETWEEN $2 AND $3",
+		"successful = true",
+		"is_payment_op = true",
+	}
+	args := []interface{}{accountID, completeFrom, completeThru}
+	arg := 4
+	if !startTime.IsZero() {
+		where = append(where, fmt.Sprintf("closed_at >= $%d", arg))
+		args = append(args, startTime)
+		arg++
+	}
+	if !endTime.IsZero() {
+		where = append(where, fmt.Sprintf("closed_at <= $%d", arg))
+		args = append(args, endTime)
+		arg++
+	}
+	args = append(args, limit)
+
+	query := fmt.Sprintf(`
+		SELECT closed_at, tx_hash, ledger_sequence, source_account,
+		       destination_account, asset_key, amount_stroops, contract_id,
+		       is_soroban_op, successful
+		FROM serving.sv_operations_by_account
+		WHERE %s
+		ORDER BY operation_toid DESC
+		LIMIT $%d`, strings.Join(where, " AND "), arg)
+	rows, err := h.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, true, fmt.Errorf("serving account transfers: %w", err)
+	}
+	defer rows.Close()
+
+	transfers := make([]TokenTransfer, 0, limit)
+	for rows.Next() {
+		var transfer TokenTransfer
+		var closedAt time.Time
+		var source, destination, assetKey, contractID sql.NullString
+		var amount sql.NullInt64
+		var isSoroban bool
+		if err := rows.Scan(
+			&closedAt,
+			&transfer.TransactionHash,
+			&transfer.LedgerSequence,
+			&source,
+			&destination,
+			&assetKey,
+			&amount,
+			&contractID,
+			&isSoroban,
+			&transfer.TransactionSuccessful,
+		); err != nil {
+			return nil, true, err
+		}
+		transfer.Timestamp = closedAt.UTC().Format(time.RFC3339)
+		transfer.SourceType = "classic"
+		if isSoroban {
+			transfer.SourceType = "soroban"
+		}
+		transfer.FromAccount = nullStringPtr(source)
+		transfer.ToAccount = nullStringPtr(destination)
+		if assetKey.Valid {
+			transfer.AssetCode, transfer.AssetIssuer = horizonServingAssetParts(assetKey.String)
+		}
+		if amount.Valid {
+			formatted := formatStroopsToDecimal(amount.Int64)
+			transfer.Amount = &formatted
+		}
+		transfer.TokenContractID = nullStringPtr(contractID)
+		transfers = append(transfers, transfer)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, true, err
+	}
+	return transfers, true, nil
 }
 
 func (h *SilverHotReader) getServingAccountSACPaymentOperationIDs(ctx context.Context, filters OperationFilters, startLedger, endLedger int64, cursorOp, orderDir string, limit int) ([]int64, error) {

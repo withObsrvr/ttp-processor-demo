@@ -76,6 +76,8 @@ Per-projector visibility now includes:
 - `serving.sv_assets_current`
 - `serving.sv_asset_stats_current`
 - `serving.sv_contracts_current`
+- `serving.sv_contract_storage_current`
+- `serving.sv_contract_storage_summary`
 - `serving.sv_contract_stats_current`
 - `serving.sv_contract_function_stats_current`
 - `serving.sv_operations_recent`
@@ -92,6 +94,10 @@ Current status of recent-feed projectors:
 - `effects_by_account` runs incrementally after a full `sv_effects_by_account`
   backfill watermark exists, preserving complete-history semantics for Horizon
   account effects.
+- `contract_storage` runs incrementally after authoritative cold current-state
+  and serving snapshots establish the handoff watermark. It upserts changed
+  entries, applies TTL changes, and consumes guarded deletion/eviction
+  tombstones; it never rebuilds serving state from the pruned hot window.
 - `transactions_recent` includes Horizon transaction hydration columns:
   `transaction_id`, `tx_envelope`, `tx_result`, `tx_meta`, `tx_fee_meta`,
   and `tx_signers`. These fields let `stellar-query-api` hydrate Horizon

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -291,57 +290,7 @@ func (r *HorizonAccountReader) hotAccountSigners(ctx context.Context, accountID 
 	if r.hot == nil || r.hot.db == nil {
 		return nil, nil
 	}
-	var accID string
-	var signersJSON string
-	var masterWeight, lowThreshold, medThreshold, highThreshold int
-	err := r.hot.db.QueryRowContext(ctx, `
-		SELECT
-			account_id,
-			COALESCE(signers, '[]') as signers,
-			COALESCE(master_weight, 1) as master_weight,
-			COALESCE(low_threshold, 0) as low_threshold,
-			COALESCE(med_threshold, 0) as med_threshold,
-			COALESCE(high_threshold, 0) as high_threshold
-		FROM accounts_current
-		WHERE account_id = $1
-	`, accountID).Scan(&accID, &signersJSON, &masterWeight, &lowThreshold, &medThreshold, &highThreshold)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	var signers []AccountSigner
-	if signersJSON != "" && signersJSON != "[]" {
-		if err := json.Unmarshal([]byte(signersJSON), &signers); err != nil {
-			// Corrupt signers JSON must not degrade to "no extra signers" — that
-			// changes who can spend from the account.
-			return nil, fmt.Errorf("accounts_current.signers unparseable for %s: %w", accountID, err)
-		}
-	}
-	if masterWeight > 0 {
-		hasMaster := false
-		for _, signer := range signers {
-			if signer.Key == accountID {
-				hasMaster = true
-				break
-			}
-		}
-		if !hasMaster {
-			signers = append([]AccountSigner{{
-				Key:    accountID,
-				Weight: masterWeight,
-				Type:   "ed25519_public_key",
-			}}, signers...)
-		}
-	}
-
-	resp := &AccountSignersResponse{AccountID: accID, Signers: signers}
-	resp.Thresholds.LowThreshold = lowThreshold
-	resp.Thresholds.MedThreshold = medThreshold
-	resp.Thresholds.HighThreshold = highThreshold
-	return resp, nil
+	return r.hot.GetAccountSigners(ctx, accountID)
 }
 
 func horizonBalances(resp *AccountBalancesResponse) []protocol.Balance {

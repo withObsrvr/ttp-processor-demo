@@ -1228,16 +1228,18 @@ func (r *BronzeColdReader) QueryContractDataSnapshot(ctx context.Context, startL
 func (r *BronzeColdReader) QueryDeletedContractDataSnapshot(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
 	query := fmt.Sprintf(`
 		WITH ranked AS (
-			SELECT
-				contract_id,
-				ledger_key_hash AS key_hash,
-				deleted,
+		SELECT
+			contract_id,
+			ledger_key_hash AS key_hash,
+			ledger_sequence,
+			closed_at,
+			deleted,
 				ROW_NUMBER() OVER (PARTITION BY contract_id, ledger_key_hash ORDER BY ledger_sequence DESC) as rn
 			FROM %s
 			WHERE ledger_sequence BETWEEN $1 AND $2
 		)
-		SELECT contract_id, key_hash
-		FROM ranked
+	SELECT contract_id, key_hash, ledger_sequence, closed_at
+	FROM ranked
 		WHERE rn = 1 AND deleted = true
 	`, r.tableName("contract_data_snapshot_v1"))
 

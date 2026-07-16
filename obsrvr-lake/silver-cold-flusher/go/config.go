@@ -145,6 +145,7 @@ func GetTablesToFlush() []string {
 		// testnet despite the rest of silver being pruned to a ~50-min window.
 		"effects",
 		"evicted_keys",
+		"contract_data_deletions",
 
 		// Append-only DEX/ledger events (added April 2026 — same leak class
 		// as effects/evicted_keys, just quieter on testnet so it went unnoticed

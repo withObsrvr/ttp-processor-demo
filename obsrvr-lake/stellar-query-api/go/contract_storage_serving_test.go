@@ -54,7 +54,7 @@ func TestGetServingContractStorageSummaryIncludesCoverage(t *testing.T) {
 	reader := &SilverHotReader{db: db, network: "testnet"}
 	updatedAt := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
 	latestClosedAt := time.Date(2026, 7, 10, 11, 59, 0, 0, time.UTC)
-	mock.ExpectQuery(regexp.QuoteMeta("FROM serving.sv_contract_storage_summary")).
+	mock.ExpectQuery(regexp.QuoteMeta("FROM serving.sv_contract_storage_summary s")).
 		WithArgs("CCONTRACT").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"contract_id", "total_entries", "live_entries", "expired_entries", "deleted_entries",

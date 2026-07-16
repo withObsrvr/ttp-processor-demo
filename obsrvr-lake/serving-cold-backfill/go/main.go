@@ -1128,13 +1128,9 @@ func (b *Backfiller) writeProjectionCheckpoints(ctx context.Context, projectionN
 			return fmt.Errorf("insert checkpoint %s: %w", name, err)
 		}
 		tableName := b.cfg.ServingSchema + "." + name
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE table_name=%s", b.servingTable("sv_watermarks"), q(tableName))); err != nil {
+		if err := b.extendWatermark(ctx, tx, tableName); err != nil {
 			_ = tx.Rollback()
-			return fmt.Errorf("delete watermark %s: %w", name, err)
-		}
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s VALUES (%s, 'complete', %d, %d, current_timestamp)", b.servingTable("sv_watermarks"), q(tableName), b.cfg.Start, b.cfg.End)); err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("insert watermark %s: %w", name, err)
+			return fmt.Errorf("extend watermark %s: %w", name, err)
 		}
 		consumerTable := fmt.Sprintf("%s.%s", b.opsSchemaRef(), ident("consumers"))
 		if _, err := tx.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE pipeline=%s AND source_table=%s", consumerTable, q(b.cfg.Component()), q(tableName))); err != nil {
@@ -1151,6 +1147,43 @@ func (b *Backfiller) writeProjectionCheckpoints(ctx context.Context, projectionN
 		return fmt.Errorf("commit checkpoint handoff: %w", err)
 	}
 	return nil
+}
+
+func (b *Backfiller) extendWatermark(ctx context.Context, tx *sql.Tx, tableName string) error {
+	watermarkTable := b.servingTable("sv_watermarks")
+	var status string
+	var completeFrom, completeThru int64
+	err := tx.QueryRowContext(ctx, fmt.Sprintf(
+		"SELECT status, complete_from, complete_thru FROM %s WHERE table_name=%s",
+		watermarkTable, q(tableName),
+	)).Scan(&status, &completeFrom, &completeThru)
+	if err == sql.ErrNoRows {
+		_, err = tx.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO %s VALUES (%s, 'complete', %d, %d, current_timestamp)",
+			watermarkTable, q(tableName), b.cfg.Start, b.cfg.End,
+		))
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	if status != "complete" {
+		return fmt.Errorf("existing watermark status is %q", status)
+	}
+	if b.cfg.Start > completeThru+1 || b.cfg.End < completeFrom-1 {
+		return fmt.Errorf("range %d..%d is not contiguous with existing coverage %d..%d", b.cfg.Start, b.cfg.End, completeFrom, completeThru)
+	}
+	if b.cfg.Start < completeFrom {
+		completeFrom = b.cfg.Start
+	}
+	if b.cfg.End > completeThru {
+		completeThru = b.cfg.End
+	}
+	_, err = tx.ExecContext(ctx, fmt.Sprintf(
+		"UPDATE %s SET status='complete', complete_from=%d, complete_thru=%d, updated_at=current_timestamp WHERE table_name=%s",
+		watermarkTable, completeFrom, completeThru, q(tableName),
+	))
+	return err
 }
 
 func feedProjectionNames(feed []FeedProjection) []string {

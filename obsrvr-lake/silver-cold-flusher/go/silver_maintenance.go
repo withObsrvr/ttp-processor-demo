@@ -56,6 +56,7 @@ var SilverTables = []string{
 	// absent from the flush list, causing silver_hot to grow unbounded)
 	"effects",
 	"evicted_keys",
+	"contract_data_deletions",
 
 	// Additional event tables (added April 2026 — same leak class as effects;
 	// testnet DEX activity is quiet so these were small when caught)

@@ -254,6 +254,7 @@ func (f *Flusher) flushAllTables(watermark, lastFlushed int64) (int64, []string,
 		"semantic_flows_value":                true,
 		"effects":                             true,
 		"evicted_keys":                        true,
+		"contract_data_deletions":             true,
 		"trades":                              true,
 		"restored_keys":                       true,
 	}
@@ -324,6 +325,7 @@ func (f *Flusher) deleteFlushedData(watermark int64, tables []string) (int64, er
 		"semantic_flows_value":                true,
 		"effects":                             true,
 		"evicted_keys":                        true,
+		"contract_data_deletions":             true,
 		"trades":                              true,
 		"restored_keys":                       true,
 	}

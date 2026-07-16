@@ -113,6 +113,11 @@ for the materialized serving table. After all enabled feed and current
 projections verify, the component writes `serving.sv_projection_checkpoints`
 for every enabled projection to `--end-ledger`.
 
+For `sv_contract_storage_current`, first rebuild Silver cold
+`contract_data_current` and `ttl_current` to the same as-of ledger. The serving
+replacement is the authoritative handoff to the incremental `contract_storage`
+projector; never seed it from the pruned hot current-state tables.
+
 The broader contract still lists every required first-release serving table:
 
 ```text

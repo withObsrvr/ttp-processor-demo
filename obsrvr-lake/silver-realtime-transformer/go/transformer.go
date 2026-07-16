@@ -2491,7 +2491,18 @@ func (rt *RealtimeTransformer) transformContractDataCurrent(ctx context.Context,
 	}
 	defer deletedRows.Close()
 
-	deleteStmt, err := tx.PrepareContext(ctx, `DELETE FROM contract_data_current WHERE contract_id = $1 AND key_hash = $2`)
+	tombstoneStmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO contract_data_deletions (contract_id, key_hash, ledger_sequence, closed_at)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (contract_id, key_hash, ledger_sequence) DO NOTHING`)
+	if err != nil {
+		return count, fmt.Errorf("failed to prepare contract data tombstone: %w", err)
+	}
+	defer tombstoneStmt.Close()
+
+	deleteStmt, err := tx.PrepareContext(ctx, `
+		DELETE FROM contract_data_current
+		WHERE contract_id = $1 AND key_hash = $2 AND ledger_sequence <= $3`)
 	if err != nil {
 		return count, fmt.Errorf("failed to prepare contract data delete: %w", err)
 	}
@@ -2500,10 +2511,15 @@ func (rt *RealtimeTransformer) transformContractDataCurrent(ctx context.Context,
 	deletedCount := int64(0)
 	for deletedRows.Next() {
 		var contractID, keyHash string
-		if err := deletedRows.Scan(&contractID, &keyHash); err != nil {
+		var ledgerSequence int64
+		var closedAt time.Time
+		if err := deletedRows.Scan(&contractID, &keyHash, &ledgerSequence, &closedAt); err != nil {
 			return count, fmt.Errorf("failed to scan deleted contract data row: %w", err)
 		}
-		result, err := deleteStmt.ExecContext(ctx, contractID, keyHash)
+		if _, err := tombstoneStmt.ExecContext(ctx, contractID, keyHash, ledgerSequence, closedAt); err != nil {
+			return count, fmt.Errorf("failed to persist contract data tombstone %s/%s: %w", contractID, keyHash, err)
+		}
+		result, err := deleteStmt.ExecContext(ctx, contractID, keyHash, ledgerSequence)
 		if err != nil {
 			return count, fmt.Errorf("failed to delete contract data current row %s/%s: %w", contractID, keyHash, err)
 		}

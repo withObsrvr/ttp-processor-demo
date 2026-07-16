@@ -183,6 +183,10 @@ create index if not exists sv_contract_storage_current_contract_idx
     on serving.sv_contract_storage_current (contract_id, expired, durability, key_hash);
 create index if not exists sv_contract_storage_current_ttl_idx
     on serving.sv_contract_storage_current (expired, live_until_ledger_seq);
+create index if not exists sv_contract_storage_current_contract_ttl_idx
+    on serving.sv_contract_storage_current (contract_id, live_until_ledger_seq);
+create index if not exists sv_contract_storage_current_key_hash_idx
+    on serving.sv_contract_storage_current (key_hash);
 create index if not exists sv_contract_storage_current_modified_idx
     on serving.sv_contract_storage_current (last_modified_ledger desc);
 

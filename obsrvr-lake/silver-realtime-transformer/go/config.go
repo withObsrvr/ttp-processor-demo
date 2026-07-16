@@ -82,6 +82,7 @@ type DatabaseConfig struct {
 	MaxIdleConns           int    `yaml:"max_idle_conns"`
 	ConnMaxLifetimeSeconds int    `yaml:"conn_max_lifetime_seconds"`
 	ConnMaxIdleTimeSeconds int    `yaml:"conn_max_idle_time_seconds"`
+	QueryExecMode          string `yaml:"query_exec_mode"`
 }
 
 // CheckpointConfig holds checkpoint tracking settings
@@ -247,8 +248,12 @@ func (d *DatabaseConfig) ConnMaxIdleTime() time.Duration {
 
 // ConnectionString builds a PostgreSQL connection string
 func (d *DatabaseConfig) ConnectionString() string {
-	return fmt.Sprintf(
+	dsn := fmt.Sprintf(
 		"host=%s port=%d dbname=%s user=%s password=%s sslmode=%s",
 		d.Host, d.Port, d.Database, d.User, d.Password, d.SSLMode,
 	)
+	if d.QueryExecMode != "" {
+		dsn += " default_query_exec_mode=" + d.QueryExecMode
+	}
+	return dsn
 }

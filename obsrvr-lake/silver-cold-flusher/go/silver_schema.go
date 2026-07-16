@@ -265,6 +265,7 @@ var tablesWithLedgerRange = map[string]bool{
 	"contract_invocations_raw":            true,
 	"effects":                             true,
 	"evicted_keys":                        true,
+	"contract_data_deletions":             true,
 	"trades":                              true,
 	"restored_keys":                       true,
 	"native_balances_current":             true,

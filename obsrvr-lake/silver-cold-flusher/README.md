@@ -55,30 +55,20 @@ The service uses a safe, idempotent flush pattern:
    VACUUM ANALYZE enriched_history_operations;
    ```
 
-## Tables Flushed (18 Total)
+## Tables Flushed
 
-### Current State Tables (10)
-1. accounts_current
-2. account_signers_current
-3. trustlines_current
-4. offers_current
-5. claimable_balances_current
-6. liquidity_pools_current
-7. contract_data_current
-8. contract_code_current
-9. config_settings_current
-10. ttl_current
+The authoritative list is `GetTablesToFlush()` in `go/config.go`. It includes:
 
-### Snapshot Tables (4) - SCD Type 2
-11. accounts_snapshot
-12. trustlines_snapshot
-13. offers_snapshot
-14. account_signers_snapshot
+- Current state: accounts, trustlines, offers, contract data, TTL, native and
+  address balances, claimable balances, token registry, and smart-account
+  state.
+- Snapshots: accounts, trustlines, offers, and account signers.
+- History/events: enriched operations, token transfers, contract invocations,
+  semantic activities/flows, effects, trades, evicted/restored keys, and
+  `contract_data_deletions` tombstones.
 
-### Enriched/Event Tables (3)
-15. enriched_history_operations
-16. token_transfers_raw
-17. soroban_history_operations
+Append-only event and tombstone tables use `ledger_sequence` for flush and
+retention. Current-state tables use their latest-modified ledger column.
 
 ## Configuration
 

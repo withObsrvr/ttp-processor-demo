@@ -65,7 +65,9 @@ projectors:
     batch_size: 1
   contract_storage:
     enabled: true
-    batch_size: 1
+    # Ledger sequences per incremental batch. Requires a complete cold
+    # sv_contract_storage_current watermark before first enablement.
+    batch_size: 256
   smart_accounts:
     enabled: true
     batch_size: 1

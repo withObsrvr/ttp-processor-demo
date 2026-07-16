@@ -1932,50 +1932,7 @@ func (r *UnifiedDuckDBReader) GetAccountSigners(ctx context.Context, accountID s
 		return nil, fmt.Errorf("unified GetAccountSigners: %w", err)
 	}
 
-	// Parse signers JSON
-	var signers []AccountSigner
-
-	// The signers column may be stored as a JSON array of signer objects
-	// Format: [{"key": "G...", "weight": 1, "type": "ed25519_public_key"}, ...]
-	// Or it could be empty/null
-	if signersJSON != "" && signersJSON != "[]" {
-		if err := json.Unmarshal([]byte(signersJSON), &signers); err != nil {
-			// If JSON parsing fails, log but continue with empty signers
-			log.Printf("Warning: failed to parse signers JSON for %s: %v", accountID, err)
-			signers = []AccountSigner{}
-		}
-	}
-
-	// Always include the master key as a signer if it has weight > 0
-	if masterWeight > 0 {
-		// Check if master key is already in signers list
-		hasMaster := false
-		for _, s := range signers {
-			if s.Key == accountID {
-				hasMaster = true
-				break
-			}
-		}
-		if !hasMaster {
-			// Prepend master key
-			masterSigner := AccountSigner{
-				Key:    accountID,
-				Weight: masterWeight,
-				Type:   "ed25519_public_key",
-			}
-			signers = append([]AccountSigner{masterSigner}, signers...)
-		}
-	}
-
-	response := &AccountSignersResponse{
-		AccountID: accID,
-		Signers:   signers,
-	}
-	response.Thresholds.LowThreshold = lowThreshold
-	response.Thresholds.MedThreshold = medThreshold
-	response.Thresholds.HighThreshold = highThreshold
-
-	return response, nil
+	return buildAccountSignersResponse(accID, signersJSON, masterWeight, lowThreshold, medThreshold, highThreshold)
 }
 
 // ============================================

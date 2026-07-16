@@ -38,7 +38,7 @@ func buildProjectors(cfg *Config, bronze, silver, serving *pgxpool.Pool, checkpo
 		projectors = append(projectors, NewContractsCurrentProjector(network, silver, serving))
 	}
 	if cfg.Projectors.ContractStorage.Enabled {
-		projectors = append(projectors, NewContractStorageProjector(network, silver, serving))
+		projectors = append(projectors, NewContractStorageProjector(network, cfg.Projectors.ContractStorage.BatchSize, silver, serving, checkpoints))
 	}
 	if cfg.Projectors.SmartAccounts.Enabled {
 		projectors = append(projectors, NewSmartAccountsProjector(network, silver, serving))

@@ -59,7 +59,7 @@ Implemented projections:
 silver.accounts_current
 silver.trustlines_current
 silver.offers_current
-silver.contract_data_current
+silver.contract_data_current (from bronze.contract_data_snapshot_v1)
 silver.ttl_current
 silver.native_balances_current
 silver.address_balances_current

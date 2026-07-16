@@ -444,15 +444,29 @@ func (h *SilverHandlers) HandleAccountSigners(w http.ResponseWriter, r *http.Req
 
 	var response *AccountSignersResponse
 	var err error
+	ctx, cancel := withInteractiveQueryTimeout(r.Context())
+	defer cancel()
+
+	if h.legacyReader != nil && h.legacyReader.hot != nil {
+		response, err = h.legacyReader.hot.GetAccountSigners(ctx, accountID)
+		if err == nil && response != nil {
+			respondJSON(w, response)
+			return
+		}
+		if err != nil && !isSchemaGapError(err) {
+			respondError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
 
 	switch h.readerMode {
 	case ReaderModeUnified, ReaderModeHybrid:
 		// Use unified reader for both unified and hybrid modes
-		response, err = h.unifiedReader.GetAccountSigners(r.Context(), accountID)
+		response, err = h.unifiedReader.GetAccountSigners(ctx, accountID)
 	default:
 		// Legacy mode - unified reader still works, just use it
 		if h.unifiedReader != nil {
-			response, err = h.unifiedReader.GetAccountSigners(r.Context(), accountID)
+			response, err = h.unifiedReader.GetAccountSigners(ctx, accountID)
 		} else {
 			respondError(w, "signers endpoint requires unified reader", http.StatusInternalServerError)
 			return
@@ -1960,24 +1974,34 @@ func (h *SilverHandlers) HandleAccountOverview(w http.ResponseWriter, r *http.Re
 		feedOps, feedOK := h.getAccountOverviewFeedOperations(optionalCtx, accountID, 10)
 		if feedOK {
 			operations = feedOps
+			now := time.Now()
+			if feedTransfers, covered, feedErr := h.legacyReader.hot.GetServingAccountTransfers(
+				optionalCtx,
+				accountID,
+				now.Add(-7*24*time.Hour),
+				now,
+				20,
+			); feedErr == nil && covered {
+				transfersFrom = feedTransfers
+			}
 		} else {
 			operations, _ = h.unifiedReader.GetEnrichedOperations(optionalCtx, OperationFilters{
 				AccountID: accountID,
 				Limit:     10,
 			})
+			transfersFrom, _ = h.unifiedReader.GetTokenTransfers(optionalCtx, TransferFilters{
+				FromAccount: accountID,
+				StartTime:   time.Now().Add(-7 * 24 * time.Hour),
+				EndTime:     time.Now(),
+				Limit:       10,
+			})
+			transfersTo, _ = h.unifiedReader.GetTokenTransfers(optionalCtx, TransferFilters{
+				ToAccount: accountID,
+				StartTime: time.Now().Add(-7 * 24 * time.Hour),
+				EndTime:   time.Now(),
+				Limit:     10,
+			})
 		}
-		transfersFrom, _ = h.unifiedReader.GetTokenTransfers(optionalCtx, TransferFilters{
-			FromAccount: accountID,
-			StartTime:   time.Now().Add(-7 * 24 * time.Hour),
-			EndTime:     time.Now(),
-			Limit:       10,
-		})
-		transfersTo, _ = h.unifiedReader.GetTokenTransfers(optionalCtx, TransferFilters{
-			ToAccount: accountID,
-			StartTime: time.Now().Add(-7 * 24 * time.Hour),
-			EndTime:   time.Now(),
-			Limit:     10,
-		})
 		optionalCancel()
 		if account == nil && len(operations) == 0 && len(transfersFrom) == 0 && len(transfersTo) == 0 {
 			respondError(w, "account not found", http.StatusNotFound)
@@ -2076,9 +2100,11 @@ func (h *SilverHandlers) HandleAccountOverview(w http.ResponseWriter, r *http.Re
 		defer createdAtCancel()
 		switch h.readerMode {
 		case ReaderModeUnified:
-			if h.unifiedReader != nil {
-				createdAt, _ := h.unifiedReader.GetAccountCreatedAt(createdAtCtx, accountID)
-				account.CreatedAt = createdAt
+			if h.legacyReader != nil && h.legacyReader.hot != nil {
+				servingAccount, _ := h.legacyReader.hot.GetServingAccountCurrent(createdAtCtx, accountID)
+				if servingAccount != nil {
+					account.CreatedAt = servingAccount.CreatedAt
+				}
 			}
 		default:
 			if h.legacyReader != nil {

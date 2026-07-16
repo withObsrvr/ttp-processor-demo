@@ -270,6 +270,64 @@ func TestByAccountOnlyProjectionSelection(t *testing.T) {
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM duckdb_tables() WHERE schema_name='serving' AND table_name='sv_transactions_recent'`, 0)
 }
 
+func TestCheckpointHandoffExtendsContiguousWatermark(t *testing.T) {
+	ctx := context.Background()
+	db := openBackfillFixtureDB(t)
+	defer db.Close()
+	loadBackfillFixture(t, ctx, db)
+
+	backfiller := NewBackfillerWithDB(db, Config{
+		Network:       "mainnet",
+		Start:         7,
+		End:           8,
+		ServingSchema: "serving",
+	})
+	if err := backfiller.ensureServingSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := backfiller.ensureManifest(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO serving.sv_watermarks VALUES ('serving.sv_transactions_by_account', 'complete', 3, 6, current_timestamp)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := backfiller.writeProjectionCheckpoints(ctx, []string{"sv_transactions_by_account"}); err != nil {
+		t.Fatalf("writeProjectionCheckpoints: %v", err)
+	}
+
+	assertBackfillCount(t, db, `SELECT complete_from FROM serving.sv_watermarks WHERE table_name='serving.sv_transactions_by_account'`, 3)
+	assertBackfillCount(t, db, `SELECT complete_thru FROM serving.sv_watermarks WHERE table_name='serving.sv_transactions_by_account'`, 8)
+}
+
+func TestCheckpointHandoffRejectsWatermarkGap(t *testing.T) {
+	ctx := context.Background()
+	db := openBackfillFixtureDB(t)
+	defer db.Close()
+	loadBackfillFixture(t, ctx, db)
+
+	backfiller := NewBackfillerWithDB(db, Config{
+		Network:       "mainnet",
+		Start:         8,
+		End:           9,
+		ServingSchema: "serving",
+	})
+	if err := backfiller.ensureServingSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := backfiller.ensureManifest(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO serving.sv_watermarks VALUES ('serving.sv_transactions_by_account', 'complete', 3, 6, current_timestamp)`); err != nil {
+		t.Fatal(err)
+	}
+	err := backfiller.writeProjectionCheckpoints(ctx, []string{"sv_transactions_by_account"})
+	if err == nil || !strings.Contains(err.Error(), "not contiguous") {
+		t.Fatalf("writeProjectionCheckpoints error = %v, want non-contiguous range error", err)
+	}
+
+	assertBackfillCount(t, db, `SELECT complete_thru FROM serving.sv_watermarks WHERE table_name='serving.sv_transactions_by_account'`, 6)
+}
+
 func TestUnknownProjectionSelectionFails(t *testing.T) {
 	if _, err := selectFeedProjections(feedProjections(), "sv_transactions_by_account,missing_projection"); err == nil {
 		t.Fatal("expected unknown feed projection error")
