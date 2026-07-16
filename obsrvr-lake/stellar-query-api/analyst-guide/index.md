@@ -96,6 +96,20 @@ curl -H "Authorization: Api-Key YOUR_API_KEY" \
   "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/events/generic?limit=10"
 ```
 
+Get active OpenZeppelin smart-account rules, signers, credentials, and policies:
+
+```bash
+curl -H "Authorization: Api-Key YOUR_API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/smart-accounts/CCQBQIAG2E2L5NOIML2SGAJYMXPID3MAQNII5USMENID3SDJ4ATOU2HG/rules"
+```
+
+Find smart accounts controlled by a credential/passkey identifier:
+
+```bash
+curl -H "Authorization: Api-Key YOUR_API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/smart-accounts/lookup/credential/9ca5204617ab254b6b21cbae8a30c42377d0cd4f"
+```
+
 Get a unified feed of recent on-chain actions (payments, contract calls, etc.):
 
 ```bash
@@ -180,7 +194,8 @@ The API automatically queries both hot and cold storage, merging results seamles
 - [CAP-67 Unified Events](./common-queries.md#cap-67-unified-event-stream) - Unified event stream (transfers, mints, burns)
 - [Generic Contract Events](./common-queries.md#generic-contract-events-bronze) - Raw Soroban events with positional topic filtering (`topic0=transfer&topic2=GABC...`)
 - [SEP-41 Token API](./common-queries.md#sep-41-token-api) - Token metadata, balances, transfers, and portfolios
-- [Smart Wallet Detection](./common-queries.md#smart-wallet-detection-sep-50) - Detect SEP-50 smart wallets
+- [Smart Account Authorization State](./common-queries.md#smart-account-authorization-state-openzeppelin) - Serving-backed OpenZeppelin rules, signers, credentials, and policies
+- [Smart Wallet Detection](./common-queries.md#legacy-smart-wallet-detection-sep-50) - Legacy SEP-50 detection route
 - [Transaction Decoding](./common-queries.md#transaction-decoding) - Human-readable transaction summaries
 - [Transaction Diffs](./common-queries.md#get-transaction-balance--state-diffs) - Balance and state changes per transaction
 - [Soroban Function Filter](./common-queries.md#get-soroban-operations-by-function) - Filter operations by contract and function

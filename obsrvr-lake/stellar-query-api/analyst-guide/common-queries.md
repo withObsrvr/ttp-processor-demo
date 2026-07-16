@@ -2980,7 +2980,153 @@ GET /api/v1/silver/soroban/contract-data/entry?contract_id={contract_id}&key_has
 
 ---
 
-### Smart Wallet Detection (SEP-50)
+### Smart Account Authorization State (OpenZeppelin)
+
+Use these endpoints when you need the current authorization state for OpenZeppelin-style smart accounts: active context rules, signer addresses, credential/passkey signers, and policy contracts. These endpoints are backed by the serving projection and are the preferred APIs for interactive tools such as Prism.
+
+> **Coverage check:** Missing rows are only meaningful if `/smart-accounts/stats` shows healthy coverage. After a Silver hot reset, the smart-account replay and serving rebuild must run before these endpoints should be treated as complete.
+
+#### Get Smart Account Serving Stats
+
+```bash
+GET /api/v1/silver/smart-accounts/stats
+```
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/smart-accounts/stats"
+```
+
+**Response:**
+```json
+{
+  "source": "serving.sv_smart_account_contracts",
+  "coverage": {
+    "table_name": "serving.sv_smart_account_contracts",
+    "last_ledger": 3630789,
+    "last_updated_at": "2026-07-16T03:58:20Z"
+  },
+  "contract_count": 13912,
+  "active_rule_count": 21772,
+  "active_signer_count": 18837,
+  "credential_count": 2308,
+  "address_signer_count": 17311,
+  "active_policy_count": 6050,
+  "last_modified_ledger": 3630789
+}
+```
+
+**When to use:** Operational checks, data freshness checks, and confirming smart-account serving coverage before analyzing missing results.
+
+#### Get Smart Account Rules
+
+```bash
+GET /api/v1/silver/smart-accounts/{contract_id}/rules?context_rule_id={id}
+```
+
+**Parameters:**
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `contract_id` | Yes | Smart-account contract address in C... Stellar format |
+| `context_rule_id` | No | Optional context rule id filter |
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/smart-accounts/CCQBQIAG2E2L5NOIML2SGAJYMXPID3MAQNII5USMENID3SDJ4ATOU2HG/rules"
+```
+
+**Response:**
+```json
+{
+  "contract_id": "CCQBQIAG2E2L5NOIML2SGAJYMXPID3MAQNII5USMENID3SDJ4ATOU2HG",
+  "source": "serving.sv_smart_account_rules_current",
+  "summary": {
+    "contract_id": "CCQBQIAG2E2L5NOIML2SGAJYMXPID3MAQNII5USMENID3SDJ4ATOU2HG",
+    "wallet_type": "openzeppelin",
+    "context_rule_count": 3,
+    "active_signer_count": 7,
+    "credential_signer_count": 3,
+    "address_signer_count": 5,
+    "active_policy_count": 2,
+    "context_rule_ids": [0, 3, 4],
+    "first_seen_ledger": 2996161,
+    "last_modified_ledger": 2997467
+  },
+  "context_rules": [
+    {
+      "context_rule_id": 3,
+      "active": true,
+      "last_modified_ledger": 2997467,
+      "transaction_hash": "c59b1b620d9dae2b0aec2998d49c4d5b28fd351595c93a6c5222d84172da8361",
+      "signers": [
+        {
+          "signer_type": "external",
+          "credential_id": "9ca5204617ab254b6b21cbae8a30c42377d0cd4f",
+          "last_modified_ledger": 2997467,
+          "registry_resolved": true
+        }
+      ],
+      "policies": [
+        {
+          "policy_address": "CAF4...",
+          "last_modified_ledger": 2997467,
+          "registry_resolved": true
+        }
+      ]
+    }
+  ],
+  "count": 3
+}
+```
+
+**When to use:** Smart-account pages, signer/policy audits, passkey investigations, and authorization-state monitoring.
+
+#### Lookup Smart Accounts by Signer Address
+
+```bash
+GET /api/v1/silver/smart-accounts/lookup/address/{address}?limit={limit}
+```
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/smart-accounts/lookup/address/GBH5Y77GMEOCYQOXGAMJY4C65RAMBXKZBDHA5XBNLJQUC3Z2HGQP5OC5?limit=25"
+```
+
+**When to use:** Find smart accounts a G-address or C-address signer can operate.
+
+#### Lookup Smart Accounts by Credential
+
+```bash
+GET /api/v1/silver/smart-accounts/lookup/credential/{credential_id}?limit={limit}
+```
+
+**Example:**
+```bash
+curl -H "Authorization: Api-Key $API_KEY" \
+  "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/smart-accounts/lookup/credential/9ca5204617ab254b6b21cbae8a30c42377d0cd4f?limit=25"
+```
+
+**When to use:** Find smart accounts controlled by a passkey/WebAuthn credential or normalized credential id.
+
+#### Preferred vs Legacy Smart-Account APIs
+
+| Use case | Preferred endpoint | Notes |
+|----------|--------------------|-------|
+| Smart-account page or rules audit | `/api/v1/silver/smart-accounts/{contract_id}/rules` | Fast, serving-backed, contains active rules/signers/policies |
+| Reverse lookup by signer address | `/api/v1/silver/smart-accounts/lookup/address/{address}` | Fast, serving-backed |
+| Reverse lookup by credential/passkey | `/api/v1/silver/smart-accounts/lookup/credential/{credential_id}` | Fast, serving-backed |
+| Serving coverage check | `/api/v1/silver/smart-accounts/stats` | Use before treating missing results as meaningful |
+| Basic heuristic smart-wallet detection | `/api/v1/silver/smart-wallet/{contract_id}` | Useful fallback/classification signal |
+| Rich smart-wallet profile | `/api/v1/silver/smart-wallets/{contract_id}` | Best-effort enrichment; can be slower than serving-backed rules |
+| Contract metadata or recent calls | `/api/v1/silver/contracts/{id}/metadata`, `/api/v1/silver/contracts/{id}/recent-calls` | Best-effort enrichment; do not block interactive pages on these paths |
+| Account transfer activity | `/api/v1/silver/transfers?from_account=...` / `to_account=...` | Can be expensive for broad windows; use narrow windows or async loading |
+
+---
+
+### Legacy Smart Wallet Detection (SEP-50)
 
 Detect whether a contract implements the SEP-50 smart wallet standard by checking for `__check_auth` events and signer-related instance storage.
 
@@ -3030,7 +3176,7 @@ curl -H "Authorization: Api-Key $API_KEY" \
 - `signers` — Contract instance storage contains entries with "Signer" or "Policy" keys
 - `is_smart_wallet` — True if either check auth events or signer storage is found
 
-**When to use:** Account detail pages, wallet type detection, smart wallet-aware UIs.
+**When to use:** Fallback classification, basic wallet type detection, and compatibility with older smart-wallet integrations. For current OpenZeppelin authorization state, prefer `/api/v1/silver/smart-accounts/{contract_id}/rules`.
 
 ---
 
@@ -4203,6 +4349,10 @@ curl -H "Authorization: Api-Key $API_KEY" \
 | Latest trade price | N/A | `/silver/prices/{base}/{counter}/latest` |
 | Trading pairs list | N/A | `/silver/prices/pairs` |
 | Transaction diffs | N/A | `/silver/tx/{hash}/diffs` |
+| Smart account rules/signers/policies | N/A | `/silver/smart-accounts/{contract_id}/rules` |
+| Smart account signer lookup | N/A | `/silver/smart-accounts/lookup/address/{address}` |
+| Smart account credential lookup | N/A | `/silver/smart-accounts/lookup/credential/{credential_id}` |
+| Smart account serving coverage | N/A | `/silver/smart-accounts/stats` |
 | Smart wallet detection | N/A | `/silver/smart-wallet/{contract_id}` |
 | Contract interface | N/A | `/silver/contracts/{id}/interface` |
 | Soroban ops by function | N/A | `/silver/operations/soroban/by-function` |

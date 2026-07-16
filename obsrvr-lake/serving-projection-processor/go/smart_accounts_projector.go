@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -21,15 +22,35 @@ func NewSmartAccountsProjector(network string, sourcePool, targetPool *pgxpool.P
 func (p *SmartAccountsProjector) Name() string { return "smart_accounts" }
 
 func (p *SmartAccountsProjector) RunOnce(ctx context.Context) (RunStats, error) {
-	var completeThru int64
+	var completeThru, sourceContracts int64
 	if err := p.sourcePool.QueryRow(ctx, `
+		WITH state_contracts AS (
+			SELECT contract_id FROM smart_account_context_rules
+			UNION
+			SELECT contract_id FROM smart_account_signers
+			UNION
+			SELECT contract_id FROM smart_account_policies
+		)
 		SELECT GREATEST(
 			COALESCE((SELECT MAX(last_modified_ledger) FROM smart_account_context_rules), 0),
 			COALESCE((SELECT MAX(last_modified_ledger) FROM smart_account_signers), 0),
 			COALESCE((SELECT MAX(last_modified_ledger) FROM smart_account_policies), 0)
-		)
-	`).Scan(&completeThru); err != nil {
+		),
+		(SELECT COUNT(*) FROM state_contracts)
+	`).Scan(&completeThru, &sourceContracts); err != nil {
 		return RunStats{}, fmt.Errorf("resolve smart account watermark: %w", err)
+	}
+
+	var existingContracts int64
+	if err := p.targetPool.QueryRow(ctx, `SELECT COUNT(*) FROM serving.sv_smart_account_contracts`).Scan(&existingContracts); err != nil {
+		return RunStats{}, fmt.Errorf("count existing smart account serving contracts: %w", err)
+	}
+	if shouldBlockSmartAccountServingShrink(sourceContracts, existingContracts) {
+		return RunStats{}, fmt.Errorf(
+			"refusing destructive smart-account serving rebuild: source contracts=%d existing serving contracts=%d; run smart-account replay first or set SERVING_SMART_ACCOUNTS_ALLOW_SHRINK=true for an intentional reset",
+			sourceContracts,
+			existingContracts,
+		)
 	}
 
 	tx, err := p.targetPool.Begin(ctx)
@@ -484,4 +505,17 @@ func (p *SmartAccountsProjector) RunOnce(ctx context.Context) (RunStats, error) 
 	log.Printf("projector=%s network=%s contracts=%d rules=%d credential_lookup=%d address_lookup=%d app_contracts=%d app_signers=%d deleted=%d watermark=%d rebuilt smart-account serving tables",
 		p.Name(), p.network, contractsTag.RowsAffected(), rulesTag.RowsAffected(), credentialTag.RowsAffected(), addressTag.RowsAffected(), appContractsTag.RowsAffected(), appSignersTag.RowsAffected(), deleted, completeThru)
 	return RunStats{RowsApplied: applied, RowsDeleted: deleted, Checkpoint: completeThru}, nil
+}
+
+func shouldBlockSmartAccountServingShrink(sourceContracts, existingContracts int64) bool {
+	if os.Getenv("SERVING_SMART_ACCOUNTS_ALLOW_SHRINK") == "true" {
+		return false
+	}
+	// Small deployments and fresh bootstraps are allowed to rebuild freely. Once a
+	// historical replay has populated serving, smart-account contract count should
+	// not collapse; that indicates Silver hot lost replayed state.
+	if existingContracts < 100 {
+		return false
+	}
+	return sourceContracts*10 < existingContracts*9
 }

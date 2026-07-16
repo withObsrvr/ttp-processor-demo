@@ -100,6 +100,17 @@ type SmartAccountStatsResponse struct {
 
 // HandleSmartAccountLookupByCredential serves GET
 // /api/v1/silver/smart-accounts/lookup/credential/{credential_id}.
+// @Summary Lookup smart accounts by credential
+// @Description Returns smart-account contracts where a credential/passkey identifier is an active signer. This serving-backed endpoint is the preferred interactive reverse lookup for passkey-controlled OpenZeppelin smart accounts.
+// @Tags Smart Accounts
+// @Produce json
+// @Param credential_id path string true "Credential/passkey identifier. Hex, base64, and base64url inputs are normalized where possible."
+// @Param limit query int false "Page size (default 100, max 500)"
+// @Success 200 {object} SmartAccountLookupResponse
+// @Failure 400 {object} map[string]interface{}
+// @Failure 503 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
+// @Router /api/v1/silver/smart-accounts/lookup/credential/{credential_id} [get]
 func (h *SmartWalletHandlers) HandleSmartAccountLookupByCredential(w http.ResponseWriter, r *http.Request) {
 	if h.hotReader == nil {
 		respondError(w, "silver_hot reader not available", http.StatusServiceUnavailable)
@@ -146,6 +157,17 @@ func (h *SmartWalletHandlers) HandleSmartAccountLookupByCredential(w http.Respon
 
 // HandleSmartAccountLookupByAddress serves GET
 // /api/v1/silver/smart-accounts/lookup/address/{address}.
+// @Summary Lookup smart accounts by signer address
+// @Description Returns smart-account contracts where a Stellar account or contract address is an active signer. This serving-backed endpoint is the preferred interactive lookup for "which smart accounts can this signer operate?".
+// @Tags Smart Accounts
+// @Produce json
+// @Param address path string true "Signer address, usually a Stellar G... account or C... contract address"
+// @Param limit query int false "Page size (default 100, max 500)"
+// @Success 200 {object} SmartAccountLookupResponse
+// @Failure 400 {object} map[string]interface{}
+// @Failure 503 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
+// @Router /api/v1/silver/smart-accounts/lookup/address/{address} [get]
 func (h *SmartWalletHandlers) HandleSmartAccountLookupByAddress(w http.ResponseWriter, r *http.Request) {
 	if h.hotReader == nil {
 		respondError(w, "silver_hot reader not available", http.StatusServiceUnavailable)
@@ -190,6 +212,18 @@ func (h *SmartWalletHandlers) HandleSmartAccountLookupByAddress(w http.ResponseW
 }
 
 // HandleSmartAccountState serves GET /api/v1/silver/smart-accounts/{contract_id}/rules.
+// @Summary Get smart-account authorization state
+// @Description Returns active context rules, signers, credential signers, address signers, and policy rows for one smart-account contract. This serving-backed endpoint is the preferred primary source for Prism-style smart-account pages.
+// @Tags Smart Accounts
+// @Produce json
+// @Param contract_id path string true "Smart-account contract address (C...)"
+// @Param context_rule_id query int false "Optional context rule id filter"
+// @Success 200 {object} SmartAccountStateResponse
+// @Failure 400 {object} map[string]interface{}
+// @Failure 404 {object} map[string]interface{}
+// @Failure 503 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
+// @Router /api/v1/silver/smart-accounts/{contract_id}/rules [get]
 func (h *SmartWalletHandlers) HandleSmartAccountState(w http.ResponseWriter, r *http.Request) {
 	if h.hotReader == nil {
 		respondError(w, "silver_hot reader not available", http.StatusServiceUnavailable)
@@ -232,6 +266,14 @@ func (h *SmartWalletHandlers) HandleSmartAccountState(w http.ResponseWriter, r *
 }
 
 // HandleSmartAccountStats serves GET /api/v1/silver/smart-accounts/stats.
+// @Summary Get smart-account serving statistics
+// @Description Returns counts and coverage metadata for the serving-backed smart-account authorization projection. Use this endpoint to verify replay/serving coverage before trusting missing smart-account lookup results.
+// @Tags Smart Accounts
+// @Produce json
+// @Success 200 {object} SmartAccountStatsResponse
+// @Failure 503 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
+// @Router /api/v1/silver/smart-accounts/stats [get]
 func (h *SmartWalletHandlers) HandleSmartAccountStats(w http.ResponseWriter, r *http.Request) {
 	if h.hotReader == nil {
 		respondError(w, "silver_hot reader not available", http.StatusServiceUnavailable)

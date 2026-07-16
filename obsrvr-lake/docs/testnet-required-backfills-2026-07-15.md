@@ -14,6 +14,12 @@ and trustline balances already agree with Horizon testnet for the investigated
 accounts; the missing requirement was complete effect history and correct
 contract-storage state.
 
+Smart-account historical state was also not part of this rollout. After the
+July 15 reset/backfill sequence, the `smart_account_*` Silver hot tables only
+contained the live tail and the serving smart-account projector rebuilt from
+that incomplete source. The repair and repeatable mainnet process are captured
+in [Smart Account Backfill and Serving Runbook (2026-07-16)](smart-account-backfill-serving-runbook-2026-07-16.md).
+
 ## Cutoff and Handoff Contract
 
 The shared cold/live cutoff is ledger `3628006`.
@@ -144,6 +150,14 @@ The rollout surfaced and resolved five production-only integration gaps:
 5. Account snapshot schema drift prevented the transformer checkpoint from
    advancing. Startup reconciliation and PgBouncer-safe pgx execution mode keep
    the live source and serving watermarks moving.
+
+Follow-up finding:
+
+6. Smart-account state is not restored by effects or contract-storage backfills.
+   It requires `silver-realtime-transformer --smart-account-replay`, followed by
+   a serving smart-account rebuild. Skipping that step can leave
+   `/api/v1/silver/smart-accounts/*` with only live-tail state even though
+   semantic smart-wallet classification still works.
 
 ## Tests
 

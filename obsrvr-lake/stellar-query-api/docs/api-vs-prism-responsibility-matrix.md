@@ -298,6 +298,88 @@ Lean hard into structure, not prose.
 
 ---
 
+## `/api/v1/silver/smart-accounts/{contract_id}/rules`
+
+### API should own
+- current active OpenZeppelin context rules
+- signer rows, including signer address and credential id when available
+- policy rows and install parameters when available
+- rule-level ledger, timestamp, tx hash, and source provenance
+- serving coverage and materialization metadata
+- optional filtering by `context_rule_id`
+
+### API should avoid
+- deciding Prism tab names or section labels
+- combining unrelated contract metadata, recent calls, and transfer scans into this response
+- blocking interactive reads on broad activity scans
+- interpreting risk or user intent beyond deterministic authorization state
+
+### Prism should own
+- smart-account page routing and layout
+- signers / credentials / policies / activity presentation
+- confidence and degraded-state wording
+- optional asynchronous enrichment from transfers, contract metadata, and call history
+
+### Recommendation
+Treat `/smart-accounts/{contract_id}/rules` as the **canonical fast smart-account authorization-state endpoint**. Prism should use this endpoint first for smart-account pages and only layer slower enrichment calls on top when they return quickly.
+
+---
+
+## `/api/v1/silver/smart-accounts/lookup/address/{address}`
+
+### API should own
+- signer-address to smart-account mappings
+- active-rule and active-signer state
+- context rule references
+- pagination limits
+- ledger/timestamp provenance
+
+### Prism should own
+- account-to-smart-account navigation
+- grouping multiple smart accounts under one signer
+- copy explaining why a signer appears
+
+### Recommendation
+Use this endpoint for reverse lookup from a signer address to smart accounts. It is serving-backed and should be preferred over broad transfer or contract scans.
+
+---
+
+## `/api/v1/silver/smart-accounts/lookup/credential/{credential_id}`
+
+### API should own
+- credential/passkey to smart-account mappings
+- active-rule and active-signer state
+- context rule references
+- pagination limits
+- ledger/timestamp provenance
+
+### Prism should own
+- credential display formatting
+- grouping and navigation behavior
+- user-facing explanatory copy
+
+### Recommendation
+Use this endpoint for passkey/credential analysis. It is serving-backed and appropriate for interactive use.
+
+---
+
+## `/api/v1/silver/smart-accounts/stats`
+
+### API should own
+- serving coverage counters
+- active contract/rule/signer/policy/credential counts
+- newest ledger and timestamp observed by the serving projection
+- operational health facts needed to interpret missing smart-account rows
+
+### Prism should own
+- whether to expose coverage status to end users
+- degraded-mode UI when coverage is stale or rebuilding
+
+### Recommendation
+Use this endpoint before treating an empty smart-account lookup as meaningful. After a Silver hot reset or replay, missing rows are not reliable until serving coverage is current.
+
+---
+
 ## `/api/v1/silver/smart-wallets/{contract_id}`
 
 ### API should own
@@ -324,7 +406,7 @@ Lean hard into structure, not prose.
 - visual confidence/provenance presentation
 
 ### Recommendation
-Smart wallet detail should be a **structured wallet profile**, not a pre-rendered explorer experience.
+Smart wallet detail should be a **structured wallet profile**, not a pre-rendered explorer experience. Treat it as rich/legacy enrichment for Prism, not the primary interactive render path while it can depend on slower scans. For OpenZeppelin authorization state, prefer `/api/v1/silver/smart-accounts/{contract_id}/rules`.
 
 ---
 
