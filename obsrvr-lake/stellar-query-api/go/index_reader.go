@@ -95,9 +95,9 @@ func NewIndexReader(config IndexConfig) (*IndexReader, error) {
 		tableName:   "tx_hash_index",
 		warmup:      newOptionalWarmupStatus(true),
 	}
-	startOptionalWarmup("Transaction index", true, optionalIndexWarmupTimeout, reader.warmup, func(ctx context.Context) error {
-		var marker int
-		return db.QueryRowContext(ctx, "SELECT 1 FROM testnet_catalog.index.tx_hash_index LIMIT 1").Scan(&marker)
+	startOptionalDBWarmup("Transaction index", true, optionalIndexWarmupTimeout, db, reader.warmup, func(ctx context.Context, conn *sql.Conn) error {
+		var exists bool
+		return conn.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM testnet_catalog.index.tx_hash_index LIMIT 1)").Scan(&exists)
 	})
 
 	return reader, nil

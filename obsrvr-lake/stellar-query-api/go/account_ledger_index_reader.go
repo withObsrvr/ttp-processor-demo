@@ -135,16 +135,17 @@ func (r *UnifiedDuckDBReader) AttachAccountLedgerIndex(config IndexConfig) error
 	warmupEnabled := reader.canPrune || accountTransactionFeedEnabled()
 	reader.warmup = newOptionalWarmupStatus(warmupEnabled)
 	if warmupEnabled {
-		warmQuery := "SELECT 1 FROM account_index_db.index.account_ledger_index LIMIT 1"
-		warmDB := r.db
 		if source == "postgres" {
-			warmQuery = "SELECT 1 FROM index.account_ledger_index LIMIT 1"
-			warmDB = catalogDB
+			startOptionalWarmup("Account ledger index", true, optionalIndexWarmupTimeout, reader.warmup, func(ctx context.Context) error {
+				var exists bool
+				return catalogDB.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM index.account_ledger_index LIMIT 1)").Scan(&exists)
+			})
+		} else {
+			startOptionalDBWarmup("Account ledger index", true, optionalIndexWarmupTimeout, r.db, reader.warmup, func(ctx context.Context, conn *sql.Conn) error {
+				var exists bool
+				return conn.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM account_index_db.index.account_ledger_index LIMIT 1)").Scan(&exists)
+			})
 		}
-		startOptionalWarmup("Account ledger index", true, optionalIndexWarmupTimeout, reader.warmup, func(ctx context.Context) error {
-			var marker int
-			return warmDB.QueryRowContext(ctx, warmQuery).Scan(&marker)
-		})
 	} else {
 		log.Printf("Account ledger index warm-up skipped because pruning and serving feed are disabled")
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"log"
 	"sync"
@@ -53,6 +54,7 @@ func (s *OptionalWarmupStatus) set(state, errMessage string, completed bool) {
 	s.Error = errMessage
 	if state == "warming" {
 		s.StartedAt = time.Now().UTC()
+		s.CompletedAt = time.Time{}
 	}
 	if completed {
 		s.CompletedAt = time.Now().UTC()
@@ -87,6 +89,31 @@ func startOptionalWarmup(name string, enabled bool, timeout time.Duration, statu
 		status.set("degraded", err.Error(), true)
 		log.Printf("%s optional warm-up degraded: %v", name, err)
 	}()
+}
+
+// startOptionalDBWarmup reserves a second connection while the asynchronous
+// probe runs. API DuckDB pools normally have one connection, so running the
+// probe on that connection would make startup non-blocking while still
+// blocking every request until the probe completed.
+func startOptionalDBWarmup(name string, enabled bool, timeout time.Duration, db *sql.DB, status *OptionalWarmupStatus, probe func(context.Context, *sql.Conn) error) {
+	startOptionalWarmup(name, enabled, timeout, status, func(ctx context.Context) error {
+		if db == nil {
+			return errors.New("warm-up database is unavailable")
+		}
+
+		previousMax := db.Stats().MaxOpenConnections
+		if previousMax > 0 {
+			db.SetMaxOpenConns(previousMax + 1)
+			defer db.SetMaxOpenConns(previousMax)
+		}
+
+		conn, err := db.Conn(ctx)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		return probe(ctx, conn)
+	})
 }
 
 func optionalWarmupHealth(enabled bool, status *OptionalWarmupStatus) map[string]interface{} {

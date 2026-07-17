@@ -92,9 +92,9 @@ func NewContractIndexReader(config ContractIndexConfig) (*ContractIndexReader, e
 		tableName:   "contract_events_index",
 		warmup:      newOptionalWarmupStatus(true),
 	}
-	startOptionalWarmup("Contract index", true, optionalIndexWarmupTimeout, reader.warmup, func(ctx context.Context) error {
-		var marker int
-		return db.QueryRowContext(ctx, "SELECT 1 FROM testnet_catalog.index.contract_events_index LIMIT 1").Scan(&marker)
+	startOptionalDBWarmup("Contract index", true, optionalIndexWarmupTimeout, db, reader.warmup, func(ctx context.Context, conn *sql.Conn) error {
+		var exists bool
+		return conn.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM testnet_catalog.index.contract_events_index LIMIT 1)").Scan(&exists)
 	})
 
 	return reader, nil

@@ -92,8 +92,8 @@ func TestAccountBalancesIncludedInServingUniqueIndexSelfHeal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read serving schema: %v", err)
 	}
-	expected := "('serving.sv_account_balances_current','sv_account_balances_current_uq',    'account_id, asset_key')"
-	if !strings.Contains(string(raw), expected) {
+	entry := regexp.MustCompile(`(?s)\(\s*'serving\.sv_account_balances_current'\s*,\s*'sv_account_balances_current_uq'\s*,\s*'account_id\s*,\s*asset_key'\s*\)`)
+	if !entry.Match(raw) {
 		t.Fatalf("account balance ON CONFLICT key is missing from serving unique-index self-heal")
 	}
 }

@@ -55,6 +55,25 @@ func TestHandleSmartWalletInfoReturnsPartialWhenBudgetExpires(t *testing.T) {
 	}
 }
 
+func TestCollectLedgerFullResultsDrainsBufferedResultsAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	ch := make(chan ledgerFullResult, 2)
+	ch <- ledgerFullResult{key: "ledger", data: "ledger"}
+	ch <- ledgerFullResult{key: "operations", data: []string{"operation"}}
+
+	collected, warnings := collectLedgerFullResults(ctx, ch)
+	for _, key := range []string{"ledger", "operations"} {
+		if _, ok := collected[key]; !ok {
+			t.Fatalf("collector dropped buffered %s result after cancellation: %#v", key, collected)
+		}
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "budget exhausted") {
+		t.Fatalf("warnings = %#v, want budget warning", warnings)
+	}
+}
+
 func TestCollectLedgerFullResultsReturnsAtContextDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()

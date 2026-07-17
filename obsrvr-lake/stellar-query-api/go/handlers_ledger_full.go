@@ -227,25 +227,38 @@ func (h *LedgerFullHandler) HandleLedgerFull(w http.ResponseWriter, r *http.Requ
 func collectLedgerFullResults(ctx context.Context, ch <-chan ledgerFullResult) (map[string]interface{}, []string) {
 	collected := make(map[string]interface{})
 	warnings := make([]string, 0)
-	for {
-		if ctx.Err() != nil {
-			warnings = append(warnings, "ledger detail query budget exhausted; unavailable sections were omitted")
-			return collected, warnings
+	collect := func(item ledgerFullResult) {
+		if item.data != nil {
+			collected[item.key] = item.data
 		}
+		if item.err != nil {
+			warnings = append(warnings, item.key+" data unavailable")
+		}
+	}
+
+	for {
 		select {
 		case item, ok := <-ch:
 			if !ok {
 				return collected, warnings
 			}
-			if item.data != nil {
-				collected[item.key] = item.data
-			}
-			if item.err != nil {
-				warnings = append(warnings, item.key+" data unavailable")
-			}
+			collect(item)
 		case <-ctx.Done():
-			warnings = append(warnings, "ledger detail query budget exhausted; unavailable sections were omitted")
-			return collected, warnings
+			// Results are buffered so workers can finish independently. Drain every
+			// result that was already available when the budget expired, but never
+			// wait for unfinished sections.
+			for {
+				select {
+				case item, ok := <-ch:
+					if !ok {
+						return collected, warnings
+					}
+					collect(item)
+				default:
+					warnings = append(warnings, "ledger detail query budget exhausted; unavailable sections were omitted")
+					return collected, warnings
+				}
+			}
 		}
 	}
 }
