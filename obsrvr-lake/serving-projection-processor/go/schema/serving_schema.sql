@@ -1358,6 +1358,7 @@ begin
       ('serving.sv_projection_checkpoints', 'sv_projection_checkpoints_pn_uq',   'projection_name, network'),
       ('serving.sv_watermarks',             'sv_watermarks_table_uq',            'table_name'),
       ('serving.sv_accounts_current',       'sv_accounts_current_account_id_uq', 'account_id'),
+      ('serving.sv_account_balances_current','sv_account_balances_current_uq',    'account_id, asset_key'),
       ('serving.sv_network_stats_current',  'sv_network_stats_current_net_uq',   'network'),
       ('serving.sv_ledger_stats_recent',    'sv_ledger_stats_recent_ls_uq',      'ledger_sequence'),
       ('serving.sv_operations_recent',      'sv_operations_recent_op_uq',        'operation_id'),

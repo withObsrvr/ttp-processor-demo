@@ -22,6 +22,12 @@ type LedgerFullHandler struct {
 	silverUnified *UnifiedSilverReader // hot+cold for operations (no DuckDB federation)
 }
 
+type ledgerFullResult struct {
+	key  string
+	data interface{}
+	err  error
+}
+
 func NewLedgerFullHandler(qs *QueryService, silverHot *SilverHotReader, silverUnified *UnifiedSilverReader) *LedgerFullHandler {
 	return &LedgerFullHandler{
 		queryService:  qs,
@@ -45,16 +51,10 @@ func (h *LedgerFullHandler) HandleLedgerFull(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), ledgerFullQueryTimeout())
 	defer cancel()
 
-	type result struct {
-		key  string
-		data interface{}
-		err  error
-	}
-
-	ch := make(chan result, 5)
+	ch := make(chan ledgerFullResult, 5)
 	var wg sync.WaitGroup
 
 	// 1. Ledger header (from bronze hot/cold)
@@ -63,6 +63,7 @@ func (h *LedgerFullHandler) HandleLedgerFull(w http.ResponseWriter, r *http.Requ
 		defer wg.Done()
 		queryHot, queryCold, hotStart, hotEnd, coldStart, coldEnd := h.queryService.determineSource(seq, seq)
 		var ledger map[string]interface{}
+		var queryErr error
 		if queryHot {
 			rows, err := h.queryService.hot.QueryLedgers(ctx, hotStart, hotEnd, 1, "sequence_asc")
 			if err == nil {
@@ -70,7 +71,11 @@ func (h *LedgerFullHandler) HandleLedgerFull(w http.ResponseWriter, r *http.Requ
 				rows.Close()
 				if scanErr == nil && len(results) > 0 {
 					ledger = results[0]
+				} else if scanErr != nil {
+					queryErr = scanErr
 				}
+			} else {
+				queryErr = err
 			}
 		}
 		if ledger == nil && queryCold {
@@ -78,12 +83,15 @@ func (h *LedgerFullHandler) HandleLedgerFull(w http.ResponseWriter, r *http.Requ
 			if err == nil {
 				results, scanErr := scanLedgers(rows)
 				rows.Close()
+				queryErr = scanErr
 				if scanErr == nil && len(results) > 0 {
 					ledger = results[0]
 				}
+			} else {
+				queryErr = err
 			}
 		}
-		ch <- result{key: "ledger", data: ledger}
+		ch <- ledgerFullResult{key: "ledger", data: ledger, err: queryErr}
 	}()
 
 	// 2. Transactions (from bronze hot/cold)
@@ -91,22 +99,27 @@ func (h *LedgerFullHandler) HandleLedgerFull(w http.ResponseWriter, r *http.Requ
 	go func() {
 		defer wg.Done()
 		queryHot, queryCold, hotStart, hotEnd, coldStart, coldEnd := h.queryService.determineSource(seq, seq)
-		var txs []map[string]interface{}
+		txs := make([]map[string]interface{}, 0)
+		var queryErr error
 		if queryHot {
 			rows, err := h.queryService.hot.QueryTransactions(ctx, hotStart, hotEnd, 50)
 			if err == nil {
-				txs, _ = scanTransactions(rows)
+				txs, queryErr = scanTransactions(rows)
 				rows.Close()
+			} else {
+				queryErr = err
 			}
 		}
 		if len(txs) == 0 && queryCold {
 			rows, err := h.queryService.cold.QueryTransactions(ctx, coldStart, coldEnd, 50)
 			if err == nil {
-				txs, _ = scanTransactions(rows)
+				txs, queryErr = scanTransactions(rows)
 				rows.Close()
+			} else {
+				queryErr = err
 			}
 		}
-		ch <- result{key: "transactions", data: txs}
+		ch <- ledgerFullResult{key: "transactions", data: txs, err: queryErr}
 	}()
 
 	// 3. Fee stats (from silver hot PG directly)
@@ -114,16 +127,16 @@ func (h *LedgerFullHandler) HandleLedgerFull(w http.ResponseWriter, r *http.Requ
 	go func() {
 		defer wg.Done()
 		if h.silverHot == nil {
-			ch <- result{key: "fees"}
+			ch <- ledgerFullResult{key: "fees"}
 			return
 		}
 		fees, err := h.silverHot.GetLedgerFeeStats(ctx, seq)
 		if err != nil {
 			log.Printf("ledger/full: fees error: %v", err)
-			ch <- result{key: "fees", err: err}
+			ch <- ledgerFullResult{key: "fees", err: err}
 			return
 		}
-		ch <- result{key: "fees", data: fees}
+		ch <- ledgerFullResult{key: "fees", data: fees}
 	}()
 
 	// 4. Soroban stats (from silver hot PG directly)
@@ -131,16 +144,16 @@ func (h *LedgerFullHandler) HandleLedgerFull(w http.ResponseWriter, r *http.Requ
 	go func() {
 		defer wg.Done()
 		if h.silverHot == nil {
-			ch <- result{key: "soroban"}
+			ch <- ledgerFullResult{key: "soroban"}
 			return
 		}
 		soroban, err := h.silverHot.GetLedgerSorobanStats(ctx, seq)
 		if err != nil {
 			log.Printf("ledger/full: soroban error: %v", err)
-			ch <- result{key: "soroban", err: err}
+			ch <- ledgerFullResult{key: "soroban", err: err}
 			return
 		}
-		ch <- result{key: "soroban", data: soroban}
+		ch <- ledgerFullResult{key: "soroban", data: soroban}
 	}()
 
 	// 5. Operations — silver enriched first (hot+cold), bronze fallback for old ledgers
@@ -155,28 +168,33 @@ func (h *LedgerFullHandler) HandleLedgerFull(w http.ResponseWriter, r *http.Requ
 				Limit:       200,
 			})
 			if err == nil && len(ops) > 0 {
-				ch <- result{key: "operations", data: ops}
+				ch <- ledgerFullResult{key: "operations", data: ops}
 				return
 			}
 		}
 		// Fallback to bronze operations for old ledgers without silver data
 		queryHot, queryCold, hotStart, hotEnd, coldStart, coldEnd := h.queryService.determineSource(seq, seq)
-		var bronzeOps []map[string]interface{}
+		bronzeOps := make([]map[string]interface{}, 0)
+		var queryErr error
 		if queryHot {
 			rows, err := h.queryService.hot.QueryOperations(ctx, hotStart, hotEnd, 200)
 			if err == nil {
-				bronzeOps, _ = scanOperations(rows)
+				bronzeOps, queryErr = scanOperations(rows)
 				rows.Close()
+			} else {
+				queryErr = err
 			}
 		}
 		if len(bronzeOps) == 0 && queryCold {
 			rows, err := h.queryService.cold.QueryOperations(ctx, coldStart, coldEnd, 200)
 			if err == nil {
-				bronzeOps, _ = scanOperations(rows)
+				bronzeOps, queryErr = scanOperations(rows)
 				rows.Close()
+			} else {
+				queryErr = err
 			}
 		}
-		ch <- result{key: "operations", data: bronzeOps}
+		ch <- ledgerFullResult{key: "operations", data: bronzeOps, err: queryErr}
 	}()
 
 	go func() {
@@ -189,13 +207,60 @@ func (h *LedgerFullHandler) HandleLedgerFull(w http.ResponseWriter, r *http.Requ
 		"ledger_sequence": seq,
 		"generated_at":    time.Now().UTC().Format(time.RFC3339),
 	}
-	for r := range ch {
-		if r.data != nil {
-			response[r.key] = r.data
+	collected, warnings := collectLedgerFullResults(ctx, ch)
+	for key, data := range collected {
+		response[key] = data
+	}
+	for _, key := range []string{"ledger", "transactions", "fees", "soroban", "operations"} {
+		if _, ok := response[key]; !ok {
+			warnings = append(warnings, key+" data unavailable")
 		}
+	}
+	if len(warnings) > 0 {
+		response["partial"] = true
+		response["warnings"] = dedupeStrings(warnings)
 	}
 
 	respondJSON(w, response)
+}
+
+func collectLedgerFullResults(ctx context.Context, ch <-chan ledgerFullResult) (map[string]interface{}, []string) {
+	collected := make(map[string]interface{})
+	warnings := make([]string, 0)
+	collect := func(item ledgerFullResult) {
+		if item.data != nil {
+			collected[item.key] = item.data
+		}
+		if item.err != nil {
+			warnings = append(warnings, item.key+" data unavailable")
+		}
+	}
+
+	for {
+		select {
+		case item, ok := <-ch:
+			if !ok {
+				return collected, warnings
+			}
+			collect(item)
+		case <-ctx.Done():
+			// Results are buffered so workers can finish independently. Drain every
+			// result that was already available when the budget expired, but never
+			// wait for unfinished sections.
+			for {
+				select {
+				case item, ok := <-ch:
+					if !ok {
+						return collected, warnings
+					}
+					collect(item)
+				default:
+					warnings = append(warnings, "ledger detail query budget exhausted; unavailable sections were omitted")
+					return collected, warnings
+				}
+			}
+		}
+	}
 }
 
 // GetLedgerFeeStats queries fee distribution for a ledger directly from silver_hot PG.

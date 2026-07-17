@@ -86,3 +86,14 @@ func TestEffectsByAccountUpsertColumnsMatchServingSchema(t *testing.T) {
 func TestTransactionsRecentUpsertColumnsMatchServingSchema(t *testing.T) {
 	assertUpsertMatchesSchema(t, transactionsRecentUpsertSQL, "serving.sv_transactions_recent")
 }
+
+func TestAccountBalancesIncludedInServingUniqueIndexSelfHeal(t *testing.T) {
+	raw, err := os.ReadFile("schema/serving_schema.sql")
+	if err != nil {
+		t.Fatalf("read serving schema: %v", err)
+	}
+	entry := regexp.MustCompile(`(?s)\(\s*'serving\.sv_account_balances_current'\s*,\s*'sv_account_balances_current_uq'\s*,\s*'account_id\s*,\s*asset_key'\s*\)`)
+	if !entry.Match(raw) {
+		t.Fatalf("account balance ON CONFLICT key is missing from serving unique-index self-heal")
+	}
+}

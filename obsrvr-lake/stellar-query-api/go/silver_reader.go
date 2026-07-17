@@ -1152,6 +1152,8 @@ type SmartWalletInfo struct {
 	SignerCount    int                `json:"signer_count"`
 	Signers        []WalletSignerInfo `json:"signers,omitempty"`
 	Policies       []string           `json:"policies,omitempty"`
+	Partial        bool               `json:"partial,omitempty"`
+	Warnings       []string           `json:"warnings,omitempty"`
 }
 
 // ============================================

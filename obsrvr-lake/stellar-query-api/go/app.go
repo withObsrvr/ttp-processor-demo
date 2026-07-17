@@ -26,6 +26,7 @@ type application struct {
 	indexHandlers         *IndexHandlers
 	indexReader           *IndexReader
 	contractIndexHandlers *ContractIndexHandlers
+	contractIndexReader   *ContractIndexReader
 	readerMode            ReaderMode
 }
 
@@ -38,6 +39,8 @@ func (app *application) routes() http.Handler {
 		app.config.ContractIndex != nil && app.config.ContractIndex.Enabled && app.contractIndexHandlers != nil,
 		app.readerMode,
 		app.unifiedDuckDBReader,
+		app.indexReader,
+		app.contractIndexReader,
 	))
 
 	router.PathPrefix("/swagger/").Handler(httpSwagger.Handler(
@@ -145,7 +148,13 @@ func (app *application) serve() error {
 	return nil
 }
 
-func handleHealthWithSilverAndIndexAndContractIndex(silverEnabled, indexEnabled, contractIndexEnabled bool, readerMode ReaderMode, unifiedReader *UnifiedDuckDBReader) http.HandlerFunc {
+func handleHealthWithSilverAndIndexAndContractIndex(
+	silverEnabled, indexEnabled, contractIndexEnabled bool,
+	readerMode ReaderMode,
+	unifiedReader *UnifiedDuckDBReader,
+	indexReader *IndexReader,
+	contractIndexReader *ContractIndexReader,
+) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		response := map[string]interface{}{
 			"status": "healthy",
@@ -159,6 +168,16 @@ func handleHealthWithSilverAndIndexAndContractIndex(silverEnabled, indexEnabled,
 				"contract_index": contractIndexEnabled,
 			},
 			"reader_mode": string(readerMode),
+			"optional_indexes": map[string]interface{}{
+				"transaction": optionalWarmupHealth(indexEnabled, indexReader.WarmupStatus()),
+				"contract":    optionalWarmupHealth(contractIndexEnabled, contractIndexReader.WarmupStatus()),
+				"account_ledger": func() map[string]interface{} {
+					if unifiedReader == nil || unifiedReader.accountIndex == nil {
+						return map[string]interface{}{"state": "unavailable"}
+					}
+					return unifiedReader.accountIndex.WarmupStatus().Snapshot()
+				}(),
+			},
 		}
 
 		if unifiedReader != nil && r.URL.Query().Get("deep") == "1" {

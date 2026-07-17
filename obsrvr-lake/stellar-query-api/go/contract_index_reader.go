@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
 	"time"
 
 	_ "github.com/duckdb/duckdb-go/v2"
@@ -17,6 +16,7 @@ type ContractIndexReader struct {
 	catalogName string
 	schemaName  string
 	tableName   string
+	warmup      *OptionalWarmupStatus
 }
 
 // ContractLedgerInfo represents a ledger containing events from a contract
@@ -90,21 +90,12 @@ func NewContractIndexReader(config ContractIndexConfig) (*ContractIndexReader, e
 		catalogName: "testnet_catalog",
 		schemaName:  "index",
 		tableName:   "contract_events_index",
+		warmup:      newOptionalWarmupStatus(true),
 	}
-
-	// Warm up DuckDB by scanning the table to load Parquet file metadata + row groups.
-	// Bounded to 60s to avoid blocking startup indefinitely.
-	warmCtx, warmCancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer warmCancel()
-	var cnt int64
-	if err := db.QueryRowContext(warmCtx, "SELECT COUNT(*) FROM testnet_catalog.index.contract_events_index").Scan(&cnt); err != nil {
-		log.Printf("Contract index warm-up query failed (non-fatal): %v", err)
-	} else {
-		log.Printf("Contract index reader warmed up (contract_events_index: %d rows)", cnt)
-	}
-	if _, err := db.ExecContext(warmCtx, "SELECT ledger_range, MIN(contract_id) FROM testnet_catalog.index.contract_events_index GROUP BY ledger_range"); err != nil {
-		log.Printf("Contract index warm-up partition scan failed (non-fatal): %v", err)
-	}
+	startOptionalDBWarmup("Contract index", true, optionalIndexWarmupTimeout, db, reader.warmup, func(ctx context.Context, conn *sql.Conn) error {
+		var exists bool
+		return conn.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM testnet_catalog.index.contract_events_index LIMIT 1)").Scan(&exists)
+	})
 
 	return reader, nil
 }
@@ -299,7 +290,15 @@ func (cir *ContractIndexReader) GetIndexStats(ctx context.Context) (map[string]i
 		"max_ledger":                  maxLedger,
 		"ledger_coverage":             maxLedger - minLedger + 1,
 		"last_updated":                lastUpdated.Format(time.RFC3339),
+		"warmup":                      cir.warmup.Snapshot(),
 	}, nil
+}
+
+func (cir *ContractIndexReader) WarmupStatus() *OptionalWarmupStatus {
+	if cir == nil {
+		return nil
+	}
+	return cir.warmup
 }
 
 // Close closes the database connection

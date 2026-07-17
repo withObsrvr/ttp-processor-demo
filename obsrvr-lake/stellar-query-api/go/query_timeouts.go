@@ -11,6 +11,9 @@ import (
 
 const (
 	defaultInteractiveQueryTimeout = 4 * time.Second
+	defaultLedgerFullQueryTimeout  = 3500 * time.Millisecond
+	defaultHomeSummaryQueryTimeout = 2500 * time.Millisecond
+	defaultSmartWalletQueryTimeout = 1500 * time.Millisecond
 	defaultOptionalQueryTimeout    = 500 * time.Millisecond
 	defaultRecentLedgerWindow      = int64(2000)
 )
@@ -21,6 +24,18 @@ func interactiveQueryTimeout() time.Duration {
 
 func optionalQueryTimeout() time.Duration {
 	return durationEnv("QUERY_API_OPTIONAL_TIMEOUT", defaultOptionalQueryTimeout)
+}
+
+func ledgerFullQueryTimeout() time.Duration {
+	return durationEnv("QUERY_API_LEDGER_FULL_TIMEOUT", defaultLedgerFullQueryTimeout)
+}
+
+func homeSummaryQueryTimeout() time.Duration {
+	return durationEnv("QUERY_API_HOME_SUMMARY_TIMEOUT", defaultHomeSummaryQueryTimeout)
+}
+
+func smartWalletQueryTimeout() time.Duration {
+	return durationEnv("QUERY_API_SMART_WALLET_TIMEOUT", defaultSmartWalletQueryTimeout)
 }
 
 func recentLedgerWindow() int64 {
@@ -55,6 +70,14 @@ func withInteractiveQueryTimeout(ctx context.Context) (context.Context, context.
 
 func withOptionalQueryTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, optionalQueryTimeout())
+}
+
+func withHomeSummaryQueryTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, homeSummaryQueryTimeout())
+}
+
+func withSmartWalletQueryTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, smartWalletQueryTimeout())
 }
 
 func isQueryTimeout(err error) bool {

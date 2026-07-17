@@ -87,6 +87,12 @@ type SmartWalletHandlers struct {
 	coldReader    *SilverColdReader
 	bronzeCold    *ColdReader
 	unifiedReader *UnifiedDuckDBReader
+	infoLookup    func(context.Context, string) (*SmartWalletInfo, error)
+}
+
+type smartWalletInfoResult struct {
+	info *SmartWalletInfo
+	err  error
 }
 
 // NewSmartWalletHandlers creates new smart wallet API handlers
@@ -112,11 +118,46 @@ func (h *SmartWalletHandlers) HandleSmartWalletInfo(w http.ResponseWriter, r *ht
 		return
 	}
 
-	info, err := h.GetSmartWalletInfo(r.Context(), contractID)
-	if err != nil {
-		respondError(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+	ctx, cancel := withSmartWalletQueryTimeout(r.Context())
+	defer cancel()
 
-	respondJSON(w, info)
+	resultCh := make(chan smartWalletInfoResult, 1)
+	go func() {
+		info, lookupErr := h.lookupSmartWalletInfo(ctx, contractID)
+		resultCh <- smartWalletInfoResult{info: info, err: lookupErr}
+	}()
+
+	select {
+	case result := <-resultCh:
+		if ctx.Err() != nil {
+			respondJSON(w, partialSmartWalletInfo(contractID, result.info))
+			return
+		}
+		if result.err != nil {
+			respondError(w, result.err.Error(), http.StatusInternalServerError)
+			return
+		}
+		respondJSON(w, result.info)
+	case <-ctx.Done():
+		respondJSON(w, partialSmartWalletInfo(contractID, nil))
+	}
+}
+
+func (h *SmartWalletHandlers) lookupSmartWalletInfo(ctx context.Context, contractID string) (*SmartWalletInfo, error) {
+	if h.infoLookup != nil {
+		return h.infoLookup(ctx, contractID)
+	}
+	return h.GetSmartWalletInfo(ctx, contractID)
+}
+
+func partialSmartWalletInfo(contractID string, info *SmartWalletInfo) *SmartWalletInfo {
+	if info == nil {
+		info = &SmartWalletInfo{ContractID: contractID}
+	}
+	info.Partial = true
+	info.Warnings = dedupeStrings(append(
+		info.Warnings,
+		"smart-wallet detection budget exhausted; detection evidence may be incomplete",
+	))
+	return info
 }
