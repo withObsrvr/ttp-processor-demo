@@ -132,7 +132,8 @@ Cycle 5B transaction hydration notes.
 |----------|-------------|
 | `GET /api/v1/silver/contracts/top` | Most active contracts |
 | `GET /api/v1/silver/contracts/{id}/analytics` | Per-contract analytics |
-| `GET /api/v1/silver/contracts/{id}/interface` | Detected contract ABI |
+| `GET /api/v1/silver/contracts/{id}/interface` | Authoritative declared interface decoded from active WASM, including its hash and byte size (`?format=rust` supported) |
+| `GET /api/v1/silver/contracts/{id}/wasm` | Download hash-validated active contract WASM |
 | `GET /api/v1/silver/smart-wallet/{id}` | SEP-50 smart wallet detection |
 
 **Ledger Analysis:**
@@ -281,6 +282,19 @@ query:
   default_limit: 100
   max_limit: 10000
   cache_ttl_seconds: 60
+
+# Required for authoritative contract interface/WASM routes. The cache is
+# content-addressed by the immutable ledger WASM hash; mount it on durable
+# storage in production.
+rpc_fallback:
+  enabled: true
+  url: "https://your-stellar-rpc.example"
+  auth_header: ""
+  timeout_seconds: 10
+
+contract_artifacts:
+  cache_directory: "/var/lib/stellar-query-api/contract-artifacts"
+  max_wasm_bytes: 4194304
 ```
 
 ## Building

@@ -1955,7 +1955,13 @@ curl -H "Authorization: Api-Key $API_KEY" \
 
 #### Get Contract Interface
 
-Returns the detected interface (SEP-41 or unknown) for a contract based on observed function calls.
+Returns the authoritative interface declared in the active contract WASM. The
+API resolves the contract instance on every request so upgrades select the
+current code hash, validates the returned WASM against that hash, and decodes
+all `contractspecv0` functions and user-defined types. Historical calls remain
+available in `observed_functions`, but they do not define the interface. The
+executable also includes the verified WASM byte size for display without a
+binary download.
 
 ```bash
 GET /api/v1/silver/contracts/{id}/interface
@@ -1967,32 +1973,64 @@ curl -H "Authorization: Api-Key $API_KEY" \
   "https://gateway.withobsrvr.com/lake/v1/testnet/api/v1/silver/contracts/CDLZFC3.../interface"
 ```
 
-**Response (SEP-41 detected):**
+**Response:**
 ```json
 {
   "contract_id": "CDLZFC3...",
+  "network": "testnet",
   "detected_type": "sep41_token",
-  "interface": [
-    {"name": "transfer", "params": ["from", "to", "amount"]},
-    {"name": "balance", "params": ["id"]},
-    {"name": "decimals", "params": []},
-    {"name": "name", "params": []},
-    {"name": "symbol", "params": []}
-  ],
-  "observed_functions": ["transfer", "balance", "approve", "decimals"]
+  "executable": {
+    "type": "wasm",
+    "wasm_hash": "3a7b5b...",
+    "wasm_size_bytes": 48213,
+    "resolved_at_ledger": 3691267
+  },
+  "interface": {
+    "functions": [
+      {
+        "name": "balance",
+        "inputs": [{"name": "id", "type": "Address"}],
+        "outputs": ["i128"]
+      }
+    ],
+    "structs": [],
+    "unions": [],
+    "enums": [],
+    "errors": [],
+    "events": []
+  },
+  "metadata": [],
+  "environment": {},
+  "provenance": {
+    "executable_source": "stellar_rpc",
+    "code_source": "file_cache"
+  },
+  "observed_functions": ["balance"]
 }
 ```
 
-**Response (unknown contract):**
-```json
-{
-  "contract_id": "CXYZ...",
-  "detected_type": "unknown",
-  "observed_functions": ["swap", "add_liquidity", "remove_liquidity"]
-}
+Use `?format=rust` for a Rust-like display suitable for an explorer interface
+tab:
+
+```bash
+GET /api/v1/silver/contracts/{id}/interface?format=rust
 ```
 
-> **Note:** SEP-41 detection requires at least 3 of 5 standard SEP-41 function signatures to be observed in historical calls.
+Built-in Stellar Asset Contracts return the canonical protocol interface with
+`executable.type=stellar_asset`; they do not have uploaded WASM.
+
+#### Download Contract WASM
+
+Downloads the exact code for the contract's current executable:
+
+```bash
+GET /api/v1/silver/contracts/{id}/wasm
+```
+
+The response uses `Content-Type: application/wasm`, includes `ETag` and
+`X-Wasm-SHA256`, and honors `If-None-Match`. The contract-ID route is
+short-cacheable rather than immutable because a contract can upgrade to a new
+code hash.
 
 ---
 

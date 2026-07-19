@@ -17,17 +17,22 @@ import (
 
 // DecodeHandlers contains HTTP handlers for transaction decoding and human-readable summaries
 type DecodeHandlers struct {
-	hotReader     *SilverHotReader
-	coldReader    *SilverColdReader
-	bronzeCold    *ColdReader
-	silverReader  *UnifiedSilverReader
-	hotPathReader *TxHotPathReader
-	indexReader   *IndexReader
+	hotReader         *SilverHotReader
+	coldReader        *SilverColdReader
+	bronzeCold        *ColdReader
+	silverReader      *UnifiedSilverReader
+	hotPathReader     *TxHotPathReader
+	indexReader       *IndexReader
+	contractArtifacts ContractArtifactResolver
 }
 
 // NewDecodeHandlers creates new transaction decode API handlers
-func NewDecodeHandlers(hotReader *SilverHotReader, coldReader *SilverColdReader, bronzeCold *ColdReader, silverReader *UnifiedSilverReader, hotPathReader *TxHotPathReader, indexReader *IndexReader) *DecodeHandlers {
-	return &DecodeHandlers{hotReader: hotReader, coldReader: coldReader, bronzeCold: bronzeCold, silverReader: silverReader, hotPathReader: hotPathReader, indexReader: indexReader}
+func NewDecodeHandlers(hotReader *SilverHotReader, coldReader *SilverColdReader, bronzeCold *ColdReader, silverReader *UnifiedSilverReader, hotPathReader *TxHotPathReader, indexReader *IndexReader, artifactResolvers ...ContractArtifactResolver) *DecodeHandlers {
+	var artifacts ContractArtifactResolver
+	if len(artifactResolvers) > 0 {
+		artifacts = artifactResolvers[0]
+	}
+	return &DecodeHandlers{hotReader: hotReader, coldReader: coldReader, bronzeCold: bronzeCold, silverReader: silverReader, hotPathReader: hotPathReader, indexReader: indexReader, contractArtifacts: artifacts}
 }
 
 // HandleDecodedTransaction returns a human-readable decoded transaction
@@ -64,16 +69,18 @@ func (h *DecodeHandlers) HandleDecodedTransaction(w http.ResponseWriter, r *http
 	respondJSON(w, decoded)
 }
 
-// HandleContractInterface returns the detected interface for a contract
-// @Summary Get contract interface detection
-// @Description Returns the detected interface type (SEP-41 or unknown) for a contract based on observed function calls. SEP-41 detection requires at least 3 of 5 standard function signatures.
+// HandleContractInterface returns the authoritative declared interface for a contract.
+// @Summary Get authoritative contract interface
+// @Description Resolves the contract's current executable, verifies its WASM hash, reports the verified byte size, and decodes the complete contractspecv0 interface. Observed calls are returned separately and are never treated as the declared interface. Use format=rust for a Rust-like text representation.
 // @Tags Contracts
 // @Accept json
 // @Produce json
 // @Param id path string true "Contract ID (C...)"
-// @Success 200 {object} map[string]interface{} "Detected interface with observed functions"
-// @Failure 400 {object} map[string]interface{} "Missing contract_id"
-// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Param format query string false "Response format: json (default) or rust"
+// @Success 200 {object} ContractInterfaceResponse "Authoritative declared interface"
+// @Failure 400 {object} map[string]interface{} "Invalid contract ID or format"
+// @Failure 404 {object} map[string]interface{} "Contract or active code not found"
+// @Failure 503 {object} map[string]interface{} "Authoritative resolver unavailable"
 // @Router /api/v1/silver/contracts/{id}/interface [get]
 func (h *DecodeHandlers) HandleContractInterface(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
@@ -82,45 +89,103 @@ func (h *DecodeHandlers) HandleContractInterface(w http.ResponseWriter, r *http.
 		badRequest(w, "contract_id required")
 		return
 	}
-
-	// Get observed function names
-	var functions []string
-	var err error
-	if h.hotReader != nil {
-		functions, err = h.hotReader.GetContractFunctions(r.Context(), contractID)
+	format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format")))
+	if format != "" && format != "json" && format != "rust" {
+		badRequest(w, "format must be json or rust")
+		return
 	}
-	if err != nil || len(functions) == 0 {
-		if h.coldReader == nil {
-			internalError(w, "contract interface detection requires cold reader")
-			return
-		}
-		functions, err = h.coldReader.GetContractFunctions(r.Context(), contractID)
+	if h.contractArtifacts == nil {
+		serviceUnavailable(w, "authoritative contract interface requires rpc_fallback configuration")
+		return
 	}
+	response, err := h.contractArtifacts.Resolve(r.Context(), contractID)
 	if err != nil {
-		internalError(w, err.Error())
+		handleContractArtifactError(w, err)
 		return
 	}
-
-	// Detect contract type
-	contractType := DetectContractType(functions)
-
-	if contractType == ContractTypeSEP41 {
-		iface := GetSEP41Interface(contractID)
-		respondJSON(w, map[string]interface{}{
-			"contract_id":        contractID,
-			"detected_type":      string(contractType),
-			"interface":          iface.Functions,
-			"observed_functions": functions,
-		})
+	response.ObservedFunctions = h.observedContractFunctions(r.Context(), contractID)
+	if format == "rust" {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("X-Contract-ID", response.ContractID)
+		if response.Executable.WasmHash != "" {
+			w.Header().Set("X-Wasm-SHA256", response.Executable.WasmHash)
+		}
+		_, _ = w.Write([]byte(RenderContractSpecRust(response.Interface)))
 		return
 	}
+	respondJSON(w, response)
+}
 
-	// Unknown contract type — return observed functions
-	respondJSON(w, map[string]interface{}{
-		"contract_id":        contractID,
-		"detected_type":      string(ContractTypeUnknown),
-		"observed_functions": functions,
-	})
+// HandleContractWASM downloads the hash-validated WASM for a contract's current executable.
+// @Summary Download active contract WASM
+// @Description Resolves the current executable by contract ID and streams the exact WASM after validating its SHA-256 ledger hash. Built-in Stellar Asset Contracts do not have downloadable WASM.
+// @Tags Contracts
+// @Produce application/wasm
+// @Param id path string true "Contract ID (C...)"
+// @Success 200 {file} binary "Contract WASM"
+// @Failure 400 {object} map[string]interface{} "Invalid contract ID"
+// @Failure 404 {object} map[string]interface{} "Contract/code not found or built-in SAC"
+// @Failure 503 {object} map[string]interface{} "Authoritative resolver unavailable"
+// @Router /api/v1/silver/contracts/{id}/wasm [get]
+func (h *DecodeHandlers) HandleContractWASM(w http.ResponseWriter, r *http.Request) {
+	contractID := mux.Vars(r)["id"]
+	if contractID == "" {
+		badRequest(w, "contract_id required")
+		return
+	}
+	if h.contractArtifacts == nil {
+		serviceUnavailable(w, "contract WASM download requires rpc_fallback configuration")
+		return
+	}
+	artifact, err := h.contractArtifacts.ResolveWASM(r.Context(), contractID)
+	if err != nil {
+		handleContractArtifactError(w, err)
+		return
+	}
+	etag := `"` + artifact.WasmHash + `"`
+	if strings.TrimSpace(r.Header.Get("If-None-Match")) == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.Header().Set("Content-Type", "application/wasm")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-%s.wasm"`, contractID, artifact.WasmHash))
+	w.Header().Set("Content-Length", strconv.Itoa(len(artifact.WASM)))
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "public, max-age=60, must-revalidate")
+	w.Header().Set("X-Contract-ID", contractID)
+	w.Header().Set("X-Wasm-SHA256", artifact.WasmHash)
+	if artifact.Executable.ResolvedAtLedger > 0 {
+		w.Header().Set("X-Resolved-At-Ledger", strconv.FormatInt(artifact.Executable.ResolvedAtLedger, 10))
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(artifact.WASM)
+}
+
+func (h *DecodeHandlers) observedContractFunctions(ctx context.Context, contractID string) []string {
+	if h.hotReader != nil {
+		if functions, err := h.hotReader.GetContractFunctions(ctx, contractID); err == nil && len(functions) > 0 {
+			return functions
+		}
+	}
+	if h.coldReader != nil {
+		if functions, err := h.coldReader.GetContractFunctions(ctx, contractID); err == nil {
+			return functions
+		}
+	}
+	return []string{}
+}
+
+func handleContractArtifactError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrInvalidContractID):
+		badRequest(w, err.Error())
+	case errors.Is(err, ErrContractNotFound), errors.Is(err, ErrContractCodeAbsent):
+		notFound(w, err.Error())
+	case errors.Is(err, ErrContractIsSAC):
+		notFound(w, "built-in Stellar Asset Contracts do not have downloadable WASM")
+	default:
+		serviceUnavailable(w, err.Error())
+	}
 }
 
 // HandleDecodeScVal decodes an ScVal from XDR or JSON

@@ -55,6 +55,25 @@ func mainWithSilver() {
 		log.Printf("✅ Smart-wallet RPC fallback enabled: %s", config.RPCFallback.URL)
 	}
 
+	var contractArtifacts ContractArtifactResolver
+	if walletRPCFallback != nil {
+		var artifactStore contractArtifactStore
+		maxWASMBytes := int64(0)
+		if config.ContractArtifacts != nil {
+			maxWASMBytes = config.ContractArtifacts.MaxWASMBytes
+			if config.ContractArtifacts.CacheDirectory != "" {
+				store, err := NewFileContractArtifactStore(config.ContractArtifacts.CacheDirectory)
+				if err != nil {
+					log.Fatalf("Failed to initialize contract artifact cache: %v", err)
+				}
+				artifactStore = store
+				log.Printf("✅ Contract artifact cache enabled: %s", config.ContractArtifacts.CacheDirectory)
+			}
+		}
+		contractArtifacts = NewContractArtifactService(config.Service.Network, walletRPCFallback, artifactStore, maxWASMBytes)
+		log.Println("✅ Authoritative contract interface and WASM resolver enabled")
+	}
+
 	// Create hot reader (PostgreSQL)
 	hotReader, err := NewHotReader(config.Postgres)
 	if err != nil {
@@ -193,6 +212,7 @@ func mainWithSilver() {
 		indexReader:           indexReader,
 		contractIndexHandlers: contractIndexHandlers,
 		contractIndexReader:   contractIndexReader,
+		contractArtifacts:     contractArtifacts,
 		readerMode:            readerMode,
 	}
 
