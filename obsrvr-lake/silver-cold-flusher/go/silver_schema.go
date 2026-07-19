@@ -107,6 +107,13 @@ func (c *DuckDBClient) applySilverMigrations() error {
 			),
 		},
 		{
+			name: "address_balances_current.network",
+			sql: fmt.Sprintf(
+				`ALTER TABLE %s.%s.address_balances_current ADD COLUMN IF NOT EXISTS network VARCHAR`,
+				c.config.CatalogName, c.config.SchemaName,
+			),
+		},
+		{
 			// Soroban i128/u128 token balances can exceed DECIMAL(38, 0)
 			// max — e.g. 99999999999999997748809823456034029568 fails to
 			// cast during flush. Convert to VARCHAR so the column holds
@@ -270,6 +277,7 @@ var tablesWithLedgerRange = map[string]bool{
 	"restored_keys":                       true,
 	"native_balances_current":             true,
 	"ttl_current":                         true,
+	"contract_balance_changes":            true,
 	// address_balances_current has no ledger_range column — deliberately omitted
 }
 

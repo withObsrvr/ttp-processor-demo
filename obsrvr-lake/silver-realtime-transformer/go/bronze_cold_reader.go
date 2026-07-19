@@ -1255,22 +1255,49 @@ func (r *BronzeColdReader) QueryDeletedContractDataSnapshot(ctx context.Context,
 // See bronze_reader.go for rationale.
 func (r *BronzeColdReader) QueryBalanceHolderSnapshots(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
 	query := fmt.Sprintf(`
-		WITH ranked AS (
-			SELECT
-				contract_id,
-				balance_holder,
-				balance,
-				asset_type,
-				asset_code,
-				asset_issuer,
-				last_modified_ledger,
-				closed_at,
-				ROW_NUMBER() OVER (PARTITION BY contract_id, balance_holder ORDER BY ledger_sequence DESC) AS rn
+		WITH balance_rows AS (
+			SELECT *
 			FROM %s
 			WHERE ledger_sequence BETWEEN $1 AND $2
-			  AND deleted = false
 			  AND balance_holder IS NOT NULL
 			  AND balance IS NOT NULL
+		), metadata_versions AS (
+			SELECT *, ROW_NUMBER() OVER (
+				PARTITION BY contract_id ORDER BY ledger_sequence DESC, closed_at DESC NULLS LAST
+			) AS metadata_rank
+			FROM %s
+			WHERE ledger_sequence <= $2
+			  AND contract_key_type = 'ScValTypeScvLedgerKeyContractInstance'
+			  AND contract_id IN (SELECT DISTINCT contract_id FROM balance_rows)
+		), metadata AS (
+			SELECT contract_id, asset_type, asset_code, asset_issuer, token_symbol, token_decimals
+			FROM metadata_versions
+			WHERE metadata_rank = 1 AND deleted = false
+		), ranked AS (
+			SELECT
+				b.contract_id,
+				b.balance_holder,
+				b.balance,
+				CASE COALESCE(NULLIF(b.asset_type, ''), NULLIF(m.asset_type, ''))
+					WHEN 'AssetTypeAssetTypeNative' THEN 'native'
+					WHEN 'AssetTypeAssetTypeCreditAlphanum4' THEN 'credit_alphanum4'
+					WHEN 'AssetTypeAssetTypeCreditAlphanum12' THEN 'credit_alphanum12'
+					ELSE COALESCE(NULLIF(b.asset_type, ''), NULLIF(m.asset_type, ''))
+				END AS asset_type,
+				CASE
+					WHEN COALESCE(NULLIF(b.asset_type, ''), NULLIF(m.asset_type, '')) IN ('native', 'AssetTypeAssetTypeNative') THEN 'XLM'
+					ELSE COALESCE(NULLIF(b.asset_code, ''), NULLIF(m.asset_code, ''))
+				END AS asset_code,
+				COALESCE(NULLIF(b.asset_issuer, ''), NULLIF(m.asset_issuer, '')) AS asset_issuer,
+				m.token_symbol,
+				m.token_decimals,
+				b.ledger_key_hash,
+				b.ledger_sequence,
+				b.closed_at,
+				b.deleted,
+				ROW_NUMBER() OVER (PARTITION BY b.contract_id, b.balance_holder ORDER BY b.ledger_sequence DESC, b.closed_at DESC NULLS LAST) AS rn
+			FROM balance_rows b
+			LEFT JOIN metadata m ON m.contract_id = b.contract_id
 		)
 		SELECT
 			contract_id,
@@ -1279,11 +1306,15 @@ func (r *BronzeColdReader) QueryBalanceHolderSnapshots(ctx context.Context, star
 			asset_type,
 			asset_code,
 			asset_issuer,
-			last_modified_ledger,
-			closed_at
+			token_symbol,
+			token_decimals,
+			ledger_key_hash,
+			ledger_sequence,
+			closed_at,
+			deleted
 		FROM ranked
 		WHERE rn = 1
-	`, r.tableName("contract_data_snapshot_v1"))
+	`, r.tableName("contract_data_snapshot_v1"), r.tableName("contract_data_snapshot_v1"))
 
 	rows, err := r.db.QueryContext(ctx, query, startLedger, endLedger)
 	if err != nil {
@@ -1512,7 +1543,7 @@ func (r *BronzeColdReader) QueryTokenMetadataEntries(ctx context.Context, startL
 				token_name,
 				token_symbol,
 				token_decimals,
-				asset_code,
+				CASE WHEN asset_type IN ('native', 'AssetTypeAssetTypeNative') THEN 'XLM' ELSE NULLIF(asset_code, '') END AS asset_code,
 				asset_issuer,
 				ledger_sequence,
 				ROW_NUMBER() OVER (PARTITION BY contract_id ORDER BY ledger_sequence DESC) as rn

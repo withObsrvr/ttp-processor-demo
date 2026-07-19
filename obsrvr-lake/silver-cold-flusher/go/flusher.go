@@ -37,7 +37,7 @@ func NewFlusher(config *Config) (*Flusher, error) {
 	log.Println("✅ Connected to PostgreSQL")
 
 	// Connect to DuckDB
-	duckDB, err := NewDuckDBClient(&config.DuckLake)
+	duckDB, err := NewDuckDBClient(&config.DuckLake, config.Network)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to DuckDB: %w", err)
 	}
@@ -257,6 +257,7 @@ func (f *Flusher) flushAllTables(watermark, lastFlushed int64) (int64, []string,
 		"contract_data_deletions":             true,
 		"trades":                              true,
 		"restored_keys":                       true,
+		"contract_balance_changes":            true,
 	}
 
 	// Tables with non-standard watermark column
@@ -299,6 +300,17 @@ func (f *Flusher) flushAllTables(watermark, lastFlushed int64) (int64, []string,
 			len(failedTables), len(tables), strings.Join(failedTables, ", "))
 	}
 
+	// The append-only change stream is the source of truth for contract-held
+	// balances. Reconcile every key touched in this chunk before the shared
+	// flusher checkpoint advances; otherwise tombstones would be archived while
+	// stale positive rows remained in cold current state.
+	reconciledRows, err := f.duckDB.ReconcileContractBalancesCurrent(watermark, lastFlushed)
+	if err != nil {
+		return totalRows, successfullyFlushed, fmt.Errorf("reconcile cold contract balances for %d..%d: %w", lastFlushed+1, watermark, err)
+	}
+	totalRows += reconciledRows
+	log.Printf("   ✓ Reconciled %d contract balance current rows", reconciledRows)
+
 	return totalRows, successfullyFlushed, nil
 }
 
@@ -328,6 +340,7 @@ func (f *Flusher) deleteFlushedData(watermark int64, tables []string) (int64, er
 		"contract_data_deletions":             true,
 		"trades":                              true,
 		"restored_keys":                       true,
+		"contract_balance_changes":            true,
 	}
 
 	// Tables with non-standard watermark column
@@ -338,6 +351,10 @@ func (f *Flusher) deleteFlushedData(watermark int64, tables []string) (int64, er
 	}
 
 	for _, tableName := range tables {
+		if !shouldDeleteFlushedTable(tableName) {
+			log.Printf("   🔒 Retaining %s in PostgreSQL as bounded current-state serving data", tableName)
+			continue
+		}
 		var whereCol string
 		if col, ok := customWatermarkCol[tableName]; ok {
 			whereCol = col
@@ -356,6 +373,14 @@ func (f *Flusher) deleteFlushedData(watermark int64, tables []string) (int64, er
 	}
 
 	return totalDeleted, nil
+}
+
+// shouldDeleteFlushedTable distinguishes append/history tables from bounded
+// serving state. address_balances_current contains one latest row per
+// (owner_address, asset_key); deleting it after archival makes historical-only
+// contract holders disappear from Query API until another on-chain change.
+func shouldDeleteFlushedTable(tableName string) bool {
+	return tableName != "address_balances_current"
 }
 
 // deleteFlushBatchSize bounds each DELETE so it holds row locks only briefly. A single large delete

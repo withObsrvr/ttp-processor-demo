@@ -358,6 +358,61 @@ func (rt *RealtimeTransformer) RunSmartAccountReplay(ctx context.Context, startL
 	return nil
 }
 
+// RunContractBalanceReplay rebuilds only Balance(Address) history and current
+// state for a bounded ledger range. It never reads, resets, or advances the
+// shared realtime_transformer_checkpoint.
+func (rt *RealtimeTransformer) RunContractBalanceReplay(ctx context.Context, startLedger, endLedger, batchSize int64, useCold bool) error {
+	if startLedger <= 0 || endLedger < startLedger {
+		return fmt.Errorf("invalid contract-balance replay range %d-%d", startLedger, endLedger)
+	}
+	if batchSize <= 0 {
+		batchSize = 1000
+	}
+	if useCold {
+		rt.sourceManager.ForceBackfillMode(endLedger)
+		log.Printf("🔄 CONTRACT-BALANCE REPLAY: reading bronze cold ledgers %d → %d (batch size: %d)", startLedger, endLedger, batchSize)
+	} else {
+		rt.sourceManager.ForceHotMode()
+		log.Printf("🔄 CONTRACT-BALANCE REPLAY: reading bronze hot ledgers %d → %d (batch size: %d)", startLedger, endLedger, batchSize)
+	}
+
+	totalRows := int64(0)
+	started := time.Now()
+	for batchStart := startLedger; batchStart <= endLedger; batchStart += batchSize {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		batchEnd := batchStart + batchSize - 1
+		if batchEnd > endLedger {
+			batchEnd = endLedger
+		}
+		tx, err := rt.silverDB.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("contract-balance replay begin tx %d-%d: %w", batchStart, batchEnd, err)
+		}
+		rows, err := rt.transformAddressBalancesFromContractState(ctx, tx, batchStart, batchEnd)
+		if err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("contract-balance replay %d-%d: %w", batchStart, batchEnd, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("contract-balance replay commit %d-%d: %w", batchStart, batchEnd, err)
+		}
+
+		totalRows += rows
+		if useCold {
+			rt.sourceManager.ForceBackfillMode(endLedger)
+		}
+		log.Printf("✅ CONTRACT-BALANCE REPLAY batch %d-%d: rows=%d", batchStart, batchEnd, rows)
+	}
+
+	log.Printf("✅ CONTRACT-BALANCE REPLAY COMPLETE: rows=%d elapsed=%s", totalRows, time.Since(started).Round(time.Second))
+	return nil
+}
+
 // migrateHexContractIDs converts existing 64-char hex contract IDs to 56-char C-encoded strkey
 // in token_transfers_raw, evicted_keys, and restored_keys tables. Runs once on startup.
 func (rt *RealtimeTransformer) migrateHexContractIDs() {
@@ -3697,19 +3752,24 @@ func (rt *RealtimeTransformer) transformAddressBalancesFromContractState(ctx con
 	var count int64
 	for rows.Next() {
 		var (
-			contractID         string
-			balanceHolder      string
-			balance            string
-			assetType          sql.NullString
-			assetCode          sql.NullString
-			assetIssuer        sql.NullString
-			lastModifiedLedger int64
-			closedAt           time.Time
+			contractID     string
+			balanceHolder  string
+			balance        string
+			assetType      sql.NullString
+			assetCode      sql.NullString
+			assetIssuer    sql.NullString
+			symbol         sql.NullString
+			decimals       sql.NullInt32
+			keyHash        string
+			ledgerSequence int64
+			closedAt       time.Time
+			deleted        bool
 		)
 		if err := rows.Scan(
 			&contractID, &balanceHolder, &balance,
 			&assetType, &assetCode, &assetIssuer,
-			&lastModifiedLedger, &closedAt,
+			&symbol, &decimals,
+			&keyHash, &ledgerSequence, &closedAt, &deleted,
 		); err != nil {
 			return count, fmt.Errorf("scan balance holder row: %w", err)
 		}
@@ -3720,8 +3780,12 @@ func (rt *RealtimeTransformer) transformAddressBalancesFromContractState(ctx con
 			AssetTypeHint:     assetType.String,
 			AssetCode:         assetCode.String,
 			AssetIssuer:       assetIssuer.String,
+			Symbol:            symbol.String,
+			Decimals:          decimals,
 			BalanceRaw:        balance,
-			LastUpdatedLedger: lastModifiedLedger,
+			KeyHash:           keyHash,
+			Deleted:           deleted,
+			LastUpdatedLedger: ledgerSequence,
 			LastUpdatedAt:     closedAt,
 		})
 		count++

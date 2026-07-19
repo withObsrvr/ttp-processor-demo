@@ -24,6 +24,212 @@ func TestPlanChunksDeterministic(t *testing.T) {
 	}
 }
 
+func TestContractBalanceProjectionPreservesArbitraryPrecision(t *testing.T) {
+	sql := selectAddressBalancesCurrent(&Projector{cfg: Config{Network: "testnet", SilverSchema: "silver"}}, 100, 200)
+	for _, want := range []string{
+		"repeat('0'",
+		"regexp_matches(CAST(balance_raw AS VARCHAR), '^[0-9]*[1-9][0-9]*$')",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("contract balance projection SQL missing %q:\n%s", want, sql)
+		}
+	}
+	db := openFixtureDB(t)
+	defer db.Close()
+	displayExpr := contractBalanceDisplayExpr("balance_raw", "decimals")
+	if strings.Contains(displayExpr, "DECIMAL(38,7)") || strings.Contains(displayExpr, "POWER(10") {
+		t.Fatalf("contract balance display still narrows raw balances through numeric arithmetic:\n%s", displayExpr)
+	}
+
+	tests := []struct {
+		name     string
+		raw      string
+		decimals int
+		want     string
+	}{
+		{name: "zero decimals", raw: "123", decimals: 0, want: "123"},
+		{name: "two decimals", raw: "12345", decimals: 2, want: "123.45"},
+		{name: "native seven decimals", raw: "99950000000", decimals: 7, want: "9995.0000000"},
+		{name: "fraction smaller than one", raw: "1", decimals: 7, want: "0.0000001"},
+		{name: "nine decimals", raw: "123456789", decimals: 9, want: "0.123456789"},
+		{name: "twelve decimals preserves trailing digits", raw: "12345678901234567890", decimals: 12, want: "12345678.901234567890"},
+		{name: "thirty one raw digits", raw: "1234567890123456789012345678901", decimals: 7, want: "123456789012345678901234.5678901"},
+		{name: "thirty two raw digits", raw: "12345678901234567890123456789012", decimals: 7, want: "1234567890123456789012345.6789012"},
+		{name: "thirty nine raw digits", raw: "999999999999999999999999999999999999999", decimals: 2, want: "9999999999999999999999999999999999999.99"},
+	}
+	query := `SELECT ` + displayExpr + `
+		FROM (SELECT ?::VARCHAR AS balance_raw, ?::INTEGER AS decimals)`
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var display string
+			if err := db.QueryRow(query, tc.raw, tc.decimals).Scan(&display); err != nil {
+				t.Fatalf("execute arbitrary-precision display expression: %v\n%s", err, query)
+			}
+			if display != tc.want {
+				t.Fatalf("display = %q, want %q", display, tc.want)
+			}
+		})
+	}
+}
+
+func TestProjectionResumeIdentityIncludesDefinitionVersion(t *testing.T) {
+	ctx := context.Background()
+	db := openFixtureDB(t)
+	defer db.Close()
+	p := NewProjectorWithDB(db, Config{Network: "testnet", Start: 3, End: 100002, SilverSchema: "silver"})
+	if err := p.ensureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE silver.silver_current_projector_manifest (
+			run_id VARCHAR,
+			component_id VARCHAR,
+			projection_name VARCHAR,
+			network VARCHAR,
+			start_ledger BIGINT,
+			end_ledger BIGINT,
+			status VARCHAR,
+			row_count BIGINT,
+			error_message VARCHAR,
+			started_at TIMESTAMP,
+			completed_at TIMESTAMP
+		);
+		INSERT INTO silver.silver_current_projector_manifest (
+			run_id, component_id, projection_name, network,
+			start_ledger, end_ledger, status, row_count,
+			error_message, started_at, completed_at
+		) VALUES (
+			'legacy-run', 'silver-current-state-projector', 'address_balances_current', 'testnet',
+			3, 100002, 'completed', 1, '', current_timestamp, current_timestamp
+		)
+	`); err != nil {
+		t.Fatalf("create legacy manifest fixture: %v", err)
+	}
+	if err := p.ensureManifest(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var versionColumns int64
+	if err := db.QueryRow(`
+		SELECT count(*) FROM information_schema.columns
+		WHERE table_schema = 'silver'
+		  AND table_name = 'silver_current_projector_manifest'
+		  AND column_name = 'projection_version'
+	`).Scan(&versionColumns); err != nil {
+		t.Fatal(err)
+	}
+	if versionColumns != 1 {
+		t.Fatalf("projection manifest version columns = %d, want 1", versionColumns)
+	}
+
+	projection := currentProjectionByName(t, "address_balances_current")
+	done, err := p.projectionComplete(ctx, 3, 100002, projection)
+	if err != nil {
+		t.Fatalf("check legacy projection completion: %v", err)
+	}
+	if done {
+		t.Fatal("legacy completion row incorrectly matched the current address-balance projection definition")
+	}
+
+	if err := p.markManifest(ctx, 3, 100002, projection, "completed", "", 1); err != nil {
+		t.Fatalf("mark current projection definition complete: %v", err)
+	}
+	p.cfg.FlowctlRunID = "redispatch-with-new-run-id"
+	done, err = p.projectionComplete(ctx, 3, 100002, projection)
+	if err != nil {
+		t.Fatalf("check current projection completion: %v", err)
+	}
+	if !done {
+		t.Fatal("same projection definition did not resume across run IDs")
+	}
+}
+
+func currentProjectionByName(t *testing.T, name string) CurrentProjection {
+	t.Helper()
+	for _, projection := range executableCurrentProjections() {
+		if projection.Name == name {
+			return projection
+		}
+	}
+	t.Fatalf("projection %q not found", name)
+	return CurrentProjection{}
+}
+
+func TestAddressBalanceProjectionWorksWithoutLegacyBalanceChanges(t *testing.T) {
+	db := openFixtureDB(t)
+	defer db.Close()
+	for _, stmt := range []string{
+		`CREATE SCHEMA silver`,
+		`CREATE TABLE silver.contract_balance_changes (
+			network VARCHAR, owner_address VARCHAR, owner_type VARCHAR, asset_key VARCHAR,
+			asset_type VARCHAR, token_contract_id VARCHAR, asset_code VARCHAR, asset_issuer VARCHAR,
+			symbol VARCHAR, decimals INTEGER, balance_raw VARCHAR, balance_source VARCHAR,
+			key_hash VARCHAR, ledger_sequence BIGINT, ledger_closed_at TIMESTAMP, deleted BOOLEAN
+		)`,
+		`INSERT INTO silver.contract_balance_changes VALUES
+			('testnet','CC1','contract','CXLM','native','CXLM','XLM',NULL,'XLM',7,'10000000','contract_storage_state','K1',10,'2026-01-01 00:00:10',false),
+			('testnet','CC2','contract','CXLM','native','CXLM','XLM',NULL,'XLM',7,'0','contract_storage_state','K2',10,'2026-01-01 00:00:10',false)`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("setup: %v\n%s", err, stmt)
+		}
+	}
+
+	p := NewProjectorWithDB(db, Config{Network: "testnet", SilverSchema: "silver"})
+	available, err := p.sourceTableExists(context.Background(), "balance_changes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.sourceAvailabilityKnown = true
+	p.balanceChangesAvailable = available
+	if available {
+		t.Fatal("legacy balance_changes unexpectedly exists")
+	}
+
+	projectionSQL := selectAddressBalancesCurrent(p, 3, 20)
+	if strings.Contains(projectionSQL, `."balance_changes"`) {
+		t.Fatalf("projection unexpectedly requires legacy balance_changes:\n%s", projectionSQL)
+	}
+	var rows int64
+	if err := db.QueryRow(`SELECT COUNT(*) FROM (` + projectionSQL + `)`).Scan(&rows); err != nil {
+		t.Fatalf("execute contract-only projection: %v\n%s", err, projectionSQL)
+	}
+	if rows != 1 {
+		t.Fatalf("contract-only projection rows = %d, want 1 positive balance", rows)
+	}
+
+	keysSQL := selectAddressBalancesCurrentKeys(p, 3, 20)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM (` + keysSQL + `)`).Scan(&rows); err != nil {
+		t.Fatalf("execute contract-only keys: %v\n%s", err, keysSQL)
+	}
+	if rows != 2 {
+		t.Fatalf("contract-only key rows = %d, want 2", rows)
+	}
+}
+
+func TestEnsureAddressBalancesCurrentAddsNetworkToLegacyTable(t *testing.T) {
+	db := openFixtureDB(t)
+	defer db.Close()
+	if _, err := db.Exec(`CREATE SCHEMA silver; CREATE TABLE silver.address_balances_current (
+		owner_address VARCHAR, asset_key VARCHAR, balance_raw VARCHAR, last_updated_ledger BIGINT
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	p := NewProjectorWithDB(db, Config{SilverSchema: "silver"})
+	projection := CurrentProjection{Name: "address_balances_current", TargetTable: "address_balances_current"}
+	if err := p.ensureTargetColumns(context.Background(), projection); err != nil {
+		t.Fatal(err)
+	}
+	var columns int64
+	if err := db.QueryRow(`SELECT COUNT(*) FROM information_schema.columns
+		WHERE table_schema='silver' AND table_name='address_balances_current' AND column_name='network'`).Scan(&columns); err != nil {
+		t.Fatal(err)
+	}
+	if columns != 1 {
+		t.Fatalf("network column count = %d, want 1", columns)
+	}
+}
+
 func TestConfigRequiresBoundedRangeAndSilverInputs(t *testing.T) {
 	_, err := parseConfig([]string{"--network", "mainnet", "--start-ledger", "3", "--end-ledger", "10"})
 	if err == nil {
@@ -92,7 +298,7 @@ func TestProjectorDerivesCurrentTablesFromSilverFixture(t *testing.T) {
 	assertCount(t, db, `SELECT COUNT(*) FROM silver.contract_data_current WHERE network='mainnet'`, 1)
 	assertCount(t, db, `SELECT COUNT(*) FROM silver.ttl_current WHERE network='mainnet'`, 2)
 	assertCount(t, db, `SELECT COUNT(*) FROM silver.native_balances_current WHERE network='mainnet'`, 2)
-	assertCount(t, db, `SELECT COUNT(*) FROM silver.address_balances_current WHERE network='mainnet'`, 4)
+	assertCount(t, db, `SELECT COUNT(*) FROM silver.address_balances_current WHERE network='mainnet'`, 6)
 	assertCount(t, db, `SELECT COUNT(*) FROM silver.silver_current_projector_manifest WHERE status='completed'`, 7)
 
 	var accountBalance string
@@ -116,6 +322,19 @@ func TestProjectorDerivesCurrentTablesFromSilverFixture(t *testing.T) {
 	if balanceRaw != "25000000" || balanceDisplay != "2.5" {
 		t.Fatalf("address USD balance raw/display = %s/%s, want 25000000/2.5", balanceRaw, balanceDisplay)
 	}
+	if err := db.QueryRow(`SELECT balance_raw, balance_display FROM silver.address_balances_current WHERE owner_address='CC1' AND token_contract_id='CXLM'`).Scan(&balanceRaw, &balanceDisplay); err != nil {
+		t.Fatal(err)
+	}
+	if balanceRaw != "99950000000" || balanceDisplay != "9995.0000000" {
+		t.Fatalf("contract XLM balance raw/display = %s/%s, want 99950000000/9995.0000000", balanceRaw, balanceDisplay)
+	}
+	if err := db.QueryRow(`SELECT balance_raw, balance_display FROM silver.address_balances_current WHERE owner_address='CC5' AND token_contract_id='CTWO'`).Scan(&balanceRaw, &balanceDisplay); err != nil {
+		t.Fatal(err)
+	}
+	if balanceRaw != "12345" || balanceDisplay != "123.45" {
+		t.Fatalf("two-decimal contract balance raw/display = %s/%s, want 12345/123.45", balanceRaw, balanceDisplay)
+	}
+	assertCount(t, db, `SELECT COUNT(*) FROM silver.address_balances_current WHERE owner_address IN ('CC2','CC3')`, 0)
 	var contractCount int64
 	if err := db.QueryRow(`SELECT COUNT(*) FROM silver.contract_data_current WHERE contract_id='CC1' AND key_hash='K2'`).Scan(&contractCount); err != nil {
 		t.Fatal(err)
@@ -329,7 +548,7 @@ func TestLedgerWindowMergeAcrossWindowsLatestWins(t *testing.T) {
 	// Identical result regardless of window count (latest <= end ledger 5, no dup keys).
 	assertCount(t, db, `SELECT COUNT(*) FROM silver.accounts_current WHERE network='mainnet'`, 2)
 	assertCount(t, db, `SELECT COUNT(*) FROM silver.trustlines_current WHERE network='mainnet'`, 2)
-	assertCount(t, db, `SELECT COUNT(*) FROM silver.address_balances_current WHERE network='mainnet'`, 4)
+	assertCount(t, db, `SELECT COUNT(*) FROM silver.address_balances_current WHERE network='mainnet'`, 6)
 	var bal string
 	if err := db.QueryRow(`SELECT balance FROM silver.accounts_current WHERE account_id='GA1'`).Scan(&bal); err != nil {
 		t.Fatal(err)
@@ -395,7 +614,7 @@ func TestResumeSkipsCompletedProjectionsAcrossRunIDs(t *testing.T) {
 	// Data intact and unchanged.
 	assertCount(t, db, `SELECT COUNT(*) FROM silver.accounts_current WHERE network='mainnet'`, 2)
 	assertCount(t, db, `SELECT COUNT(*) FROM silver.trustlines_current WHERE network='mainnet'`, 2)
-	assertCount(t, db, `SELECT COUNT(*) FROM silver.address_balances_current WHERE network='mainnet'`, 4)
+	assertCount(t, db, `SELECT COUNT(*) FROM silver.address_balances_current WHERE network='mainnet'`, 6)
 }
 
 func TestIsRetryableIOAndExecWindow(t *testing.T) {
@@ -516,6 +735,12 @@ func loadCurrentProjectorFixture(t *testing.T, ctx context.Context, db *sql.DB) 
 			network VARCHAR, address VARCHAR, asset_type VARCHAR, asset_code VARCHAR, asset_issuer VARCHAR,
 			balance VARCHAR, ledger_sequence BIGINT, ledger_closed_at TIMESTAMP, deleted BOOLEAN, ledger_range BIGINT
 		)`,
+		`CREATE TABLE silver.contract_balance_changes (
+			network VARCHAR, owner_address VARCHAR, owner_type VARCHAR, asset_key VARCHAR, asset_type VARCHAR,
+			token_contract_id VARCHAR, asset_code VARCHAR, asset_issuer VARCHAR, symbol VARCHAR, decimals INTEGER,
+			balance_raw VARCHAR, balance_source VARCHAR, key_hash VARCHAR, ledger_sequence BIGINT,
+			ledger_closed_at TIMESTAMP, deleted BOOLEAN, ledger_range BIGINT
+		)`,
 		`INSERT INTO silver.accounts_snapshot VALUES
 			('mainnet','GA1',3,'2026-01-01 00:00:03','100',10,3,3,1,0,0,NULL,1,1,1,1,0,false,false,false,false,NULL,NULL,'2026-01-01 00:00:03','2026-01-01 00:00:03',3,'era','v1'),
 			('mainnet','GA1',4,'2026-01-01 00:00:04','200',11,4,4,1,0,0,NULL,1,1,1,1,0,false,false,false,false,NULL,NULL,'2026-01-01 00:00:03','2026-01-01 00:00:04',4,'era','v1'),
@@ -549,6 +774,14 @@ func loadCurrentProjectorFixture(t *testing.T, ctx context.Context, db *sql.DB) 
 			('mainnet','GA1','credit_alphanum4','USD','ISSUER','2.5',5,'2026-01-01 00:00:05',false,5),
 			('mainnet','GA2','credit_alphanum4','EUR','ISSUER2','3',4,'2026-01-01 00:00:04',false,4),
 			('mainnet','GA3','native','XLM',NULL,'1',8,'2026-01-01 00:00:08',false,8)`,
+		`INSERT INTO silver.contract_balance_changes VALUES
+			('mainnet','CC1','contract','CXLM','native','CXLM','XLM',NULL,'XLM',7,'10000000000','contract_storage_state','BK1',3,'2026-01-01 00:00:03',false,3),
+			('mainnet','CC1','contract','CXLM','native','CXLM','XLM',NULL,'XLM',7,'99950000000','contract_storage_state','BK1',5,'2026-01-01 00:00:05',false,5),
+			('mainnet','CC2','contract','CXLM','native','CXLM','XLM',NULL,'XLM',7,'50000000','contract_storage_state','BK2',3,'2026-01-01 00:00:03',false,3),
+			('mainnet','CC2','contract','CXLM','native','CXLM','XLM',NULL,'XLM',7,'50000000','contract_storage_state','BK2',4,'2026-01-01 00:00:04',true,4),
+			('mainnet','CC3','contract','CXLM','native','CXLM','XLM',NULL,'XLM',7,'0','contract_storage_state','BK3',4,'2026-01-01 00:00:04',false,4),
+			('mainnet','CC4','contract','CXLM','native','CXLM','XLM',NULL,'XLM',7,'70000000','contract_storage_state','BK4',8,'2026-01-01 00:00:08',false,8),
+			('mainnet','CC5','contract','CTWO','soroban_token','CTWO',NULL,NULL,'TWO',2,'12345','contract_storage_state','BK5',5,'2026-01-01 00:00:05',false,5)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {

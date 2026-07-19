@@ -778,6 +778,7 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.ttl_current (
 -- 38-digit boundary where DuckDB's cast conservatively rejects). VARCHAR
 -- preserves full precision; downstream Go can parse to big.Int if needed.
 CREATE TABLE IF NOT EXISTS testnet_catalog.silver.address_balances_current (
+    network VARCHAR,
     owner_address VARCHAR,
     asset_key VARCHAR,
     asset_type VARCHAR,
@@ -792,4 +793,31 @@ CREATE TABLE IF NOT EXISTS testnet_catalog.silver.address_balances_current (
     last_updated_ledger BIGINT,
     last_updated_at TIMESTAMP,
     updated_at TIMESTAMP
+);
+
+-- Append-only Balance(Address) storage changes. This table deliberately keeps
+-- deleted and zero-valued rows so cold current-state reconciliation can remove
+-- stale balances. It shares the history-loader schema, including provenance.
+CREATE TABLE IF NOT EXISTS testnet_catalog.silver.contract_balance_changes (
+    network VARCHAR,
+    owner_address VARCHAR,
+    owner_type VARCHAR,
+    asset_key VARCHAR,
+    asset_type VARCHAR,
+    token_contract_id VARCHAR,
+    asset_code VARCHAR,
+    asset_issuer VARCHAR,
+    symbol VARCHAR,
+    decimals INTEGER,
+    balance_raw VARCHAR,
+    balance_source VARCHAR,
+    key_hash VARCHAR,
+    ledger_sequence BIGINT,
+    ledger_closed_at TIMESTAMP,
+    deleted BOOLEAN,
+    ledger_range BIGINT,
+    _schema_version VARCHAR,
+    _loaded_at TIMESTAMP,
+    _source_bronze_start_ledger BIGINT,
+    _source_bronze_end_ledger BIGINT
 );

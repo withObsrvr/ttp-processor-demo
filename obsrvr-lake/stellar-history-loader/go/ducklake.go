@@ -69,6 +69,10 @@ func NewDuckLakePusher(config DuckLakeConfig) (*DuckLakePusher, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open duckdb: %w", err)
 	}
+	// DuckDB connection state (attached catalogs, secrets, and temporary staging
+	// tables) is connection-local. Keep this process on one connection so a
+	// chunk cannot attach on one connection and execute on another.
+	db.SetMaxOpenConns(1)
 
 	return &DuckLakePusher{db: db, config: config}, nil
 }
@@ -77,16 +81,16 @@ func (p *DuckLakePusher) Close() error {
 	return p.db.Close()
 }
 
-// Push reads local Parquet files and inserts them into DuckLake.
-func (p *DuckLakePusher) Push(ctx context.Context, outputDir string) (*DuckLakePushResult, error) {
-	pushResult := &DuckLakePushResult{RowCounts: map[string]int64{}}
+// Setup attaches the configured DuckLake catalog on the pusher's connection.
+// It is shared by the normal Parquet pusher and in-place maintenance jobs.
+func (p *DuckLakePusher) Setup(ctx context.Context) error {
 	// Step 1: Load extensions
 	log.Println("[DuckLake] Loading extensions...")
 	if _, err := p.db.ExecContext(ctx, "INSTALL ducklake; LOAD ducklake;"); err != nil {
-		return nil, fmt.Errorf("load extension ducklake: %w", err)
+		return fmt.Errorf("load extension ducklake: %w", err)
 	}
 	if _, err := p.db.ExecContext(ctx, "INSTALL httpfs; LOAD httpfs;"); err != nil {
-		return nil, fmt.Errorf("load extension httpfs: %w", err)
+		return fmt.Errorf("load extension httpfs: %w", err)
 	}
 
 	// Step 2: Configure S3 credentials
@@ -108,7 +112,7 @@ func (p *DuckLakePusher) Push(ctx context.Context, outputDir string) (*DuckLakeP
 	`, p.config.S3KeyID, p.config.S3KeySecret, p.config.S3Region, endpoint)
 
 	if _, err := p.db.ExecContext(ctx, createSecretSQL); err != nil {
-		return nil, fmt.Errorf("create S3 secret: %w", err)
+		return fmt.Errorf("create S3 secret: %w", err)
 	}
 
 	// Step 3: Attach DuckLake catalog
@@ -125,7 +129,7 @@ func (p *DuckLakePusher) Push(ctx context.Context, outputDir string) (*DuckLakeP
 			"ATTACH '%s' AS %s (TYPE ducklake, DATA_PATH '%s', METADATA_SCHEMA '%s', AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE);",
 			catalogPath, p.config.CatalogName, p.config.DataPath, p.config.MetadataSchema)
 		if _, err := p.db.ExecContext(ctx, createAttachSQL); err != nil {
-			return nil, fmt.Errorf("attach catalog: %w", err)
+			return fmt.Errorf("attach catalog: %w", err)
 		}
 		log.Println("[DuckLake] Created new catalog")
 	}
@@ -133,7 +137,16 @@ func (p *DuckLakePusher) Push(ctx context.Context, outputDir string) (*DuckLakeP
 	// Step 4: Create schema
 	createSchemaSQL := fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s.%s", p.config.CatalogName, p.config.SchemaName)
 	if _, err := p.db.ExecContext(ctx, createSchemaSQL); err != nil {
-		return nil, fmt.Errorf("create schema: %w", err)
+		return fmt.Errorf("create schema: %w", err)
+	}
+	return nil
+}
+
+// Push reads local Parquet files and inserts them into DuckLake.
+func (p *DuckLakePusher) Push(ctx context.Context, outputDir string) (*DuckLakePushResult, error) {
+	pushResult := &DuckLakePushResult{RowCounts: map[string]int64{}}
+	if err := p.Setup(ctx); err != nil {
+		return nil, err
 	}
 
 	// Step 5: Create tables

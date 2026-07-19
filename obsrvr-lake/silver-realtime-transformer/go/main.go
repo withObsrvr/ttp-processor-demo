@@ -42,6 +42,11 @@ func main() {
 	smartAccountReplayEnd := flag.Int64("smart-account-replay-end", 0, "End ledger for smart-account replay")
 	smartAccountReplayBatchSize := flag.Int64("smart-account-replay-batch-size", 1000, "Ledgers per batch during smart-account replay")
 	smartAccountReplayCold := flag.Bool("smart-account-replay-cold", true, "Read smart-account replay from bronze cold DuckLake instead of bronze hot")
+	contractBalanceReplay := flag.Bool("contract-balance-replay", false, "Run one-shot contract-balance replay without moving the realtime checkpoint")
+	contractBalanceReplayStart := flag.Int64("contract-balance-replay-start", 0, "Start ledger for contract-balance replay")
+	contractBalanceReplayEnd := flag.Int64("contract-balance-replay-end", 0, "End ledger for contract-balance replay")
+	contractBalanceReplayBatchSize := flag.Int64("contract-balance-replay-batch-size", 1000, "Ledgers per batch during contract-balance replay")
+	contractBalanceReplayCold := flag.Bool("contract-balance-replay-cold", true, "Read contract-balance replay from bronze cold DuckLake instead of bronze hot")
 	flag.Parse()
 
 	log.Println("🔧 Loading configuration from", *configPath)
@@ -150,6 +155,31 @@ func main() {
 			}
 		}()
 		defer grpcServer.GracefulStop()
+	}
+
+	// Contract-balance replay mode: rebuild only Balance(Address) history/current
+	// state for a bounded range. The shared realtime checkpoint is deliberately
+	// untouched so this can run alongside a healthy realtime transformer.
+	if *contractBalanceReplay {
+		if *contractBalanceReplayStart <= 0 || *contractBalanceReplayEnd <= 0 || *contractBalanceReplayStart > *contractBalanceReplayEnd {
+			log.Fatalf("❌ Contract-balance replay requires valid --contract-balance-replay-start and --contract-balance-replay-end")
+		}
+		if *contractBalanceReplayCold && bronzeColdReader == nil {
+			log.Fatalf("❌ Contract-balance cold replay requires bronze_cold and s3 configuration. Enable fallback and configure bronze_cold + s3.")
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+		go func() {
+			<-sigChan
+			log.Println("🛑 Shutdown signal received, stopping contract-balance replay...")
+			cancel()
+		}()
+		if err := transformer.RunContractBalanceReplay(ctx, *contractBalanceReplayStart, *contractBalanceReplayEnd, *contractBalanceReplayBatchSize, *contractBalanceReplayCold); err != nil {
+			log.Fatalf("Contract-balance replay failed: %v", err)
+		}
+		log.Println("👋 Contract-balance replay complete")
+		return
 	}
 
 	// Smart-account replay mode: targeted state rebuild that does not reset or

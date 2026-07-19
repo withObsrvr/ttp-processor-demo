@@ -66,15 +66,33 @@ The authoritative list is `GetTablesToFlush()` in `go/config.go`. It includes:
 - History/events: enriched operations, token transfers, contract invocations,
   semantic activities/flows, effects, trades, evicted/restored keys, and
   `contract_data_deletions` tombstones.
+- Contract balance history: network-labeled `contract_balance_changes`,
+  including deleted and zero-valued rows.
 
 Append-only event and tombstone tables use `ledger_sequence` for flush and
 retention. Current-state tables use their latest-modified ledger column.
+
+After each contract-balance history range commits, the flusher reconciles the
+affected `(network, owner_address, asset_key)` keys in cold
+`address_balances_current` in a transaction. It deletes stale current rows and
+reinserts only the newest positive, non-deleted change. The shared flusher
+checkpoint does not advance if this reconciliation fails.
+
+`address_balances_current` is a deliberate exception to normal hot-buffer
+retention. It is a bounded latest-per-key serving table, so successfully
+flushed rows remain in PostgreSQL after every cycle. Query API current-balance
+endpoints read this hot materialization. Append-only history and change tables,
+including `contract_balance_changes`, still follow normal post-commit
+deletion. Removing the current table after archival would make historical
+holders disappear from the API between replay and the next live update.
 
 ## Configuration
 
 Create `config.yaml`:
 
 ```yaml
+network: testnet
+
 service:
   name: silver-cold-flusher
   health_port: "8095"

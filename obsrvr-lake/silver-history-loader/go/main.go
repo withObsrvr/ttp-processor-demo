@@ -23,6 +23,7 @@ type Config struct {
 	Chunk   int64
 	Resume  bool
 	Verify  bool
+	Tables  string
 
 	BronzeCatalog string
 	BronzeData    string
@@ -43,8 +44,9 @@ type Config struct {
 }
 
 type Loader struct {
-	db  *sql.DB
-	cfg Config
+	db         *sql.DB
+	cfg        Config
+	transforms []Transform
 }
 
 type Transform struct {
@@ -83,6 +85,7 @@ func parseFlags() Config {
 	flag.Int64Var(&cfg.Chunk, "chunk-size", 100000, "ledgers per chunk")
 	flag.BoolVar(&cfg.Resume, "resume", false, "skip chunks whose manifest entries are already complete")
 	flag.BoolVar(&cfg.Verify, "verify", false, "verify source coverage, manifests, and silver output")
+	flag.StringVar(&cfg.Tables, "tables", "", "comma-separated Silver tables to load (default: all)")
 
 	flag.StringVar(&cfg.BronzeCatalog, "bronze-ducklake-catalog", "", "Bronze DuckLake catalog DSN/path (required)")
 	flag.StringVar(&cfg.BronzeData, "bronze-data-path", "", "Bronze DuckLake data path (required)")
@@ -128,11 +131,15 @@ func parseFlags() Config {
 }
 
 func NewLoader(ctx context.Context, cfg Config) (*Loader, error) {
+	selected, err := selectTransforms(cfg.Tables)
+	if err != nil {
+		return nil, err
+	}
 	db, err := sql.Open("duckdb", "")
 	if err != nil {
 		return nil, err
 	}
-	l := &Loader{db: db, cfg: cfg}
+	l := &Loader{db: db, cfg: cfg, transforms: selected}
 	for _, stmt := range []string{"INSTALL ducklake", "LOAD ducklake", "INSTALL httpfs", "LOAD httpfs"} {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			db.Close()
@@ -185,7 +192,7 @@ func (l *Loader) attach(ctx context.Context, alias, catalog, data, meta string, 
 func (l *Loader) Close() error { return l.db.Close() }
 
 func (l *Loader) Run(ctx context.Context) error {
-	log.Printf("silver-history-loader %s: network=%s range=%d..%d chunk=%d", Version, l.cfg.Network, l.cfg.Start, l.cfg.End, l.cfg.Chunk)
+	log.Printf("silver-history-loader %s: network=%s range=%d..%d chunk=%d tables=%s", Version, l.cfg.Network, l.cfg.Start, l.cfg.End, l.cfg.Chunk, strings.Join(l.transformNames(), ","))
 	for start := l.cfg.Start; start <= l.cfg.End; start += l.cfg.Chunk {
 		end := start + l.cfg.Chunk - 1
 		if end > l.cfg.End {
@@ -213,7 +220,7 @@ func (l *Loader) processChunk(ctx context.Context, start, end int64) error {
 		return err
 	}
 	log.Printf("processing chunk %d..%d", start, end)
-	for _, t := range transforms() {
+	for _, t := range l.selectedTransforms() {
 		if err := l.markManifest(ctx, start, end, t.Table, "running", "", 0, ""); err != nil {
 			return err
 		}
@@ -296,11 +303,15 @@ func (l *Loader) verifyBronzeCoverage(ctx context.Context, start, end int64) err
 	// holds one row per operation across ALL transactions (successful and failed),
 	// which equals SUM(tx_set_operation_count); transactions_row_v2 holds one row per
 	// transaction, which equals SUM(transaction_count).
-	if err := l.verifyBronzeFactCount(ctx, start, end, "operations_row_v2", expectedOps, nullOpHeaders, "tx_set_operation_count"); err != nil {
-		return err
+	if l.needsBronzeOperations() {
+		if err := l.verifyBronzeFactCount(ctx, start, end, "operations_row_v2", expectedOps, nullOpHeaders, "tx_set_operation_count"); err != nil {
+			return err
+		}
 	}
-	if err := l.verifyBronzeFactCount(ctx, start, end, "transactions_row_v2", expectedTxs, nullTxHeaders, "transaction_count"); err != nil {
-		return err
+	if l.needsBronzeTransactions() {
+		if err := l.verifyBronzeFactCount(ctx, start, end, "transactions_row_v2", expectedTxs, nullTxHeaders, "transaction_count"); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -344,18 +355,22 @@ func (l *Loader) Verify(ctx context.Context) error {
 			return fmt.Errorf("manifest incomplete for chunk %d..%d", start, end)
 		}
 	}
-	var min, max, cnt int64
-	if err := l.db.QueryRowContext(ctx, fmt.Sprintf("SELECT COALESCE(MIN(ledger_sequence),0), COALESCE(MAX(ledger_sequence),0), COUNT(*) FROM %s WHERE network = %s AND ledger_sequence BETWEEN %d AND %d", l.table("enriched_ledgers"), q(l.cfg.Network), l.cfg.Start, l.cfg.End)).Scan(&min, &max, &cnt); err != nil {
-		return fmt.Errorf("read enriched_ledgers: %w", err)
+	for _, transform := range l.selectedTransforms() {
+		count, checksum, err := l.tableStats(ctx, transform, l.cfg.Start, l.cfg.End)
+		if err != nil {
+			return fmt.Errorf("verify %s: %w", transform.Table, err)
+		}
+		log.Printf("%s: rows=%d checksum=%s", transform.Table, count, checksum)
 	}
-	log.Printf("enriched_ledgers: network=%s min=%d max=%d count=%d", l.cfg.Network, min, max, cnt)
-	var gaps int64
-	gapSQL := fmt.Sprintf(`WITH ordered AS (SELECT ledger_sequence, lag(ledger_sequence) OVER (ORDER BY ledger_sequence) prev FROM %s WHERE network = %s AND ledger_sequence BETWEEN %d AND %d) SELECT COUNT(*) FROM ordered WHERE prev IS NOT NULL AND ledger_sequence <> prev + 1`, l.table("enriched_ledgers"), q(l.cfg.Network), l.cfg.Start, l.cfg.End)
-	if err := l.db.QueryRowContext(ctx, gapSQL).Scan(&gaps); err != nil {
-		return err
-	}
-	if gaps != 0 {
-		return fmt.Errorf("enriched_ledgers has %d positive gaps", gaps)
+	if l.hasTransform("enriched_ledgers") {
+		var gaps int64
+		gapSQL := fmt.Sprintf(`WITH ordered AS (SELECT ledger_sequence, lag(ledger_sequence) OVER (ORDER BY ledger_sequence) prev FROM %s WHERE network = %s AND ledger_sequence BETWEEN %d AND %d) SELECT COUNT(*) FROM ordered WHERE prev IS NOT NULL AND ledger_sequence <> prev + 1`, l.table("enriched_ledgers"), q(l.cfg.Network), l.cfg.Start, l.cfg.End)
+		if err := l.db.QueryRowContext(ctx, gapSQL).Scan(&gaps); err != nil {
+			return err
+		}
+		if gaps != 0 {
+			return fmt.Errorf("enriched_ledgers has %d positive gaps", gaps)
+		}
 	}
 	log.Printf("verify ok for %d..%d", l.cfg.Start, l.cfg.End)
 	return nil
@@ -363,11 +378,16 @@ func (l *Loader) Verify(ctx context.Context) error {
 
 func (l *Loader) chunkComplete(ctx context.Context, start, end int64) (bool, error) {
 	var count int64
-	query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE network = %s AND start_ledger = %d AND end_ledger = %d AND status = 'completed'", l.table("silver_load_manifest"), q(l.cfg.Network), start, end)
+	tables := l.transformNames()
+	quotedTables := make([]string, 0, len(tables))
+	for _, table := range tables {
+		quotedTables = append(quotedTables, q(table))
+	}
+	query := fmt.Sprintf("SELECT COUNT(DISTINCT table_name) FROM %s WHERE network = %s AND start_ledger = %d AND end_ledger = %d AND status = 'completed' AND table_name IN (%s)", l.table("silver_load_manifest"), q(l.cfg.Network), start, end, strings.Join(quotedTables, ","))
 	if err := l.db.QueryRowContext(ctx, query).Scan(&count); err != nil {
 		return false, err
 	}
-	return count == int64(len(transforms())), nil
+	return count == int64(len(tables)), nil
 }
 
 func (l *Loader) ensureManifest(ctx context.Context) error {
@@ -422,8 +442,82 @@ func transforms() []Transform {
 		{Table: "evicted_keys", RangeCol: "ledger_sequence", SelectSQL: selectEvictedKeys},
 		{Table: "restored_keys", RangeCol: "ledger_sequence", SelectSQL: selectRestoredKeys},
 		{Table: "contract_data_changes", RangeCol: "ledger_sequence", SelectSQL: selectContractDataChanges},
+		{Table: "contract_balance_changes", RangeCol: "ledger_sequence", SelectSQL: selectContractBalanceChanges},
 		{Table: "balance_changes", RangeCol: "ledger_sequence", SelectSQL: selectBalanceChanges},
 	}
+}
+
+func selectTransforms(spec string) ([]Transform, error) {
+	all := transforms()
+	if strings.TrimSpace(spec) == "" {
+		return all, nil
+	}
+	byName := make(map[string]Transform, len(all))
+	for _, transform := range all {
+		byName[transform.Table] = transform
+	}
+	selected := make([]Transform, 0)
+	seen := make(map[string]bool)
+	for _, raw := range strings.Split(spec, ",") {
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			continue
+		}
+		transform, ok := byName[name]
+		if !ok {
+			return nil, fmt.Errorf("unknown --tables value %q", name)
+		}
+		if !seen[name] {
+			selected = append(selected, transform)
+			seen[name] = true
+		}
+	}
+	if len(selected) == 0 {
+		return nil, fmt.Errorf("--tables must contain at least one table name")
+	}
+	return selected, nil
+}
+
+func (l *Loader) selectedTransforms() []Transform {
+	if len(l.transforms) != 0 {
+		return l.transforms
+	}
+	return transforms()
+}
+
+func (l *Loader) transformNames() []string {
+	names := make([]string, 0, len(l.selectedTransforms()))
+	for _, transform := range l.selectedTransforms() {
+		names = append(names, transform.Table)
+	}
+	return names
+}
+
+func (l *Loader) hasTransform(name string) bool {
+	for _, transform := range l.selectedTransforms() {
+		if transform.Table == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (l *Loader) needsBronzeOperations() bool {
+	for _, name := range []string{"enriched_history_operations", "token_transfers_raw", "semantic_activities", "semantic_flows_value"} {
+		if l.hasTransform(name) {
+			return true
+		}
+	}
+	return false
+}
+
+func (l *Loader) needsBronzeTransactions() bool {
+	for _, name := range []string{"enriched_history_operations", "enriched_history_operations_soroban", "token_transfers_raw", "contract_invocations_raw", "semantic_activities", "semantic_flows_value"} {
+		if l.hasTransform(name) {
+			return true
+		}
+	}
+	return false
 }
 
 func selectLedgers(l *Loader, start, end int64) string {
