@@ -15,6 +15,8 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+const contractObservedFunctionsTimeout = 500 * time.Millisecond
+
 // DecodeHandlers contains HTTP handlers for transaction decoding and human-readable summaries
 type DecodeHandlers struct {
 	hotReader         *SilverHotReader
@@ -162,13 +164,18 @@ func (h *DecodeHandlers) HandleContractWASM(w http.ResponseWriter, r *http.Reque
 }
 
 func (h *DecodeHandlers) observedContractFunctions(ctx context.Context, contractID string) []string {
+	lookupCtx, cancel := context.WithTimeout(ctx, contractObservedFunctionsTimeout)
+	defer cancel()
 	if h.hotReader != nil {
-		if functions, err := h.hotReader.GetContractFunctions(ctx, contractID); err == nil && len(functions) > 0 {
+		if functions, err := h.hotReader.GetContractFunctions(lookupCtx, contractID); err == nil && len(functions) > 0 {
 			return functions
 		}
 	}
+	if lookupCtx.Err() != nil {
+		return []string{}
+	}
 	if h.coldReader != nil {
-		if functions, err := h.coldReader.GetContractFunctions(ctx, contractID); err == nil {
+		if functions, err := h.coldReader.GetContractFunctions(lookupCtx, contractID); err == nil {
 			return functions
 		}
 	}

@@ -7,7 +7,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gorilla/mux"
 )
 
@@ -147,5 +149,47 @@ func TestContractArtifactHandlersMapClientAndAvailabilityErrors(t *testing.T) {
 				t.Fatalf("status: got %d want %d body=%s", w.Code, test.want, w.Body.String())
 			}
 		})
+	}
+}
+
+func TestObservedContractFunctionsDoesNotBlockAuthoritativeInterfaceOnColdScan(t *testing.T) {
+	hotDB, hotMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hotDB.Close()
+	coldDB, coldMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer coldDB.Close()
+
+	hotMock.ExpectQuery(`SELECT DISTINCT function_name`).
+		WithArgs("CEXAMPLE").
+		WillReturnRows(sqlmock.NewRows([]string{"function_name"}))
+	coldMock.ExpectQuery(`SELECT DISTINCT function_name`).
+		WithArgs("CEXAMPLE").
+		WillDelayFor(2 * time.Second).
+		WillReturnRows(sqlmock.NewRows([]string{"function_name"}).AddRow("historical_call"))
+
+	h := &DecodeHandlers{
+		hotReader:  &SilverHotReader{db: hotDB},
+		coldReader: &SilverColdReader{db: coldDB, catalogName: "memory", schemaName: "silver"},
+	}
+	started := time.Now()
+	functions := h.observedContractFunctions(t.Context(), "CEXAMPLE")
+	elapsed := time.Since(started)
+
+	if len(functions) != 0 {
+		t.Fatalf("expected optional timed-out enrichment to be omitted, got %v", functions)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("optional observed-function lookup blocked for %s", elapsed)
+	}
+	if err := hotMock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+	if err := coldMock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }

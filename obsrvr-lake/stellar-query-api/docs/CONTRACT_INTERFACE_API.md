@@ -17,6 +17,10 @@ invocation history cannot prove the complete declared interface. For WASM
 contracts, `executable.wasm_size_bytes` exposes the verified active artifact's
 size without requiring clients to download it first.
 
+Observed-call enrichment is optional and bounded to 500 milliseconds. A slow
+cold activity lookup returns an empty `observed_functions` array rather than
+delaying or failing the authoritative interface response.
+
 `GET /api/v1/silver/contracts/{contract_id}/wasm` streams the verified active
 code as `application/wasm`. It includes the active hash as an ETag and supports
 conditional requests. The contract-ID route re-resolves the current executable
