@@ -115,6 +115,33 @@ selection unless explicitly set.
 For a push-only repair from existing Parquet output, omit `--bucket` and use
 `--ducklake-only-tables contract_events_stream_v1`.
 
+### Enrich historical contract balances in Bronze
+
+The enrichment mode repairs historical `contract_data_snapshot_v1` rows whose
+XDR contains a SAC/SEP-41 balance but whose `balance_holder` or `balance` field
+is null. It does not re-download ledger archives or rewrite unrelated Bronze
+columns. Start with a no-write scan:
+
+```bash
+./bin/stellar-history-loader \
+  --enrich-contract-balances \
+  --enrichment-dry-run \
+  --start 3 --end 3500000 \
+  --enrichment-chunk-size 100000 \
+  --ducklake-catalog "postgresql://user:pass@host:5432/catalog_db" \
+  --ducklake-data-path "s3://obsrvr-lake-testnet/" \
+  --ducklake-metadata-schema bronze_meta \
+  --b2-key-id "$B2_KEY_ID" \
+  --b2-key-secret "$B2_KEY_SECRET"
+```
+
+For the mutating run, remove `--enrichment-dry-run` and provide a stable,
+operator-chosen `--enrichment-run-id`. Each chunk is decoded, updated in a
+transaction, read back for verification, and recorded in
+`bronze_operations.contract_balance_enrichment_manifest`. Rerunning with the
+same run ID and `--enrichment-resume=true` skips completed chunks. A different
+run ID safely scans the same range again; already enriched rows are no-ops.
+
 ### Load PostgreSQL hot buffer
 
 Loads the most recent N ledgers into PostgreSQL for low-latency queries:

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -12,21 +13,24 @@ import (
 
 // DuckDBClient manages DuckDB connection and operations
 type DuckDBClient struct {
-	db      *sql.DB
-	config  *DuckLakeConfig
-	flusher *Flusher // Reference to parent Flusher for mutex coordination
+	db                     *sql.DB
+	config                 *DuckLakeConfig
+	network                string
+	postgresSourceAttached bool
+	flusher                *Flusher // Reference to parent Flusher for mutex coordination
 }
 
 // NewDuckDBClient creates a new DuckDB client
-func NewDuckDBClient(config *DuckLakeConfig) (*DuckDBClient, error) {
+func NewDuckDBClient(config *DuckLakeConfig, network string) (*DuckDBClient, error) {
 	db, err := sql.Open("duckdb", "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open DuckDB: %w", err)
 	}
 
 	client := &DuckDBClient{
-		db:     db,
-		config: config,
+		db:      db,
+		config:  config,
+		network: network,
 	}
 
 	// Initialize DuckDB with extensions and catalog
@@ -148,6 +152,60 @@ var flushOverrides = map[string]map[string]string{
 		"amount":       "CAST(amount AS DOUBLE)",
 		"ledger_range": "FLOOR(ledger_sequence / 100000)",
 	},
+	"contract_balance_changes": {
+		"ledger_range": "FLOOR(ledger_sequence / 100000)",
+	},
+}
+
+func quoteSQLLiteral(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+func quotePostgresIdentifier(value string) string {
+	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
+}
+
+// postgresExactBalanceSource casts balance_raw to text inside PostgreSQL,
+// before DuckDB's postgres extension can infer an unbounded NUMERIC as DOUBLE.
+// That preserves integer precision and prevents scientific-notation strings.
+func postgresExactBalanceSource(postgresAlias, tableName, watermarkCol string, watermark, lastFlushed int64, hotCols []string) string {
+	columns := make([]string, 0, len(hotCols))
+	for _, column := range hotCols {
+		quoted := quotePostgresIdentifier(column)
+		if column == "balance_raw" {
+			columns = append(columns, quoted+"::text AS "+quoted)
+		} else {
+			columns = append(columns, quoted)
+		}
+	}
+	query := fmt.Sprintf("SELECT %s FROM public.%s WHERE %s > %d AND %s <= %d",
+		strings.Join(columns, ", "), quotePostgresIdentifier(tableName),
+		quotePostgresIdentifier(watermarkCol), lastFlushed,
+		quotePostgresIdentifier(watermarkCol), watermark)
+	return fmt.Sprintf("postgres_query(%s, %s)", quoteSQLLiteral(postgresAlias), quoteSQLLiteral(query))
+}
+
+func (c *DuckDBClient) ensurePostgresSourceAttached(pgConnStr string) error {
+	if c.postgresSourceAttached {
+		return nil
+	}
+	if _, err := c.db.Exec(fmt.Sprintf("ATTACH %s AS silver_hot_exact (TYPE POSTGRES, READ_ONLY)", quoteSQLLiteral(pgConnStr))); err != nil {
+		return fmt.Errorf("attach exact-text Silver Hot source: %w", err)
+	}
+	c.postgresSourceAttached = true
+	return nil
+}
+
+func (c *DuckDBClient) tableFlushOverrides(tableName string) map[string]string {
+	overrides := make(map[string]string, len(flushOverrides[tableName])+1)
+	for column, expression := range flushOverrides[tableName] {
+		overrides[column] = expression
+	}
+	// History-loader tables carry network as a cold-only column. Live flushes
+	// must write the same label so targeted history and live rows form one
+	// continuous network partition.
+	overrides["network"] = quoteSQLLiteral(c.network)
+	return overrides
 }
 
 // buildFlushColumns computes the INSERT column list and matching SELECT expressions for a flush,
@@ -184,18 +242,125 @@ func (c *DuckDBClient) buildIntersectionFlush(tableName, watermarkCol string, wa
 	if err != nil {
 		return "", fmt.Errorf("describe hot %s: %w", tableName, err)
 	}
-	insertCols, selectExprs := buildFlushColumns(coldCols, hotCols, flushOverrides[tableName])
+	insertCols, selectExprs := buildFlushColumns(coldCols, hotCols, c.tableFlushOverrides(tableName))
 	if len(insertCols) == 0 {
 		return "", fmt.Errorf("no shared columns between hot and cold for %s", tableName)
+	}
+	source := fmt.Sprintf("postgres_scan(%s, 'public', %s)", quoteSQLLiteral(pgConnStr), quoteSQLLiteral(tableName))
+	filter := fmt.Sprintf("%s > %d AND %s <= %d", watermarkCol, lastFlushed, watermarkCol, watermark)
+	if tableName == "contract_balance_changes" || tableName == "address_balances_current" {
+		if err := c.ensurePostgresSourceAttached(pgConnStr); err != nil {
+			return "", err
+		}
+		source = postgresExactBalanceSource("silver_hot_exact", tableName, watermarkCol, watermark, lastFlushed, hotCols)
+		filter = "TRUE"
 	}
 	return fmt.Sprintf(`
 		INSERT INTO %s.%s.%s (%s)
 		SELECT %s
-		FROM postgres_scan('%s', 'public', '%s')
-		WHERE %s > %d AND %s <= %d
+		FROM %s
+		WHERE %s
 	`, c.config.CatalogName, c.config.SchemaName, tableName,
 		strings.Join(insertCols, ", "), strings.Join(selectExprs, ", "),
-		pgConnStr, tableName, watermarkCol, lastFlushed, watermarkCol, watermark), nil
+		source, filter), nil
+}
+
+func (c *DuckDBClient) contractBalanceReconciliationSQL(watermark, lastFlushed int64) (string, string, string) {
+	current := fmt.Sprintf("%s.%s.address_balances_current", c.config.CatalogName, c.config.SchemaName)
+	changes := fmt.Sprintf("%s.%s.contract_balance_changes", c.config.CatalogName, c.config.SchemaName)
+	network := quoteSQLLiteral(c.network)
+	stage := "temp_contract_balance_reconcile"
+	affected := fmt.Sprintf(`SELECT DISTINCT owner_address, asset_key
+		FROM %s
+		WHERE network = %s AND ledger_sequence > %d AND ledger_sequence <= %d`, changes, network, lastFlushed, watermark)
+	stageSQL := fmt.Sprintf(`CREATE OR REPLACE TEMP TABLE %s AS
+		WITH affected AS (%s), ranked AS (
+			SELECT history.*, row_number() OVER (
+				PARTITION BY history.owner_address, history.asset_key
+				ORDER BY history.ledger_sequence DESC, history.ledger_closed_at DESC NULLS LAST
+			) AS row_rank
+			FROM %s history
+			JOIN affected USING (owner_address, asset_key)
+			WHERE history.network = %s AND history.ledger_sequence <= %d
+		)
+		SELECT owner_address, asset_key, asset_type, token_contract_id,
+			asset_code, asset_issuer, symbol, decimals, balance_raw,
+			balance_source, ledger_sequence, ledger_closed_at, deleted,
+			EXISTS (
+				SELECT 1 FROM %s newer
+				WHERE newer.network = %s
+				  AND newer.owner_address = ranked.owner_address
+				  AND newer.asset_key = ranked.asset_key
+				  AND newer.last_updated_ledger > %d
+			) AS has_newer_current
+		FROM ranked WHERE row_rank = 1`, stage, affected, changes, network, watermark, current, network, watermark)
+	deleteSQL := fmt.Sprintf(`DELETE FROM %s AS current
+		WHERE (current.network = %s OR current.network IS NULL)
+		  AND COALESCE(current.last_updated_ledger, 0) <= %d
+		  AND EXISTS (
+			SELECT 1 FROM %s affected
+			WHERE affected.owner_address = current.owner_address
+			  AND affected.asset_key = current.asset_key
+		  )`, current, network, watermark, stage)
+
+	// Format arbitrary-precision, non-negative integer balances as decimal
+	// strings without narrowing them through DECIMAL(38), which cannot hold the
+	// full Soroban u128 range.
+	display := `CASE
+		WHEN COALESCE(decimals, 7) <= 0 THEN CAST(balance_raw AS VARCHAR)
+		WHEN length(CAST(balance_raw AS VARCHAR)) <= COALESCE(decimals, 7)
+			THEN '0.' || repeat('0', COALESCE(decimals, 7) - length(CAST(balance_raw AS VARCHAR))) || CAST(balance_raw AS VARCHAR)
+		ELSE left(CAST(balance_raw AS VARCHAR), length(CAST(balance_raw AS VARCHAR)) - COALESCE(decimals, 7)) || '.' || right(CAST(balance_raw AS VARCHAR), COALESCE(decimals, 7))
+	END`
+	insertSQL := fmt.Sprintf(`INSERT INTO %s (
+			network, owner_address, asset_key, asset_type, token_contract_id,
+			asset_code, asset_issuer, symbol, decimals, balance_raw,
+			balance_display, balance_source, last_updated_ledger,
+			last_updated_at, updated_at
+		)
+		SELECT %s, owner_address, asset_key, asset_type, token_contract_id,
+			asset_code, asset_issuer, symbol, COALESCE(decimals, 7), CAST(balance_raw AS VARCHAR),
+			%s, balance_source, ledger_sequence, ledger_closed_at, current_timestamp
+		FROM %s
+		WHERE COALESCE(deleted, false) = false
+		  AND regexp_matches(CAST(balance_raw AS VARCHAR), '^[0-9]*[1-9][0-9]*$')
+		  AND NOT has_newer_current`,
+		current, network, display, stage)
+	return stageSQL, deleteSQL, insertSQL
+}
+
+// ReconcileContractBalancesCurrent applies the latest archived change for each
+// contract-balance key touched in the flush range. Delete and insert share one
+// transaction so a tombstone can never be archived without removing stale
+// cold current state.
+func (c *DuckDBClient) ReconcileContractBalancesCurrent(watermark, lastFlushed int64) (int64, error) {
+	stageSQL, deleteSQL, insertSQL := c.contractBalanceReconciliationSQL(watermark, lastFlushed)
+	if _, err := c.db.Exec(stageSQL); err != nil {
+		return 0, fmt.Errorf("materialize contract balance reconciliation stage: %w", err)
+	}
+	defer func() { _, _ = c.db.Exec("DROP TABLE IF EXISTS temp_contract_balance_reconcile") }()
+	var rowsToInsert int64
+	if err := c.db.QueryRow(`SELECT COUNT(*) FROM temp_contract_balance_reconcile
+		WHERE COALESCE(deleted, false) = false
+		  AND regexp_matches(CAST(balance_raw AS VARCHAR), '^[0-9]*[1-9][0-9]*$')
+		  AND NOT has_newer_current`).Scan(&rowsToInsert); err != nil {
+		return 0, fmt.Errorf("count staged contract balances: %w", err)
+	}
+	tx, err := c.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin contract balance reconciliation: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(deleteSQL); err != nil {
+		return 0, fmt.Errorf("delete affected cold current balances: %w", err)
+	}
+	if _, err := tx.Exec(insertSQL); err != nil {
+		return 0, fmt.Errorf("insert latest cold current balances: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit contract balance reconciliation: %w", err)
+	}
+	return rowsToInsert, nil
 }
 
 func (c *DuckDBClient) buildDeleteRangeSQL(tableName, watermarkCol string, watermark, lastFlushed int64) string {

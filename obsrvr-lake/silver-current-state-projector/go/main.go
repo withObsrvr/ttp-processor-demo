@@ -137,12 +137,13 @@ type JSONLManifest struct {
 }
 
 type Projector struct {
-	db          *sql.DB
-	cfg         Config
-	jsonl       ManifestStore
-	localAlias  string // attached catalog for local staging; "" => in-process memory catalog
-	scratchFile string // on-disk scratch DB path to remove on Close, if any
-
+	db                      *sql.DB
+	cfg                     Config
+	jsonl                   ManifestStore
+	localAlias              string // attached catalog for local staging; "" => in-process memory catalog
+	scratchFile             string // on-disk scratch DB path to remove on Close, if any
+	sourceAvailabilityKnown bool
+	balanceChangesAvailable bool
 }
 
 type CurrentProjection struct {
@@ -309,6 +310,12 @@ func NewProjector(ctx context.Context, cfg Config) (*Projector, error) {
 		db.Close()
 		return nil, err
 	}
+	p.balanceChangesAvailable, err = p.sourceTableExists(ctx, "balance_changes")
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("inspect optional balance_changes source: %w", err)
+	}
+	p.sourceAvailabilityKnown = true
 	if err := p.attachBronze(ctx); err != nil {
 		db.Close()
 		return nil, err
@@ -330,6 +337,24 @@ func NewProjector(ctx context.Context, cfg Config) (*Projector, error) {
 
 func NewProjectorWithDB(db *sql.DB, cfg Config) *Projector {
 	return &Projector{db: db, cfg: cfg, jsonl: JSONLManifest{path: cfg.ManifestPath}}
+}
+
+func (p *Projector) sourceTableExists(ctx context.Context, table string) (bool, error) {
+	var count int64
+	query := `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = ? AND table_name = ?`
+	args := []any{p.cfg.SilverSchema, table}
+	if p.cfg.SilverAlias != "" {
+		query += ` AND table_catalog = ?`
+		args = append(args, p.cfg.SilverAlias)
+	}
+	if err := p.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func (p *Projector) includeBalanceChanges() bool {
+	return !p.sourceAvailabilityKnown || p.balanceChangesAvailable
 }
 
 func (p *Projector) configureS3(ctx context.Context) error {
@@ -495,7 +520,7 @@ func silverCurrentProjections() []Projection {
 		{Name: "offers_current", TargetTable: "silver.offers_current", Source: "silver.offers_snapshot", Mode: "replace_as_of", Required: true, Status: "implemented"},
 		{Name: "contract_data_current", TargetTable: "silver.contract_data_current", Source: "bronze.contract_data_snapshot_v1", Mode: "replace_as_of", Required: true, Status: "implemented"},
 		{Name: "native_balances_current", TargetTable: "silver.native_balances_current", Source: "silver.balance_changes", Mode: "replace_as_of", Required: true, Status: "implemented"},
-		{Name: "address_balances_current", TargetTable: "silver.address_balances_current", Source: "silver.balance_changes", Mode: "replace_as_of", Required: true, Status: "implemented"},
+		{Name: "address_balances_current", TargetTable: "silver.address_balances_current", Source: "silver.balance_changes + silver.contract_balance_changes", Mode: "replace_as_of", Required: true, Status: "implemented"},
 		{Name: "ttl_current", TargetTable: "silver.ttl_current", Source: "bronze.ttl_snapshot_v1", Mode: "replace_as_of", Required: true, Status: "implemented"},
 		{Name: "claimable_balances_current", TargetTable: "silver.claimable_balances_current", Source: "source mapping open", Mode: "replace_as_of", Required: true, Status: "blocked_source_mapping", Gap: "design asks for explicit implementation/source mapping before production completion"},
 		{Name: "token_registry", TargetTable: "silver.token_registry", Source: "source mapping open", Mode: "replace_as_of", Required: true, Status: "blocked_source_mapping", Gap: "registry bootstrap/source of truth not yet specified"},
@@ -511,7 +536,7 @@ func executableCurrentProjections() []CurrentProjection {
 		{Name: "contract_data_current", TargetTable: "contract_data_current", Source: "contract_data_snapshot_v1", SourceLedgerCol: "ledger_sequence", PartitionExpr: "concat(contract_id, ':', ledger_key_hash)", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"contract_id", "key_hash"}, SelectSQL: selectContractDataCurrent, KeySQL: selectContractDataCurrentKeys},
 		{Name: "ttl_current", TargetTable: "ttl_current", Source: "ttl_snapshot_v1", SourceLedgerCol: "ledger_sequence", PartitionExpr: "key_hash", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"key_hash"}, SelectSQL: selectTTLCurrent, KeySQL: selectTTLCurrentKeys},
 		{Name: "native_balances_current", TargetTable: "native_balances_current", Source: "balance_changes", SourceLedgerCol: "ledger_sequence", SourceFilter: "(asset_type = 'native' OR asset_code = 'XLM')", PartitionExpr: "address", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"account_id"}, SelectSQL: selectNativeBalancesCurrent, KeySQL: selectNativeBalancesCurrentKeys},
-		{Name: "address_balances_current", TargetTable: "address_balances_current", Source: "balance_changes", SourceLedgerCol: "ledger_sequence", PartitionExpr: "concat(address, ':', " + assetKey + ")", MaxLedgerCol: "last_updated_ledger", KeyExprs: []string{"owner_address", "asset_key"}, SelectSQL: selectAddressBalancesCurrent, KeySQL: selectAddressBalancesCurrentKeys},
+		{Name: "address_balances_current", TargetTable: "address_balances_current", Source: "balance_changes + contract_balance_changes", SourceLedgerCol: "ledger_sequence", PartitionExpr: "concat(address, ':', " + assetKey + ")", MaxLedgerCol: "last_updated_ledger", KeyExprs: []string{"owner_address", "asset_key"}, SelectSQL: selectAddressBalancesCurrent, KeySQL: selectAddressBalancesCurrentKeys},
 	}
 }
 
@@ -646,6 +671,31 @@ func (p *Projector) ensureTargetTable(ctx context.Context, projection CurrentPro
 
 func (p *Projector) ensureTargetColumns(ctx context.Context, projection CurrentProjection) error {
 	target := p.table(projection.TargetTable)
+	if projection.Name == "address_balances_current" {
+		columns := []string{
+			"network VARCHAR",
+			"owner_address VARCHAR",
+			"asset_key VARCHAR",
+			"asset_type VARCHAR",
+			"token_contract_id VARCHAR",
+			"asset_code VARCHAR",
+			"asset_issuer VARCHAR",
+			"symbol VARCHAR",
+			"decimals INTEGER",
+			"balance_raw VARCHAR",
+			"balance_display VARCHAR",
+			"balance_source VARCHAR",
+			"last_updated_ledger BIGINT",
+			"last_updated_at TIMESTAMP",
+			"updated_at TIMESTAMP",
+		}
+		for _, column := range columns {
+			if _, err := p.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s", target, column)); err != nil {
+				return fmt.Errorf("migrate %s add column %s: %w", projection.Name, column, err)
+			}
+		}
+		return nil
+	}
 	if projection.Name == "contract_data_current" {
 		if _, err := p.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS network VARCHAR", target)); err != nil {
 			return fmt.Errorf("migrate %s add network: %w", projection.Name, err)
@@ -1099,6 +1149,24 @@ func addressBalanceAssetKeyExpr() string {
 	END`
 }
 
+func contractBalanceDisplayExpr(balanceRaw, decimals string) string {
+	decimals = fmt.Sprintf("COALESCE(%s, 7)", decimals)
+	raw := fmt.Sprintf("CAST(%s AS VARCHAR)", balanceRaw)
+	return fmt.Sprintf(`CASE
+		WHEN length(%[1]s) <= 38 THEN CAST(CASE
+			WHEN %[2]s = 0 THEN TRY_CAST(%[3]s AS DECIMAL(38,0))
+			ELSE TRY_CAST(%[3]s AS DECIMAL(38,7)) / POWER(10, %[2]s)
+		END AS VARCHAR)
+		WHEN %[2]s <= 0 THEN %[1]s
+		WHEN length(%[1]s) <= %[2]s THEN '0.' || repeat('0', %[2]s - length(%[1]s)) || %[1]s
+		ELSE left(%[1]s, length(%[1]s) - %[2]s) || '.' || right(%[1]s, %[2]s)
+	END`, raw, decimals, balanceRaw)
+}
+
+func contractBalancePositiveExpr(balanceRaw string) string {
+	return fmt.Sprintf("regexp_matches(CAST(%s AS VARCHAR), '^[0-9]*[1-9][0-9]*$')", balanceRaw)
+}
+
 func selectAddressBalancesCurrent(p *Projector, start, end int64) string {
 	assetKey := addressBalanceAssetKeyExpr()
 	balanceRaw := `CASE
@@ -1109,29 +1177,63 @@ func selectAddressBalancesCurrent(p *Projector, start, end int64) string {
 		WHEN asset_type = 'native' OR asset_code = 'XLM' THEN TRY_CAST(balance AS DECIMAL(38,7)) / 10000000
 		ELSE TRY_CAST(balance AS DECIMAL(38,7))
 	END`
-	return fmt.Sprintf(`SELECT network, address AS owner_address, %s AS asset_key, asset_type,
-		NULL::VARCHAR AS token_contract_id, asset_code, asset_issuer, asset_code AS symbol, 7::INTEGER AS decimals,
-		CAST(%s AS VARCHAR) AS balance_raw, CAST(%s AS VARCHAR) AS balance_display,
-		'silver.balance_changes' AS balance_source, ledger_sequence AS last_updated_ledger,
-		ledger_closed_at AS last_updated_at, current_timestamp AS updated_at
-		FROM (
-			SELECT r.* FROM (
-				SELECT arg_max(s, ROW(s.ledger_sequence, s.ledger_closed_at)) AS r
-				FROM %s s WHERE %s GROUP BY address, %s
-			)
-		) WHERE COALESCE(deleted, false) = false`, assetKey, balanceRaw, balanceDisplay, p.table("balance_changes"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end), assetKey)
+	contractBalanceDisplay := contractBalanceDisplayExpr("balance_raw", "decimals")
+	contractBalancePositive := contractBalancePositiveExpr("balance_raw")
+	changeSources := []string{fmt.Sprintf(`SELECT network, owner_address, owner_type, asset_key, asset_type, token_contract_id,
+			asset_code, asset_issuer, symbol, decimals, balance_raw,
+			%s AS balance_display,
+			balance_source, ledger_sequence, ledger_closed_at, deleted
+		FROM %s WHERE %s`, contractBalanceDisplay,
+		p.table("contract_balance_changes"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))}
+	if p.includeBalanceChanges() {
+		legacySource := fmt.Sprintf(`SELECT network, address AS owner_address, 'account' AS owner_type, %s AS asset_key, asset_type,
+			NULL::VARCHAR AS token_contract_id, asset_code, asset_issuer, asset_code AS symbol, 7::INTEGER AS decimals,
+			CAST(%s AS VARCHAR) AS balance_raw, CAST(%s AS VARCHAR) AS balance_display,
+			'silver.balance_changes' AS balance_source, ledger_sequence, ledger_closed_at, deleted
+		FROM %s WHERE %s`, assetKey, balanceRaw, balanceDisplay,
+			p.table("balance_changes"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
+		changeSources = append([]string{legacySource}, changeSources...)
+	}
+	return fmt.Sprintf(`WITH changes AS (
+			%s
+		), ranked AS (
+			SELECT *, row_number() OVER (
+				PARTITION BY owner_address, asset_key
+				ORDER BY ledger_sequence DESC, ledger_closed_at DESC NULLS LAST
+			) AS rn
+			FROM changes
+		)
+		SELECT network, owner_address, asset_key, asset_type, token_contract_id,
+			asset_code, asset_issuer, symbol, decimals, balance_raw, balance_display,
+			balance_source, ledger_sequence AS last_updated_ledger,
+			ledger_closed_at AS last_updated_at, current_timestamp AS updated_at
+		FROM ranked
+		WHERE rn = 1
+		  AND COALESCE(deleted, false) = false
+		  AND (owner_type <> 'contract' OR %s)`,
+		strings.Join(changeSources, "\nUNION ALL\n"), contractBalancePositive)
 }
 
 func selectAddressBalancesCurrentKeys(p *Projector, start, end int64) string {
 	assetKey := addressBalanceAssetKeyExpr()
-	return fmt.Sprintf(`SELECT address AS owner_address, asset_key FROM (
-			SELECT address, %s AS asset_key, row_number() OVER (
-				PARTITION BY address, %s
+	keySources := []string{fmt.Sprintf(`SELECT owner_address, asset_key, ledger_sequence, ledger_closed_at
+		FROM %s WHERE %s`, p.table("contract_balance_changes"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))}
+	if p.includeBalanceChanges() {
+		legacySource := fmt.Sprintf(`SELECT address AS owner_address, %s AS asset_key, ledger_sequence, ledger_closed_at
+		FROM %s WHERE %s`, assetKey,
+			p.table("balance_changes"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
+		keySources = append([]string{legacySource}, keySources...)
+	}
+	return fmt.Sprintf(`WITH changed_keys AS (
+			%s
+		)
+		SELECT owner_address, asset_key FROM (
+			SELECT owner_address, asset_key, row_number() OVER (
+				PARTITION BY owner_address, asset_key
 				ORDER BY ledger_sequence DESC, ledger_closed_at DESC NULLS LAST
 			) AS rn
-			FROM %s
-			WHERE %s
-		) WHERE rn = 1`, assetKey, assetKey, p.table("balance_changes"), p.sourceFilter(CurrentProjection{SourceLedgerCol: "ledger_sequence"}, start, end))
+			FROM changed_keys
+		) WHERE rn = 1`, strings.Join(keySources, "\nUNION ALL\n"))
 }
 
 func PlanChunks(start, end, size int64) []Chunk {

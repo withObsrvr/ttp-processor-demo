@@ -270,10 +270,6 @@ func flattenTopicValue(decoded interface{}) *string {
 // Contract Data
 // ===========================================================================
 
-// balanceMetadataSym is the ScSymbol key used for SAC/SEP-41 Balance entries.
-// Matches the SDK's internal constant.
-var balanceMetadataSym = xdr.ScSymbol("Balance")
-
 // contractStorageBalanceFromData inlines the logic of sac.ContractBalanceFromContractData
 // but includes native-XLM SAC balances, which the SDK helper intentionally omits.
 func contractStorageBalanceFromData(ledgerEntry xdr.LedgerEntry, _ string) ([32]byte, *big.Int, bool) {
@@ -281,63 +277,7 @@ func contractStorageBalanceFromData(ledgerEntry xdr.LedgerEntry, _ string) ([32]
 	if !ok {
 		return [32]byte{}, nil, false
 	}
-	if contractData.Durability != xdr.ContractDataDurabilityPersistent {
-		return [32]byte{}, nil, false
-	}
-	if contractData.Contract.ContractId == nil {
-		return [32]byte{}, nil, false
-	}
-
-	keyEnumVecPtr, ok := contractData.Key.GetVec()
-	if !ok || keyEnumVecPtr == nil {
-		return [32]byte{}, nil, false
-	}
-	keyEnumVec := *keyEnumVecPtr
-	if len(keyEnumVec) != 2 || !keyEnumVec[0].Equals(
-		xdr.ScVal{
-			Type: xdr.ScValTypeScvSymbol,
-			Sym:  &balanceMetadataSym,
-		},
-	) {
-		return [32]byte{}, nil, false
-	}
-
-	scAddress, ok := keyEnumVec[1].GetAddress()
-	if !ok {
-		return [32]byte{}, nil, false
-	}
-	holder, ok := scAddress.GetContractId()
-	if !ok {
-		return [32]byte{}, nil, false
-	}
-
-	balanceMapPtr, ok := contractData.Val.GetMap()
-	if !ok || balanceMapPtr == nil {
-		return [32]byte{}, nil, false
-	}
-	balanceMap := *balanceMapPtr
-	if len(balanceMap) != 3 {
-		return [32]byte{}, nil, false
-	}
-	if keySym, ok := balanceMap[0].Key.GetSym(); !ok || keySym != "amount" {
-		return [32]byte{}, nil, false
-	}
-	if keySym, ok := balanceMap[1].Key.GetSym(); !ok || keySym != "authorized" || !balanceMap[1].Val.IsBool() {
-		return [32]byte{}, nil, false
-	}
-	if keySym, ok := balanceMap[2].Key.GetSym(); !ok || keySym != "clawback" || !balanceMap[2].Val.IsBool() {
-		return [32]byte{}, nil, false
-	}
-	amount, ok := balanceMap[0].Val.GetI128()
-	if !ok {
-		return [32]byte{}, nil, false
-	}
-	if int64(amount.Hi) < 0 {
-		return [32]byte{}, nil, false
-	}
-	amt := new(big.Int).Lsh(new(big.Int).SetInt64(int64(amount.Hi)), 64)
-	amt.Add(amt, new(big.Int).SetUint64(uint64(amount.Lo)))
-	return holder, amt, true
+	return contractBalanceFromData(contractData)
 }
 
 // extractContractData extracts contract data state from a ledger.
@@ -587,9 +527,6 @@ func extractTokenMetadata(contractData xdr.ContractDataEntry) (*string, *string,
 
 	return name, symbol, decimals
 }
-
-// Ensure math/big is used (for SAC balance detection)
-var _ = (*big.Int)(nil)
 
 // ===========================================================================
 // Contract Code (WASM)

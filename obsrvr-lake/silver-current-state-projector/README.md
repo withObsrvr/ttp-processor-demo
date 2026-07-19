@@ -62,7 +62,7 @@ silver.offers_current
 silver.contract_data_current (from bronze.contract_data_snapshot_v1)
 silver.ttl_current
 silver.native_balances_current
-silver.address_balances_current
+silver.address_balances_current (classic balance_changes + contract_balance_changes)
 ```
 
 For each implemented projection the projector:
@@ -73,6 +73,10 @@ For each implemented projection the projector:
 - verifies duplicate entity keys
 - verifies projected max ledger does not exceed `--end-ledger`
 - writes `silver.silver_current_projector_manifest`
+
+Contract balance raw values remain strings through projection. Display values
+use per-token decimals and avoid narrowing full-width Soroban i128/u128 values
+through `DECIMAL(38)`.
 
 `--manifest-path` additionally writes JSONL records for batch-local status
 mirroring.

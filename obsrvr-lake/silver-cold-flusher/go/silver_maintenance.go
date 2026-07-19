@@ -67,6 +67,7 @@ var SilverTables = []string{
 	"native_balances_current",
 	"ttl_current",
 	"address_balances_current",
+	"contract_balance_changes",
 }
 
 // HighVolumeSilverTables are tables that accumulate files fastest and need
@@ -75,6 +76,7 @@ var HighVolumeSilverTables = []string{
 	"enriched_history_operations",
 	"semantic_activities",
 	"token_transfers_raw",
+	"contract_balance_changes",
 	"accounts_snapshot",
 	"offers_snapshot",
 }

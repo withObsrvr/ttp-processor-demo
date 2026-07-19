@@ -49,8 +49,63 @@ func main() {
 	pgSSL := flag.String("pg-sslmode", "require", "PostgreSQL SSL mode")
 	tailLedgers := flag.Uint("tail-ledgers", 100000, "Number of recent ledgers to load into hot buffer")
 	eraID := flag.String("era-id", "", "Era identifier for DuckLake partitioning (optional)")
+	enrichContractBalances := flag.Bool("enrich-contract-balances", false, "Repair missing Bronze contract balance_holder and balance fields in place")
+	enrichmentChunkSize := flag.Uint("enrichment-chunk-size", 100000, "Ledgers per contract-balance enrichment transaction")
+	enrichmentRunID := flag.String("enrichment-run-id", "", "Durable manifest run ID (required for mutating enrichment)")
+	enrichmentDryRun := flag.Bool("enrichment-dry-run", false, "Decode and count contract-balance candidates without mutating DuckLake")
+	enrichmentResume := flag.Bool("enrichment-resume", true, "Skip chunks already completed under the enrichment run ID")
+	enrichmentManifestSchema := flag.String("enrichment-manifest-schema", "bronze_operations", "DuckLake schema for the enrichment audit manifest")
 
 	flag.Parse()
+	if *enrichContractBalances {
+		if *start == 0 || *end == 0 || *end < *start {
+			log.Fatalf("--enrich-contract-balances requires a valid inclusive --start/--end range")
+		}
+		if *enrichmentChunkSize == 0 {
+			log.Fatal("--enrichment-chunk-size must be greater than zero")
+		}
+		if *dlCatalog == "" || *dlDataPath == "" || *b2KeyID == "" || *b2KeySecret == "" {
+			log.Fatal("--enrich-contract-balances requires --ducklake-catalog, --ducklake-data-path, --b2-key-id, and --b2-key-secret")
+		}
+		if !*enrichmentDryRun && strings.TrimSpace(*enrichmentRunID) == "" {
+			log.Fatal("--enrichment-run-id is required unless --enrichment-dry-run is set")
+		}
+
+		ctx := context.Background()
+		enricher, err := NewContractBalanceEnricher(ContractBalanceEnricherConfig{
+			DuckLake: DuckLakeConfig{
+				CatalogDSN:     *dlCatalog,
+				DataPath:       *dlDataPath,
+				MetadataSchema: *dlMetaSchema,
+				S3KeyID:        *b2KeyID,
+				S3KeySecret:    *b2KeySecret,
+				S3Endpoint:     *b2Endpoint,
+				S3Region:       *b2Region,
+			},
+			StartLedger:    int64(*start),
+			EndLedger:      int64(*end),
+			ChunkSize:      int64(*enrichmentChunkSize),
+			RunID:          *enrichmentRunID,
+			Network:        *networkPassphrase,
+			VersionLabel:   Version,
+			ManifestSchema: *enrichmentManifestSchema,
+			DryRun:         *enrichmentDryRun,
+			Resume:         *enrichmentResume,
+		})
+		if err != nil {
+			log.Fatalf("contract-balance enrichment setup failed: %v", err)
+		}
+		defer enricher.Close()
+		result, err := enricher.Run(ctx)
+		if err != nil {
+			log.Fatalf("contract-balance enrichment failed: %v", err)
+		}
+		fmt.Printf(
+			"Contract-balance enrichment complete: dry_run=%t candidates=%d decoded=%d updated=%d skipped=%d\n",
+			*enrichmentDryRun, result.CandidateRows, result.DecodedRows, result.UpdatedRows, result.SkippedRows,
+		)
+		return
+	}
 
 	// Validate required flags
 	if *start == 0 {

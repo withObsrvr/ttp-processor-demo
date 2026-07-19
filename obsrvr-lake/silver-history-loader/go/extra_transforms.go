@@ -127,6 +127,72 @@ func selectContractDataChanges(l *Loader, start, end int64) string {
 		FROM %s WHERE ledger_sequence BETWEEN %d AND %d`, q(l.cfg.Network), metaSelect(l, start, end), l.bronze("contract_data_snapshot_v1"), start, end)
 }
 
+func selectContractBalanceChanges(l *Loader, start, end int64) string {
+	return fmt.Sprintf(`WITH balance_rows AS (
+		SELECT * FROM %s
+		WHERE ledger_sequence BETWEEN %d AND %d
+		  AND balance_holder IS NOT NULL
+		  AND balance IS NOT NULL
+	), metadata_versions AS (
+		SELECT *, ROW_NUMBER() OVER (
+			PARTITION BY contract_id ORDER BY ledger_sequence DESC, closed_at DESC NULLS LAST
+		) AS metadata_rank
+		FROM %s
+		WHERE ledger_sequence <= %d
+		  AND contract_key_type = 'ScValTypeScvLedgerKeyContractInstance'
+		  AND contract_id IN (SELECT DISTINCT contract_id FROM balance_rows)
+	), metadata AS (
+		SELECT contract_id,
+			CASE arg_max(NULLIF(asset_type, ''), ledger_sequence)
+				WHEN 'AssetTypeAssetTypeNative' THEN 'native'
+				WHEN 'AssetTypeAssetTypeCreditAlphanum4' THEN 'credit_alphanum4'
+				WHEN 'AssetTypeAssetTypeCreditAlphanum12' THEN 'credit_alphanum12'
+				ELSE arg_max(NULLIF(asset_type, ''), ledger_sequence)
+			END AS asset_type,
+			CASE WHEN arg_max(NULLIF(asset_type, ''), ledger_sequence) IN ('native', 'AssetTypeAssetTypeNative')
+				THEN 'XLM' ELSE arg_max(NULLIF(asset_code, ''), ledger_sequence) END AS asset_code,
+			arg_max(NULLIF(asset_issuer, ''), ledger_sequence) AS asset_issuer,
+			arg_max(NULLIF(token_symbol, ''), ledger_sequence) AS token_symbol,
+			arg_max(token_decimals, ledger_sequence) AS token_decimals
+		FROM metadata_versions
+		WHERE metadata_rank = 1 AND deleted = false
+		GROUP BY contract_id
+	)
+	SELECT %s AS network,
+		b.balance_holder AS owner_address,
+		'contract' AS owner_type,
+		b.contract_id AS asset_key,
+		CASE COALESCE(NULLIF(b.asset_type, ''), m.asset_type)
+			WHEN 'AssetTypeAssetTypeNative' THEN 'native'
+			WHEN 'AssetTypeAssetTypeCreditAlphanum4' THEN 'credit_alphanum4'
+			WHEN 'AssetTypeAssetTypeCreditAlphanum12' THEN 'credit_alphanum12'
+			ELSE COALESCE(NULLIF(b.asset_type, ''), m.asset_type, 'soroban_token')
+		END AS asset_type,
+		b.contract_id AS token_contract_id,
+		CASE
+			WHEN COALESCE(NULLIF(b.asset_type, ''), m.asset_type) IN ('native', 'AssetTypeAssetTypeNative') THEN 'XLM'
+			ELSE COALESCE(NULLIF(b.asset_code, ''), m.asset_code)
+		END AS asset_code,
+		COALESCE(NULLIF(b.asset_issuer, ''), m.asset_issuer) AS asset_issuer,
+		COALESCE(m.token_symbol,
+			CASE WHEN COALESCE(NULLIF(b.asset_type, ''), m.asset_type) IN ('native', 'AssetTypeAssetTypeNative') THEN 'XLM' END,
+			NULLIF(b.asset_code, ''), m.asset_code) AS symbol,
+		COALESCE(m.token_decimals, 7)::INTEGER AS decimals,
+		b.balance AS balance_raw,
+		'contract_storage_state' AS balance_source,
+		b.ledger_key_hash AS key_hash,
+		b.ledger_sequence,
+		b.closed_at AS ledger_closed_at,
+		b.deleted,
+		b.ledger_range,
+		%s
+	FROM balance_rows b
+	LEFT JOIN metadata m ON m.contract_id = b.contract_id`,
+		l.bronze("contract_data_snapshot_v1"), start, end,
+		l.bronze("contract_data_snapshot_v1"), end,
+		q(l.cfg.Network), metaSelect(l, start, end))
+}
+
 func selectBalanceChanges(l *Loader, start, end int64) string {
 	return fmt.Sprintf(`SELECT * FROM (
 		SELECT %s AS network, account_id AS address, 'native' AS asset_type, 'XLM' AS asset_code, NULL::VARCHAR AS asset_issuer,

@@ -21,11 +21,12 @@ This implementation processes deterministic ledger chunks and writes directly in
 - `evicted_keys`
 - `restored_keys`
 - `contract_data_changes`
+- `contract_balance_changes`
 - `balance_changes`
 
 In addition to the data tables above, the loader maintains `silver_load_manifest`, a bookkeeping/control table that tracks per-chunk, per-table load status (it is not a materialized data output).
 
-`contract_data_changes` and `balance_changes` are append/history tables intended to rebuild current-state projections such as `contract_data_current`, `address_balances_current`, `native_balances_current`, and `trustlines_current`.
+`contract_data_changes`, `contract_balance_changes`, and `balance_changes` are append/history tables intended to rebuild current-state projections such as `contract_data_current`, `address_balances_current`, `native_balances_current`, and `trustlines_current`. Contract balance changes come from decoded Soroban `Balance(Address)` storage entries, retain deletion tombstones, and join the latest contract-instance metadata available as of the chunk end.
 
 ## Build
 
@@ -57,7 +58,22 @@ DuckDB/DuckLake requires CGO; the Makefile uses `GOWORK=off CGO_ENABLED=1`.
 ./bin/silver-history-loader ... --resume
 ```
 
-A chunk is skipped only when every implemented table has a `completed` entry in `silver_load_manifest`. Per-table publication is transactional: the loader begins a DuckDB transaction, deletes the exact network/table/range, inserts replacement rows, and commits before marking the manifest row completed.
+A chunk is skipped only when every selected table has a `completed` entry in
+`silver_load_manifest`. Per-table publication is transactional: the loader
+begins a DuckDB transaction, deletes the exact network/table/range, inserts
+replacement rows, and commits before marking the manifest row completed.
+
+For a targeted contract-balance backfill:
+
+```bash
+./bin/silver-history-loader ... \
+  --tables contract_balance_changes \
+  --resume
+```
+
+`--tables` accepts a comma-separated list, rejects unknown names, and defaults
+to every implemented transform when omitted. The selection also scopes
+manifest completeness and verification.
 
 ## Verify
 
@@ -65,4 +81,7 @@ A chunk is skipped only when every implemented table has a `completed` entry in 
 ./bin/silver-history-loader ... --verify
 ```
 
-Verification checks Bronze ledger coverage, completed manifest entries, readability of `enriched_ledgers`, and that `enriched_ledgers` has no positive ledger-sequence gaps within the requested range (any gap fails verification).
+Verification checks Bronze ledger coverage, selected manifest entries, and
+the selected Silver outputs. The enriched-ledger positive-gap check runs only
+when `enriched_ledgers` is selected. A contract-balance-only run does not
+depend on completeness of unrelated classic operation/transaction tables.

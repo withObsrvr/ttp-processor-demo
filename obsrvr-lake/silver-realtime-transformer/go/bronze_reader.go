@@ -1142,21 +1142,48 @@ func (br *BronzeReader) QueryDeletedContractDataSnapshot(ctx context.Context, st
 // without decoded balances.
 func (br *BronzeReader) QueryBalanceHolderSnapshots(ctx context.Context, startLedger, endLedger int64) (*sql.Rows, error) {
 	query := `
-		SELECT DISTINCT ON (contract_id, balance_holder)
-			contract_id,
-			balance_holder,
-			balance,
-			asset_type,
-			asset_code,
-			asset_issuer,
-			last_modified_ledger,
-			closed_at
-		FROM contract_data_snapshot_v1
-		WHERE ledger_sequence BETWEEN $1 AND $2
-		  AND deleted = false
-		  AND balance_holder IS NOT NULL
-		  AND balance IS NOT NULL
-		ORDER BY contract_id, balance_holder, ledger_sequence DESC
+		WITH balance_rows AS (
+			SELECT *
+			FROM contract_data_snapshot_v1
+			WHERE ledger_sequence BETWEEN $1 AND $2
+			  AND balance_holder IS NOT NULL
+			  AND balance IS NOT NULL
+		), metadata_versions AS (
+			SELECT DISTINCT ON (contract_id)
+				contract_id, asset_type, asset_code, asset_issuer,
+				token_symbol, token_decimals, deleted
+			FROM contract_data_snapshot_v1
+			WHERE ledger_sequence <= $2
+			  AND contract_key_type = 'ScValTypeScvLedgerKeyContractInstance'
+			  AND contract_id IN (SELECT DISTINCT contract_id FROM balance_rows)
+			ORDER BY contract_id, ledger_sequence DESC, closed_at DESC
+		), metadata AS (
+			SELECT * FROM metadata_versions WHERE deleted = false
+		)
+		SELECT DISTINCT ON (b.contract_id, b.balance_holder)
+			b.contract_id,
+			b.balance_holder,
+			b.balance,
+			CASE COALESCE(NULLIF(b.asset_type, ''), NULLIF(m.asset_type, ''))
+				WHEN 'AssetTypeAssetTypeNative' THEN 'native'
+				WHEN 'AssetTypeAssetTypeCreditAlphanum4' THEN 'credit_alphanum4'
+				WHEN 'AssetTypeAssetTypeCreditAlphanum12' THEN 'credit_alphanum12'
+				ELSE COALESCE(NULLIF(b.asset_type, ''), NULLIF(m.asset_type, ''))
+			END AS asset_type,
+			CASE
+				WHEN COALESCE(NULLIF(b.asset_type, ''), NULLIF(m.asset_type, '')) IN ('native', 'AssetTypeAssetTypeNative') THEN 'XLM'
+				ELSE COALESCE(NULLIF(b.asset_code, ''), NULLIF(m.asset_code, ''))
+			END AS asset_code,
+			COALESCE(NULLIF(b.asset_issuer, ''), NULLIF(m.asset_issuer, '')) AS asset_issuer,
+			m.token_symbol,
+			m.token_decimals,
+			b.ledger_key_hash,
+			b.ledger_sequence,
+			b.closed_at,
+			b.deleted
+		FROM balance_rows b
+		LEFT JOIN metadata m ON m.contract_id = b.contract_id
+		ORDER BY b.contract_id, b.balance_holder, b.ledger_sequence DESC, b.closed_at DESC
 	`
 	rows, err := br.db.QueryContext(ctx, query, startLedger, endLedger)
 	if err != nil {
@@ -1290,7 +1317,7 @@ func (br *BronzeReader) QueryTokenMetadataEntries(ctx context.Context, startLedg
 			token_name,
 			token_symbol,
 			token_decimals,
-			asset_code,
+			CASE WHEN asset_type IN ('native', 'AssetTypeAssetTypeNative') THEN 'XLM' ELSE NULLIF(asset_code, '') END AS asset_code,
 			asset_issuer,
 			ledger_sequence
 		FROM contract_data_snapshot_v1

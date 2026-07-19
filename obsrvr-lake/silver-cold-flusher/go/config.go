@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -10,6 +11,7 @@ import (
 
 // Config holds all configuration for the silver cold flusher
 type Config struct {
+	Network     string            `yaml:"network"`
 	Service     ServiceConfig     `yaml:"service"`
 	Postgres    PostgresConfig    `yaml:"postgres"`
 	DuckLake    DuckLakeConfig    `yaml:"ducklake"`
@@ -86,6 +88,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	// Validate
+	if !regexp.MustCompile(`^[A-Za-z0-9_-]+$`).MatchString(config.Network) {
+		return nil, fmt.Errorf("network is required and may contain only letters, digits, underscore, and hyphen")
+	}
 	if config.Service.FlushIntervalHours < 1 || config.Service.FlushIntervalHours > 24 {
 		return nil, fmt.Errorf("flush_interval_hours must be between 1 and 24, got %d", config.Service.FlushIntervalHours)
 	}
@@ -159,5 +164,10 @@ func GetTablesToFlush() []string {
 		"native_balances_current",
 		"ttl_current",
 		"address_balances_current",
+
+		// Append-only authoritative changes for Balance(Address) contract
+		// storage. Tombstones are retained so cold current state can remove
+		// balances that were deleted or set to zero.
+		"contract_balance_changes",
 	}
 }
