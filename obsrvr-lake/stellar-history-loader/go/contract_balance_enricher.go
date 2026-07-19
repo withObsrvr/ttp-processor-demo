@@ -200,8 +200,8 @@ func (e *ContractBalanceEnricher) chunkCompleted(ctx context.Context, startLedge
 	var count int64
 	if err := e.pusher.db.QueryRowContext(ctx, fmt.Sprintf(`
 		SELECT COUNT(*) FROM %s
-		WHERE run_id = ? AND chunk_start = ? AND chunk_end = ? AND status = 'completed'
-	`, manifest), e.config.RunID, startLedger, endLedger).Scan(&count); err != nil {
+		WHERE run_id = ? AND network = ? AND chunk_start = ? AND chunk_end = ? AND status = 'completed'
+	`, manifest), e.config.RunID, e.config.Network, startLedger, endLedger).Scan(&count); err != nil {
 		return false, fmt.Errorf("read enrichment manifest for %d-%d: %w", startLedger, endLedger, err)
 	}
 	return count > 0, nil
@@ -232,8 +232,8 @@ func (e *ContractBalanceEnricher) recordManifest(
 		}
 	}()
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
-		DELETE FROM %s WHERE run_id = ? AND chunk_start = ? AND chunk_end = ?
-	`, manifest), e.config.RunID, startLedger, endLedger); err != nil {
+		DELETE FROM %s WHERE run_id = ? AND network = ? AND chunk_start = ? AND chunk_end = ?
+	`, manifest), e.config.RunID, e.config.Network, startLedger, endLedger); err != nil {
 		return fmt.Errorf("replace enrichment manifest row: %w", err)
 	}
 	var completed any

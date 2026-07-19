@@ -4,9 +4,46 @@ import (
 	"context"
 	"database/sql"
 	"testing"
+	"time"
 
 	_ "github.com/duckdb/duckdb-go/v2"
 )
+
+func createContractBalanceManifestFixture(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if _, err := db.Exec(`
+		CREATE TABLE contract_balance_enrichment_manifest (
+			run_id VARCHAR,
+			network VARCHAR,
+			chunk_start BIGINT,
+			chunk_end BIGINT,
+			status VARCHAR,
+			dry_run BOOLEAN,
+			candidate_rows BIGINT,
+			decoded_rows BIGINT,
+			updated_rows BIGINT,
+			skipped_rows BIGINT,
+			started_at TIMESTAMP,
+			completed_at TIMESTAMP,
+			error_message VARCHAR,
+			version_label VARCHAR
+		)
+	`); err != nil {
+		t.Fatalf("create enrichment manifest fixture: %v", err)
+	}
+}
+
+func manifestTestEnricher(db *sql.DB, network string) *ContractBalanceEnricher {
+	return &ContractBalanceEnricher{
+		config: ContractBalanceEnricherConfig{
+			RunID:        "shared-repair-run",
+			Network:      network,
+			VersionLabel: "test",
+		},
+		pusher:   &DuckLakePusher{db: db},
+		manifest: "contract_balance_enrichment_manifest",
+	}
+}
 
 const historicalNativeBalanceXDR = "AAAAAAAAAAHXkotywnA8z+r365/0701QSlWouXn8m0UOoshCtNHOYQAAABAAAAABAAAAAgAAAA8AAAAHQmFsYW5jZQAAAAASAAAAAaAYIAbRNL61yGL1IwE4Zd6B7YCDUI7STCNQPchp4CbqAAAAAQAAABEAAAABAAAAAwAAAA8AAAAGYW1vdW50AAAAAAAKAAAAAAAAAAAAAAAXRXv3gAAAAA8AAAAKYXV0aG9yaXplZAAAAAAAAAAAAAEAAAAPAAAACGNsYXdiYWNrAAAAAAAAAAA="
 
@@ -73,5 +110,69 @@ func TestEnrichContractBalanceChunkIsVerifiedAndIdempotent(t *testing.T) {
 	}
 	if second.CandidateRows != 0 || second.UpdatedRows != 0 {
 		t.Fatalf("rerun was not idempotent: %+v", second)
+	}
+}
+
+func TestEnrichmentManifestCompletionIsScopedByNetwork(t *testing.T) {
+	db, err := sql.Open("duckdb", "")
+	if err != nil {
+		t.Fatalf("open duckdb: %v", err)
+	}
+	defer db.Close()
+	createContractBalanceManifestFixture(t, db)
+
+	ctx := context.Background()
+	if _, err := db.Exec(`
+		INSERT INTO contract_balance_enrichment_manifest (
+			run_id, network, chunk_start, chunk_end, status
+		) VALUES ('shared-repair-run', 'testnet', 3, 100002, 'completed')
+	`); err != nil {
+		t.Fatalf("seed testnet completion: %v", err)
+	}
+
+	completed, err := manifestTestEnricher(db, "mainnet").chunkCompleted(ctx, 3, 100002)
+	if err != nil {
+		t.Fatalf("check mainnet completion: %v", err)
+	}
+	if completed {
+		t.Fatal("mainnet chunk was incorrectly completed by a testnet manifest row with the same run and range")
+	}
+}
+
+func TestEnrichmentManifestReplacementPreservesOtherNetworks(t *testing.T) {
+	db, err := sql.Open("duckdb", "")
+	if err != nil {
+		t.Fatalf("open duckdb: %v", err)
+	}
+	defer db.Close()
+	createContractBalanceManifestFixture(t, db)
+
+	ctx := context.Background()
+	if _, err := db.Exec(`
+		INSERT INTO contract_balance_enrichment_manifest (
+			run_id, network, chunk_start, chunk_end, status
+		) VALUES ('shared-repair-run', 'testnet', 3, 100002, 'completed')
+	`); err != nil {
+		t.Fatalf("seed testnet completion: %v", err)
+	}
+
+	startedAt := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
+	if err := manifestTestEnricher(db, "mainnet").recordManifest(
+		ctx, 3, 100002, "running", ContractBalanceEnrichmentResult{}, startedAt, nil, "",
+	); err != nil {
+		t.Fatalf("record mainnet manifest: %v", err)
+	}
+
+	var testnetRows, mainnetRows int64
+	if err := db.QueryRow(`
+		SELECT
+			count(*) FILTER (WHERE network = 'testnet' AND status = 'completed'),
+			count(*) FILTER (WHERE network = 'mainnet' AND status = 'running')
+		FROM contract_balance_enrichment_manifest
+	`).Scan(&testnetRows, &mainnetRows); err != nil {
+		t.Fatalf("verify network-scoped manifest replacement: %v", err)
+	}
+	if testnetRows != 1 || mainnetRows != 1 {
+		t.Fatalf("manifest rows after mainnet replacement = testnet completed %d, mainnet running %d; want 1/1", testnetRows, mainnetRows)
 	}
 }

@@ -114,17 +114,18 @@ type Event struct {
 }
 
 type ManifestRecord struct {
-	RunID          string `json:"run_id"`
-	ComponentID    string `json:"component_id"`
-	ProjectionName string `json:"projection_name"`
-	Network        string `json:"network"`
-	StartLedger    int64  `json:"start_ledger"`
-	EndLedger      int64  `json:"end_ledger"`
-	Status         string `json:"status"`
-	FailureClass   string `json:"failure_class,omitempty"`
-	ErrorMessage   string `json:"error_message,omitempty"`
-	RowCount       int64  `json:"row_count"`
-	UpdatedAt      string `json:"updated_at"`
+	RunID             string `json:"run_id"`
+	ComponentID       string `json:"component_id"`
+	ProjectionName    string `json:"projection_name"`
+	ProjectionVersion string `json:"projection_version,omitempty"`
+	Network           string `json:"network"`
+	StartLedger       int64  `json:"start_ledger"`
+	EndLedger         int64  `json:"end_ledger"`
+	Status            string `json:"status"`
+	FailureClass      string `json:"failure_class,omitempty"`
+	ErrorMessage      string `json:"error_message,omitempty"`
+	RowCount          int64  `json:"row_count"`
+	UpdatedAt         string `json:"updated_at"`
 }
 
 type ManifestStore interface {
@@ -148,6 +149,7 @@ type Projector struct {
 
 type CurrentProjection struct {
 	Name            string
+	ManifestVersion string
 	TargetTable     string
 	Source          string
 	SourceLedgerCol string
@@ -487,7 +489,7 @@ func (p *Projector) Run(ctx context.Context, out io.Writer) error {
 		emit(out, Event{EventType: "component.chunk_started", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, Status: "running"})
 		for _, projection := range projections {
 			if cfg.Resume {
-				done, err := p.projectionComplete(ctx, chunk.Start, chunk.End, projection.Name)
+				done, err := p.projectionComplete(ctx, chunk.Start, chunk.End, projection)
 				if err != nil {
 					return err
 				}
@@ -501,7 +503,7 @@ func (p *Projector) Run(ctx context.Context, out io.Writer) error {
 			rows, err := p.replaceProjection(ctx, out, chunk, projection)
 			stopProgress()
 			if err != nil {
-				_ = p.markManifest(ctx, chunk.Start, chunk.End, projection.Name, "failed", err.Error(), 0)
+				_ = p.markManifest(ctx, chunk.Start, chunk.End, projection, "failed", err.Error(), 0)
 				emit(out, Event{EventType: "component.failed", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, ChunkStart: chunk.Start, ChunkEnd: chunk.End, ProjectionName: projection.Name, TargetTable: projection.TargetTable, Phase: "replace_current", Status: "failed", FailureClass: classifyFailure(err), Error: err.Error(), Recommended: recommendedAction(classifyFailure(err))})
 				return err
 			}
@@ -536,7 +538,7 @@ func executableCurrentProjections() []CurrentProjection {
 		{Name: "contract_data_current", TargetTable: "contract_data_current", Source: "contract_data_snapshot_v1", SourceLedgerCol: "ledger_sequence", PartitionExpr: "concat(contract_id, ':', ledger_key_hash)", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"contract_id", "key_hash"}, SelectSQL: selectContractDataCurrent, KeySQL: selectContractDataCurrentKeys},
 		{Name: "ttl_current", TargetTable: "ttl_current", Source: "ttl_snapshot_v1", SourceLedgerCol: "ledger_sequence", PartitionExpr: "key_hash", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"key_hash"}, SelectSQL: selectTTLCurrent, KeySQL: selectTTLCurrentKeys},
 		{Name: "native_balances_current", TargetTable: "native_balances_current", Source: "balance_changes", SourceLedgerCol: "ledger_sequence", SourceFilter: "(asset_type = 'native' OR asset_code = 'XLM')", PartitionExpr: "address", MaxLedgerCol: "last_modified_ledger", KeyExprs: []string{"account_id"}, SelectSQL: selectNativeBalancesCurrent, KeySQL: selectNativeBalancesCurrentKeys},
-		{Name: "address_balances_current", TargetTable: "address_balances_current", Source: "balance_changes + contract_balance_changes", SourceLedgerCol: "ledger_sequence", PartitionExpr: "concat(address, ':', " + assetKey + ")", MaxLedgerCol: "last_updated_ledger", KeyExprs: []string{"owner_address", "asset_key"}, SelectSQL: selectAddressBalancesCurrent, KeySQL: selectAddressBalancesCurrentKeys},
+		{Name: "address_balances_current", ManifestVersion: "contract-balance-changes-v1", TargetTable: "address_balances_current", Source: "balance_changes + contract_balance_changes", SourceLedgerCol: "ledger_sequence", PartitionExpr: "concat(address, ':', " + assetKey + ")", MaxLedgerCol: "last_updated_ledger", KeyExprs: []string{"owner_address", "asset_key"}, SelectSQL: selectAddressBalancesCurrent, KeySQL: selectAddressBalancesCurrentKeys},
 	}
 }
 
@@ -583,7 +585,7 @@ func sortedKeys(m map[string]bool) []string {
 }
 
 func (p *Projector) replaceProjection(ctx context.Context, out io.Writer, chunk Chunk, projection CurrentProjection) (int64, error) {
-	if err := p.markManifest(ctx, chunk.Start, chunk.End, projection.Name, "running", "", 0); err != nil {
+	if err := p.markManifest(ctx, chunk.Start, chunk.End, projection, "running", "", 0); err != nil {
 		return 0, err
 	}
 	if err := p.ensureTargetTable(ctx, projection); err != nil {
@@ -651,7 +653,7 @@ func (p *Projector) replaceProjection(ctx context.Context, out io.Writer, chunk 
 	if err != nil {
 		return 0, err
 	}
-	if err := p.markManifest(ctx, chunk.Start, chunk.End, projection.Name, "completed", "", rowCount); err != nil {
+	if err := p.markManifest(ctx, chunk.Start, chunk.End, projection, "completed", "", rowCount); err != nil {
 		return 0, err
 	}
 	_, _ = p.db.ExecContext(ctx, "DROP TABLE IF EXISTS "+staging)
@@ -904,6 +906,7 @@ func (p *Projector) ensureManifest(ctx context.Context) error {
 		run_id VARCHAR,
 		component_id VARCHAR,
 		projection_name VARCHAR,
+		projection_version VARCHAR,
 		network VARCHAR,
 		start_ledger BIGINT,
 		end_ledger BIGINT,
@@ -915,6 +918,9 @@ func (p *Projector) ensureManifest(ctx context.Context) error {
 	)`, p.table("silver_current_projector_manifest"))
 	if _, err := p.db.ExecContext(ctx, stmt); err != nil {
 		return fmt.Errorf("create manifest: %w", err)
+	}
+	if _, err := p.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS projection_version VARCHAR", p.table("silver_current_projector_manifest"))); err != nil {
+		return fmt.Errorf("migrate manifest projection_version: %w", err)
 	}
 	pubStmt := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
 		run_id VARCHAR,
@@ -937,26 +943,29 @@ func (p *Projector) ensureManifest(ctx context.Context) error {
 	return nil
 }
 
-func (p *Projector) markManifest(ctx context.Context, start, end int64, projection, status, message string, rows int64) error {
-	if _, err := p.db.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE run_id=%s AND component_id=%s AND network=%s AND start_ledger=%d AND end_ledger=%d AND projection_name=%s", p.table("silver_current_projector_manifest"), q(p.cfg.RunID()), q(p.cfg.Component()), q(p.cfg.Network), start, end, q(projection))); err != nil {
+func (p *Projector) markManifest(ctx context.Context, start, end int64, projection CurrentProjection, status, message string, rows int64) error {
+	if _, err := p.db.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE run_id=%s AND component_id=%s AND network=%s AND start_ledger=%d AND end_ledger=%d AND projection_name=%s AND COALESCE(projection_version, '')=%s", p.table("silver_current_projector_manifest"), q(p.cfg.RunID()), q(p.cfg.Component()), q(p.cfg.Network), start, end, q(projection.Name), q(projection.ManifestVersion))); err != nil {
 		return err
 	}
 	completed := "NULL"
 	if status == "completed" || status == "failed" {
 		completed = "current_timestamp"
 	}
-	stmt := fmt.Sprintf(`INSERT INTO %s VALUES (%s, %s, %s, %s, %d, %d, %s, %d, %s, current_timestamp, %s)`,
+	stmt := fmt.Sprintf(`INSERT INTO %s (
+		run_id, component_id, projection_name, projection_version, network,
+		start_ledger, end_ledger, status, row_count, error_message, started_at, completed_at
+	) VALUES (%s, %s, %s, %s, %s, %d, %d, %s, %d, %s, current_timestamp, %s)`,
 		p.table("silver_current_projector_manifest"),
-		q(p.cfg.RunID()), q(p.cfg.Component()), q(projection), q(p.cfg.Network), start, end, q(status), rows, q(message), completed)
+		q(p.cfg.RunID()), q(p.cfg.Component()), q(projection.Name), q(projection.ManifestVersion), q(p.cfg.Network), start, end, q(status), rows, q(message), completed)
 	if _, err := p.db.ExecContext(ctx, stmt); err != nil {
 		return err
 	}
-	return p.jsonl.Mark(ctx, ManifestRecord{RunID: p.cfg.RunID(), ComponentID: p.cfg.Component(), ProjectionName: projection, Network: p.cfg.Network, StartLedger: start, EndLedger: end, Status: status, ErrorMessage: message, RowCount: rows, UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)})
+	return p.jsonl.Mark(ctx, ManifestRecord{RunID: p.cfg.RunID(), ComponentID: p.cfg.Component(), ProjectionName: projection.Name, ProjectionVersion: projection.ManifestVersion, Network: p.cfg.Network, StartLedger: start, EndLedger: end, Status: status, ErrorMessage: message, RowCount: rows, UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)})
 }
 
 func (p *Projector) chunkComplete(ctx context.Context, start, end int64) (bool, error) {
 	for _, projection := range executableCurrentProjections() {
-		done, err := p.projectionComplete(ctx, start, end, projection.Name)
+		done, err := p.projectionComplete(ctx, start, end, projection)
 		if err != nil {
 			return false, err
 		}
@@ -971,12 +980,13 @@ func (p *Projector) chunkComplete(ctx context.Context, start, end int64) (bool, 
 // (component, network, ledger range). It intentionally does NOT filter on run_id: each
 // dispatch gets a fresh run_id (the wrapper stamps a timestamp), so resuming across
 // re-dispatches — e.g. to bump --chunk-size without redoing finished projections — must
-// match on the durable identity of the work, not the run. The targets are replace-as-of-end
-// and deterministic, so a completed projection's data is valid to keep.
-func (p *Projector) projectionComplete(ctx context.Context, start, end int64, projection string) (bool, error) {
+// match on the durable identity of the work, not the run. ProjectionVersion invalidates
+// completed records when a projection's source semantics change. Unversioned projections
+// retain compatibility with their legacy manifest rows.
+func (p *Projector) projectionComplete(ctx context.Context, start, end int64, projection CurrentProjection) (bool, error) {
 	var count int64
-	query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE component_id=%s AND network=%s AND start_ledger=%d AND end_ledger=%d AND projection_name=%s AND status='completed'",
-		p.table("silver_current_projector_manifest"), q(p.cfg.Component()), q(p.cfg.Network), start, end, q(projection))
+	query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE component_id=%s AND network=%s AND start_ledger=%d AND end_ledger=%d AND projection_name=%s AND COALESCE(projection_version, '')=%s AND status='completed'",
+		p.table("silver_current_projector_manifest"), q(p.cfg.Component()), q(p.cfg.Network), start, end, q(projection.Name), q(projection.ManifestVersion))
 	if err := p.db.QueryRowContext(ctx, query).Scan(&count); err != nil {
 		return false, err
 	}
@@ -1153,14 +1163,10 @@ func contractBalanceDisplayExpr(balanceRaw, decimals string) string {
 	decimals = fmt.Sprintf("COALESCE(%s, 7)", decimals)
 	raw := fmt.Sprintf("CAST(%s AS VARCHAR)", balanceRaw)
 	return fmt.Sprintf(`CASE
-		WHEN length(%[1]s) <= 38 THEN CAST(CASE
-			WHEN %[2]s = 0 THEN TRY_CAST(%[3]s AS DECIMAL(38,0))
-			ELSE TRY_CAST(%[3]s AS DECIMAL(38,7)) / POWER(10, %[2]s)
-		END AS VARCHAR)
 		WHEN %[2]s <= 0 THEN %[1]s
 		WHEN length(%[1]s) <= %[2]s THEN '0.' || repeat('0', %[2]s - length(%[1]s)) || %[1]s
 		ELSE left(%[1]s, length(%[1]s) - %[2]s) || '.' || right(%[1]s, %[2]s)
-	END`, raw, decimals, balanceRaw)
+	END`, raw, decimals)
 }
 
 func contractBalancePositiveExpr(balanceRaw string) string {

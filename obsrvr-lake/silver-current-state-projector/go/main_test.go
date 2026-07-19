@@ -27,7 +27,6 @@ func TestPlanChunksDeterministic(t *testing.T) {
 func TestContractBalanceProjectionPreservesArbitraryPrecision(t *testing.T) {
 	sql := selectAddressBalancesCurrent(&Projector{cfg: Config{Network: "testnet", SilverSchema: "silver"}}, 100, 200)
 	for _, want := range []string{
-		"length(CAST(balance_raw AS VARCHAR)) <= 38",
 		"repeat('0'",
 		"regexp_matches(CAST(balance_raw AS VARCHAR), '^[0-9]*[1-9][0-9]*$')",
 	} {
@@ -37,15 +36,123 @@ func TestContractBalanceProjectionPreservesArbitraryPrecision(t *testing.T) {
 	}
 	db := openFixtureDB(t)
 	defer db.Close()
-	query := `SELECT ` + contractBalanceDisplayExpr("balance_raw", "decimals") + `
-		FROM (SELECT '999999999999999999999999999999999999999' AS balance_raw, 2 AS decimals)`
-	var display string
-	if err := db.QueryRow(query).Scan(&display); err != nil {
-		t.Fatalf("execute arbitrary-precision display expression: %v\n%s", err, query)
+	displayExpr := contractBalanceDisplayExpr("balance_raw", "decimals")
+	if strings.Contains(displayExpr, "DECIMAL(38,7)") || strings.Contains(displayExpr, "POWER(10") {
+		t.Fatalf("contract balance display still narrows raw balances through numeric arithmetic:\n%s", displayExpr)
 	}
-	if display != "9999999999999999999999999999999999999.99" {
-		t.Fatalf("arbitrary-precision display = %q", display)
+
+	tests := []struct {
+		name     string
+		raw      string
+		decimals int
+		want     string
+	}{
+		{name: "zero decimals", raw: "123", decimals: 0, want: "123"},
+		{name: "two decimals", raw: "12345", decimals: 2, want: "123.45"},
+		{name: "native seven decimals", raw: "99950000000", decimals: 7, want: "9995.0000000"},
+		{name: "fraction smaller than one", raw: "1", decimals: 7, want: "0.0000001"},
+		{name: "nine decimals", raw: "123456789", decimals: 9, want: "0.123456789"},
+		{name: "twelve decimals preserves trailing digits", raw: "12345678901234567890", decimals: 12, want: "12345678.901234567890"},
+		{name: "thirty one raw digits", raw: "1234567890123456789012345678901", decimals: 7, want: "123456789012345678901234.5678901"},
+		{name: "thirty two raw digits", raw: "12345678901234567890123456789012", decimals: 7, want: "1234567890123456789012345.6789012"},
+		{name: "thirty nine raw digits", raw: "999999999999999999999999999999999999999", decimals: 2, want: "9999999999999999999999999999999999999.99"},
 	}
+	query := `SELECT ` + displayExpr + `
+		FROM (SELECT ?::VARCHAR AS balance_raw, ?::INTEGER AS decimals)`
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var display string
+			if err := db.QueryRow(query, tc.raw, tc.decimals).Scan(&display); err != nil {
+				t.Fatalf("execute arbitrary-precision display expression: %v\n%s", err, query)
+			}
+			if display != tc.want {
+				t.Fatalf("display = %q, want %q", display, tc.want)
+			}
+		})
+	}
+}
+
+func TestProjectionResumeIdentityIncludesDefinitionVersion(t *testing.T) {
+	ctx := context.Background()
+	db := openFixtureDB(t)
+	defer db.Close()
+	p := NewProjectorWithDB(db, Config{Network: "testnet", Start: 3, End: 100002, SilverSchema: "silver"})
+	if err := p.ensureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE silver.silver_current_projector_manifest (
+			run_id VARCHAR,
+			component_id VARCHAR,
+			projection_name VARCHAR,
+			network VARCHAR,
+			start_ledger BIGINT,
+			end_ledger BIGINT,
+			status VARCHAR,
+			row_count BIGINT,
+			error_message VARCHAR,
+			started_at TIMESTAMP,
+			completed_at TIMESTAMP
+		);
+		INSERT INTO silver.silver_current_projector_manifest (
+			run_id, component_id, projection_name, network,
+			start_ledger, end_ledger, status, row_count,
+			error_message, started_at, completed_at
+		) VALUES (
+			'legacy-run', 'silver-current-state-projector', 'address_balances_current', 'testnet',
+			3, 100002, 'completed', 1, '', current_timestamp, current_timestamp
+		)
+	`); err != nil {
+		t.Fatalf("create legacy manifest fixture: %v", err)
+	}
+	if err := p.ensureManifest(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var versionColumns int64
+	if err := db.QueryRow(`
+		SELECT count(*) FROM information_schema.columns
+		WHERE table_schema = 'silver'
+		  AND table_name = 'silver_current_projector_manifest'
+		  AND column_name = 'projection_version'
+	`).Scan(&versionColumns); err != nil {
+		t.Fatal(err)
+	}
+	if versionColumns != 1 {
+		t.Fatalf("projection manifest version columns = %d, want 1", versionColumns)
+	}
+
+	projection := currentProjectionByName(t, "address_balances_current")
+	done, err := p.projectionComplete(ctx, 3, 100002, projection)
+	if err != nil {
+		t.Fatalf("check legacy projection completion: %v", err)
+	}
+	if done {
+		t.Fatal("legacy completion row incorrectly matched the current address-balance projection definition")
+	}
+
+	if err := p.markManifest(ctx, 3, 100002, projection, "completed", "", 1); err != nil {
+		t.Fatalf("mark current projection definition complete: %v", err)
+	}
+	p.cfg.FlowctlRunID = "redispatch-with-new-run-id"
+	done, err = p.projectionComplete(ctx, 3, 100002, projection)
+	if err != nil {
+		t.Fatalf("check current projection completion: %v", err)
+	}
+	if !done {
+		t.Fatal("same projection definition did not resume across run IDs")
+	}
+}
+
+func currentProjectionByName(t *testing.T, name string) CurrentProjection {
+	t.Helper()
+	for _, projection := range executableCurrentProjections() {
+		if projection.Name == name {
+			return projection
+		}
+	}
+	t.Fatalf("projection %q not found", name)
+	return CurrentProjection{}
 }
 
 func TestAddressBalanceProjectionWorksWithoutLegacyBalanceChanges(t *testing.T) {
@@ -218,8 +325,8 @@ func TestProjectorDerivesCurrentTablesFromSilverFixture(t *testing.T) {
 	if err := db.QueryRow(`SELECT balance_raw, balance_display FROM silver.address_balances_current WHERE owner_address='CC1' AND token_contract_id='CXLM'`).Scan(&balanceRaw, &balanceDisplay); err != nil {
 		t.Fatal(err)
 	}
-	if balanceRaw != "99950000000" || balanceDisplay != "9995.0" {
-		t.Fatalf("contract XLM balance raw/display = %s/%s, want 99950000000/9995.0", balanceRaw, balanceDisplay)
+	if balanceRaw != "99950000000" || balanceDisplay != "9995.0000000" {
+		t.Fatalf("contract XLM balance raw/display = %s/%s, want 99950000000/9995.0000000", balanceRaw, balanceDisplay)
 	}
 	if err := db.QueryRow(`SELECT balance_raw, balance_display FROM silver.address_balances_current WHERE owner_address='CC5' AND token_contract_id='CTWO'`).Scan(&balanceRaw, &balanceDisplay); err != nil {
 		t.Fatal(err)
