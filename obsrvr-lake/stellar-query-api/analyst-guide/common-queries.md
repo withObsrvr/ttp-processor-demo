@@ -2010,7 +2010,7 @@ curl -H "Authorization: Api-Key $API_KEY" \
 ```
 
 Use `?format=rust` for a Rust-like display suitable for an explorer interface
-tab:
+tab. It includes declared events and renders Soroban union types as Rust enums:
 
 ```bash
 GET /api/v1/silver/contracts/{id}/interface?format=rust

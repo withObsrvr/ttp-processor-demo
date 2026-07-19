@@ -3680,7 +3680,8 @@ const docTemplate = `{
                     "application/json"
                 ],
                 "produces": [
-                    "application/json"
+                    "application/json",
+                    "text/plain"
                 ],
                 "tags": [
                     "Contracts"

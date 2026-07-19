@@ -100,6 +100,42 @@ func TestContractArtifactServiceCachesImmutableCodeButResolvesExecutableEveryTim
 	}
 }
 
+func TestContractArtifactServiceEnforcesLimitOnCachedCode(t *testing.T) {
+	wasm := testContractWASM(t)
+	hashBytes := sha256.Sum256(wasm)
+	hash := hex.EncodeToString(hashBytes[:])
+	store, err := NewFileContractArtifactStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ParseContractWASM(wasm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(&cachedContractCode{
+		WasmHash:    hash,
+		WASM:        wasm,
+		Interface:   parsed.Spec,
+		Metadata:    parsed.Metadata,
+		Environment: parsed.Environment,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rpc := &fakeContractArtifactRPC{
+		executable: ContractExecutableReference{Type: "wasm", WasmHash: hash},
+		fetchErr:   errors.New("cached artifact must not be refetched"),
+	}
+	service := NewContractArtifactService("testnet", rpc, store, int64(len(wasm)-1))
+
+	if _, err := service.Resolve(context.Background(), "CEXAMPLE"); err == nil || !strings.Contains(err.Error(), "exceeds configured") {
+		t.Fatalf("expected cached artifact size error, got %v", err)
+	}
+	if rpc.fetchCalls != 0 {
+		t.Fatalf("oversized cached artifact must not fall through to RPC, got %d fetch calls", rpc.fetchCalls)
+	}
+}
+
 func TestContractArtifactServiceFollowsContractUpgradeAndRetainsBothImmutableArtifacts(t *testing.T) {
 	wasmV1 := testContractWASM(t)
 	wasmV2 := append(append([]byte(nil), wasmV1...), testWASMCustomSection("upgrade-test", []byte("v2"))...)

@@ -119,12 +119,35 @@ func TestHandleContractWASMReturnsDownloadAndHonorsETag(t *testing.T) {
 		t.Fatalf("content type: %q", got)
 	}
 
+	for _, test := range []struct {
+		name   string
+		header string
+	}{
+		{name: "exact", header: `"` + hash + `"`},
+		{name: "weak", header: `W/"` + hash + `"`},
+		{name: "list", header: `"other", W/"` + hash + `", "another"`},
+		{name: "wildcard", header: "*"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			req := mux.SetURLVars(httptest.NewRequest(http.MethodGet, "/api/v1/silver/contracts/CEXAMPLE/wasm", nil), map[string]string{"id": "CEXAMPLE"})
+			req.Header.Set("If-None-Match", test.header)
+			w := httptest.NewRecorder()
+			h.HandleContractWASM(w, req)
+			if w.Code != http.StatusNotModified || w.Body.Len() != 0 {
+				t.Fatalf("unexpected conditional response: status=%d body=%q", w.Code, w.Body.String())
+			}
+			if got := w.Header().Get("ETag"); got != `"`+hash+`"` {
+				t.Fatalf("304 etag: %q", got)
+			}
+		})
+	}
+
 	req = mux.SetURLVars(httptest.NewRequest(http.MethodGet, "/api/v1/silver/contracts/CEXAMPLE/wasm", nil), map[string]string{"id": "CEXAMPLE"})
-	req.Header.Set("If-None-Match", `"`+hash+`"`)
+	req.Header.Set("If-None-Match", `"different"`)
 	w = httptest.NewRecorder()
 	h.HandleContractWASM(w, req)
-	if w.Code != http.StatusNotModified || w.Body.Len() != 0 {
-		t.Fatalf("unexpected conditional response: status=%d body=%q", w.Code, w.Body.String())
+	if w.Code != http.StatusOK || w.Body.String() != "\x00asm" {
+		t.Fatalf("non-matching validator must return representation: status=%d body=%q", w.Code, w.Body.String())
 	}
 }
 

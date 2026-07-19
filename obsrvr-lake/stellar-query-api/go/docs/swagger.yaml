@@ -5060,6 +5060,7 @@ paths:
         type: string
       produces:
       - application/json
+      - text/plain
       responses:
         "200":
           description: Authoritative declared interface

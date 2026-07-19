@@ -33,6 +33,9 @@ func TestParseContractWASMDecodesAuthoritativeInterfaceAndMetadata(t *testing.T)
 	if len(parsed.Spec.Errors) != 1 || parsed.Spec.Errors[0].Cases[0].Value != 1 {
 		t.Fatalf("unexpected errors: %#v", parsed.Spec.Errors)
 	}
+	if len(parsed.Spec.Events) != 1 || parsed.Spec.Events[0].Name != "PriceUpdated" || parsed.Spec.Events[0].DataFormat != "map" {
+		t.Fatalf("unexpected events: %#v", parsed.Spec.Events)
+	}
 	if len(parsed.Metadata) != 1 || parsed.Metadata[0].Key != "Description" {
 		t.Fatalf("unexpected metadata: %#v", parsed.Metadata)
 	}
@@ -43,11 +46,15 @@ func TestParseContractWASMDecodesAuthoritativeInterfaceAndMetadata(t *testing.T)
 	rust := RenderContractSpecRust(parsed.Spec)
 	for _, expected := range []string{
 		"fn init(admin: Address, publishers: Vec<BytesN<32>>) -> Result<Void, Errors>",
-		"struct PriceEntry", "union DataKey", "enum Errors", "AlreadyInitialized = 1",
+		"struct PriceEntry", "enum DataKey", "Admin,", "Price(BytesN<8>)", "enum Errors", "AlreadyInitialized = 1",
+		`#[contractevent(topics = ["oracle", "price"], data_format = "map")]`, "struct PriceUpdated", "#[topic]", "asset: BytesN<8>", "value: i128",
 	} {
 		if !strings.Contains(rust, expected) {
 			t.Fatalf("rust rendering missing %q:\n%s", expected, rust)
 		}
+	}
+	if strings.Contains(rust, "union DataKey") || strings.Contains(rust, "Admin()") {
+		t.Fatalf("rust rendering contains invalid union syntax:\n%s", rust)
 	}
 }
 
@@ -109,7 +116,16 @@ func testSpecEntries(t *testing.T) []xdr.ScSpecEntry {
 	errorEnum := mustSpecEntry(t, xdr.ScSpecEntryKindScSpecEntryUdtErrorEnumV0, xdr.ScSpecUdtErrorEnumV0{
 		Name: "Errors", Cases: []xdr.ScSpecUdtErrorEnumCaseV0{{Name: "AlreadyInitialized", Value: 1}},
 	})
-	return []xdr.ScSpecEntry{function, structure, union, errorEnum}
+	event := mustSpecEntry(t, xdr.ScSpecEntryKindScSpecEntryEventV0, xdr.ScSpecEventV0{
+		Doc: "Published when the oracle price changes", Name: xdr.ScSymbol("PriceUpdated"),
+		PrefixTopics: []xdr.ScSymbol{"oracle", "price"},
+		Params: []xdr.ScSpecEventParamV0{
+			{Name: "asset", Type: bytes8, Location: xdr.ScSpecEventParamLocationV0ScSpecEventParamLocationTopicList},
+			{Name: "value", Type: xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeI128}, Location: xdr.ScSpecEventParamLocationV0ScSpecEventParamLocationData},
+		},
+		DataFormat: xdr.ScSpecEventDataFormatScSpecEventDataFormatMap,
+	})
+	return []xdr.ScSpecEntry{function, structure, union, errorEnum, event}
 }
 
 func mustSpecEntry(t *testing.T, kind xdr.ScSpecEntryKind, value any) xdr.ScSpecEntry {

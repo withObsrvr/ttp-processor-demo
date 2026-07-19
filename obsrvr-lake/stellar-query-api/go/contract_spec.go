@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/stellar/go-stellar-sdk/xdr"
@@ -455,8 +456,13 @@ func RenderContractSpecRust(spec ContractSpec) string {
 	}
 	for _, item := range spec.Unions {
 		writeRustDoc(&out, item.Doc)
-		fmt.Fprintf(&out, "#[contracttype]\nunion %s {\n", item.Name)
+		fmt.Fprintf(&out, "#[contracttype]\nenum %s {\n", item.Name)
 		for _, c := range item.Cases {
+			writeRustDocIndented(&out, c.Doc, "  ")
+			if len(c.Values) == 0 {
+				fmt.Fprintf(&out, "  %s,\n", c.Name)
+				continue
+			}
 			fmt.Fprintf(&out, "  %s(%s),\n", c.Name, strings.Join(c.Values, ", "))
 		}
 		out.WriteString("}\n\n")
@@ -467,7 +473,40 @@ func RenderContractSpecRust(spec ContractSpec) string {
 	for _, item := range spec.Errors {
 		renderRustEnum(&out, item, "contracterror")
 	}
+	for _, event := range spec.Events {
+		renderRustEvent(&out, event)
+	}
 	return strings.TrimSpace(out.String()) + "\n"
+}
+
+func renderRustEvent(out *strings.Builder, event ContractSpecEvent) {
+	writeRustDoc(out, event.Doc)
+	attributes := make([]string, 0, 2)
+	if len(event.PrefixTopics) > 0 {
+		topics := make([]string, 0, len(event.PrefixTopics))
+		for _, topic := range event.PrefixTopics {
+			topics = append(topics, strconv.Quote(topic))
+		}
+		attributes = append(attributes, "topics = ["+strings.Join(topics, ", ")+"]")
+	}
+	if event.DataFormat != "" {
+		dataFormat := strings.ReplaceAll(event.DataFormat, "_", "-")
+		attributes = append(attributes, "data_format = "+strconv.Quote(dataFormat))
+	}
+	if len(attributes) == 0 {
+		out.WriteString("#[contractevent]\n")
+	} else {
+		fmt.Fprintf(out, "#[contractevent(%s)]\n", strings.Join(attributes, ", "))
+	}
+	fmt.Fprintf(out, "struct %s {\n", event.Name)
+	for _, param := range event.Params {
+		writeRustDocIndented(out, param.Doc, "  ")
+		if param.Location == "topic" {
+			out.WriteString("  #[topic]\n")
+		}
+		fmt.Fprintf(out, "  %s: %s,\n", param.Name, param.Type)
+	}
+	out.WriteString("}\n\n")
 }
 
 func renderRustEnum(out *strings.Builder, item ContractSpecEnum, attribute string) {
@@ -480,9 +519,13 @@ func renderRustEnum(out *strings.Builder, item ContractSpecEnum, attribute strin
 }
 
 func writeRustDoc(out *strings.Builder, doc string) {
+	writeRustDocIndented(out, doc, "")
+}
+
+func writeRustDocIndented(out *strings.Builder, doc, indent string) {
 	for _, line := range strings.Split(strings.TrimSpace(doc), "\n") {
 		if line != "" {
-			fmt.Fprintf(out, "/// %s\n", line)
+			fmt.Fprintf(out, "%s/// %s\n", indent, line)
 		}
 	}
 }

@@ -184,20 +184,27 @@ func applyRuntimeEnvOverrides(config *Config) error {
 	if config == nil {
 		return errors.New("config is nil")
 	}
-	if url := strings.TrimSpace(os.Getenv("RPC_FALLBACK_URL")); url != "" {
+	rpcURL := strings.TrimSpace(os.Getenv("RPC_FALLBACK_URL"))
+	rpcAuthHeader := strings.TrimSpace(os.Getenv("RPC_FALLBACK_AUTH_HEADER"))
+	rpcTimeout := strings.TrimSpace(os.Getenv("RPC_FALLBACK_TIMEOUT"))
+	if rpcURL != "" || rpcAuthHeader != "" || rpcTimeout != "" {
 		if config.RPCFallback == nil {
 			config.RPCFallback = &RPCFallbackConfig{}
 		}
+	}
+	if rpcURL != "" {
 		config.RPCFallback.Enabled = true
-		config.RPCFallback.URL = url
-		config.RPCFallback.AuthHeader = strings.TrimSpace(os.Getenv("RPC_FALLBACK_AUTH_HEADER"))
-		if rawTimeout := strings.TrimSpace(os.Getenv("RPC_FALLBACK_TIMEOUT")); rawTimeout != "" {
-			timeout, err := strconv.Atoi(rawTimeout)
-			if err != nil || timeout <= 0 {
-				return fmt.Errorf("invalid RPC_FALLBACK_TIMEOUT %q", rawTimeout)
-			}
-			config.RPCFallback.TimeoutSeconds = timeout
+		config.RPCFallback.URL = rpcURL
+	}
+	if rpcAuthHeader != "" {
+		config.RPCFallback.AuthHeader = rpcAuthHeader
+	}
+	if rpcTimeout != "" {
+		timeout, err := strconv.Atoi(rpcTimeout)
+		if err != nil || timeout <= 0 {
+			return fmt.Errorf("invalid RPC_FALLBACK_TIMEOUT %q", rpcTimeout)
 		}
+		config.RPCFallback.TimeoutSeconds = timeout
 	}
 	if directory := strings.TrimSpace(os.Getenv("CONTRACT_ARTIFACT_CACHE_DIR")); directory != "" {
 		if config.ContractArtifacts == nil {

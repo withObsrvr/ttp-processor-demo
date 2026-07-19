@@ -76,7 +76,7 @@ func (h *DecodeHandlers) HandleDecodedTransaction(w http.ResponseWriter, r *http
 // @Description Resolves the contract's current executable, verifies its WASM hash, reports the verified byte size, and decodes the complete contractspecv0 interface. Observed calls are returned separately and are never treated as the declared interface. Use format=rust for a Rust-like text representation.
 // @Tags Contracts
 // @Accept json
-// @Produce json
+// @Produce json,plain
 // @Param id path string true "Contract ID (C...)"
 // @Param format query string false "Response format: json (default) or rust"
 // @Success 200 {object} ContractInterfaceResponse "Authoritative declared interface"
@@ -145,13 +145,6 @@ func (h *DecodeHandlers) HandleContractWASM(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	etag := `"` + artifact.WasmHash + `"`
-	if strings.TrimSpace(r.Header.Get("If-None-Match")) == etag {
-		w.WriteHeader(http.StatusNotModified)
-		return
-	}
-	w.Header().Set("Content-Type", "application/wasm")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-%s.wasm"`, contractID, artifact.WasmHash))
-	w.Header().Set("Content-Length", strconv.Itoa(len(artifact.WASM)))
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Cache-Control", "public, max-age=60, must-revalidate")
 	w.Header().Set("X-Contract-ID", contractID)
@@ -159,8 +152,35 @@ func (h *DecodeHandlers) HandleContractWASM(w http.ResponseWriter, r *http.Reque
 	if artifact.Executable.ResolvedAtLedger > 0 {
 		w.Header().Set("X-Resolved-At-Ledger", strconv.FormatInt(artifact.Executable.ResolvedAtLedger, 10))
 	}
+	if ifNoneMatchMatches(r.Header.Get("If-None-Match"), etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.Header().Set("Content-Type", "application/wasm")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-%s.wasm"`, contractID, artifact.WasmHash))
+	w.Header().Set("Content-Length", strconv.Itoa(len(artifact.WASM)))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(artifact.WASM)
+}
+
+func ifNoneMatchMatches(header, currentETag string) bool {
+	currentETag = strings.TrimSpace(currentETag)
+	if currentETag == "" {
+		return false
+	}
+	for _, candidate := range strings.Split(header, ",") {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "*" {
+			return true
+		}
+		if strings.HasPrefix(candidate, "W/") {
+			candidate = strings.TrimSpace(strings.TrimPrefix(candidate, "W/"))
+		}
+		if candidate == currentETag {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *DecodeHandlers) observedContractFunctions(ctx context.Context, contractID string) []string {

@@ -297,6 +297,11 @@ contract_artifacts:
   max_wasm_bytes: 4194304
 ```
 
+Non-empty `RPC_FALLBACK_URL`, `RPC_FALLBACK_AUTH_HEADER`, and
+`RPC_FALLBACK_TIMEOUT` environment variables override their YAML fields
+independently. This allows the URL and timeout to remain in configuration while
+the authentication header is injected from a runtime secret.
+
 ## Building
 
 ```bash

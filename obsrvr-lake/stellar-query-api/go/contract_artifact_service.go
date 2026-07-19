@@ -266,6 +266,9 @@ func (s *ContractArtifactService) resolveCode(ctx context.Context, hash string) 
 	if s.store != nil {
 		cached, err := s.store.Load(hash)
 		if err == nil {
+			if int64(cached.WasmSize) > s.maxWasmBytes {
+				return nil, "", fmt.Errorf("contract wasm exceeds configured %d-byte limit", s.maxWasmBytes)
+			}
 			return cached, "file_cache", nil
 		}
 		// Missing or corrupt cache entries are never served. Fetching the code
