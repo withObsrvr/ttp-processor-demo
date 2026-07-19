@@ -3675,17 +3675,18 @@ const docTemplate = `{
         },
         "/api/v1/silver/contracts/{id}/interface": {
             "get": {
-                "description": "Returns the detected interface type (SEP-41 or unknown) for a contract based on observed function calls. SEP-41 detection requires at least 3 of 5 standard function signatures.",
+                "description": "Resolves the contract's current executable, verifies its WASM hash, reports the verified byte size, and decodes the complete contractspecv0 interface. Observed calls are returned separately and are never treated as the declared interface. Use format=rust for a Rust-like text representation.",
                 "consumes": [
                     "application/json"
                 ],
                 "produces": [
-                    "application/json"
+                    "application/json",
+                    "text/plain"
                 ],
                 "tags": [
                     "Contracts"
                 ],
-                "summary": "Get contract interface detection",
+                "summary": "Get authoritative contract interface",
                 "parameters": [
                     {
                         "type": "string",
@@ -3693,25 +3694,37 @@ const docTemplate = `{
                         "name": "id",
                         "in": "path",
                         "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Response format: json (default) or rust",
+                        "name": "format",
+                        "in": "query"
                     }
                 ],
                 "responses": {
                     "200": {
-                        "description": "Detected interface with observed functions",
+                        "description": "Authoritative declared interface",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/main.ContractInterfaceResponse"
                         }
                     },
                     "400": {
-                        "description": "Missing contract_id",
+                        "description": "Invalid contract ID or format",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
                         }
                     },
-                    "500": {
-                        "description": "Internal server error",
+                    "404": {
+                        "description": "Contract or active code not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "503": {
+                        "description": "Authoritative resolver unavailable",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -3883,6 +3896,56 @@ const docTemplate = `{
                     },
                     "500": {
                         "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/silver/contracts/{id}/wasm": {
+            "get": {
+                "description": "Resolves the current executable by contract ID and streams the exact WASM after validating its SHA-256 ledger hash. Built-in Stellar Asset Contracts do not have downloadable WASM.",
+                "produces": [
+                    "application/wasm"
+                ],
+                "tags": [
+                    "Contracts"
+                ],
+                "summary": "Download active contract WASM",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Contract ID (C...)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Contract WASM",
+                        "schema": {
+                            "type": "file"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid contract ID",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Contract/code not found or built-in SAC",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "503": {
+                        "description": "Authoritative resolver unavailable",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -7217,6 +7280,23 @@ const docTemplate = `{
                 }
             }
         },
+        "main.ContractArtifactProvenance": {
+            "type": "object",
+            "properties": {
+                "code_last_modified_ledger": {
+                    "type": "integer"
+                },
+                "code_source": {
+                    "type": "string"
+                },
+                "executable_source": {
+                    "type": "string"
+                },
+                "resolved_at_ledger": {
+                    "type": "integer"
+                }
+            }
+        },
         "main.ContractCallSummary": {
             "type": "object",
             "properties": {
@@ -7240,6 +7320,97 @@ const docTemplate = `{
                 },
                 "unique_callers": {
                     "type": "integer"
+                }
+            }
+        },
+        "main.ContractEnvironment": {
+            "type": "object",
+            "properties": {
+                "interface_version": {
+                    "$ref": "#/definitions/main.ContractEnvironmentVersion"
+                }
+            }
+        },
+        "main.ContractEnvironmentVersion": {
+            "type": "object",
+            "properties": {
+                "pre_release": {
+                    "type": "integer"
+                },
+                "protocol": {
+                    "type": "integer"
+                }
+            }
+        },
+        "main.ContractExecutableReference": {
+            "type": "object",
+            "properties": {
+                "instance_last_modified_ledger": {
+                    "type": "integer"
+                },
+                "live_until_ledger": {
+                    "type": "integer"
+                },
+                "resolved_at_ledger": {
+                    "type": "integer"
+                },
+                "type": {
+                    "type": "string"
+                },
+                "wasm_hash": {
+                    "type": "string"
+                },
+                "wasm_size_bytes": {
+                    "type": "integer"
+                }
+            }
+        },
+        "main.ContractInterfaceResponse": {
+            "type": "object",
+            "properties": {
+                "contract_id": {
+                    "type": "string"
+                },
+                "detected_type": {
+                    "$ref": "#/definitions/main.ContractType"
+                },
+                "environment": {
+                    "$ref": "#/definitions/main.ContractEnvironment"
+                },
+                "executable": {
+                    "$ref": "#/definitions/main.ContractExecutableReference"
+                },
+                "interface": {
+                    "$ref": "#/definitions/main.ContractSpec"
+                },
+                "metadata": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.ContractMetadataEntry"
+                    }
+                },
+                "network": {
+                    "type": "string"
+                },
+                "observed_functions": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "provenance": {
+                    "$ref": "#/definitions/main.ContractArtifactProvenance"
+                }
+            }
+        },
+        "main.ContractMetadataEntry": {
+            "type": "object",
+            "properties": {
+                "key": {
+                    "type": "string"
+                },
+                "value": {
+                    "type": "string"
                 }
             }
         },
@@ -7343,6 +7514,221 @@ const docTemplate = `{
                 }
             }
         },
+        "main.ContractSpec": {
+            "type": "object",
+            "properties": {
+                "enums": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.ContractSpecEnum"
+                    }
+                },
+                "errors": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.ContractSpecEnum"
+                    }
+                },
+                "events": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.ContractSpecEvent"
+                    }
+                },
+                "functions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.ContractSpecFunction"
+                    }
+                },
+                "structs": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.ContractSpecStruct"
+                    }
+                },
+                "unions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.ContractSpecUnion"
+                    }
+                }
+            }
+        },
+        "main.ContractSpecEnum": {
+            "type": "object",
+            "properties": {
+                "cases": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.ContractSpecEnumCase"
+                    }
+                },
+                "doc": {
+                    "type": "string"
+                },
+                "lib": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.ContractSpecEnumCase": {
+            "type": "object",
+            "properties": {
+                "doc": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "value": {
+                    "type": "integer"
+                }
+            }
+        },
+        "main.ContractSpecEvent": {
+            "type": "object",
+            "properties": {
+                "data_format": {
+                    "type": "string"
+                },
+                "doc": {
+                    "type": "string"
+                },
+                "lib": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "params": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.ContractSpecEventParam"
+                    }
+                },
+                "prefix_topics": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "main.ContractSpecEventParam": {
+            "type": "object",
+            "properties": {
+                "doc": {
+                    "type": "string"
+                },
+                "location": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "type": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.ContractSpecField": {
+            "type": "object",
+            "properties": {
+                "doc": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "type": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.ContractSpecFunction": {
+            "type": "object",
+            "properties": {
+                "doc": {
+                    "type": "string"
+                },
+                "inputs": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.ContractSpecField"
+                    }
+                },
+                "name": {
+                    "type": "string"
+                },
+                "outputs": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "main.ContractSpecStruct": {
+            "type": "object",
+            "properties": {
+                "doc": {
+                    "type": "string"
+                },
+                "fields": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.ContractSpecField"
+                    }
+                },
+                "lib": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.ContractSpecUnion": {
+            "type": "object",
+            "properties": {
+                "cases": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.ContractSpecUnionCase"
+                    }
+                },
+                "doc": {
+                    "type": "string"
+                },
+                "lib": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.ContractSpecUnionCase": {
+            "type": "object",
+            "properties": {
+                "doc": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "values": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
         "main.ContractTransactionEntry": {
             "type": "object",
             "properties": {
@@ -7391,6 +7777,19 @@ const docTemplate = `{
                     }
                 }
             }
+        },
+        "main.ContractType": {
+            "type": "string",
+            "enum": [
+                "sep41_token",
+                "smart_wallet",
+                "unknown"
+            ],
+            "x-enum-varnames": [
+                "ContractTypeSEP41",
+                "ContractTypeSmartWallet",
+                "ContractTypeUnknown"
+            ]
         },
         "main.DecodedOperation": {
             "type": "object",
@@ -9715,6 +10114,9 @@ const docTemplate = `{
                 "is_smart_wallet": {
                     "type": "boolean"
                 },
+                "partial": {
+                    "type": "boolean"
+                },
                 "policies": {
                     "type": "array",
                     "items": {
@@ -9733,6 +10135,12 @@ const docTemplate = `{
                 "wallet_type": {
                     "description": "\"crossmint\", \"openzeppelin\", \"sep50_generic\"",
                     "type": "string"
+                },
+                "warnings": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 }
             }
         },

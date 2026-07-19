@@ -27,12 +27,13 @@ func (app *application) registerTokenAndDecodeRoutes(router *mux.Router) {
 	router.HandleFunc("/api/v1/silver/tokens/{contract_id}", sep41Handlers.HandleTokenMetadata).Methods("GET")
 	router.HandleFunc("/api/v1/silver/address/{addr}/token-balances", sep41Handlers.HandleAddressTokenPortfolio).Methods("GET")
 
-	decodeHandlers := NewDecodeHandlers(silverHotReader, unifiedSilverReader.cold, coldReader, unifiedSilverReader, txHotPathReader, app.indexReader)
+	decodeHandlers := NewDecodeHandlers(silverHotReader, unifiedSilverReader.cold, coldReader, unifiedSilverReader, txHotPathReader, app.indexReader, app.contractArtifacts)
 	router.HandleFunc("/api/v1/silver/tx/batch/decoded", decodeHandlers.HandleBatchDecodedTransactions).Methods("GET", "POST")
 	router.HandleFunc("/api/v1/silver/tx/{hash}/decoded", decodeHandlers.HandleDecodedTransaction).Methods("GET")
 	router.HandleFunc("/api/v1/silver/tx/{hash}/semantic", decodeHandlers.HandleSemanticTransaction).Methods("GET")
 	router.HandleFunc("/api/v1/silver/tx/{hash}/full", decodeHandlers.HandleFullTransaction).Methods("GET")
 	router.HandleFunc("/api/v1/silver/contracts/{id}/interface", decodeHandlers.HandleContractInterface).Methods("GET")
+	router.HandleFunc("/api/v1/silver/contracts/{id}/wasm", decodeHandlers.HandleContractWASM).Methods("GET")
 	router.HandleFunc("/api/v1/silver/decode/scval", decodeHandlers.HandleDecodeScVal).Methods("POST")
 
 	// Prism tx-detail page fast path: single PK lookup into serving.sv_tx_receipts

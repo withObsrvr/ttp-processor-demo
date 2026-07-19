@@ -27,6 +27,7 @@ type application struct {
 	indexReader           *IndexReader
 	contractIndexHandlers *ContractIndexHandlers
 	contractIndexReader   *ContractIndexReader
+	contractArtifacts     ContractArtifactResolver
 	readerMode            ReaderMode
 }
 

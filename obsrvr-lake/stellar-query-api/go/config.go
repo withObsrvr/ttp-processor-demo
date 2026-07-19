@@ -1,23 +1,27 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	Service        ServiceConfig        `yaml:"service"`
-	Postgres       PostgresConfig       `yaml:"postgres"`
-	PostgresSilver *PostgresConfig      `yaml:"postgres_silver,omitempty"`
-	DuckLake       DuckLakeConfig       `yaml:"ducklake"`
-	DuckLakeSilver *DuckLakeConfig      `yaml:"ducklake_silver,omitempty"`
-	Index          *IndexConfig         `yaml:"index,omitempty"`
-	ContractIndex  *ContractIndexConfig `yaml:"contract_index,omitempty"`
-	Query          QueryConfig          `yaml:"query"`
-	Unified        *UnifiedReaderConfig `yaml:"unified,omitempty"` // Config for DuckDB ATTACH unified reader
-	RPCFallback    *RPCFallbackConfig   `yaml:"rpc_fallback,omitempty"`
+	Service           ServiceConfig           `yaml:"service"`
+	Postgres          PostgresConfig          `yaml:"postgres"`
+	PostgresSilver    *PostgresConfig         `yaml:"postgres_silver,omitempty"`
+	DuckLake          DuckLakeConfig          `yaml:"ducklake"`
+	DuckLakeSilver    *DuckLakeConfig         `yaml:"ducklake_silver,omitempty"`
+	Index             *IndexConfig            `yaml:"index,omitempty"`
+	ContractIndex     *ContractIndexConfig    `yaml:"contract_index,omitempty"`
+	Query             QueryConfig             `yaml:"query"`
+	Unified           *UnifiedReaderConfig    `yaml:"unified,omitempty"` // Config for DuckDB ATTACH unified reader
+	RPCFallback       *RPCFallbackConfig      `yaml:"rpc_fallback,omitempty"`
+	ContractArtifacts *ContractArtifactConfig `yaml:"contract_artifacts,omitempty"`
 }
 
 type ServiceConfig struct {
@@ -142,6 +146,14 @@ type RPCFallbackConfig struct {
 	TimeoutSeconds int    `yaml:"timeout_seconds"`
 }
 
+// ContractArtifactConfig controls content-addressed persistence for immutable
+// contract WASM and its decoded interface. The contract-to-hash mapping is
+// always resolved from current ledger state, so cached code remains upgrade-safe.
+type ContractArtifactConfig struct {
+	CacheDirectory string `yaml:"cache_directory"`
+	MaxWASMBytes   int64  `yaml:"max_wasm_bytes"`
+}
+
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -151,6 +163,9 @@ func LoadConfig(path string) (*Config, error) {
 	var config Config
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
+	}
+	if err := applyRuntimeEnvOverrides(&config); err != nil {
+		return nil, err
 	}
 	if config.Service.Network == "" {
 		config.Service.Network = "testnet"
@@ -163,6 +178,51 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	return &config, nil
+}
+
+func applyRuntimeEnvOverrides(config *Config) error {
+	if config == nil {
+		return errors.New("config is nil")
+	}
+	rpcURL := strings.TrimSpace(os.Getenv("RPC_FALLBACK_URL"))
+	rpcAuthHeader := strings.TrimSpace(os.Getenv("RPC_FALLBACK_AUTH_HEADER"))
+	rpcTimeout := strings.TrimSpace(os.Getenv("RPC_FALLBACK_TIMEOUT"))
+	if rpcURL != "" || rpcAuthHeader != "" || rpcTimeout != "" {
+		if config.RPCFallback == nil {
+			config.RPCFallback = &RPCFallbackConfig{}
+		}
+	}
+	if rpcURL != "" {
+		config.RPCFallback.Enabled = true
+		config.RPCFallback.URL = rpcURL
+	}
+	if rpcAuthHeader != "" {
+		config.RPCFallback.AuthHeader = rpcAuthHeader
+	}
+	if rpcTimeout != "" {
+		timeout, err := strconv.Atoi(rpcTimeout)
+		if err != nil || timeout <= 0 {
+			return fmt.Errorf("invalid RPC_FALLBACK_TIMEOUT %q", rpcTimeout)
+		}
+		config.RPCFallback.TimeoutSeconds = timeout
+	}
+	if directory := strings.TrimSpace(os.Getenv("CONTRACT_ARTIFACT_CACHE_DIR")); directory != "" {
+		if config.ContractArtifacts == nil {
+			config.ContractArtifacts = &ContractArtifactConfig{}
+		}
+		config.ContractArtifacts.CacheDirectory = directory
+	}
+	if rawLimit := strings.TrimSpace(os.Getenv("CONTRACT_ARTIFACT_MAX_WASM_BYTES")); rawLimit != "" {
+		limit, err := strconv.ParseInt(rawLimit, 10, 64)
+		if err != nil || limit <= 0 {
+			return fmt.Errorf("invalid CONTRACT_ARTIFACT_MAX_WASM_BYTES %q", rawLimit)
+		}
+		if config.ContractArtifacts == nil {
+			config.ContractArtifacts = &ContractArtifactConfig{}
+		}
+		config.ContractArtifacts.MaxWASMBytes = limit
+	}
+	return nil
 }
 
 func (c *PostgresConfig) DSN() string {

@@ -166,6 +166,17 @@ definitions:
       timestamp:
         type: string
     type: object
+  main.ContractArtifactProvenance:
+    properties:
+      code_last_modified_ledger:
+        type: integer
+      code_source:
+        type: string
+      executable_source:
+        type: string
+      resolved_at_ledger:
+        type: integer
+    type: object
   main.ContractCallSummary:
     properties:
       contract_id:
@@ -182,6 +193,65 @@ definitions:
         type: integer
       unique_callers:
         type: integer
+    type: object
+  main.ContractEnvironment:
+    properties:
+      interface_version:
+        $ref: '#/definitions/main.ContractEnvironmentVersion'
+    type: object
+  main.ContractEnvironmentVersion:
+    properties:
+      pre_release:
+        type: integer
+      protocol:
+        type: integer
+    type: object
+  main.ContractExecutableReference:
+    properties:
+      instance_last_modified_ledger:
+        type: integer
+      live_until_ledger:
+        type: integer
+      resolved_at_ledger:
+        type: integer
+      type:
+        type: string
+      wasm_hash:
+        type: string
+      wasm_size_bytes:
+        type: integer
+    type: object
+  main.ContractInterfaceResponse:
+    properties:
+      contract_id:
+        type: string
+      detected_type:
+        $ref: '#/definitions/main.ContractType'
+      environment:
+        $ref: '#/definitions/main.ContractEnvironment'
+      executable:
+        $ref: '#/definitions/main.ContractExecutableReference'
+      interface:
+        $ref: '#/definitions/main.ContractSpec'
+      metadata:
+        items:
+          $ref: '#/definitions/main.ContractMetadataEntry'
+        type: array
+      network:
+        type: string
+      observed_functions:
+        items:
+          type: string
+        type: array
+      provenance:
+        $ref: '#/definitions/main.ContractArtifactProvenance'
+    type: object
+  main.ContractMetadataEntry:
+    properties:
+      key:
+        type: string
+      value:
+        type: string
     type: object
   main.ContractMetadataResponse:
     properties:
@@ -249,6 +319,146 @@ definitions:
       website:
         type: string
     type: object
+  main.ContractSpec:
+    properties:
+      enums:
+        items:
+          $ref: '#/definitions/main.ContractSpecEnum'
+        type: array
+      errors:
+        items:
+          $ref: '#/definitions/main.ContractSpecEnum'
+        type: array
+      events:
+        items:
+          $ref: '#/definitions/main.ContractSpecEvent'
+        type: array
+      functions:
+        items:
+          $ref: '#/definitions/main.ContractSpecFunction'
+        type: array
+      structs:
+        items:
+          $ref: '#/definitions/main.ContractSpecStruct'
+        type: array
+      unions:
+        items:
+          $ref: '#/definitions/main.ContractSpecUnion'
+        type: array
+    type: object
+  main.ContractSpecEnum:
+    properties:
+      cases:
+        items:
+          $ref: '#/definitions/main.ContractSpecEnumCase'
+        type: array
+      doc:
+        type: string
+      lib:
+        type: string
+      name:
+        type: string
+    type: object
+  main.ContractSpecEnumCase:
+    properties:
+      doc:
+        type: string
+      name:
+        type: string
+      value:
+        type: integer
+    type: object
+  main.ContractSpecEvent:
+    properties:
+      data_format:
+        type: string
+      doc:
+        type: string
+      lib:
+        type: string
+      name:
+        type: string
+      params:
+        items:
+          $ref: '#/definitions/main.ContractSpecEventParam'
+        type: array
+      prefix_topics:
+        items:
+          type: string
+        type: array
+    type: object
+  main.ContractSpecEventParam:
+    properties:
+      doc:
+        type: string
+      location:
+        type: string
+      name:
+        type: string
+      type:
+        type: string
+    type: object
+  main.ContractSpecField:
+    properties:
+      doc:
+        type: string
+      name:
+        type: string
+      type:
+        type: string
+    type: object
+  main.ContractSpecFunction:
+    properties:
+      doc:
+        type: string
+      inputs:
+        items:
+          $ref: '#/definitions/main.ContractSpecField'
+        type: array
+      name:
+        type: string
+      outputs:
+        items:
+          type: string
+        type: array
+    type: object
+  main.ContractSpecStruct:
+    properties:
+      doc:
+        type: string
+      fields:
+        items:
+          $ref: '#/definitions/main.ContractSpecField'
+        type: array
+      lib:
+        type: string
+      name:
+        type: string
+    type: object
+  main.ContractSpecUnion:
+    properties:
+      cases:
+        items:
+          $ref: '#/definitions/main.ContractSpecUnionCase'
+        type: array
+      doc:
+        type: string
+      lib:
+        type: string
+      name:
+        type: string
+    type: object
+  main.ContractSpecUnionCase:
+    properties:
+      doc:
+        type: string
+      name:
+        type: string
+      values:
+        items:
+          type: string
+        type: array
+    type: object
   main.ContractTransactionEntry:
     properties:
       closed_at:
@@ -281,6 +491,16 @@ definitions:
           $ref: '#/definitions/main.ContractTransactionEntry'
         type: array
     type: object
+  main.ContractType:
+    enum:
+    - sep41_token
+    - smart_wallet
+    - unknown
+    type: string
+    x-enum-varnames:
+    - ContractTypeSEP41
+    - ContractTypeSmartWallet
+    - ContractTypeUnknown
   main.DecodedOperation:
     properties:
       amount:
@@ -1805,6 +2025,8 @@ definitions:
         type: string
       is_smart_wallet:
         type: boolean
+      partial:
+        type: boolean
       policies:
         items:
           type: string
@@ -1818,6 +2040,10 @@ definitions:
       wallet_type:
         description: '"crossmint", "openzeppelin", "sep50_generic"'
         type: string
+      warnings:
+        items:
+          type: string
+        type: array
     type: object
   main.SmartWalletListEntry:
     properties:
@@ -4818,34 +5044,44 @@ paths:
     get:
       consumes:
       - application/json
-      description: Returns the detected interface type (SEP-41 or unknown) for a contract
-        based on observed function calls. SEP-41 detection requires at least 3 of
-        5 standard function signatures.
+      description: Resolves the contract's current executable, verifies its WASM hash,
+        reports the verified byte size, and decodes the complete contractspecv0 interface.
+        Observed calls are returned separately and are never treated as the declared
+        interface. Use format=rust for a Rust-like text representation.
       parameters:
       - description: Contract ID (C...)
         in: path
         name: id
         required: true
         type: string
+      - description: 'Response format: json (default) or rust'
+        in: query
+        name: format
+        type: string
       produces:
       - application/json
+      - text/plain
       responses:
         "200":
-          description: Detected interface with observed functions
+          description: Authoritative declared interface
           schema:
-            additionalProperties: true
-            type: object
+            $ref: '#/definitions/main.ContractInterfaceResponse'
         "400":
-          description: Missing contract_id
+          description: Invalid contract ID or format
           schema:
             additionalProperties: true
             type: object
-        "500":
-          description: Internal server error
+        "404":
+          description: Contract or active code not found
           schema:
             additionalProperties: true
             type: object
-      summary: Get contract interface detection
+        "503":
+          description: Authoritative resolver unavailable
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get authoritative contract interface
       tags:
       - Contracts
   /api/v1/silver/contracts/{id}/metadata:
@@ -4964,6 +5200,42 @@ paths:
             additionalProperties: true
             type: object
       summary: Get contract storage entries
+      tags:
+      - Contracts
+  /api/v1/silver/contracts/{id}/wasm:
+    get:
+      description: Resolves the current executable by contract ID and streams the
+        exact WASM after validating its SHA-256 ledger hash. Built-in Stellar Asset
+        Contracts do not have downloadable WASM.
+      parameters:
+      - description: Contract ID (C...)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/wasm
+      responses:
+        "200":
+          description: Contract WASM
+          schema:
+            type: file
+        "400":
+          description: Invalid contract ID
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Contract/code not found or built-in SAC
+          schema:
+            additionalProperties: true
+            type: object
+        "503":
+          description: Authoritative resolver unavailable
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Download active contract WASM
       tags:
       - Contracts
   /api/v1/silver/contracts/top:

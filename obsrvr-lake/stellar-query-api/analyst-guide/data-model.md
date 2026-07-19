@@ -750,7 +750,8 @@ curl -H "Authorization: Api-Key $API_KEY" \
 - `GET /contracts/{id}/callers` - Who calls this contract
 - `GET /contracts/{id}/callees` - Contracts this one calls
 - `GET /contracts/{id}/call-summary` - Call statistics
-- `GET /contracts/{id}/interface` - Detected contract interface (SEP-41 or unknown)
+- `GET /contracts/{id}/interface` - Authoritative declared interface decoded from the contract's current WASM, including active hash and byte size; observed calls are separate activity evidence
+- `GET /contracts/{id}/wasm` - Hash-validated download of the contract's current WASM (not available for the built-in Stellar Asset Contract)
 
 #### Transaction Contract Analysis
 
