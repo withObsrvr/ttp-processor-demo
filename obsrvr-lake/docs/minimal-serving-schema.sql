@@ -519,6 +519,39 @@ create table if not exists serving.sv_ledger_stats_recent (
 create index if not exists sv_ledger_stats_recent_closed_idx
     on serving.sv_ledger_stats_recent (closed_at desc);
 
+create table if not exists serving.sv_validator_identity_current (
+    network text not null,
+    public_key text not null,
+    name text,
+    display_name text,
+    alias text,
+    home_domain text,
+    organization_id text,
+    is_validator boolean not null default false,
+    source text not null,
+    source_updated_at timestamptz,
+    observed_at timestamptz not null,
+    identity_fingerprint text not null,
+    primary key (network, public_key)
+);
+
+create table if not exists serving.sv_validator_identity_history (
+    network text not null,
+    public_key text not null,
+    name text,
+    display_name text,
+    alias text,
+    home_domain text,
+    organization_id text,
+    is_validator boolean not null default false,
+    source text not null,
+    source_updated_at timestamptz,
+    identity_fingerprint text not null,
+    valid_from timestamptz not null,
+    valid_to timestamptz,
+    primary key (network, public_key, valid_from)
+);
+
 
 create table if not exists serving.sv_asset_holders_top (
     asset_key                    text not null,

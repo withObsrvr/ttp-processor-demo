@@ -30,6 +30,12 @@ target:
     password: CHANGE_ME
     sslmode: require
 
+radar:
+  # Mainnet default: https://radar.withobsrvr.com/api
+  # Testnet default: https://radar.withobsrvr.com/testnet-api
+  base_url: https://radar.withobsrvr.com/testnet-api
+  request_timeout_seconds: 10
+
 schema:
   auto_apply: true
 
@@ -89,3 +95,6 @@ projectors:
   effects_by_account:
     enabled: true
     batch_size: 256
+  validator_identities:
+    enabled: true
+    batch_size: 1

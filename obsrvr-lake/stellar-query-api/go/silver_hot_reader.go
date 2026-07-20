@@ -56,6 +56,15 @@ type ServingRecentLedger struct {
 type ServingRecentLedgerValidator struct {
 	PublicKey            string `json:"public_key,omitempty"`
 	AttributionAvailable bool   `json:"attribution_available"`
+	Status               string `json:"status"`
+	Name                 string `json:"name,omitempty"`
+	DisplayName          string `json:"display_name,omitempty"`
+	Alias                string `json:"alias,omitempty"`
+	HomeDomain           string `json:"home_domain,omitempty"`
+	OrganizationID       string `json:"organization_id,omitempty"`
+	Source               string `json:"source,omitempty"`
+	SourceUpdatedAt      string `json:"source_updated_at,omitempty"`
+	ObservedAt           string `json:"observed_at,omitempty"`
 }
 
 type ServingRecentLedgerTransactionCounts struct {
@@ -2496,6 +2505,12 @@ func (h *SilverHotReader) GetServingRecentLedgers(ctx context.Context, limit int
 		}
 		item.Validator.PublicKey = decodeValidatorAccountID(validatorNodeID)
 		item.Validator.AttributionAvailable = item.Validator.PublicKey != ""
+		if item.Validator.AttributionAvailable {
+			item.Validator.Status = "not_found"
+			item.Validator.Source = "radar"
+		} else {
+			item.Validator.Status = "unavailable"
+		}
 		item.Transactions = ServingRecentLedgerTransactionCounts{
 			Total:      item.TransactionCount,
 			Successful: item.SuccessfulTxCount,
@@ -2518,7 +2533,84 @@ func (h *SilverHotReader) GetServingRecentLedgers(ctx context.Context, limit int
 	if err := rows.Err(); err != nil {
 		return 0, nil, err
 	}
+	h.enrichServingLedgerValidatorIdentities(ctx, out)
 	return latestSequence, out, nil
+}
+
+func (h *SilverHotReader) enrichServingLedgerValidatorIdentities(ctx context.Context, ledgers []ServingRecentLedger) {
+	keys := make([]string, 0, len(ledgers))
+	seen := make(map[string]struct{}, len(ledgers))
+	for i := range ledgers {
+		key := ledgers[i].Validator.PublicKey
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	if len(keys) == 0 {
+		return
+	}
+
+	rows, err := h.db.QueryContext(ctx, `
+		SELECT public_key, COALESCE(name, ''), COALESCE(display_name, ''),
+		       COALESCE(alias, ''), COALESCE(home_domain, ''), COALESCE(organization_id, ''),
+		       source, source_updated_at, observed_at
+		FROM serving.sv_validator_identity_current
+		WHERE network = $1 AND public_key = ANY($2)
+	`, h.network, pq.Array(keys))
+	if err != nil {
+		log.Printf("serving recent ledger validator identity lookup unavailable: %v", err)
+		for i := range ledgers {
+			if ledgers[i].Validator.PublicKey != "" {
+				ledgers[i].Validator.Status = "unavailable"
+			}
+		}
+		return
+	}
+	defer rows.Close()
+
+	identities := make(map[string]ServingRecentLedgerValidator, len(keys))
+	for rows.Next() {
+		var identity ServingRecentLedgerValidator
+		var sourceUpdatedAt sql.NullTime
+		var observedAt time.Time
+		if err := rows.Scan(
+			&identity.PublicKey,
+			&identity.Name,
+			&identity.DisplayName,
+			&identity.Alias,
+			&identity.HomeDomain,
+			&identity.OrganizationID,
+			&identity.Source,
+			&sourceUpdatedAt,
+			&observedAt,
+		); err != nil {
+			log.Printf("serving recent ledger validator identity scan unavailable: %v", err)
+			return
+		}
+		identity.AttributionAvailable = true
+		identity.Status = "resolved"
+		if sourceUpdatedAt.Valid {
+			identity.SourceUpdatedAt = sourceUpdatedAt.Time.UTC().Format(time.RFC3339Nano)
+		}
+		identity.ObservedAt = observedAt.UTC().Format(time.RFC3339Nano)
+		identities[identity.PublicKey] = identity
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("serving recent ledger validator identity iteration unavailable: %v", err)
+		return
+	}
+
+	for i := range ledgers {
+		identity, ok := identities[ledgers[i].Validator.PublicKey]
+		if ok {
+			ledgers[i].Validator = identity
+		}
+	}
 }
 
 // GetServingExplorerEvents returns recent explorer events from serving projections.

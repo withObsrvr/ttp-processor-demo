@@ -64,6 +64,9 @@ func buildProjectors(cfg *Config, bronze, silver, serving *pgxpool.Pool, checkpo
 	if cfg.Projectors.EffectsByAccount.Enabled {
 		projectors = append(projectors, NewEffectsByAccountProjector(network, cfg.Projectors.EffectsByAccount.BatchSize, silver, serving, checkpoints))
 	}
+	if cfg.Projectors.ValidatorIdentities.Enabled {
+		projectors = append(projectors, NewValidatorIdentityProjector(network, cfg.Radar.BaseURL, time.Duration(cfg.Radar.RequestTimeoutSeconds)*time.Second, serving))
+	}
 	return projectors
 }
 

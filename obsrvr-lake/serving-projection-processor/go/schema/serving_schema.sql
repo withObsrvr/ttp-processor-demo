@@ -795,6 +795,43 @@ alter table serving.sv_ledger_stats_recent add column if not exists operation_ca
 create index if not exists sv_ledger_stats_recent_closed_idx
     on serving.sv_ledger_stats_recent (closed_at desc);
 
+create table if not exists serving.sv_validator_identity_current (
+    network                     text not null,
+    public_key                  text not null,
+    name                        text,
+    display_name                text,
+    alias                       text,
+    home_domain                 text,
+    organization_id             text,
+    is_validator                boolean not null default false,
+    source                      text not null,
+    source_updated_at           timestamptz,
+    observed_at                 timestamptz not null,
+    identity_fingerprint        text not null,
+    primary key (network, public_key)
+);
+
+create table if not exists serving.sv_validator_identity_history (
+    network                     text not null,
+    public_key                  text not null,
+    name                        text,
+    display_name                text,
+    alias                       text,
+    home_domain                 text,
+    organization_id             text,
+    is_validator                boolean not null default false,
+    source                      text not null,
+    source_updated_at           timestamptz,
+    identity_fingerprint        text not null,
+    valid_from                  timestamptz not null,
+    valid_to                    timestamptz,
+    primary key (network, public_key, valid_from)
+);
+
+create index if not exists sv_validator_identity_history_current_idx
+    on serving.sv_validator_identity_history (network, public_key)
+    where valid_to is null;
+
 
 create table if not exists serving.sv_asset_holders_top (
     asset_key                    text not null,
@@ -1408,6 +1445,7 @@ begin
       ('serving.sv_account_balances_current','sv_account_balances_current_uq',    'account_id, asset_key'),
       ('serving.sv_network_stats_current',  'sv_network_stats_current_net_uq',   'network'),
       ('serving.sv_ledger_stats_recent',    'sv_ledger_stats_recent_ls_uq',      'ledger_sequence'),
+      ('serving.sv_validator_identity_current','sv_validator_identity_current_uq','network, public_key'),
       ('serving.sv_operations_recent',      'sv_operations_recent_op_uq',        'operation_id'),
       ('serving.sv_transactions_recent',    'sv_transactions_recent_tx_uq',      'tx_hash'),
       ('serving.sv_tx_receipts',            'sv_tx_receipts_tx_uq',              'tx_hash'),
