@@ -735,6 +735,9 @@ create table if not exists serving.sv_ledger_stats_recent (
     successful_tx_count          integer,
     failed_tx_count              integer,
     operation_count              integer,
+    tx_set_operation_count       integer,
+    validator_node_id            text,
+    ledger_close_signature       text,
     soroban_op_count             integer,
     events_emitted               integer,
     total_fee_charged_stroops    bigint,
@@ -744,6 +747,16 @@ create table if not exists serving.sv_ledger_stats_recent (
     total_rent_stroops           bigint,
     close_time_seconds           numeric(10,2)
 );
+
+-- CREATE TABLE IF NOT EXISTS does not add columns to an existing serving
+-- table. Keep this additive migration beside the canonical definition so
+-- auto-apply upgrades both streaming- and cold-backfill-created tables.
+alter table serving.sv_ledger_stats_recent
+    add column if not exists tx_set_operation_count integer;
+alter table serving.sv_ledger_stats_recent
+    add column if not exists validator_node_id text;
+alter table serving.sv_ledger_stats_recent
+    add column if not exists ledger_close_signature text;
 
 create index if not exists sv_ledger_stats_recent_closed_idx
     on serving.sv_ledger_stats_recent (closed_at desc);

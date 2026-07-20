@@ -1,0 +1,67 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"testing"
+	"time"
+
+	sqlmock "github.com/DATA-DOG/go-sqlmock"
+	"github.com/stellar/go-stellar-sdk/strkey"
+)
+
+func TestGetServingRecentLedgersReturnsExplicitOperationSemanticsAndValidator(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	rawValidator := bytes.Repeat([]byte{0x2a}, 32)
+	nodeID := base64.StdEncoding.EncodeToString(rawValidator)
+	validatorAddress, err := strkey.Encode(strkey.VersionByteAccountID, rawValidator)
+	if err != nil {
+		t.Fatalf("encode validator fixture: %v", err)
+	}
+	closedAt := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+
+	mock.ExpectQuery(`SELECT COALESCE\(MAX\(ledger_sequence\), 0\) FROM serving\.sv_ledger_stats_recent`).
+		WillReturnRows(sqlmock.NewRows([]string{"max"}).AddRow(int64(3707457)))
+	mock.ExpectQuery(`(?s)SELECT ledger_sequence, closed_at.*tx_set_operation_count.*validator_node_id.*ledger_close_signature.*FROM serving\.sv_ledger_stats_recent`).
+		WithArgs(6).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"ledger_sequence", "closed_at", "ledger_hash", "prev_hash", "protocol_version", "base_fee_stroops",
+			"successful_tx_count", "failed_tx_count", "operation_count", "tx_set_operation_count",
+			"validator_node_id", "ledger_close_signature",
+		}).AddRow(int64(3707457), closedAt, "hash", "prev", 23, int64(100), 13, 1, 15, 19, nodeID, "signature"))
+
+	reader := &SilverHotReader{db: db, network: "testnet"}
+	latest, ledgers, err := reader.GetServingRecentLedgers(context.Background(), 6)
+	if err != nil {
+		t.Fatalf("GetServingRecentLedgers: %v", err)
+	}
+	if latest != 3707457 || len(ledgers) != 1 {
+		t.Fatalf("unexpected result latest=%d ledgers=%d", latest, len(ledgers))
+	}
+
+	got := ledgers[0]
+	if got.TransactionCount != 14 || got.Transactions.Total != 14 || got.Transactions.Successful != 13 || got.Transactions.Failed != 1 {
+		t.Fatalf("unexpected transaction counts: %+v", got.Transactions)
+	}
+	if got.OperationCount != 15 || got.TransactionSetOperationCount != 19 || got.SuccessfulOperationCount != 15 || got.FailedOperationCount != 4 {
+		t.Fatalf("unexpected operation compatibility fields: %+v", got)
+	}
+	if got.Operations.Included != 19 || got.Operations.Successful != 15 || got.Operations.Failed != 4 {
+		t.Fatalf("unexpected operation counts: %+v", got.Operations)
+	}
+	if got.Validator.PublicKey != validatorAddress || !got.Validator.AttributionAvailable {
+		t.Fatalf("unexpected validator: %+v", got.Validator)
+	}
+	if got.LedgerCloseSignature != "signature" {
+		t.Fatalf("unexpected ledger close signature %q", got.LedgerCloseSignature)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet SQL expectations: %v", err)
+	}
+}

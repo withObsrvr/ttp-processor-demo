@@ -60,14 +60,17 @@ func TestHandleExplorerSummaryHotOnlySuccess(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(`
 		SELECT ledger_sequence, closed_at, COALESCE(ledger_hash, ''), COALESCE(prev_hash, ''),
 		       COALESCE(protocol_version, 0), COALESCE(base_fee_stroops, 0),
-		       COALESCE(successful_tx_count, 0), COALESCE(failed_tx_count, 0), COALESCE(operation_count, 0)
+		       COALESCE(successful_tx_count, 0), COALESCE(failed_tx_count, 0), COALESCE(operation_count, 0),
+		       COALESCE(tx_set_operation_count, operation_count, 0), COALESCE(validator_node_id, ''),
+		       COALESCE(ledger_close_signature, '')
 		FROM serving.sv_ledger_stats_recent
 		ORDER BY ledger_sequence DESC
 		LIMIT $1
 	`)).WithArgs(20).WillReturnRows(sqlmock.NewRows([]string{
 		"ledger_sequence", "closed_at", "ledger_hash", "prev_hash", "protocol_version", "base_fee_stroops", "successful_tx_count", "failed_tx_count", "operation_count",
-	}).AddRow(int64(2144030), closedAt, "abc", "def", 23, int64(100), 11, 1, 44).
-		AddRow(int64(2144029), closedAt.Add(-5*time.Second), "abc2", "def2", 23, int64(100), 10, 0, 30))
+		"tx_set_operation_count", "validator_node_id", "ledger_close_signature",
+	}).AddRow(int64(2144030), closedAt, "abc", "def", 23, int64(100), 11, 1, 44, 48, "", "").
+		AddRow(int64(2144029), closedAt.Add(-5*time.Second), "abc2", "def2", 23, int64(100), 10, 0, 30, 30, "", ""))
 
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT ledger_closed_at FROM enriched_history_operations ORDER BY ledger_sequence DESC LIMIT 1`)).WillReturnRows(
 		sqlmock.NewRows([]string{"ledger_closed_at"}).AddRow(now),

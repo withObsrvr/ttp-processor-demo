@@ -34,15 +34,40 @@ type ServingRecentTransaction struct {
 }
 
 type ServingRecentLedger struct {
-	LedgerSequence     int64  `json:"ledger_sequence"`
-	ClosedAt           string `json:"closed_at"`
-	LedgerHash         string `json:"ledger_hash,omitempty"`
-	PreviousLedgerHash string `json:"previous_ledger_hash,omitempty"`
-	ProtocolVersion    int    `json:"protocol_version,omitempty"`
-	BaseFeeStroops     int64  `json:"base_fee_stroops,omitempty"`
-	SuccessfulTxCount  int    `json:"successful_tx_count"`
-	FailedTxCount      int    `json:"failed_tx_count,omitempty"`
-	OperationCount     int    `json:"operation_count"`
+	LedgerSequence               int64                                `json:"ledger_sequence"`
+	ClosedAt                     string                               `json:"closed_at"`
+	LedgerHash                   string                               `json:"ledger_hash,omitempty"`
+	PreviousLedgerHash           string                               `json:"previous_ledger_hash,omitempty"`
+	ProtocolVersion              int                                  `json:"protocol_version,omitempty"`
+	BaseFeeStroops               int64                                `json:"base_fee_stroops,omitempty"`
+	SuccessfulTxCount            int                                  `json:"successful_tx_count"`
+	FailedTxCount                int                                  `json:"failed_tx_count,omitempty"`
+	OperationCount               int                                  `json:"operation_count"`
+	TransactionCount             int                                  `json:"transaction_count"`
+	TransactionSetOperationCount int                                  `json:"transaction_set_operation_count"`
+	SuccessfulOperationCount     int                                  `json:"successful_operation_count"`
+	FailedOperationCount         int                                  `json:"failed_operation_count,omitempty"`
+	LedgerCloseSignature         string                               `json:"ledger_close_signature,omitempty"`
+	Validator                    ServingRecentLedgerValidator         `json:"validator"`
+	Transactions                 ServingRecentLedgerTransactionCounts `json:"transactions"`
+	Operations                   ServingRecentLedgerOperationCounts   `json:"operations"`
+}
+
+type ServingRecentLedgerValidator struct {
+	PublicKey            string `json:"public_key,omitempty"`
+	AttributionAvailable bool   `json:"attribution_available"`
+}
+
+type ServingRecentLedgerTransactionCounts struct {
+	Total      int `json:"total"`
+	Successful int `json:"successful"`
+	Failed     int `json:"failed"`
+}
+
+type ServingRecentLedgerOperationCounts struct {
+	Included   int `json:"included"`
+	Successful int `json:"successful"`
+	Failed     int `json:"failed"`
 }
 
 type ServingCoverageMetadata struct {
@@ -2390,7 +2415,9 @@ func (h *SilverHotReader) GetServingRecentLedgers(ctx context.Context, limit int
 	rows, err := h.db.QueryContext(ctx, `
 		SELECT ledger_sequence, closed_at, COALESCE(ledger_hash, ''), COALESCE(prev_hash, ''),
 		       COALESCE(protocol_version, 0), COALESCE(base_fee_stroops, 0),
-		       COALESCE(successful_tx_count, 0), COALESCE(failed_tx_count, 0), COALESCE(operation_count, 0)
+		       COALESCE(successful_tx_count, 0), COALESCE(failed_tx_count, 0), COALESCE(operation_count, 0),
+		       COALESCE(tx_set_operation_count, operation_count, 0), COALESCE(validator_node_id, ''),
+		       COALESCE(ledger_close_signature, '')
 		FROM serving.sv_ledger_stats_recent
 		ORDER BY ledger_sequence DESC
 		LIMIT $1
@@ -2403,10 +2430,41 @@ func (h *SilverHotReader) GetServingRecentLedgers(ctx context.Context, limit int
 	for rows.Next() {
 		var item ServingRecentLedger
 		var closedAt time.Time
-		if err := rows.Scan(&item.LedgerSequence, &closedAt, &item.LedgerHash, &item.PreviousLedgerHash, &item.ProtocolVersion, &item.BaseFeeStroops, &item.SuccessfulTxCount, &item.FailedTxCount, &item.OperationCount); err != nil {
+		var validatorNodeID string
+		if err := rows.Scan(
+			&item.LedgerSequence,
+			&closedAt,
+			&item.LedgerHash,
+			&item.PreviousLedgerHash,
+			&item.ProtocolVersion,
+			&item.BaseFeeStroops,
+			&item.SuccessfulTxCount,
+			&item.FailedTxCount,
+			&item.OperationCount,
+			&item.TransactionSetOperationCount,
+			&validatorNodeID,
+			&item.LedgerCloseSignature,
+		); err != nil {
 			return 0, nil, err
 		}
 		item.ClosedAt = closedAt.UTC().Format(time.RFC3339)
+		item.TransactionCount = item.SuccessfulTxCount + item.FailedTxCount
+		item.SuccessfulOperationCount = item.OperationCount
+		if item.TransactionSetOperationCount >= item.SuccessfulOperationCount {
+			item.FailedOperationCount = item.TransactionSetOperationCount - item.SuccessfulOperationCount
+		}
+		item.Validator.PublicKey = decodeValidatorAccountID(validatorNodeID)
+		item.Validator.AttributionAvailable = item.Validator.PublicKey != ""
+		item.Transactions = ServingRecentLedgerTransactionCounts{
+			Total:      item.TransactionCount,
+			Successful: item.SuccessfulTxCount,
+			Failed:     item.FailedTxCount,
+		}
+		item.Operations = ServingRecentLedgerOperationCounts{
+			Included:   item.TransactionSetOperationCount,
+			Successful: item.SuccessfulOperationCount,
+			Failed:     item.FailedOperationCount,
+		}
 		out = append(out, item)
 	}
 	if err := rows.Err(); err != nil {

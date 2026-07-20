@@ -20,17 +20,20 @@ type LedgersRecentProjector struct {
 }
 
 type bronzeLedgerRow struct {
-	Sequence          int64
-	ClosedAt          time.Time
-	LedgerHash        sql.NullString
-	PreviousHash      sql.NullString
-	ProtocolVersion   sql.NullInt32
-	BaseFee           sql.NullInt32
-	MaxTxSetSize      sql.NullInt32
-	SuccessfulTxCount sql.NullInt32
-	FailedTxCount     sql.NullInt32
-	OperationCount    sql.NullInt32
-	SorobanOpCount    sql.NullInt32
+	Sequence             int64
+	ClosedAt             time.Time
+	LedgerHash           sql.NullString
+	PreviousHash         sql.NullString
+	ProtocolVersion      sql.NullInt32
+	BaseFee              sql.NullInt32
+	MaxTxSetSize         sql.NullInt32
+	SuccessfulTxCount    sql.NullInt32
+	FailedTxCount        sql.NullInt32
+	OperationCount       sql.NullInt32
+	TxSetOperationCount  sql.NullInt32
+	ValidatorNodeID      sql.NullString
+	LedgerCloseSignature sql.NullString
+	SorobanOpCount       sql.NullInt32
 }
 
 func NewLedgersRecentProjector(network string, batchSize int, sourcePool, targetPool *pgxpool.Pool, checkpoints *CheckpointStore) *LedgersRecentProjector {
@@ -76,6 +79,9 @@ func (p *LedgersRecentProjector) RunOnce(ctx context.Context) (RunStats, error) 
 			successful_tx_count,
 			failed_tx_count,
 			operation_count,
+			tx_set_operation_count,
+			node_id,
+			signature,
 			soroban_op_count
 		FROM ledgers_row_v2
 		WHERE sequence > $1
@@ -102,6 +108,9 @@ func (p *LedgersRecentProjector) RunOnce(ctx context.Context) (RunStats, error) 
 			&row.SuccessfulTxCount,
 			&row.FailedTxCount,
 			&row.OperationCount,
+			&row.TxSetOperationCount,
+			&row.ValidatorNodeID,
+			&row.LedgerCloseSignature,
 			&row.SorobanOpCount,
 		); err != nil {
 			return RunStats{}, fmt.Errorf("scan bronze ledger: %w", err)
@@ -146,10 +155,13 @@ func (p *LedgersRecentProjector) RunOnce(ctx context.Context) (RunStats, error) 
 				successful_tx_count,
 				failed_tx_count,
 				operation_count,
+				tx_set_operation_count,
+				validator_node_id,
+				ledger_close_signature,
 				soroban_op_count,
 				close_time_seconds
 			) VALUES (
-				$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12
+				$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15
 			)
 			ON CONFLICT (ledger_sequence) DO UPDATE SET
 				closed_at = EXCLUDED.closed_at,
@@ -161,6 +173,9 @@ func (p *LedgersRecentProjector) RunOnce(ctx context.Context) (RunStats, error) 
 				successful_tx_count = EXCLUDED.successful_tx_count,
 				failed_tx_count = EXCLUDED.failed_tx_count,
 				operation_count = EXCLUDED.operation_count,
+				tx_set_operation_count = EXCLUDED.tx_set_operation_count,
+				validator_node_id = EXCLUDED.validator_node_id,
+				ledger_close_signature = EXCLUDED.ledger_close_signature,
 				soroban_op_count = EXCLUDED.soroban_op_count,
 				close_time_seconds = EXCLUDED.close_time_seconds
 		`,
@@ -174,6 +189,9 @@ func (p *LedgersRecentProjector) RunOnce(ctx context.Context) (RunStats, error) 
 			nullableInt32(row.SuccessfulTxCount),
 			nullableInt32(row.FailedTxCount),
 			nullableInt32(row.OperationCount),
+			nullableInt32(row.TxSetOperationCount),
+			nullableString(row.ValidatorNodeID),
+			nullableString(row.LedgerCloseSignature),
 			nullableInt32(row.SorobanOpCount),
 			closeTimeSeconds,
 		)
