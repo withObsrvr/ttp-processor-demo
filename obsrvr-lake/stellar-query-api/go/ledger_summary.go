@@ -54,13 +54,16 @@ type LedgerSummaryLedger struct {
 }
 
 type LedgerSummaryTotals struct {
-	TransactionCount   int64 `json:"transaction_count"`
-	SuccessfulTxCount  int64 `json:"successful_tx_count,omitempty"`
-	FailedTxCount      int64 `json:"failed_tx_count,omitempty"`
-	OperationCount     int64 `json:"operation_count,omitempty"`
-	ContractEventCount int64 `json:"contract_event_count,omitempty"`
-	SorobanOpCount     int64 `json:"soroban_op_count,omitempty"`
-	TotalFeeCharged    int64 `json:"total_fee_charged,omitempty"`
+	TransactionCount             int64 `json:"transaction_count"`
+	SuccessfulTxCount            int64 `json:"successful_tx_count,omitempty"`
+	FailedTxCount                int64 `json:"failed_tx_count,omitempty"`
+	OperationCount               int64 `json:"operation_count,omitempty"`
+	TransactionSetOperationCount int64 `json:"transaction_set_operation_count,omitempty"`
+	SuccessfulOperationCount     int64 `json:"successful_operation_count,omitempty"`
+	FailedOperationCount         int64 `json:"failed_operation_count,omitempty"`
+	ContractEventCount           int64 `json:"contract_event_count,omitempty"`
+	SorobanOpCount               int64 `json:"soroban_op_count,omitempty"`
+	TotalFeeCharged              int64 `json:"total_fee_charged,omitempty"`
 }
 
 type LedgerSummaryClassifications struct {
@@ -243,15 +246,7 @@ func (h *LedgerSummaryHandler) HandleLedgerSummary(w http.ResponseWriter, r *htt
 			Sequence: seq,
 			ClosedAt: ledgerTimeString(ledgerRow["closed_at"]),
 		},
-		Totals: LedgerSummaryTotals{
-			TransactionCount:   mapInt64(ledgerRow["transaction_count"]),
-			SuccessfulTxCount:  mapInt64(ledgerRow["successful_tx_count"]),
-			FailedTxCount:      mapInt64(ledgerRow["failed_tx_count"]),
-			OperationCount:     mapInt64(ledgerRow["operation_count"]),
-			ContractEventCount: mapInt64(ledgerRow["contract_events_count"]),
-			SorobanOpCount:     mapInt64(ledgerRow["soroban_op_count"]),
-			TotalFeeCharged:    mapInt64(ledgerRow["total_fee_charged"]),
-		},
+		Totals: ledgerSummaryTotalsFromRow(ledgerRow),
 		Provenance: LedgerSummaryProvenance{
 			ClassificationSource: "derived_from_enriched_history_operations_v1",
 			UtilizationSource:    "transactions_row_v2_plus_config_settings_current_v1",
@@ -302,6 +297,34 @@ func (h *LedgerSummaryHandler) HandleLedgerSummary(w http.ResponseWriter, r *htt
 	}
 
 	respondJSON(w, resp)
+}
+
+func ledgerSummaryTotalsFromRow(ledgerRow map[string]interface{}) LedgerSummaryTotals {
+	successfulOperations := mapInt64(ledgerRow["operation_count"])
+	includedOperations := mapInt64(ledgerRow["tx_set_operation_count"])
+	if includedOperations == 0 && successfulOperations > 0 {
+		// Older materializations predate the explicit transaction-set count.
+		// Preserve the invariant that included operations cannot be lower than
+		// successful operations while the historical row is being rebuilt.
+		includedOperations = successfulOperations
+	}
+	failedOperations := int64(0)
+	if includedOperations >= successfulOperations {
+		failedOperations = includedOperations - successfulOperations
+	}
+
+	return LedgerSummaryTotals{
+		TransactionCount:             mapInt64(ledgerRow["transaction_count"]),
+		SuccessfulTxCount:            mapInt64(ledgerRow["successful_tx_count"]),
+		FailedTxCount:                mapInt64(ledgerRow["failed_tx_count"]),
+		OperationCount:               successfulOperations,
+		TransactionSetOperationCount: includedOperations,
+		SuccessfulOperationCount:     successfulOperations,
+		FailedOperationCount:         failedOperations,
+		ContractEventCount:           mapInt64(ledgerRow["contract_events_count"]),
+		SorobanOpCount:               mapInt64(ledgerRow["soroban_op_count"]),
+		TotalFeeCharged:              mapInt64(ledgerRow["total_fee_charged"]),
+	}
 }
 
 func (h *LedgerSummaryHandler) getLedgerRow(ctx context.Context, seq int64) (map[string]interface{}, error) {
