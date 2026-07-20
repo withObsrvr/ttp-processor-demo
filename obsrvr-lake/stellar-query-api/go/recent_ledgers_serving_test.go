@@ -34,7 +34,14 @@ func TestGetServingRecentLedgersReturnsExplicitOperationSemanticsAndValidator(t 
 			"ledger_sequence", "closed_at", "ledger_hash", "prev_hash", "protocol_version", "base_fee_stroops",
 			"successful_tx_count", "failed_tx_count", "operation_count", "tx_set_operation_count",
 			"validator_node_id", "ledger_close_signature",
-		}).AddRow(int64(3707457), closedAt, "hash", "prev", 23, int64(100), 13, 1, 15, 19, nodeID, "signature"))
+			"op_category_account_creation", "op_category_payments", "op_category_offers_and_amms", "op_category_trustlines",
+			"op_category_claimable_balances", "op_category_sponsorship", "op_category_soroban", "op_category_other",
+			"successful_op_category_account_creation", "successful_op_category_payments", "successful_op_category_offers_and_amms", "successful_op_category_trustlines",
+			"successful_op_category_claimable_balances", "successful_op_category_sponsorship", "successful_op_category_soroban", "successful_op_category_other",
+			"operation_categories_complete",
+		}).AddRow(int64(3707457), closedAt, "hash", "prev", 23, int64(100), 13, 1, 15, 19, nodeID, "signature",
+			1, 2, 3, 1, 1, 1, 8, 2,
+			1, 2, 2, 1, 1, 1, 5, 2, true))
 
 	reader := &SilverHotReader{db: db, network: "testnet"}
 	latest, ledgers, err := reader.GetServingRecentLedgers(context.Background(), 6)
@@ -55,6 +62,12 @@ func TestGetServingRecentLedgersReturnsExplicitOperationSemanticsAndValidator(t 
 	if got.Operations.Included != 19 || got.Operations.Successful != 15 || got.Operations.Failed != 4 {
 		t.Fatalf("unexpected operation counts: %+v", got.Operations)
 	}
+	if categoryTotal(got.Operations.Categories) != 19 || categoryTotal(got.Operations.SuccessfulCategories) != 15 {
+		t.Fatalf("operation category totals do not match counts: %+v", got.Operations)
+	}
+	if got.Operations.ClassificationStatus != "materialized" {
+		t.Fatalf("unexpected classification status: %+v", got.Operations)
+	}
 	if got.Validator.PublicKey != validatorAddress || !got.Validator.AttributionAvailable {
 		t.Fatalf("unexpected validator: %+v", got.Validator)
 	}
@@ -64,4 +77,9 @@ func TestGetServingRecentLedgersReturnsExplicitOperationSemanticsAndValidator(t 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet SQL expectations: %v", err)
 	}
+}
+
+func categoryTotal(counts ServingLedgerOperationCategoryCounts) int {
+	return counts.AccountCreation + counts.Payments + counts.OffersAndAMMs + counts.Trustlines +
+		counts.ClaimableBalances + counts.Sponsorship + counts.Soroban + counts.Other
 }

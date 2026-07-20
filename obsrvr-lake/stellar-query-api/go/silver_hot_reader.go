@@ -65,9 +65,23 @@ type ServingRecentLedgerTransactionCounts struct {
 }
 
 type ServingRecentLedgerOperationCounts struct {
-	Included   int `json:"included"`
-	Successful int `json:"successful"`
-	Failed     int `json:"failed"`
+	Included             int                                  `json:"included"`
+	Successful           int                                  `json:"successful"`
+	Failed               int                                  `json:"failed"`
+	ClassificationStatus string                               `json:"classification_status"`
+	Categories           ServingLedgerOperationCategoryCounts `json:"categories"`
+	SuccessfulCategories ServingLedgerOperationCategoryCounts `json:"successful_categories"`
+}
+
+type ServingLedgerOperationCategoryCounts struct {
+	AccountCreation   int `json:"account_creation"`
+	Payments          int `json:"payments"`
+	OffersAndAMMs     int `json:"offers_and_amms"`
+	Trustlines        int `json:"trustlines"`
+	ClaimableBalances int `json:"claimable_balances"`
+	Sponsorship       int `json:"sponsorship"`
+	Soroban           int `json:"soroban"`
+	Other             int `json:"other"`
 }
 
 type ServingCoverageMetadata struct {
@@ -2417,7 +2431,16 @@ func (h *SilverHotReader) GetServingRecentLedgers(ctx context.Context, limit int
 		       COALESCE(protocol_version, 0), COALESCE(base_fee_stroops, 0),
 		       COALESCE(successful_tx_count, 0), COALESCE(failed_tx_count, 0), COALESCE(operation_count, 0),
 		       COALESCE(tx_set_operation_count, operation_count, 0), COALESCE(validator_node_id, ''),
-		       COALESCE(ledger_close_signature, '')
+		       COALESCE(ledger_close_signature, ''),
+		       COALESCE(op_category_account_creation, 0), COALESCE(op_category_payments, 0),
+		       COALESCE(op_category_offers_and_amms, 0), COALESCE(op_category_trustlines, 0),
+		       COALESCE(op_category_claimable_balances, 0), COALESCE(op_category_sponsorship, 0),
+		       COALESCE(op_category_soroban, 0), COALESCE(op_category_other, 0),
+		       COALESCE(successful_op_category_account_creation, 0), COALESCE(successful_op_category_payments, 0),
+		       COALESCE(successful_op_category_offers_and_amms, 0), COALESCE(successful_op_category_trustlines, 0),
+		       COALESCE(successful_op_category_claimable_balances, 0), COALESCE(successful_op_category_sponsorship, 0),
+		       COALESCE(successful_op_category_soroban, 0), COALESCE(successful_op_category_other, 0),
+		       COALESCE(operation_categories_complete, false)
 		FROM serving.sv_ledger_stats_recent
 		ORDER BY ledger_sequence DESC
 		LIMIT $1
@@ -2431,6 +2454,7 @@ func (h *SilverHotReader) GetServingRecentLedgers(ctx context.Context, limit int
 		var item ServingRecentLedger
 		var closedAt time.Time
 		var validatorNodeID string
+		var operationCategoriesComplete bool
 		if err := rows.Scan(
 			&item.LedgerSequence,
 			&closedAt,
@@ -2444,6 +2468,23 @@ func (h *SilverHotReader) GetServingRecentLedgers(ctx context.Context, limit int
 			&item.TransactionSetOperationCount,
 			&validatorNodeID,
 			&item.LedgerCloseSignature,
+			&item.Operations.Categories.AccountCreation,
+			&item.Operations.Categories.Payments,
+			&item.Operations.Categories.OffersAndAMMs,
+			&item.Operations.Categories.Trustlines,
+			&item.Operations.Categories.ClaimableBalances,
+			&item.Operations.Categories.Sponsorship,
+			&item.Operations.Categories.Soroban,
+			&item.Operations.Categories.Other,
+			&item.Operations.SuccessfulCategories.AccountCreation,
+			&item.Operations.SuccessfulCategories.Payments,
+			&item.Operations.SuccessfulCategories.OffersAndAMMs,
+			&item.Operations.SuccessfulCategories.Trustlines,
+			&item.Operations.SuccessfulCategories.ClaimableBalances,
+			&item.Operations.SuccessfulCategories.Sponsorship,
+			&item.Operations.SuccessfulCategories.Soroban,
+			&item.Operations.SuccessfulCategories.Other,
+			&operationCategoriesComplete,
 		); err != nil {
 			return 0, nil, err
 		}
@@ -2461,9 +2502,16 @@ func (h *SilverHotReader) GetServingRecentLedgers(ctx context.Context, limit int
 			Failed:     item.FailedTxCount,
 		}
 		item.Operations = ServingRecentLedgerOperationCounts{
-			Included:   item.TransactionSetOperationCount,
-			Successful: item.SuccessfulOperationCount,
-			Failed:     item.FailedOperationCount,
+			Included:             item.TransactionSetOperationCount,
+			Successful:           item.SuccessfulOperationCount,
+			Failed:               item.FailedOperationCount,
+			Categories:           item.Operations.Categories,
+			SuccessfulCategories: item.Operations.SuccessfulCategories,
+		}
+		if operationCategoriesComplete {
+			item.Operations.ClassificationStatus = "materialized"
+		} else {
+			item.Operations.ClassificationStatus = "partial"
 		}
 		out = append(out, item)
 	}
