@@ -243,6 +243,42 @@ func TestFeedBackfillRerunResumeNoDuplicates(t *testing.T) {
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_projection_checkpoints WHERE last_ledger_sequence=6`, 19)
 }
 
+func TestLedgerStatsBackfillDoesNotRequireSilverEnrichedLedgers(t *testing.T) {
+	ctx := context.Background()
+	db := openBackfillFixtureDB(t)
+	defer db.Close()
+	loadBackfillFixture(t, ctx, db)
+
+	if _, err := db.ExecContext(ctx, `DROP TABLE silver.enriched_ledgers`); err != nil {
+		t.Fatal(err)
+	}
+	backfiller := NewBackfillerWithDB(db, Config{
+		Network:         "mainnet",
+		Start:           3,
+		End:             6,
+		Chunk:           4,
+		RetentionDays:   30,
+		BronzeSchema:    "bronze",
+		SilverSchema:    "silver",
+		ServingSchema:   "serving",
+		FeedProjections: "sv_ledger_stats_recent",
+		SkipCurrent:     true,
+	})
+	if err := backfiller.ensureServingSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := backfiller.ensureManifest(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if err := backfiller.Run(ctx, &out); err != nil {
+		t.Fatalf("ledger stats run: %v\n%s", err, out.String())
+	}
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_ledger_stats_recent`, 4)
+	assertBackfillCount(t, db, `SELECT tx_set_operation_count FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=5`, 1)
+}
+
 func TestByAccountOnlyProjectionSelection(t *testing.T) {
 	ctx := context.Background()
 	db := openBackfillFixtureDB(t)
@@ -432,7 +468,10 @@ func loadBackfillFixture(t *testing.T, ctx context.Context, db *sql.DB) {
 			successful_tx_count INTEGER, failed_tx_count INTEGER, operation_count INTEGER
 		)`,
 		`CREATE TABLE bronze.ledgers_row_v2 (
-			sequence BIGINT, max_tx_set_size INTEGER, tx_set_operation_count INTEGER,
+			sequence BIGINT, ledger_hash VARCHAR, previous_ledger_hash VARCHAR,
+			closed_at TIMESTAMP, protocol_version INTEGER, base_fee BIGINT,
+			max_tx_set_size INTEGER, successful_tx_count INTEGER, failed_tx_count INTEGER,
+			operation_count INTEGER, tx_set_operation_count INTEGER,
 			node_id VARCHAR, signature VARCHAR, soroban_op_count INTEGER,
 			contract_events_count INTEGER, total_fee_charged BIGINT
 		)`,
@@ -508,10 +547,10 @@ func loadBackfillFixture(t *testing.T, ctx context.Context, db *sql.DB) {
 			('mainnet',5,'2026-01-01 00:00:05','h5','h4',23,100,0,1,0),
 			('mainnet',6,'2026-01-01 00:00:06','h6','h5',23,100,1,0,0)`,
 		`INSERT INTO bronze.ledgers_row_v2 VALUES
-			(3,100,1,'node3','sig3',0,0,100),
-			(4,100,2,'node4','sig4',1,2,201),
-			(5,100,1,'node5','sig5',0,0,102),
-			(6,100,0,'node6','sig6',0,0,0)`,
+			(3,'h3','h2','2026-01-01 00:00:03',23,100,100,1,0,1,1,'node3','sig3',0,0,100),
+			(4,'h4','h3','2026-01-01 00:00:04',23,100,100,1,0,2,2,'node4','sig4',1,2,201),
+			(5,'h5','h4','2026-01-01 00:00:05',23,100,100,0,1,0,1,'node5','sig5',0,0,102),
+			(6,'h6','h5','2026-01-01 00:00:06',23,100,100,1,0,0,0,'node6','sig6',0,0,0)`,
 		`INSERT INTO bronze.transactions_row_v2 VALUES
 			('tx3',3,'2026-01-01 00:00:03','GA1',100,200,true,1,NULL,'none',NULL,10,NULL,NULL,NULL,12884905984,'env3','res3','meta3','fee3','["sig3"]'),
 			('tx4',4,'2026-01-01 00:00:04','GA2',101,201,true,2,'CC1','text','memo',11,1000,10,20,17179873280,'env4','res4','meta4','fee4','["sig4"]'),

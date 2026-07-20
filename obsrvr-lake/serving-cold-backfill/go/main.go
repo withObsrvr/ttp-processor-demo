@@ -481,7 +481,7 @@ func (b *Backfiller) Run(ctx context.Context, out io.Writer) error {
 func requiredProjections(schema string) []Projection {
 	table := func(name string) string { return schema + "." + name }
 	return []Projection{
-		{Name: "sv_ledger_stats_recent", TargetTable: table("sv_ledger_stats_recent"), Source: "silver.enriched_ledgers", Mode: "recent_range_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
+		{Name: "sv_ledger_stats_recent", TargetTable: table("sv_ledger_stats_recent"), Source: "bronze.ledgers_row_v2 + bronze.operations_row_v2", Mode: "recent_range_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_transactions_recent", TargetTable: table("sv_transactions_recent"), Source: "bronze.transactions_row_v2 + silver enriched data", Mode: "recent_range_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_operations_recent", TargetTable: table("sv_operations_recent"), Source: "silver.enriched_history_operations", Mode: "recent_range_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_events_recent", TargetTable: table("sv_events_recent"), Source: "bronze.contract_events_stream_v1 / silver effects", Mode: "recent_range_replace", Checkpoint: false, Required: true, InitialClass: "blocked_source_mapping", Rationale: "required by the broader serving contract, but this binary does not enable the projection yet"},
@@ -493,7 +493,7 @@ func requiredProjections(schema string) []Projection {
 		{Name: "sv_effects_by_account", TargetTable: table("sv_effects_by_account"), Source: "silver.effects + bronze operations_row_v2 TOID", Mode: "full_history_chunk_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_accounts_current", TargetTable: table("sv_accounts_current"), Source: "silver.accounts_current", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_account_balances_current", TargetTable: table("sv_account_balances_current"), Source: "silver.address_balances_current / silver.native_balances_current", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
-		{Name: "sv_network_stats_current", TargetTable: table("sv_network_stats_current"), Source: "silver.enriched_ledgers + aggregate counts", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
+		{Name: "sv_network_stats_current", TargetTable: table("sv_network_stats_current"), Source: "serving recent feed aggregates", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_assets_current", TargetTable: table("sv_assets_current"), Source: "sv_account_balances_current aggregates", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_asset_stats_current", TargetTable: table("sv_asset_stats_current"), Source: "sv_account_balances_current aggregates", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_contracts_current", TargetTable: table("sv_contracts_current"), Source: "silver.contract_metadata + silver.contract_data_current", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
@@ -1222,8 +1222,8 @@ func currentProjectionNames(current []CurrentProjection) []string {
 }
 
 func (b *Backfiller) retentionPredicate(timeExpr string) string {
-	return fmt.Sprintf("%s >= COALESCE((SELECT MAX(ledger_closed_at) - INTERVAL %d DAY FROM %s WHERE network=%s AND ledger_sequence <= %d), %s)",
-		timeExpr, b.cfg.RetentionDays, b.silverTable("enriched_ledgers"), q(b.cfg.Network), b.cfg.End, timeExpr)
+	return fmt.Sprintf("%s >= COALESCE((SELECT MAX(closed_at) - INTERVAL %d DAY FROM %s WHERE sequence <= %d), %s)",
+		timeExpr, b.cfg.RetentionDays, b.bronzeTable("ledgers_row_v2"), b.cfg.End, timeExpr)
 }
 
 func (b *Backfiller) transactionRetentionPredicate(timeExpr string) string {
@@ -1234,16 +1234,15 @@ func (b *Backfiller) transactionRetentionPredicate(timeExpr string) string {
 
 func selectLedgerStatsRecent(b *Backfiller, chunk Chunk) string {
 	return fmt.Sprintf(`WITH retained_ledgers AS (
-		SELECT s.ledger_sequence, s.ledger_closed_at AS closed_at, s.ledger_hash,
-			s.previous_ledger_hash AS prev_hash, s.ledger_version AS protocol_version,
-			s.base_fee AS base_fee_stroops, b.max_tx_set_size,
-			s.successful_tx_count, s.failed_tx_count, s.operation_count,
+		SELECT b.sequence AS ledger_sequence, b.closed_at, b.ledger_hash,
+			b.previous_ledger_hash AS prev_hash, b.protocol_version,
+			b.base_fee AS base_fee_stroops, b.max_tx_set_size,
+			b.successful_tx_count, b.failed_tx_count, b.operation_count,
 			b.tx_set_operation_count, b.node_id AS validator_node_id,
 			b.signature AS ledger_close_signature, b.soroban_op_count,
 			b.contract_events_count AS events_emitted, b.total_fee_charged AS total_fee_charged_stroops
-		FROM %s s
-		LEFT JOIN %s b ON b.sequence = s.ledger_sequence
-		WHERE s.network=%s AND s.ledger_sequence BETWEEN %d AND %d AND %s
+		FROM %s b
+		WHERE b.sequence BETWEEN %d AND %d AND %s
 	), operation_categories AS (
 		SELECT o.ledger_sequence,
 			COUNT(*) FILTER (WHERE o.type = 0)::INTEGER AS account_creation,
@@ -1296,7 +1295,7 @@ func selectLedgerStatsRecent(b *Backfiller, chunk Chunk) string {
 		NULL::BIGINT AS total_rent_stroops, NULL::DOUBLE AS close_time_seconds
 	FROM retained_ledgers l
 	LEFT JOIN operation_categories c ON c.ledger_sequence = l.ledger_sequence`,
-		b.silverTable("enriched_ledgers"), b.bronzeTable("ledgers_row_v2"), q(b.cfg.Network), chunk.Start, chunk.End, b.retentionPredicate("s.ledger_closed_at"),
+		b.bronzeTable("ledgers_row_v2"), chunk.Start, chunk.End, b.retentionPredicate("b.closed_at"),
 		b.bronzeTable("operations_row_v2"))
 }
 
