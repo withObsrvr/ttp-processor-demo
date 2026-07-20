@@ -168,6 +168,19 @@ func TestFeedBackfillRerunResumeNoDuplicates(t *testing.T) {
 	}
 
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_ledger_stats_recent`, 4)
+	assertBackfillCount(t, db, `SELECT tx_set_operation_count FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=4`, 2)
+	assertBackfillString(t, db, `SELECT validator_node_id FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=4`, "node4")
+	assertBackfillString(t, db, `SELECT ledger_close_signature FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=4`, "sig4")
+	assertBackfillCount(t, db, `SELECT op_category_payments FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=4`, 1)
+	assertBackfillCount(t, db, `SELECT op_category_soroban FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=4`, 1)
+	assertBackfillCount(t, db, `SELECT successful_op_category_payments FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=4`, 1)
+	assertBackfillCount(t, db, `SELECT successful_op_category_soroban FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=4`, 1)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=4 AND operation_categories_complete=true`, 1)
+	assertBackfillCount(t, db, `SELECT operation_count FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=5`, 0)
+	assertBackfillCount(t, db, `SELECT tx_set_operation_count FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=5`, 1)
+	assertBackfillCount(t, db, `SELECT op_category_payments FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=5`, 1)
+	assertBackfillCount(t, db, `SELECT successful_op_category_payments FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=5`, 0)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=5 AND operation_categories_complete=true`, 1)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_transactions_recent`, 3)
 	assertBackfillCount(t, db, `SELECT transaction_id FROM serving.sv_transactions_recent WHERE tx_hash='tx3' AND tx_envelope='env3' AND tx_result='res3' AND tx_meta='meta3' AND tx_fee_meta='fee3' AND tx_signers='["sig3"]'`, transactionTOID(3, 1))
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_operations_recent`, 4)
@@ -390,6 +403,11 @@ func loadBackfillFixture(t *testing.T, ctx context.Context, db *sql.DB) {
 			previous_ledger_hash VARCHAR, ledger_version INTEGER, base_fee BIGINT,
 			successful_tx_count INTEGER, failed_tx_count INTEGER, operation_count INTEGER
 		)`,
+		`CREATE TABLE bronze.ledgers_row_v2 (
+			sequence BIGINT, max_tx_set_size INTEGER, tx_set_operation_count INTEGER,
+			node_id VARCHAR, signature VARCHAR, soroban_op_count INTEGER,
+			contract_events_count INTEGER, total_fee_charged BIGINT
+		)`,
 		`CREATE TABLE bronze.transactions_row_v2 (
 			transaction_hash VARCHAR, ledger_sequence BIGINT, created_at TIMESTAMP, source_account VARCHAR,
 			fee_charged BIGINT, max_fee BIGINT, successful BOOLEAN, operation_count INTEGER,
@@ -399,7 +417,8 @@ func loadBackfillFixture(t *testing.T, ctx context.Context, db *sql.DB) {
 		)`,
 		`CREATE TABLE bronze.operations_row_v2 (
 			transaction_hash VARCHAR, ledger_sequence BIGINT, operation_index INTEGER,
-			transaction_index INTEGER, transaction_id BIGINT, operation_id BIGINT
+			transaction_index INTEGER, transaction_id BIGINT, operation_id BIGINT,
+			type INTEGER, transaction_successful BOOLEAN
 		)`,
 		`CREATE TABLE silver.enriched_history_operations (
 			network VARCHAR, transaction_hash VARCHAR, operation_index INTEGER, ledger_sequence BIGINT,
@@ -458,17 +477,22 @@ func loadBackfillFixture(t *testing.T, ctx context.Context, db *sql.DB) {
 		`INSERT INTO silver.enriched_ledgers VALUES
 			('mainnet',3,'2026-01-01 00:00:03','h3','h2',23,100,1,0,1),
 			('mainnet',4,'2026-01-01 00:00:04','h4','h3',23,100,1,0,2),
-			('mainnet',5,'2026-01-01 00:00:05','h5','h4',23,100,0,1,1),
+			('mainnet',5,'2026-01-01 00:00:05','h5','h4',23,100,0,1,0),
 			('mainnet',6,'2026-01-01 00:00:06','h6','h5',23,100,1,0,0)`,
+		`INSERT INTO bronze.ledgers_row_v2 VALUES
+			(3,100,1,'node3','sig3',0,0,100),
+			(4,100,2,'node4','sig4',1,2,201),
+			(5,100,1,'node5','sig5',0,0,102),
+			(6,100,0,'node6','sig6',0,0,0)`,
 		`INSERT INTO bronze.transactions_row_v2 VALUES
 			('tx3',3,'2026-01-01 00:00:03','GA1',100,200,true,1,NULL,'none',NULL,10,NULL,NULL,NULL,12884905984,'env3','res3','meta3','fee3','["sig3"]'),
 			('tx4',4,'2026-01-01 00:00:04','GA2',101,201,true,2,'CC1','text','memo',11,1000,10,20,17179873280,'env4','res4','meta4','fee4','["sig4"]'),
 			('tx5',5,'2026-01-01 00:00:05','GA3',102,202,false,1,NULL,'none',NULL,12,NULL,NULL,NULL,21474840576,'env5','res5','meta5','fee5','["sig5"]')`,
 		`INSERT INTO bronze.operations_row_v2 VALUES
-			('tx3',3,0,1,12884905984,12884905985),
-			('tx4',4,0,1,17179873280,17179873281),
-			('tx4',4,1,1,17179873280,17179873282),
-			('tx5',5,0,1,21474840576,21474840577)`,
+			('tx3',3,0,1,12884905984,12884905985,1,true),
+			('tx4',4,0,1,17179873280,17179873281,24,true),
+			('tx4',4,1,1,17179873280,17179873282,1,true),
+			('tx5',5,0,1,21474840576,21474840577,1,false)`,
 		`INSERT INTO silver.enriched_history_operations VALUES
 			('mainnet','tx3',0,3,'2026-01-01 00:00:03',1,'payment','GA1','GB1','native','100',NULL,NULL,true,true,false),
 			('mainnet','tx4',0,4,'2026-01-01 00:00:04',24,'invoke_host_function','GA2',NULL,NULL,NULL,'CC1','transfer',true,false,true),

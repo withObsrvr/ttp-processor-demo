@@ -540,7 +540,17 @@ func checkpointPlan(cfg Config, projections []Projection) []Checkpoint {
 
 func feedProjections() []FeedProjection {
 	return []FeedProjection{
-		{Name: "sv_ledger_stats_recent", TargetTable: "sv_ledger_stats_recent", RangeCol: "ledger_sequence", KeyExprs: []string{"ledger_sequence"}, SelectSQL: selectLedgerStatsRecent},
+		{Name: "sv_ledger_stats_recent", TargetTable: "sv_ledger_stats_recent", RangeCol: "ledger_sequence", KeyExprs: []string{"ledger_sequence"}, InsertColumns: []string{
+			"ledger_sequence", "closed_at", "ledger_hash", "prev_hash", "protocol_version",
+			"base_fee_stroops", "max_tx_set_size", "successful_tx_count", "failed_tx_count", "operation_count",
+			"tx_set_operation_count", "validator_node_id", "ledger_close_signature", "soroban_op_count",
+			"op_category_account_creation", "op_category_payments", "op_category_offers_and_amms", "op_category_trustlines",
+			"op_category_claimable_balances", "op_category_sponsorship", "op_category_soroban", "op_category_other",
+			"successful_op_category_account_creation", "successful_op_category_payments", "successful_op_category_offers_and_amms", "successful_op_category_trustlines",
+			"successful_op_category_claimable_balances", "successful_op_category_sponsorship", "successful_op_category_soroban", "successful_op_category_other",
+			"operation_categories_complete", "events_emitted", "total_fee_charged_stroops", "total_cpu_insns",
+			"total_read_bytes", "total_write_bytes", "total_rent_stroops", "close_time_seconds",
+		}, SelectSQL: selectLedgerStatsRecent},
 		{Name: "sv_transactions_recent", TargetTable: "sv_transactions_recent", RangeCol: "ledger_sequence", KeyExprs: []string{"tx_hash"}, InsertColumns: []string{
 			"tx_hash", "ledger_sequence", "created_at", "source_account",
 			"fee_charged_stroops", "max_fee_stroops", "successful", "operation_count",
@@ -1214,17 +1224,71 @@ func (b *Backfiller) transactionRetentionPredicate(timeExpr string) string {
 }
 
 func selectLedgerStatsRecent(b *Backfiller, chunk Chunk) string {
-	return fmt.Sprintf(`SELECT ledger_sequence, ledger_closed_at AS closed_at, ledger_hash,
-		previous_ledger_hash AS prev_hash, ledger_version AS protocol_version,
-		base_fee AS base_fee_stroops, NULL::INTEGER AS max_tx_set_size,
-		successful_tx_count, failed_tx_count, operation_count,
-		NULL::INTEGER AS soroban_op_count, NULL::BIGINT AS events_emitted,
-		NULL::BIGINT AS total_fee_charged_stroops, NULL::BIGINT AS total_cpu_insns,
-		NULL::BIGINT AS total_read_bytes, NULL::BIGINT AS total_write_bytes,
+	return fmt.Sprintf(`WITH retained_ledgers AS (
+		SELECT s.ledger_sequence, s.ledger_closed_at AS closed_at, s.ledger_hash,
+			s.previous_ledger_hash AS prev_hash, s.ledger_version AS protocol_version,
+			s.base_fee AS base_fee_stroops, b.max_tx_set_size,
+			s.successful_tx_count, s.failed_tx_count, s.operation_count,
+			b.tx_set_operation_count, b.node_id AS validator_node_id,
+			b.signature AS ledger_close_signature, b.soroban_op_count,
+			b.contract_events_count AS events_emitted, b.total_fee_charged AS total_fee_charged_stroops
+		FROM %s s
+		LEFT JOIN %s b ON b.sequence = s.ledger_sequence
+		WHERE s.network=%s AND s.ledger_sequence BETWEEN %d AND %d AND %s
+	), operation_categories AS (
+		SELECT o.ledger_sequence,
+			COUNT(*) FILTER (WHERE o.type = 0)::INTEGER AS account_creation,
+			COUNT(*) FILTER (WHERE o.type IN (1, 2, 13))::INTEGER AS payments,
+			COUNT(*) FILTER (WHERE o.type IN (3, 4, 12, 22, 23))::INTEGER AS offers_and_amms,
+			COUNT(*) FILTER (WHERE o.type IN (6, 7, 21))::INTEGER AS trustlines,
+			COUNT(*) FILTER (WHERE o.type IN (14, 15, 19))::INTEGER AS claimable_balances,
+			COUNT(*) FILTER (WHERE o.type IN (16, 17, 18))::INTEGER AS sponsorship,
+			COUNT(*) FILTER (WHERE o.type IN (24, 25, 26))::INTEGER AS soroban,
+			COUNT(*) FILTER (WHERE o.type IS NULL OR o.type NOT IN (0,1,2,3,4,6,7,12,13,14,15,16,17,18,19,21,22,23,24,25,26))::INTEGER AS other,
+			COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND o.type = 0)::INTEGER AS successful_account_creation,
+			COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND o.type IN (1, 2, 13))::INTEGER AS successful_payments,
+			COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND o.type IN (3, 4, 12, 22, 23))::INTEGER AS successful_offers_and_amms,
+			COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND o.type IN (6, 7, 21))::INTEGER AS successful_trustlines,
+			COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND o.type IN (14, 15, 19))::INTEGER AS successful_claimable_balances,
+			COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND o.type IN (16, 17, 18))::INTEGER AS successful_sponsorship,
+			COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND o.type IN (24, 25, 26))::INTEGER AS successful_soroban,
+			COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND (o.type IS NULL OR o.type NOT IN (0,1,2,3,4,6,7,12,13,14,15,16,17,18,19,21,22,23,24,25,26)))::INTEGER AS successful_other
+		FROM %s o
+		JOIN retained_ledgers l ON l.ledger_sequence = o.ledger_sequence
+		GROUP BY o.ledger_sequence
+	)
+	SELECT l.ledger_sequence, l.closed_at, l.ledger_hash, l.prev_hash, l.protocol_version,
+		l.base_fee_stroops, l.max_tx_set_size, l.successful_tx_count, l.failed_tx_count, l.operation_count,
+		l.tx_set_operation_count, l.validator_node_id, l.ledger_close_signature, l.soroban_op_count,
+		COALESCE(c.account_creation, 0) AS op_category_account_creation,
+		COALESCE(c.payments, 0) AS op_category_payments,
+		COALESCE(c.offers_and_amms, 0) AS op_category_offers_and_amms,
+		COALESCE(c.trustlines, 0) AS op_category_trustlines,
+		COALESCE(c.claimable_balances, 0) AS op_category_claimable_balances,
+		COALESCE(c.sponsorship, 0) AS op_category_sponsorship,
+		COALESCE(c.soroban, 0) AS op_category_soroban,
+		COALESCE(c.other, 0) AS op_category_other,
+		COALESCE(c.successful_account_creation, 0) AS successful_op_category_account_creation,
+		COALESCE(c.successful_payments, 0) AS successful_op_category_payments,
+		COALESCE(c.successful_offers_and_amms, 0) AS successful_op_category_offers_and_amms,
+		COALESCE(c.successful_trustlines, 0) AS successful_op_category_trustlines,
+		COALESCE(c.successful_claimable_balances, 0) AS successful_op_category_claimable_balances,
+		COALESCE(c.successful_sponsorship, 0) AS successful_op_category_sponsorship,
+		COALESCE(c.successful_soroban, 0) AS successful_op_category_soroban,
+		COALESCE(c.successful_other, 0) AS successful_op_category_other,
+		l.tx_set_operation_count IS NOT NULL
+			AND COALESCE(c.account_creation, 0) + COALESCE(c.payments, 0) + COALESCE(c.offers_and_amms, 0) + COALESCE(c.trustlines, 0)
+				+ COALESCE(c.claimable_balances, 0) + COALESCE(c.sponsorship, 0) + COALESCE(c.soroban, 0) + COALESCE(c.other, 0) = l.tx_set_operation_count
+			AND COALESCE(c.successful_account_creation, 0) + COALESCE(c.successful_payments, 0) + COALESCE(c.successful_offers_and_amms, 0) + COALESCE(c.successful_trustlines, 0)
+				+ COALESCE(c.successful_claimable_balances, 0) + COALESCE(c.successful_sponsorship, 0) + COALESCE(c.successful_soroban, 0) + COALESCE(c.successful_other, 0) = l.operation_count
+			AS operation_categories_complete,
+		l.events_emitted, l.total_fee_charged_stroops,
+		NULL::BIGINT AS total_cpu_insns, NULL::BIGINT AS total_read_bytes, NULL::BIGINT AS total_write_bytes,
 		NULL::BIGINT AS total_rent_stroops, NULL::DOUBLE AS close_time_seconds
-		FROM %s
-		WHERE network=%s AND ledger_sequence BETWEEN %d AND %d AND %s`,
-		b.silverTable("enriched_ledgers"), q(b.cfg.Network), chunk.Start, chunk.End, b.retentionPredicate("ledger_closed_at"))
+	FROM retained_ledgers l
+	LEFT JOIN operation_categories c ON c.ledger_sequence = l.ledger_sequence`,
+		b.silverTable("enriched_ledgers"), b.bronzeTable("ledgers_row_v2"), q(b.cfg.Network), chunk.Start, chunk.End, b.retentionPredicate("s.ledger_closed_at"),
+		b.bronzeTable("operations_row_v2"))
 }
 
 func selectTransactionsRecent(b *Backfiller, chunk Chunk) string {
