@@ -66,6 +66,25 @@ func TestAssignedChunkOverridesChunkPlan(t *testing.T) {
 	}
 }
 
+func TestLedgerStatsSelectPrunesBronzePartitionsToChunk(t *testing.T) {
+	backfiller := NewBackfillerWithDB(nil, Config{
+		End:          63_570_750,
+		BronzeSchema: "bronze",
+	})
+
+	query := selectLedgerStatsRecent(backfiller, Chunk{Start: 63_570_750, End: 63_570_750})
+	for _, predicate := range []string{
+		"b.ledger_range BETWEEN 63570000 AND 63570000",
+		"WHERE sequence BETWEEN 63570000 AND 63570750 AND ledger_range = 63570000",
+		"o.ledger_sequence BETWEEN 63570750 AND 63570750",
+		"o.ledger_range BETWEEN 63570000 AND 63570000",
+	} {
+		if !strings.Contains(query, predicate) {
+			t.Fatalf("ledger stats query missing partition-pruning predicate %q:\n%s", predicate, query)
+		}
+	}
+}
+
 func TestCurrentProjectionUsesInsertColumnList(t *testing.T) {
 	ctx := context.Background()
 	db := openBackfillFixtureDB(t)
@@ -499,7 +518,7 @@ func loadBackfillFixture(t *testing.T, ctx context.Context, db *sql.DB) {
 			max_tx_set_size INTEGER, successful_tx_count INTEGER, failed_tx_count INTEGER,
 			operation_count INTEGER, tx_set_operation_count INTEGER,
 			node_id VARCHAR, signature VARCHAR, soroban_op_count INTEGER,
-			contract_events_count INTEGER, total_fee_charged BIGINT
+			contract_events_count INTEGER, total_fee_charged BIGINT, ledger_range BIGINT
 		)`,
 		`CREATE TABLE bronze.transactions_row_v2 (
 			transaction_hash VARCHAR, ledger_sequence BIGINT, created_at TIMESTAMP, source_account VARCHAR,
@@ -511,7 +530,7 @@ func loadBackfillFixture(t *testing.T, ctx context.Context, db *sql.DB) {
 		`CREATE TABLE bronze.operations_row_v2 (
 			transaction_hash VARCHAR, ledger_sequence BIGINT, operation_index INTEGER,
 			transaction_index INTEGER, transaction_id BIGINT, operation_id BIGINT,
-			type INTEGER, transaction_successful BOOLEAN
+			type INTEGER, transaction_successful BOOLEAN, ledger_range BIGINT
 		)`,
 		`CREATE TABLE silver.enriched_history_operations (
 			network VARCHAR, transaction_hash VARCHAR, operation_index INTEGER, ledger_sequence BIGINT,
@@ -573,19 +592,19 @@ func loadBackfillFixture(t *testing.T, ctx context.Context, db *sql.DB) {
 			('mainnet',5,'2026-01-01 00:00:05','h5','h4',23,100,0,1,0),
 			('mainnet',6,'2026-01-01 00:00:06','h6','h5',23,100,1,0,0)`,
 		`INSERT INTO bronze.ledgers_row_v2 VALUES
-			(3,'h3','h2','2026-01-01 00:00:03',23,100,100,1,0,1,1,'node3','sig3',0,0,100),
-			(4,'h4','h3','2026-01-01 00:00:04',23,100,100,1,0,2,2,'node4','sig4',1,2,201),
-			(5,'h5','h4','2026-01-01 00:00:05',23,100,100,0,1,0,1,'node5','sig5',0,0,102),
-			(6,'h6','h5','2026-01-01 00:00:06',23,100,100,1,0,0,0,'node6','sig6',0,0,0)`,
+			(3,'h3','h2','2026-01-01 00:00:03',23,100,100,1,0,1,1,'node3','sig3',0,0,100,0),
+			(4,'h4','h3','2026-01-01 00:00:04',23,100,100,1,0,2,2,'node4','sig4',1,2,201,0),
+			(5,'h5','h4','2026-01-01 00:00:05',23,100,100,0,1,0,1,'node5','sig5',0,0,102,0),
+			(6,'h6','h5','2026-01-01 00:00:06',23,100,100,1,0,0,0,'node6','sig6',0,0,0,0)`,
 		`INSERT INTO bronze.transactions_row_v2 VALUES
 			('tx3',3,'2026-01-01 00:00:03','GA1',100,200,true,1,NULL,'none',NULL,10,NULL,NULL,NULL,12884905984,'env3','res3','meta3','fee3','["sig3"]'),
 			('tx4',4,'2026-01-01 00:00:04','GA2',101,201,true,2,'CC1','text','memo',11,1000,10,20,17179873280,'env4','res4','meta4','fee4','["sig4"]'),
 			('tx5',5,'2026-01-01 00:00:05','GA3',102,202,false,1,NULL,'none',NULL,12,NULL,NULL,NULL,21474840576,'env5','res5','meta5','fee5','["sig5"]')`,
 		`INSERT INTO bronze.operations_row_v2 VALUES
-			('tx3',3,0,1,12884905984,12884905985,1,true),
-			('tx4',4,0,1,17179873280,17179873281,24,true),
-			('tx4',4,1,1,17179873280,17179873282,1,true),
-			('tx5',5,0,1,21474840576,21474840577,1,false)`,
+			('tx3',3,0,1,12884905984,12884905985,1,true,0),
+			('tx4',4,0,1,17179873280,17179873281,24,true,0),
+			('tx4',4,1,1,17179873280,17179873282,1,true,0),
+			('tx5',5,0,1,21474840576,21474840577,1,false,0)`,
 		`INSERT INTO silver.enriched_history_operations VALUES
 			('mainnet','tx3',0,3,'2026-01-01 00:00:03',1,'payment','GA1','GB1','native','100',NULL,NULL,true,true,false),
 			('mainnet','tx4',0,4,'2026-01-01 00:00:04',24,'invoke_host_function','GA2',NULL,NULL,NULL,'CC1','transfer',true,false,true),

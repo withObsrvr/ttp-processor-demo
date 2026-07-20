@@ -21,6 +21,7 @@ var Version = "dev"
 const componentID = "serving-cold-backfill"
 const progressInterval = 15 * time.Second
 const toidOperationMask int64 = 0xFFF
+const bronzeLedgerRangeSize int64 = 10_000
 
 type FailureClass string
 
@@ -1289,8 +1290,9 @@ func tableBaseName(table string) string {
 }
 
 func (b *Backfiller) retentionPredicate(timeExpr string) string {
-	return fmt.Sprintf("%s >= COALESCE((SELECT MAX(closed_at) - INTERVAL %d DAY FROM %s WHERE sequence <= %d), %s)",
-		timeExpr, b.cfg.RetentionDays, b.bronzeTable("ledgers_row_v2"), b.cfg.End, timeExpr)
+	endRange := bronzeLedgerRange(b.cfg.End)
+	return fmt.Sprintf("%s >= COALESCE((SELECT MAX(closed_at) - INTERVAL %d DAY FROM %s WHERE sequence BETWEEN %d AND %d AND ledger_range = %d), %s)",
+		timeExpr, b.cfg.RetentionDays, b.bronzeTable("ledgers_row_v2"), endRange, b.cfg.End, endRange, timeExpr)
 }
 
 func (b *Backfiller) transactionRetentionPredicate(timeExpr string) string {
@@ -1300,6 +1302,8 @@ func (b *Backfiller) transactionRetentionPredicate(timeExpr string) string {
 }
 
 func selectLedgerStatsRecent(b *Backfiller, chunk Chunk) string {
+	startRange := bronzeLedgerRange(chunk.Start)
+	endRange := bronzeLedgerRange(chunk.End)
 	return fmt.Sprintf(`WITH retained_ledgers AS (
 		SELECT b.sequence AS ledger_sequence, b.closed_at, b.ledger_hash,
 			b.previous_ledger_hash AS prev_hash, b.protocol_version,
@@ -1309,7 +1313,9 @@ func selectLedgerStatsRecent(b *Backfiller, chunk Chunk) string {
 			b.signature AS ledger_close_signature, b.soroban_op_count,
 			b.contract_events_count AS events_emitted, b.total_fee_charged AS total_fee_charged_stroops
 		FROM %s b
-		WHERE b.sequence BETWEEN %d AND %d AND %s
+		WHERE b.sequence BETWEEN %d AND %d
+			AND b.ledger_range BETWEEN %d AND %d
+			AND %s
 	), operation_categories AS (
 		SELECT o.ledger_sequence,
 			COUNT(*) FILTER (WHERE o.type = 0)::INTEGER AS account_creation,
@@ -1330,6 +1336,8 @@ func selectLedgerStatsRecent(b *Backfiller, chunk Chunk) string {
 			COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND (o.type IS NULL OR o.type NOT IN (0,1,2,3,4,6,7,12,13,14,15,16,17,18,19,21,22,23,24,25,26)))::INTEGER AS successful_other
 		FROM %s o
 		JOIN retained_ledgers l ON l.ledger_sequence = o.ledger_sequence
+		WHERE o.ledger_sequence BETWEEN %d AND %d
+			AND o.ledger_range BETWEEN %d AND %d
 		GROUP BY o.ledger_sequence
 	)
 	SELECT l.ledger_sequence, l.closed_at, l.ledger_hash, l.prev_hash, l.protocol_version,
@@ -1362,8 +1370,12 @@ func selectLedgerStatsRecent(b *Backfiller, chunk Chunk) string {
 		NULL::BIGINT AS total_rent_stroops, NULL::DOUBLE AS close_time_seconds
 	FROM retained_ledgers l
 	LEFT JOIN operation_categories c ON c.ledger_sequence = l.ledger_sequence`,
-		b.bronzeTable("ledgers_row_v2"), chunk.Start, chunk.End, b.retentionPredicate("b.closed_at"),
-		b.bronzeTable("operations_row_v2"))
+		b.bronzeTable("ledgers_row_v2"), chunk.Start, chunk.End, startRange, endRange, b.retentionPredicate("b.closed_at"),
+		b.bronzeTable("operations_row_v2"), chunk.Start, chunk.End, startRange, endRange)
+}
+
+func bronzeLedgerRange(sequence int64) int64 {
+	return sequence / bronzeLedgerRangeSize * bronzeLedgerRangeSize
 }
 
 func selectTransactionsRecent(b *Backfiller, chunk Chunk) string {
