@@ -2503,14 +2503,7 @@ func (h *SilverHotReader) GetServingRecentLedgers(ctx context.Context, limit int
 		if item.TransactionSetOperationCount >= item.SuccessfulOperationCount {
 			item.FailedOperationCount = item.TransactionSetOperationCount - item.SuccessfulOperationCount
 		}
-		item.Validator.PublicKey = decodeValidatorAccountID(validatorNodeID)
-		item.Validator.AttributionAvailable = item.Validator.PublicKey != ""
-		if item.Validator.AttributionAvailable {
-			item.Validator.Status = "not_found"
-			item.Validator.Source = "radar"
-		} else {
-			item.Validator.Status = "unavailable"
-		}
+		item.Validator = unresolvedServingLedgerValidator(decodeValidatorAccountID(validatorNodeID))
 		item.Transactions = ServingRecentLedgerTransactionCounts{
 			Total:      item.TransactionCount,
 			Successful: item.SuccessfulTxCount,
@@ -2555,13 +2548,7 @@ func (h *SilverHotReader) enrichServingLedgerValidatorIdentities(ctx context.Con
 		return
 	}
 
-	rows, err := h.db.QueryContext(ctx, `
-		SELECT public_key, COALESCE(name, ''), COALESCE(display_name, ''),
-		       COALESCE(alias, ''), COALESCE(home_domain, ''), COALESCE(organization_id, ''),
-		       source, source_updated_at, observed_at
-		FROM serving.sv_validator_identity_current
-		WHERE network = $1 AND public_key = ANY($2)
-	`, h.network, pq.Array(keys))
+	identities, err := h.lookupServingValidatorIdentities(ctx, keys)
 	if err != nil {
 		log.Printf("serving recent ledger validator identity lookup unavailable: %v", err)
 		for i := range ledgers {
@@ -2570,6 +2557,54 @@ func (h *SilverHotReader) enrichServingLedgerValidatorIdentities(ctx context.Con
 			}
 		}
 		return
+	}
+
+	for i := range ledgers {
+		identity, ok := identities[ledgers[i].Validator.PublicKey]
+		if ok {
+			ledgers[i].Validator = identity
+		}
+	}
+}
+
+func unresolvedServingLedgerValidator(publicKey string) ServingRecentLedgerValidator {
+	validator := ServingRecentLedgerValidator{PublicKey: publicKey}
+	validator.AttributionAvailable = publicKey != ""
+	if publicKey == "" {
+		validator.Status = "unavailable"
+		return validator
+	}
+	validator.Status = "not_found"
+	validator.Source = "radar"
+	return validator
+}
+
+func (h *SilverHotReader) GetServingValidatorIdentity(ctx context.Context, publicKey string) (ServingRecentLedgerValidator, error) {
+	validator := unresolvedServingLedgerValidator(publicKey)
+	if publicKey == "" || h == nil || h.db == nil {
+		return validator, nil
+	}
+	identities, err := h.lookupServingValidatorIdentities(ctx, []string{publicKey})
+	if err != nil {
+		validator.Status = "unavailable"
+		return validator, err
+	}
+	if identity, ok := identities[publicKey]; ok {
+		return identity, nil
+	}
+	return validator, nil
+}
+
+func (h *SilverHotReader) lookupServingValidatorIdentities(ctx context.Context, keys []string) (map[string]ServingRecentLedgerValidator, error) {
+	rows, err := h.db.QueryContext(ctx, `
+		SELECT public_key, COALESCE(name, ''), COALESCE(display_name, ''),
+		       COALESCE(alias, ''), COALESCE(home_domain, ''), COALESCE(organization_id, ''),
+		       source, source_updated_at, observed_at
+		FROM serving.sv_validator_identity_current
+		WHERE network = $1 AND public_key = ANY($2)
+	`, h.network, pq.Array(keys))
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -2589,8 +2624,7 @@ func (h *SilverHotReader) enrichServingLedgerValidatorIdentities(ctx context.Con
 			&sourceUpdatedAt,
 			&observedAt,
 		); err != nil {
-			log.Printf("serving recent ledger validator identity scan unavailable: %v", err)
-			return
+			return nil, err
 		}
 		identity.AttributionAvailable = true
 		identity.Status = "resolved"
@@ -2601,16 +2635,9 @@ func (h *SilverHotReader) enrichServingLedgerValidatorIdentities(ctx context.Con
 		identities[identity.PublicKey] = identity
 	}
 	if err := rows.Err(); err != nil {
-		log.Printf("serving recent ledger validator identity iteration unavailable: %v", err)
-		return
+		return nil, err
 	}
-
-	for i := range ledgers {
-		identity, ok := identities[ledgers[i].Validator.PublicKey]
-		if ok {
-			ledgers[i].Validator = identity
-		}
-	}
+	return identities, nil
 }
 
 // GetServingExplorerEvents returns recent explorer events from serving projections.

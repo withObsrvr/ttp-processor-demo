@@ -43,14 +43,15 @@ type LedgerSummaryResponse struct {
 }
 
 type LedgerSummaryLedger struct {
-	Sequence          int64   `json:"sequence"`
-	ClosedAt          string  `json:"closed_at"`
-	CloseTimeSeconds  float64 `json:"close_time_seconds,omitempty"`
-	ClosedByNodeID    string  `json:"closed_by_node_id,omitempty"`
-	ClosedByValidator string  `json:"closed_by_validator,omitempty"`
-	ProtocolVersion   int     `json:"protocol_version,omitempty"`
-	Hash              string  `json:"hash,omitempty"`
-	PreviousHash      string  `json:"previous_hash,omitempty"`
+	Sequence          int64                         `json:"sequence"`
+	ClosedAt          string                        `json:"closed_at"`
+	CloseTimeSeconds  float64                       `json:"close_time_seconds,omitempty"`
+	ClosedByNodeID    string                        `json:"closed_by_node_id,omitempty"`
+	ClosedByValidator string                        `json:"closed_by_validator,omitempty"`
+	Validator         *ServingRecentLedgerValidator `json:"validator,omitempty"`
+	ProtocolVersion   int                           `json:"protocol_version,omitempty"`
+	Hash              string                        `json:"hash,omitempty"`
+	PreviousHash      string                        `json:"previous_hash,omitempty"`
 }
 
 type LedgerSummaryTotals struct {
@@ -263,8 +264,7 @@ func (h *LedgerSummaryHandler) HandleLedgerSummary(w http.ResponseWriter, r *htt
 	}
 	resp.Ledger.ProtocolVersion = int(mapInt64(ledgerRow["protocol_version"]))
 	if closedBy, ok := ledgerRow["node_id"].(string); ok {
-		resp.Ledger.ClosedByNodeID = closedBy
-		resp.Ledger.ClosedByValidator = decodeValidatorAccountID(closedBy)
+		h.enrichLedgerSummaryValidator(ctx, &resp, closedBy)
 	}
 
 	txAggs, err := h.getLedgerTxAggs(ctx, seq)
@@ -297,6 +297,28 @@ func (h *LedgerSummaryHandler) HandleLedgerSummary(w http.ResponseWriter, r *htt
 	}
 
 	respondJSON(w, resp)
+}
+
+func (h *LedgerSummaryHandler) enrichLedgerSummaryValidator(ctx context.Context, resp *LedgerSummaryResponse, nodeID string) {
+	if resp == nil {
+		return
+	}
+	resp.Ledger.ClosedByNodeID = nodeID
+	publicKey := decodeValidatorAccountID(nodeID)
+	resp.Ledger.ClosedByValidator = publicKey
+	if publicKey == "" {
+		return
+	}
+
+	validator := unresolvedServingLedgerValidator(publicKey)
+	if h != nil && h.hot != nil {
+		if resolved, err := h.hot.GetServingValidatorIdentity(ctx, publicKey); err == nil {
+			validator = resolved
+		} else {
+			validator.Status = "unavailable"
+		}
+	}
+	resp.Ledger.Validator = &validator
 }
 
 func ledgerSummaryTotalsFromRow(ledgerRow map[string]interface{}) LedgerSummaryTotals {
