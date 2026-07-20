@@ -1124,7 +1124,11 @@ func (b *Backfiller) writeProjectionCheckpoints(ctx context.Context, projectionN
 		return fmt.Errorf("begin checkpoint handoff: %w", err)
 	}
 	for _, name := range projectionNames {
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE projection_name=%s AND network=%s", b.servingTable("sv_projection_checkpoints"), q(name), q(b.cfg.Network))); err != nil {
+		checkpointTable := b.servingTable("sv_projection_checkpoints")
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(
+			"DELETE FROM %s WHERE projection_name=%s AND network=%s AND last_ledger_sequence <= %d",
+			checkpointTable, q(name), q(b.cfg.Network), b.cfg.End,
+		)); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("delete checkpoint %s: %w", name, err)
 		}
@@ -1132,7 +1136,12 @@ func (b *Backfiller) writeProjectionCheckpoints(ctx context.Context, projectionN
 		if endClosedAt.Valid {
 			closedAt = q(endClosedAt.Time.Format("2006-01-02 15:04:05"))
 		}
-		stmt := fmt.Sprintf("INSERT INTO %s VALUES (%s, %s, %d, %s, current_timestamp)", b.servingTable("sv_projection_checkpoints"), q(name), q(b.cfg.Network), b.cfg.End, closedAt)
+		stmt := fmt.Sprintf(`INSERT INTO %s
+			SELECT %s, %s, %d, %s, current_timestamp
+			WHERE NOT EXISTS (
+				SELECT 1 FROM %s WHERE projection_name=%s AND network=%s
+			)`, checkpointTable, q(name), q(b.cfg.Network), b.cfg.End, closedAt,
+			checkpointTable, q(name), q(b.cfg.Network))
 		if _, err := tx.ExecContext(ctx, stmt); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("insert checkpoint %s: %w", name, err)

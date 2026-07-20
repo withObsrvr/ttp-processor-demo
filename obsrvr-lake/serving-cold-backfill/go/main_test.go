@@ -312,6 +312,34 @@ func TestCheckpointHandoffExtendsContiguousWatermark(t *testing.T) {
 	assertBackfillCount(t, db, `SELECT complete_thru FROM serving.sv_watermarks WHERE table_name='serving.sv_transactions_by_account'`, 8)
 }
 
+func TestCheckpointHandoffDoesNotRewindNewerProjection(t *testing.T) {
+	ctx := context.Background()
+	db := openBackfillFixtureDB(t)
+	defer db.Close()
+	loadBackfillFixture(t, ctx, db)
+
+	backfiller := NewBackfillerWithDB(db, Config{
+		Network:       "mainnet",
+		Start:         3,
+		End:           6,
+		ServingSchema: "serving",
+	})
+	if err := backfiller.ensureServingSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := backfiller.ensureManifest(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO serving.sv_projection_checkpoints VALUES ('sv_ledger_stats_recent', 'mainnet', 100, TIMESTAMP '2026-01-01 00:01:40', current_timestamp)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := backfiller.writeProjectionCheckpoints(ctx, []string{"sv_ledger_stats_recent"}); err != nil {
+		t.Fatalf("writeProjectionCheckpoints: %v", err)
+	}
+
+	assertBackfillCount(t, db, `SELECT last_ledger_sequence FROM serving.sv_projection_checkpoints WHERE projection_name='sv_ledger_stats_recent' AND network='mainnet'`, 100)
+}
+
 func TestCheckpointHandoffRejectsWatermarkGap(t *testing.T) {
 	ctx := context.Background()
 	db := openBackfillFixtureDB(t)
