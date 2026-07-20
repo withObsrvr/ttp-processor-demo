@@ -174,6 +174,13 @@ type CurrentProjection struct {
 	PostgresNative bool
 }
 
+// ProjectionHandoff separates the serving table identity from the logical
+// projector identity used by the incremental processor's checkpoint store.
+type ProjectionHandoff struct {
+	CheckpointName string
+	TargetTable    string
+}
+
 func transactionTOID(ledgerSequence, transactionOrder int64) int64 {
 	return (ledgerSequence << 32) | (transactionOrder << 12)
 }
@@ -469,7 +476,8 @@ func (b *Backfiller) Run(ctx context.Context, out io.Writer) error {
 		emit(out, Event{EventType: "component.failed", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, Phase: "verification", FailureClass: FailureVerification, Error: err.Error(), Recommended: recommendedAction(FailureVerification)})
 		return err
 	}
-	if err := b.writeProjectionCheckpoints(ctx, append(feedProjectionNames(feed), currentProjectionNames(current)...)); err != nil {
+	handoffs := append(feedProjectionHandoffs(feed), currentProjectionHandoffs(current)...)
+	if err := b.writeProjectionCheckpoints(ctx, handoffs); err != nil {
 		emit(out, Event{EventType: "component.failed", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, Phase: "checkpoint_handoff", FailureClass: classifyFailure(err), Error: err.Error(), Recommended: recommendedAction(classifyFailure(err))})
 		return err
 	}
@@ -532,7 +540,7 @@ func checkpointPlan(cfg Config, projections []Projection) []Checkpoint {
 	var checkpoints []Checkpoint
 	for _, p := range projections {
 		if p.Checkpoint {
-			checkpoints = append(checkpoints, Checkpoint{ProjectionName: p.Name, Network: cfg.Network, LastLedgerSequence: cfg.End, Status: "planned_after_all_verify"})
+			checkpoints = append(checkpoints, Checkpoint{ProjectionName: liveProjectorName(p.TargetTable), Network: cfg.Network, LastLedgerSequence: cfg.End, Status: "planned_after_all_verify"})
 		}
 	}
 	return checkpoints
@@ -1116,14 +1124,15 @@ func (b *Backfiller) verifyMaxLedger(ctx context.Context, projectionName, table,
 	return nil
 }
 
-func (b *Backfiller) writeProjectionCheckpoints(ctx context.Context, projectionNames []string) error {
+func (b *Backfiller) writeProjectionCheckpoints(ctx context.Context, handoffs []ProjectionHandoff) error {
 	var endClosedAt sql.NullTime
 	_ = b.db.QueryRowContext(ctx, fmt.Sprintf("SELECT MAX(closed_at) FROM %s WHERE ledger_sequence = %d", b.servingTable("sv_ledger_stats_recent"), b.cfg.End)).Scan(&endClosedAt)
 	tx, err := b.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin checkpoint handoff: %w", err)
 	}
-	for _, name := range projectionNames {
+	for _, handoff := range handoffs {
+		name := handoff.CheckpointName
 		checkpointTable := b.servingTable("sv_projection_checkpoints")
 		if _, err := tx.ExecContext(ctx, fmt.Sprintf(
 			"DELETE FROM %s WHERE projection_name=%s AND network=%s AND last_ledger_sequence <= %d",
@@ -1146,7 +1155,7 @@ func (b *Backfiller) writeProjectionCheckpoints(ctx context.Context, projectionN
 			_ = tx.Rollback()
 			return fmt.Errorf("insert checkpoint %s: %w", name, err)
 		}
-		tableName := b.cfg.ServingSchema + "." + name
+		tableName := b.cfg.ServingSchema + "." + handoff.TargetTable
 		if err := b.extendWatermark(ctx, tx, tableName); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("extend watermark %s: %w", name, err)
@@ -1205,6 +1214,28 @@ func (b *Backfiller) extendWatermark(ctx context.Context, tx *sql.Tx, tableName 
 	return err
 }
 
+func feedProjectionHandoffs(feed []FeedProjection) []ProjectionHandoff {
+	handoffs := make([]ProjectionHandoff, 0, len(feed))
+	for _, projection := range feed {
+		handoffs = append(handoffs, ProjectionHandoff{
+			CheckpointName: liveProjectorName(projection.TargetTable),
+			TargetTable:    projection.TargetTable,
+		})
+	}
+	return handoffs
+}
+
+func currentProjectionHandoffs(current []CurrentProjection) []ProjectionHandoff {
+	handoffs := make([]ProjectionHandoff, 0, len(current))
+	for _, projection := range current {
+		handoffs = append(handoffs, ProjectionHandoff{
+			CheckpointName: liveProjectorName(projection.TargetTable),
+			TargetTable:    projection.TargetTable,
+		})
+	}
+	return handoffs
+}
+
 func feedProjectionNames(feed []FeedProjection) []string {
 	names := make([]string, 0, len(feed))
 	for _, projection := range feed {
@@ -1219,6 +1250,42 @@ func currentProjectionNames(current []CurrentProjection) []string {
 		names = append(names, projection.Name)
 	}
 	return names
+}
+
+func liveProjectorName(targetTable string) string {
+	switch tableBaseName(targetTable) {
+	case "sv_ledger_stats_recent":
+		return "ledgers_recent"
+	case "sv_transactions_recent":
+		return "transactions_recent"
+	case "sv_operations_recent":
+		return "operations_recent"
+	case "sv_events_recent":
+		return "events_recent"
+	case "sv_explorer_events_recent":
+		return "explorer_events_recent"
+	case "sv_contract_calls_recent":
+		return "contract_calls_recent"
+	case "sv_tx_receipts":
+		return "tx_receipts"
+	case "sv_effects_by_account":
+		return "effects_by_account"
+	case "sv_accounts_current":
+		return "accounts_current"
+	case "sv_account_balances_current":
+		return "account_balances"
+	case "sv_contract_storage_current":
+		return "contract_storage"
+	default:
+		return tableBaseName(targetTable)
+	}
+}
+
+func tableBaseName(table string) string {
+	if index := strings.LastIndex(table, "."); index >= 0 {
+		return table[index+1:]
+	}
+	return table
 }
 
 func (b *Backfiller) retentionPredicate(timeExpr string) string {

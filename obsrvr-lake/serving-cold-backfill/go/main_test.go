@@ -126,6 +126,28 @@ func TestClassifiedOptionalTablesAreDocumented(t *testing.T) {
 	}
 }
 
+func TestLiveProjectorNamesMatchIncrementalCheckpointContract(t *testing.T) {
+	tests := map[string]string{
+		"serving.sv_ledger_stats_recent":     "ledgers_recent",
+		"sv_transactions_recent":             "transactions_recent",
+		"sv_operations_recent":               "operations_recent",
+		"sv_events_recent":                   "events_recent",
+		"sv_explorer_events_recent":          "explorer_events_recent",
+		"sv_contract_calls_recent":           "contract_calls_recent",
+		"sv_tx_receipts":                     "tx_receipts",
+		"sv_effects_by_account":              "effects_by_account",
+		"sv_accounts_current":                "accounts_current",
+		"sv_account_balances_current":        "account_balances",
+		"sv_contract_storage_current":        "contract_storage",
+		"sv_contract_function_stats_current": "sv_contract_function_stats_current",
+	}
+	for targetTable, want := range tests {
+		if got := liveProjectorName(targetTable); got != want {
+			t.Errorf("liveProjectorName(%q) = %q, want %q", targetTable, got, want)
+		}
+	}
+}
+
 func TestClassifyFailurePrecedence(t *testing.T) {
 	if got := classifyFailure(errors.New("postgres schema mismatch")); got != FailureNonRetryableSchema {
 		t.Fatalf("classifyFailure schema = %s", got)
@@ -277,6 +299,10 @@ func TestLedgerStatsBackfillDoesNotRequireSilverEnrichedLedgers(t *testing.T) {
 	}
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_ledger_stats_recent`, 4)
 	assertBackfillCount(t, db, `SELECT tx_set_operation_count FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=5`, 1)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_projection_checkpoints WHERE projection_name='ledgers_recent' AND network='mainnet' AND last_ledger_sequence=6`, 1)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_projection_checkpoints WHERE projection_name='sv_ledger_stats_recent' AND network='mainnet'`, 0)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_watermarks WHERE table_name='serving.sv_ledger_stats_recent' AND complete_from=3 AND complete_thru=6`, 1)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_watermarks WHERE table_name='serving.ledgers_recent'`, 0)
 }
 
 func TestByAccountOnlyProjectionSelection(t *testing.T) {
@@ -340,7 +366,7 @@ func TestCheckpointHandoffExtendsContiguousWatermark(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `INSERT INTO serving.sv_watermarks VALUES ('serving.sv_transactions_by_account', 'complete', 3, 6, current_timestamp)`); err != nil {
 		t.Fatal(err)
 	}
-	if err := backfiller.writeProjectionCheckpoints(ctx, []string{"sv_transactions_by_account"}); err != nil {
+	if err := backfiller.writeProjectionCheckpoints(ctx, []ProjectionHandoff{{CheckpointName: "sv_transactions_by_account", TargetTable: "sv_transactions_by_account"}}); err != nil {
 		t.Fatalf("writeProjectionCheckpoints: %v", err)
 	}
 
@@ -366,14 +392,14 @@ func TestCheckpointHandoffDoesNotRewindNewerProjection(t *testing.T) {
 	if err := backfiller.ensureManifest(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(ctx, `INSERT INTO serving.sv_projection_checkpoints VALUES ('sv_ledger_stats_recent', 'mainnet', 100, TIMESTAMP '2026-01-01 00:01:40', current_timestamp)`); err != nil {
+	if _, err := db.ExecContext(ctx, `INSERT INTO serving.sv_projection_checkpoints VALUES ('ledgers_recent', 'mainnet', 100, TIMESTAMP '2026-01-01 00:01:40', current_timestamp)`); err != nil {
 		t.Fatal(err)
 	}
-	if err := backfiller.writeProjectionCheckpoints(ctx, []string{"sv_ledger_stats_recent"}); err != nil {
+	if err := backfiller.writeProjectionCheckpoints(ctx, []ProjectionHandoff{{CheckpointName: "ledgers_recent", TargetTable: "sv_ledger_stats_recent"}}); err != nil {
 		t.Fatalf("writeProjectionCheckpoints: %v", err)
 	}
 
-	assertBackfillCount(t, db, `SELECT last_ledger_sequence FROM serving.sv_projection_checkpoints WHERE projection_name='sv_ledger_stats_recent' AND network='mainnet'`, 100)
+	assertBackfillCount(t, db, `SELECT last_ledger_sequence FROM serving.sv_projection_checkpoints WHERE projection_name='ledgers_recent' AND network='mainnet'`, 100)
 }
 
 func TestCheckpointHandoffRejectsWatermarkGap(t *testing.T) {
@@ -397,7 +423,7 @@ func TestCheckpointHandoffRejectsWatermarkGap(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `INSERT INTO serving.sv_watermarks VALUES ('serving.sv_transactions_by_account', 'complete', 3, 6, current_timestamp)`); err != nil {
 		t.Fatal(err)
 	}
-	err := backfiller.writeProjectionCheckpoints(ctx, []string{"sv_transactions_by_account"})
+	err := backfiller.writeProjectionCheckpoints(ctx, []ProjectionHandoff{{CheckpointName: "sv_transactions_by_account", TargetTable: "sv_transactions_by_account"}})
 	if err == nil || !strings.Contains(err.Error(), "not contiguous") {
 		t.Fatalf("writeProjectionCheckpoints error = %v, want non-contiguous range error", err)
 	}
