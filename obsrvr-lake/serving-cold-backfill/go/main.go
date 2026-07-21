@@ -1318,6 +1318,8 @@ func selectLedgerStatsRecent(b *Backfiller, chunk Chunk) string {
 			AND %s
 	), operation_categories AS (
 		SELECT o.ledger_sequence,
+			COUNT(*)::INTEGER AS included_operation_count,
+			COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE)::INTEGER AS successful_operation_count,
 			COUNT(*) FILTER (WHERE o.type = 0)::INTEGER AS account_creation,
 			COUNT(*) FILTER (WHERE o.type IN (1, 2, 13))::INTEGER AS payments,
 			COUNT(*) FILTER (WHERE o.type IN (3, 4, 12, 22, 23))::INTEGER AS offers_and_amms,
@@ -1342,7 +1344,13 @@ func selectLedgerStatsRecent(b *Backfiller, chunk Chunk) string {
 	)
 	SELECT l.ledger_sequence, l.closed_at, l.ledger_hash, l.prev_hash, l.protocol_version,
 		l.base_fee_stroops, l.max_tx_set_size, l.successful_tx_count, l.failed_tx_count, l.operation_count,
-		l.tx_set_operation_count, l.validator_node_id, l.ledger_close_signature, l.soroban_op_count,
+		CASE
+			WHEN COALESCE(c.successful_operation_count, 0) = l.operation_count
+				AND COALESCE(c.included_operation_count, 0) > COALESCE(l.tx_set_operation_count, -1)
+			THEN c.included_operation_count
+			ELSE l.tx_set_operation_count
+		END AS tx_set_operation_count,
+		l.validator_node_id, l.ledger_close_signature, l.soroban_op_count,
 		COALESCE(c.account_creation, 0) AS op_category_account_creation,
 		COALESCE(c.payments, 0) AS op_category_payments,
 		COALESCE(c.offers_and_amms, 0) AS op_category_offers_and_amms,
@@ -1359,11 +1367,13 @@ func selectLedgerStatsRecent(b *Backfiller, chunk Chunk) string {
 		COALESCE(c.successful_sponsorship, 0) AS successful_op_category_sponsorship,
 		COALESCE(c.successful_soroban, 0) AS successful_op_category_soroban,
 		COALESCE(c.successful_other, 0) AS successful_op_category_other,
-		l.tx_set_operation_count IS NOT NULL
-			AND COALESCE(c.account_creation, 0) + COALESCE(c.payments, 0) + COALESCE(c.offers_and_amms, 0) + COALESCE(c.trustlines, 0)
-				+ COALESCE(c.claimable_balances, 0) + COALESCE(c.sponsorship, 0) + COALESCE(c.soroban, 0) + COALESCE(c.other, 0) = l.tx_set_operation_count
-			AND COALESCE(c.successful_account_creation, 0) + COALESCE(c.successful_payments, 0) + COALESCE(c.successful_offers_and_amms, 0) + COALESCE(c.successful_trustlines, 0)
-				+ COALESCE(c.successful_claimable_balances, 0) + COALESCE(c.successful_sponsorship, 0) + COALESCE(c.successful_soroban, 0) + COALESCE(c.successful_other, 0) = l.operation_count
+		COALESCE(c.successful_operation_count, 0) = l.operation_count
+			AND COALESCE(c.included_operation_count, 0) = CASE
+				WHEN COALESCE(c.successful_operation_count, 0) = l.operation_count
+					AND COALESCE(c.included_operation_count, 0) > COALESCE(l.tx_set_operation_count, -1)
+				THEN c.included_operation_count
+				ELSE l.tx_set_operation_count
+			END
 			AS operation_categories_complete,
 		l.events_emitted, l.total_fee_charged_stroops,
 		NULL::BIGINT AS total_cpu_insns, NULL::BIGINT AS total_read_bytes, NULL::BIGINT AS total_write_bytes,

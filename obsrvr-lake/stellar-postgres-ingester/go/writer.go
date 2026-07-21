@@ -687,6 +687,14 @@ func countContractEvents(meta *xdr.TransactionMeta) int {
 	return 0
 }
 
+func countEnvelopeOperations(envelopes []xdr.TransactionEnvelope) uint32 {
+	var count uint32
+	for _, envelope := range envelopes {
+		count += uint32(len(envelope.Operations()))
+	}
+	return count
+}
+
 // extractLedgerData extracts ledger data from raw ledger protobuf
 func (w *Writer) extractLedgerData(rawLedger *pb.RawLedger) (*LedgerData, error) {
 	// Unmarshal XDR
@@ -730,7 +738,7 @@ func (w *Writer) extractLedgerData(rawLedger *pb.RawLedger) (*LedgerData, error)
 	var txCount uint32
 	var failedCount uint32
 	var operationCount uint32
-	var txSetOperationCount uint32
+	txSetOperationCount := countEnvelopeOperations(lcm.TransactionEnvelopes())
 
 	switch lcm.V {
 	case 0:
@@ -739,7 +747,6 @@ func (w *Writer) extractLedgerData(rawLedger *pb.RawLedger) (*LedgerData, error)
 		// V0 doesn't have tx processing results, count all ops from envelopes
 		for _, tx := range v0.TxSet.Txs {
 			opCount := uint32(len(tx.Operations()))
-			txSetOperationCount += opCount
 			operationCount += opCount
 		}
 	case 1:
@@ -750,8 +757,6 @@ func (w *Writer) extractLedgerData(rawLedger *pb.RawLedger) (*LedgerData, error)
 		for _, txApply := range v1.TxProcessing {
 			if opResults, ok := txApply.Result.Result.OperationResults(); ok {
 				opCount := uint32(len(opResults))
-				txSetOperationCount += opCount
-
 				if txApply.Result.Result.Successful() {
 					operationCount += opCount
 				} else {
@@ -769,8 +774,6 @@ func (w *Writer) extractLedgerData(rawLedger *pb.RawLedger) (*LedgerData, error)
 		for _, txApply := range v2.TxProcessing {
 			if opResults, ok := txApply.Result.Result.OperationResults(); ok {
 				opCount := uint32(len(opResults))
-				txSetOperationCount += opCount
-
 				if txApply.Result.Result.Successful() {
 					operationCount += opCount
 				} else {
@@ -898,7 +901,7 @@ func (w *Writer) extractLedgerDataFromLCM(lcm xdr.LedgerCloseMeta) (*LedgerData,
 	var txCount uint32
 	var failedCount uint32
 	var operationCount uint32
-	var txSetOperationCount uint32
+	txSetOperationCount := countEnvelopeOperations(lcm.TransactionEnvelopes())
 
 	switch lcm.V {
 	case 0:
@@ -906,7 +909,6 @@ func (w *Writer) extractLedgerDataFromLCM(lcm xdr.LedgerCloseMeta) (*LedgerData,
 		txCount = uint32(len(v0.TxSet.Txs))
 		for _, tx := range v0.TxSet.Txs {
 			opCount := uint32(len(tx.Operations()))
-			txSetOperationCount += opCount
 			operationCount += opCount
 		}
 	case 1:
@@ -915,7 +917,6 @@ func (w *Writer) extractLedgerDataFromLCM(lcm xdr.LedgerCloseMeta) (*LedgerData,
 		for _, txApply := range v1.TxProcessing {
 			if opResults, ok := txApply.Result.Result.OperationResults(); ok {
 				opCount := uint32(len(opResults))
-				txSetOperationCount += opCount
 				if txApply.Result.Result.Successful() {
 					operationCount += opCount
 				} else {
@@ -931,7 +932,6 @@ func (w *Writer) extractLedgerDataFromLCM(lcm xdr.LedgerCloseMeta) (*LedgerData,
 		for _, txApply := range v2.TxProcessing {
 			if opResults, ok := txApply.Result.Result.OperationResults(); ok {
 				opCount := uint32(len(opResults))
-				txSetOperationCount += opCount
 				if txApply.Result.Result.Successful() {
 					operationCount += opCount
 				} else {

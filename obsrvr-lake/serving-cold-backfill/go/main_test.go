@@ -337,6 +337,57 @@ func TestLedgerStatsClassifiesClaimableBalanceClawback(t *testing.T) {
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=6 AND operation_categories_complete=true`, 1)
 }
 
+func TestLedgerStatsRepairsProvenTransactionSetOperationUndercount(t *testing.T) {
+	ctx := context.Background()
+	db := openBackfillFixtureDB(t)
+	defer db.Close()
+	loadBackfillFixture(t, ctx, db)
+
+	if _, err := db.ExecContext(ctx, `
+		UPDATE bronze.ledgers_row_v2
+		SET operation_count = 2, tx_set_operation_count = 2
+		WHERE sequence = 6
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO bronze.operations_row_v2 VALUES
+			('tx6',6,0,1,25769807872,25769807873,1,true,0),
+			('tx6',6,1,1,25769807872,25769807874,1,true,0),
+			('tx6failed',6,2,2,25769811968,25769811969,1,false,0)
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	backfiller := NewBackfillerWithDB(db, Config{
+		Network:         "mainnet",
+		Start:           6,
+		End:             6,
+		Chunk:           1,
+		RetentionDays:   30,
+		BronzeSchema:    "bronze",
+		SilverSchema:    "silver",
+		ServingSchema:   "serving",
+		FeedProjections: "sv_ledger_stats_recent",
+		SkipCurrent:     true,
+	})
+	if err := backfiller.ensureServingSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := backfiller.ensureManifest(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if err := backfiller.Run(ctx, &out); err != nil {
+		t.Fatalf("backfill: %v\n%s", err, out.String())
+	}
+
+	assertBackfillCount(t, db, `SELECT tx_set_operation_count FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=6`, 3)
+	assertBackfillCount(t, db, `SELECT operation_count FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=6`, 2)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=6 AND operation_categories_complete=true`, 1)
+}
+
 func TestLedgerStatsBackfillDoesNotRequireSilverEnrichedLedgers(t *testing.T) {
 	ctx := context.Background()
 	db := openBackfillFixtureDB(t)

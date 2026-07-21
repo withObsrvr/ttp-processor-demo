@@ -255,6 +255,14 @@ func (h *LedgerSummaryHandler) HandleLedgerSummary(w http.ResponseWriter, r *htt
 			Partial:              false,
 		},
 	}
+	if h.hot != nil {
+		successful, included, complete, found, servingErr := h.hot.GetVerifiedServingLedgerOperationTotals(ctx, seq)
+		if servingErr != nil {
+			resp.Provenance.Partial = true
+		} else if found {
+			applyVerifiedServingOperationTotals(&resp.Totals, successful, included, complete)
+		}
+	}
 
 	if hash, ok := ledgerRow["ledger_hash"].(string); ok {
 		resp.Ledger.Hash = hash
@@ -271,6 +279,7 @@ func (h *LedgerSummaryHandler) HandleLedgerSummary(w http.ResponseWriter, r *htt
 	if err != nil {
 		resp.Provenance.Partial = true
 	} else {
+		applyVerifiedTransactionOperationTotals(&resp.Totals, txAggs)
 		activities, activityErr := h.getLedgerSemanticActivities(ctx, seq)
 		if activityErr != nil {
 			resp.Provenance.Partial = true
@@ -347,6 +356,41 @@ func ledgerSummaryTotalsFromRow(ledgerRow map[string]interface{}) LedgerSummaryT
 		SorobanOpCount:               mapInt64(ledgerRow["soroban_op_count"]),
 		TotalFeeCharged:              mapInt64(ledgerRow["total_fee_charged"]),
 	}
+}
+
+func applyVerifiedServingOperationTotals(totals *LedgerSummaryTotals, successful, included int64, complete bool) {
+	if totals == nil || !complete || successful < 0 || included < successful {
+		return
+	}
+	if successful != totals.SuccessfulOperationCount || included < totals.TransactionSetOperationCount {
+		return
+	}
+	// The serving projection derives these values from the operation rows and
+	// marks them complete only when the successful subset matches the ledger.
+	// It is therefore authoritative when an older Bronze ledger row undercounts
+	// failed operations in the transaction set.
+	totals.TransactionSetOperationCount = included
+	totals.FailedOperationCount = included - successful
+}
+
+func applyVerifiedTransactionOperationTotals(totals *LedgerSummaryTotals, transactions []ledgerSummaryTxAgg) {
+	if totals == nil || len(transactions) == 0 {
+		return
+	}
+	var included, successful int64
+	for _, transaction := range transactions {
+		if transaction.OpCount < 0 {
+			return
+		}
+		included += transaction.OpCount
+		if transaction.Successful {
+			successful += transaction.OpCount
+		}
+	}
+	if successful != totals.SuccessfulOperationCount || included < successful {
+		return
+	}
+	applyVerifiedServingOperationTotals(totals, successful, included, true)
 }
 
 func (h *LedgerSummaryHandler) getLedgerRow(ctx context.Context, seq int64) (map[string]interface{}, error) {

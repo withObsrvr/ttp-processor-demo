@@ -203,6 +203,15 @@ func TestAddressBalancesCurrentIsRetainedInHotServing(t *testing.T) {
 	if shouldDeleteFlushedTable("address_balances_current") {
 		t.Fatal("address_balances_current is bounded latest-per-key serving state and must not be deleted after cold archival")
 	}
+	for _, tableName := range []string{
+		"smart_account_context_rules",
+		"smart_account_signers",
+		"smart_account_policies",
+	} {
+		if shouldDeleteFlushedTable(tableName) {
+			t.Fatalf("%s is bounded smart-account current state and must not be deleted after cold archival", tableName)
+		}
+	}
 	if !shouldDeleteFlushedTable("contract_balance_changes") {
 		t.Fatal("append-only contract_balance_changes should still be deleted after cold archival")
 	}

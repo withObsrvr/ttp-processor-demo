@@ -45,7 +45,7 @@ func extractLedgers(lcm xdr.LedgerCloseMeta, networkPassphrase string, ledgerSeq
 	var txCount uint32
 	var failedCount uint32
 	var operationCount uint32
-	var txSetOperationCount uint32
+	txSetOperationCount := countEnvelopeOperations(lcm.TransactionEnvelopes())
 
 	switch lcm.V {
 	case 0:
@@ -53,7 +53,6 @@ func extractLedgers(lcm xdr.LedgerCloseMeta, networkPassphrase string, ledgerSeq
 		txCount = uint32(len(v0.TxSet.Txs))
 		for _, tx := range v0.TxSet.Txs {
 			opCount := uint32(len(tx.Operations()))
-			txSetOperationCount += opCount
 			operationCount += opCount
 		}
 	case 1:
@@ -62,7 +61,6 @@ func extractLedgers(lcm xdr.LedgerCloseMeta, networkPassphrase string, ledgerSeq
 		for _, txApply := range v1.TxProcessing {
 			if opResults, ok := txApply.Result.Result.OperationResults(); ok {
 				opCount := uint32(len(opResults))
-				txSetOperationCount += opCount
 				if txApply.Result.Result.Successful() {
 					operationCount += opCount
 				} else {
@@ -78,7 +76,6 @@ func extractLedgers(lcm xdr.LedgerCloseMeta, networkPassphrase string, ledgerSeq
 		for _, txApply := range v2.TxProcessing {
 			if opResults, ok := txApply.Result.Result.OperationResults(); ok {
 				opCount := uint32(len(opResults))
-				txSetOperationCount += opCount
 				if txApply.Result.Result.Successful() {
 					operationCount += opCount
 				} else {
@@ -183,6 +180,14 @@ func extractLedgers(lcm xdr.LedgerCloseMeta, networkPassphrase string, ledgerSeq
 	data.ContractEventsCount = &contractEventsCount
 
 	return []LedgerRowData{data}, nil
+}
+
+func countEnvelopeOperations(envelopes []xdr.TransactionEnvelope) uint32 {
+	var count uint32
+	for _, envelope := range envelopes {
+		count += uint32(len(envelope.Operations()))
+	}
+	return count
 }
 
 // countLedgerContractEvents counts contract events in a transaction meta.

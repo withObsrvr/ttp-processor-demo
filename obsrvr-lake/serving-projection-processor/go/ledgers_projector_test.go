@@ -36,3 +36,47 @@ func TestCategoryCountTotalCoversEveryCategory(t *testing.T) {
 		t.Fatalf("categoryCountTotal()=%d, want 36", got)
 	}
 }
+
+func TestResolveTransactionSetOperationCountRepairsProvenUndercount(t *testing.T) {
+	all := ledgerOperationCategoryCounts{
+		Payments: sql.NullInt32{Int32: 37, Valid: true},
+	}
+	successful := ledgerOperationCategoryCounts{
+		Payments: sql.NullInt32{Int32: 29, Valid: true},
+	}
+
+	got, complete := resolveTransactionSetOperationCount(
+		sql.NullInt32{Int32: 29, Valid: true},
+		sql.NullInt32{Int32: 29, Valid: true},
+		all,
+		successful,
+	)
+	if !got.Valid || got.Int32 != 37 {
+		t.Fatalf("resolved transaction-set operation count = %+v, want 37", got)
+	}
+	if !complete {
+		t.Fatal("operation categories backed by complete successful rows should be complete")
+	}
+}
+
+func TestResolveTransactionSetOperationCountDoesNotGuessFromIncompleteRows(t *testing.T) {
+	all := ledgerOperationCategoryCounts{
+		Payments: sql.NullInt32{Int32: 37, Valid: true},
+	}
+	successful := ledgerOperationCategoryCounts{
+		Payments: sql.NullInt32{Int32: 28, Valid: true},
+	}
+
+	got, complete := resolveTransactionSetOperationCount(
+		sql.NullInt32{Int32: 29, Valid: true},
+		sql.NullInt32{Int32: 29, Valid: true},
+		all,
+		successful,
+	)
+	if !got.Valid || got.Int32 != 29 {
+		t.Fatalf("unproven count was changed: %+v", got)
+	}
+	if complete {
+		t.Fatal("incomplete successful operation rows must not be marked complete")
+	}
+}

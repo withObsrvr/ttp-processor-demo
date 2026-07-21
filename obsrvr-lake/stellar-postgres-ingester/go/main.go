@@ -121,9 +121,13 @@ func main() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
-	// Start streaming ledgers
+	// Start streaming ledgers. Source disconnects are recoverable: resume from
+	// the durable checkpoint instead of cancelling the whole service.
 	go func() {
-		if err := streamLedgers(ctx, client, writer, startLedger, cfg.Source.EndLedger); err != nil {
+		stream := func(streamCtx context.Context, retryStart, end uint32) error {
+			return streamLedgers(streamCtx, client, writer, retryStart, end)
+		}
+		if err := runStreamWithReconnect(ctx, startLedger, cfg.Source.EndLedger, checkpoint, healthServer, time.Second, 30*time.Second, stream, sleepWithContext); err != nil && !errors.Is(err, context.Canceled) {
 			log.Printf("Stream error: %v", err)
 			cancel()
 		}
@@ -154,39 +158,50 @@ func main() {
 // The receiver and writer run in separate goroutines connected by a buffered channel,
 // so slow batch writes don't cause the gRPC stream to time out.
 func streamLedgers(ctx context.Context, client pb.RawLedgerServiceClient, writer *Writer, startLedger, endLedger uint32) error {
+	streamCtx, cancelStream := context.WithCancel(ctx)
+	defer cancelStream()
 	req := &pb.StreamLedgersRequest{
 		StartLedger: startLedger,
 	}
 
-	stream, err := client.StreamRawLedgers(ctx, req)
+	stream, err := client.StreamRawLedgers(streamCtx, req)
 	if err != nil {
 		return fmt.Errorf("failed to start stream: %w", err)
 	}
+	writer.healthServer.MarkStreamConnected()
 
 	log.Printf("Streaming ledgers from %d to %d (0 = continuous)", startLedger, endLedger)
 
 	// Buffer up to 200 ledgers (4 batches worth) between receiver and writer
 	ledgerCh := make(chan *pb.RawLedger, 200)
-	errCh := make(chan error, 2)
+	receiverErrCh := make(chan error, 1)
+	writerErrCh := make(chan error, 1)
 
 	// Receiver goroutine: reads from gRPC stream as fast as possible
 	go func() {
 		defer close(ledgerCh)
 		for {
-			if ctx.Err() != nil {
+			if streamCtx.Err() != nil {
+				receiverErrCh <- streamCtx.Err()
 				return
 			}
 			ledger, err := stream.Recv()
 			if err != nil {
-				if errors.Is(err, io.EOF) || ctx.Err() != nil {
+				if errors.Is(err, io.EOF) || streamCtx.Err() != nil {
+					if streamCtx.Err() != nil {
+						receiverErrCh <- streamCtx.Err()
+					} else {
+						receiverErrCh <- nil
+					}
 					return
 				}
-				errCh <- fmt.Errorf("stream receive error: %w", err)
+				receiverErrCh <- fmt.Errorf("stream receive error: %w", err)
 				return
 			}
 			select {
 			case ledgerCh <- ledger:
-			case <-ctx.Done():
+			case <-streamCtx.Done():
+				receiverErrCh <- streamCtx.Err()
 				return
 			}
 		}
@@ -229,7 +244,7 @@ func streamLedgers(ctx context.Context, client pb.RawLedgerServiceClient, writer
 
 			if shouldCommit {
 				if err := flushBatch(); err != nil {
-					errCh <- err
+					writerErrCh <- err
 					return
 				}
 			}
@@ -237,17 +252,94 @@ func streamLedgers(ctx context.Context, client pb.RawLedgerServiceClient, writer
 
 		// Flush remaining
 		if err := flushBatch(); err != nil {
-			errCh <- err
+			writerErrCh <- err
 			return
 		}
 
-		errCh <- nil
+		writerErrCh <- nil
 	}()
 
-	// Wait for either successful completion, an error, or cancellation.
+	// The writer can finish only after the receiver closes ledgerCh, so always
+	// wait for both results. This lets it flush buffered ledgers before a source
+	// reconnect advances from the durable checkpoint.
+	var receiverErr, writerErr error
 	select {
-	case err := <-errCh:
-		return err
+	case receiverErr = <-receiverErrCh:
+		writerErr = <-writerErrCh
+	case writerErr = <-writerErrCh:
+		cancelStream()
+		receiverErr = <-receiverErrCh
+	}
+	if writerErr != nil {
+		return writerErr
+	}
+	return receiverErr
+}
+
+type ledgerStreamFunc func(context.Context, uint32, uint32) error
+type reconnectSleepFunc func(context.Context, time.Duration) error
+
+func runStreamWithReconnect(
+	ctx context.Context,
+	initialStart, endLedger uint32,
+	checkpoint *Checkpoint,
+	health *HealthServer,
+	initialDelay, maxDelay time.Duration,
+	stream ledgerStreamFunc,
+	sleep reconnectSleepFunc,
+) error {
+	if initialDelay <= 0 {
+		initialDelay = time.Second
+	}
+	if maxDelay < initialDelay {
+		maxDelay = initialDelay
+	}
+	delay := initialDelay
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		start := initialStart
+		if last := checkpoint.GetLastLedger(); last >= start {
+			if endLedger > 0 && last >= endLedger {
+				return nil
+			}
+			start = last + 1
+		}
+		before := checkpoint.GetLastLedger()
+		health.MarkStreamConnecting()
+		err := stream(ctx, start, endLedger)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err == nil && endLedger > 0 && checkpoint.GetLastLedger() >= endLedger {
+			return nil
+		}
+		if err == nil {
+			err = io.ErrUnexpectedEOF
+		}
+		health.MarkStreamError(err)
+		log.Printf("Stream disconnected at checkpoint %d: %v; reconnecting in %s", checkpoint.GetLastLedger(), err, delay)
+		if err := sleep(ctx, delay); err != nil {
+			return err
+		}
+		if checkpoint.GetLastLedger() > before {
+			delay = initialDelay
+		} else if delay < maxDelay {
+			delay *= 2
+			if delay > maxDelay {
+				delay = maxDelay
+			}
+		}
+	}
+}
+
+func sleepWithContext(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}

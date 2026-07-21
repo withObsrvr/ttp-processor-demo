@@ -196,10 +196,13 @@ func (p *LedgersRecentProjector) RunOnce(ctx context.Context) (RunStats, error) 
 		); err != nil {
 			return RunStats{}, fmt.Errorf("scan bronze ledger: %w", err)
 		}
+		row.TxSetOperationCount, row.OperationCategoriesComplete = resolveTransactionSetOperationCount(
+			row.TxSetOperationCount,
+			row.OperationCount,
+			row.OperationCategories,
+			row.SuccessfulOperationCategories,
+		)
 		batch = append(batch, row)
-		batch[len(batch)-1].OperationCategoriesComplete =
-			categoryCountTotal(row.OperationCategories) == nullableInt32Value(row.TxSetOperationCount) &&
-				categoryCountTotal(row.SuccessfulOperationCategories) == nullableInt32Value(row.OperationCount)
 	}
 	if err := rows.Err(); err != nil {
 		return RunStats{}, fmt.Errorf("iterate bronze ledgers: %w", err)
@@ -365,6 +368,28 @@ func categoryCountTotal(counts ledgerOperationCategoryCounts) int32 {
 		nullableInt32Value(counts.Sponsorship) +
 		nullableInt32Value(counts.Soroban) +
 		nullableInt32Value(counts.Other)
+}
+
+// resolveTransactionSetOperationCount repairs a historical ledger-row
+// undercount only when the operation rows prove that their successful subset is
+// complete. This preserves the source value when the operation projection is
+// itself partial while allowing failed operations omitted from older ledger
+// metadata to be counted exactly.
+func resolveTransactionSetOperationCount(
+	stored sql.NullInt32,
+	storedSuccessful sql.NullInt32,
+	allCategories ledgerOperationCategoryCounts,
+	successfulCategories ledgerOperationCategoryCounts,
+) (sql.NullInt32, bool) {
+	derivedAll := categoryCountTotal(allCategories)
+	derivedSuccessful := categoryCountTotal(successfulCategories)
+	if !storedSuccessful.Valid || derivedSuccessful != storedSuccessful.Int32 {
+		return stored, false
+	}
+	if !stored.Valid || derivedAll > stored.Int32 {
+		stored = sql.NullInt32{Int32: derivedAll, Valid: true}
+	}
+	return stored, stored.Valid && derivedAll == stored.Int32
 }
 
 func nullableInt32Value(value sql.NullInt32) int32 {

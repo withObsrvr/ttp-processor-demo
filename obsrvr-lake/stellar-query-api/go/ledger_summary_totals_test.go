@@ -38,6 +38,52 @@ func TestLedgerSummaryTotalsFallsBackForPreMigrationRows(t *testing.T) {
 	}
 }
 
+func TestLedgerSummaryTotalsAcceptsVerifiedServingCorrection(t *testing.T) {
+	totals := ledgerSummaryTotalsFromRow(map[string]interface{}{
+		"operation_count":        int64(29),
+		"tx_set_operation_count": int64(29),
+	})
+
+	applyVerifiedServingOperationTotals(&totals, 29, 37, true)
+
+	if totals.OperationCount != 29 || totals.SuccessfulOperationCount != 29 {
+		t.Fatalf("successful totals changed: %+v", totals)
+	}
+	if totals.TransactionSetOperationCount != 37 || totals.FailedOperationCount != 8 {
+		t.Fatalf("serving correction was not applied: %+v", totals)
+	}
+}
+
+func TestLedgerSummaryTotalsRejectsIncompleteServingCorrection(t *testing.T) {
+	totals := ledgerSummaryTotalsFromRow(map[string]interface{}{
+		"operation_count":        int64(29),
+		"tx_set_operation_count": int64(29),
+	})
+
+	applyVerifiedServingOperationTotals(&totals, 29, 37, false)
+
+	if totals.TransactionSetOperationCount != 29 || totals.FailedOperationCount != 0 {
+		t.Fatalf("incomplete serving totals should not be trusted: %+v", totals)
+	}
+}
+
+func TestLedgerSummaryTotalsUsesCompleteTransactionEnvelopes(t *testing.T) {
+	totals := ledgerSummaryTotalsFromRow(map[string]interface{}{
+		"operation_count":        int64(29),
+		"tx_set_operation_count": int64(29),
+	})
+	transactions := []ledgerSummaryTxAgg{
+		{OpCount: 29, Successful: true},
+		{OpCount: 8, Successful: false},
+	}
+
+	applyVerifiedTransactionOperationTotals(&totals, transactions)
+
+	if totals.TransactionSetOperationCount != 37 || totals.FailedOperationCount != 8 {
+		t.Fatalf("transaction envelope correction was not applied: %+v", totals)
+	}
+}
+
 func TestLedgerSummaryIncludesResolvedValidatorIdentity(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

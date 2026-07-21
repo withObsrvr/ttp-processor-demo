@@ -10,12 +10,15 @@ import (
 
 // HealthServer provides health and metrics endpoints
 type HealthServer struct {
-	mu         sync.RWMutex
-	port       int
-	startTime  time.Time
-	checkpoint *Checkpoint
-	metrics    *IngestionMetrics
-	server     *http.Server
+	mu          sync.RWMutex
+	port        int
+	startTime   time.Time
+	checkpoint  *Checkpoint
+	metrics     *IngestionMetrics
+	server      *http.Server
+	streamState string
+	staleAfter  time.Duration
+	now         func() time.Time
 }
 
 // IngestionMetrics tracks real-time ingestion metrics
@@ -34,6 +37,7 @@ type IngestionMetrics struct {
 // HealthResponse is the JSON response for /health
 type HealthResponse struct {
 	Status            string  `json:"status"`
+	StreamState       string  `json:"stream_state"`
 	Uptime            string  `json:"uptime"`
 	LastLedger        uint32  `json:"last_ledger"`
 	TotalLedgers      uint64  `json:"total_ledgers"`
@@ -43,16 +47,27 @@ type HealthResponse struct {
 	ErrorCount        uint64  `json:"error_count"`
 	LastError         string  `json:"last_error,omitempty"`
 	LastErrorTime     string  `json:"last_error_time,omitempty"`
+	LastProgressTime  string  `json:"last_progress_time,omitempty"`
 }
 
 // NewHealthServer creates a new health server
 func NewHealthServer(port int, checkpoint *Checkpoint) *HealthServer {
+	return NewHealthServerWithStaleAfter(port, checkpoint, 2*time.Minute)
+}
+
+// NewHealthServerWithStaleAfter creates a health server with an explicit
+// progress threshold. It is primarily useful for deterministic health tests.
+func NewHealthServerWithStaleAfter(port int, checkpoint *Checkpoint, staleAfter time.Duration) *HealthServer {
+	now := time.Now()
 	return &HealthServer{
-		port:       port,
-		startTime:  time.Now(),
-		checkpoint: checkpoint,
+		port:        port,
+		startTime:   now,
+		checkpoint:  checkpoint,
+		streamState: "starting",
+		staleAfter:  staleAfter,
+		now:         time.Now,
 		metrics: &IngestionMetrics{
-			LastLedgerTime: time.Now(),
+			LastLedgerTime: now,
 		},
 	}
 }
@@ -88,7 +103,14 @@ func (hs *HealthServer) Stop() error {
 // handleHealth handles /health endpoint
 func (hs *HealthServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	hs.mu.RLock()
-	defer hs.mu.RUnlock()
+	streamState := hs.streamState
+	startTime := hs.startTime
+	staleAfter := hs.staleAfter
+	now := hs.now
+	hs.mu.RUnlock()
+	if now == nil {
+		now = time.Now
+	}
 
 	lastLedger, totalLedgers, totalTx, totalOps := hs.checkpoint.GetStats()
 
@@ -97,17 +119,31 @@ func (hs *HealthServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	lastError := hs.metrics.LastError
 	lastErrorTime := hs.metrics.LastErrorTime
 	processingRate := hs.metrics.ProcessingRate
+	lastLedgerTime := hs.metrics.LastLedgerTime
 	hs.metrics.mu.RUnlock()
 
+	status := "healthy"
+	httpStatus := http.StatusOK
+	if streamState == "reconnecting" || streamState == "connecting" || streamState == "starting" {
+		status = "degraded"
+		httpStatus = http.StatusServiceUnavailable
+	} else if staleAfter > 0 && now().Sub(lastLedgerTime) > staleAfter {
+		status = "degraded"
+		streamState = "stale"
+		httpStatus = http.StatusServiceUnavailable
+	}
+
 	resp := HealthResponse{
-		Status:            "healthy",
-		Uptime:            time.Since(hs.startTime).String(),
+		Status:            status,
+		StreamState:       streamState,
+		Uptime:            now().Sub(startTime).String(),
 		LastLedger:        lastLedger,
 		TotalLedgers:      totalLedgers,
 		TotalTransactions: totalTx,
 		TotalOperations:   totalOps,
 		ProcessingRate:    processingRate,
 		ErrorCount:        errorCount,
+		LastProgressTime:  lastLedgerTime.UTC().Format(time.RFC3339),
 	}
 
 	if lastError != "" {
@@ -116,14 +152,12 @@ func (hs *HealthServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(httpStatus)
 	json.NewEncoder(w).Encode(resp)
 }
 
 // handleMetrics handles /metrics endpoint (Prometheus-compatible plain text)
 func (hs *HealthServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
-	hs.mu.RLock()
-	defer hs.mu.RUnlock()
-
 	lastLedger, totalLedgers, totalTx, totalOps := hs.checkpoint.GetStats()
 
 	hs.metrics.mu.RLock()
@@ -159,6 +193,7 @@ func (hs *HealthServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 
 // UpdateMetrics updates the ingestion metrics
 func (hs *HealthServer) UpdateMetrics(ledgersCount, txCount, opCount uint64) {
+	now := hs.currentTime()
 	hs.metrics.mu.Lock()
 	defer hs.metrics.mu.Unlock()
 
@@ -167,7 +202,6 @@ func (hs *HealthServer) UpdateMetrics(ledgersCount, txCount, opCount uint64) {
 	hs.metrics.OperationsProcessed += opCount
 
 	// Calculate processing rate
-	now := time.Now()
 	elapsed := now.Sub(hs.metrics.LastLedgerTime).Seconds()
 	if elapsed > 0 {
 		hs.metrics.ProcessingRate = float64(ledgersCount) / elapsed
@@ -175,12 +209,42 @@ func (hs *HealthServer) UpdateMetrics(ledgersCount, txCount, opCount uint64) {
 	hs.metrics.LastLedgerTime = now
 }
 
+func (hs *HealthServer) currentTime() time.Time {
+	hs.mu.RLock()
+	now := hs.now
+	hs.mu.RUnlock()
+	if now == nil {
+		return time.Now()
+	}
+	return now()
+}
+
+func (hs *HealthServer) MarkStreamConnecting() {
+	hs.mu.Lock()
+	hs.streamState = "connecting"
+	hs.mu.Unlock()
+}
+
+func (hs *HealthServer) MarkStreamConnected() {
+	hs.mu.Lock()
+	hs.streamState = "streaming"
+	hs.mu.Unlock()
+}
+
+func (hs *HealthServer) MarkStreamError(err error) {
+	hs.mu.Lock()
+	hs.streamState = "reconnecting"
+	hs.mu.Unlock()
+	hs.RecordError(err)
+}
+
 // RecordError records an error in metrics
 func (hs *HealthServer) RecordError(err error) {
+	now := hs.currentTime()
 	hs.metrics.mu.Lock()
 	defer hs.metrics.mu.Unlock()
 
 	hs.metrics.ErrorCount++
 	hs.metrics.LastError = err.Error()
-	hs.metrics.LastErrorTime = time.Now()
+	hs.metrics.LastErrorTime = now
 }

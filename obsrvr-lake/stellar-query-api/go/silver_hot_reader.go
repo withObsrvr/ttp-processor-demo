@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sort"
@@ -2528,6 +2529,23 @@ func (h *SilverHotReader) GetServingRecentLedgers(ctx context.Context, limit int
 	}
 	h.enrichServingLedgerValidatorIdentities(ctx, out)
 	return latestSequence, out, nil
+}
+
+func (h *SilverHotReader) GetVerifiedServingLedgerOperationTotals(ctx context.Context, ledgerSequence int64) (successful, included int64, complete, found bool, err error) {
+	err = h.db.QueryRowContext(ctx, `
+		SELECT COALESCE(operation_count, 0),
+		       COALESCE(tx_set_operation_count, operation_count, 0),
+		       COALESCE(operation_categories_complete, false)
+		FROM serving.sv_ledger_stats_recent
+		WHERE ledger_sequence = $1
+	`, ledgerSequence).Scan(&successful, &included, &complete)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, 0, false, false, nil
+	}
+	if err != nil {
+		return 0, 0, false, false, err
+	}
+	return successful, included, complete, true, nil
 }
 
 func (h *SilverHotReader) enrichServingLedgerValidatorIdentities(ctx context.Context, ledgers []ServingRecentLedger) {

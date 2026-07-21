@@ -376,11 +376,19 @@ func (f *Flusher) deleteFlushedData(watermark int64, tables []string) (int64, er
 }
 
 // shouldDeleteFlushedTable distinguishes append/history tables from bounded
-// serving state. address_balances_current contains one latest row per
-// (owner_address, asset_key); deleting it after archival makes historical-only
-// contract holders disappear from Query API until another on-chain change.
+// serving state. Current-state tables contain one latest row per logical key;
+// deleting them after archival makes unchanged entities disappear from Query API
+// and can make downstream serving rebuilds look destructively empty.
 func shouldDeleteFlushedTable(tableName string) bool {
-	return tableName != "address_balances_current"
+	switch tableName {
+	case "address_balances_current",
+		"smart_account_context_rules",
+		"smart_account_signers",
+		"smart_account_policies":
+		return false
+	default:
+		return true
+	}
 }
 
 // deleteFlushBatchSize bounds each DELETE so it holds row locks only briefly. A single large delete
