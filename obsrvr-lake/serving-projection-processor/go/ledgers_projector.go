@@ -19,6 +19,11 @@ type LedgersRecentProjector struct {
 	checkpoints *CheckpointStore
 }
 
+const (
+	claimableBalanceOperationTypesSQL = "14, 15, 20"
+	categorizedOperationTypesSQL      = "0,1,2,3,4,6,7,12,13,14,15,16,17,18,20,21,22,23,24,25,26"
+)
+
 type bronzeLedgerRow struct {
 	Sequence                      int64
 	ClosedAt                      time.Time
@@ -81,7 +86,7 @@ func (p *LedgersRecentProjector) RunOnce(ctx context.Context) (RunStats, error) 
 
 	dataTime := resolveDataTimeBy(ctx, p.sourcePool, "ledgers_row_v2", "closed_at", "sequence")
 
-	rows, err := p.sourcePool.Query(ctx, `
+	operationCategoriesQuery := fmt.Sprintf(`
 		WITH next_ledgers AS (
 			SELECT
 			sequence,
@@ -110,18 +115,18 @@ func (p *LedgersRecentProjector) RunOnce(ctx context.Context) (RunStats, error) 
 				COUNT(*) FILTER (WHERE o.type IN (1, 2, 13))::integer AS payments,
 				COUNT(*) FILTER (WHERE o.type IN (3, 4, 12, 22, 23))::integer AS offers_and_amms,
 				COUNT(*) FILTER (WHERE o.type IN (6, 7, 21))::integer AS trustlines,
-				COUNT(*) FILTER (WHERE o.type IN (14, 15, 19))::integer AS claimable_balances,
+				COUNT(*) FILTER (WHERE o.type IN (%[1]s))::integer AS claimable_balances,
 				COUNT(*) FILTER (WHERE o.type IN (16, 17, 18))::integer AS sponsorship,
 				COUNT(*) FILTER (WHERE o.type IN (24, 25, 26))::integer AS soroban,
-				COUNT(*) FILTER (WHERE o.type IS NULL OR o.type NOT IN (0,1,2,3,4,6,7,12,13,14,15,16,17,18,19,21,22,23,24,25,26))::integer AS other,
+				COUNT(*) FILTER (WHERE o.type IS NULL OR o.type NOT IN (%[2]s))::integer AS other,
 				COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND o.type = 0)::integer AS successful_account_creation,
 				COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND o.type IN (1, 2, 13))::integer AS successful_payments,
 				COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND o.type IN (3, 4, 12, 22, 23))::integer AS successful_offers_and_amms,
 				COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND o.type IN (6, 7, 21))::integer AS successful_trustlines,
-				COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND o.type IN (14, 15, 19))::integer AS successful_claimable_balances,
+				COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND o.type IN (%[1]s))::integer AS successful_claimable_balances,
 				COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND o.type IN (16, 17, 18))::integer AS successful_sponsorship,
 				COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND o.type IN (24, 25, 26))::integer AS successful_soroban,
-				COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND (o.type IS NULL OR o.type NOT IN (0,1,2,3,4,6,7,12,13,14,15,16,17,18,19,21,22,23,24,25,26)))::integer AS successful_other
+				COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND (o.type IS NULL OR o.type NOT IN (%[2]s)))::integer AS successful_other
 			FROM operations_row_v2 o
 			JOIN next_ledgers l ON l.sequence = o.ledger_sequence
 			GROUP BY o.ledger_sequence
@@ -147,7 +152,8 @@ func (p *LedgersRecentProjector) RunOnce(ctx context.Context) (RunStats, error) 
 		FROM next_ledgers l
 		LEFT JOIN operation_categories c ON c.ledger_sequence = l.sequence
 		ORDER BY l.sequence ASC
-	`, checkpoint, p.batchSize, dataTime)
+	`, claimableBalanceOperationTypesSQL, categorizedOperationTypesSQL)
+	rows, err := p.sourcePool.Query(ctx, operationCategoriesQuery, checkpoint, p.batchSize, dataTime)
 	if err != nil {
 		return RunStats{}, fmt.Errorf("query bronze ledgers: %w", err)
 	}

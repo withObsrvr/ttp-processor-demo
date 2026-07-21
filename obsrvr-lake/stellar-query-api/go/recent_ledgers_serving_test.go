@@ -46,8 +46,8 @@ func TestGetServingRecentLedgersReturnsExplicitOperationSemanticsAndValidator(t 
 	mock.ExpectQuery(`(?s)SELECT public_key.*FROM serving\.sv_validator_identity_current.*WHERE network = \$1 AND public_key = ANY\(\$2\)`).
 		WithArgs("testnet", sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"public_key", "name", "display_name", "alias", "home_domain", "organization_id", "source", "source_updated_at", "observed_at",
-		}).AddRow(validatorAddress, "SDF Testnet 3", "SDF Testnet 3", "sdf_testnet_3", "", "", "radar", closedAt.Add(-time.Hour), closedAt))
+			"public_key", "name", "display_name", "alias", "home_domain", "organization_id", "source", "source_updated_at", "observed_at", "identity_status",
+		}).AddRow(validatorAddress, "SDF Testnet 3", "SDF Testnet 3", "sdf_testnet_3", "", "", "radar", closedAt.Add(-time.Hour), closedAt, "resolved"))
 
 	reader := &SilverHotReader{db: db, network: "testnet"}
 	latest, ledgers, err := reader.GetServingRecentLedgers(context.Background(), 6)
@@ -110,6 +110,33 @@ func TestServingRecentLedgerIdentityIsSoftDependency(t *testing.T) {
 
 	if ledgers[0].Validator.Status != "unavailable" || ledgers[0].Validator.PublicKey != "GVALIDATOR" {
 		t.Fatalf("base validator attribution was not preserved: %+v", ledgers[0].Validator)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet SQL expectations: %v", err)
+	}
+}
+
+func TestServingValidatorIdentityFallsBackToRetiredHistory(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	observedAt := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	mock.ExpectQuery(`(?s)WITH candidates AS.*sv_validator_identity_current.*UNION ALL.*sv_validator_identity_history.*identity_rank = 1`).
+		WithArgs("testnet", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"public_key", "name", "display_name", "alias", "home_domain", "organization_id", "source", "source_updated_at", "observed_at", "identity_status",
+		}).AddRow("GVALIDATOR", "Retired Node", "Retired Node", "retired", "example.org", "org", "radar", observedAt.Add(-time.Hour), observedAt, "historical"))
+
+	reader := &SilverHotReader{db: db, network: "testnet"}
+	identity, err := reader.GetServingValidatorIdentity(context.Background(), "GVALIDATOR")
+	if err != nil {
+		t.Fatalf("GetServingValidatorIdentity: %v", err)
+	}
+	if identity.Status != "historical" || identity.Name != "Retired Node" || !identity.AttributionAvailable {
+		t.Fatalf("historical validator identity not preserved: %+v", identity)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet SQL expectations: %v", err)

@@ -1322,18 +1322,18 @@ func selectLedgerStatsRecent(b *Backfiller, chunk Chunk) string {
 			COUNT(*) FILTER (WHERE o.type IN (1, 2, 13))::INTEGER AS payments,
 			COUNT(*) FILTER (WHERE o.type IN (3, 4, 12, 22, 23))::INTEGER AS offers_and_amms,
 			COUNT(*) FILTER (WHERE o.type IN (6, 7, 21))::INTEGER AS trustlines,
-			COUNT(*) FILTER (WHERE o.type IN (14, 15, 19))::INTEGER AS claimable_balances,
+			COUNT(*) FILTER (WHERE o.type IN (14, 15, 20))::INTEGER AS claimable_balances,
 			COUNT(*) FILTER (WHERE o.type IN (16, 17, 18))::INTEGER AS sponsorship,
 			COUNT(*) FILTER (WHERE o.type IN (24, 25, 26))::INTEGER AS soroban,
-			COUNT(*) FILTER (WHERE o.type IS NULL OR o.type NOT IN (0,1,2,3,4,6,7,12,13,14,15,16,17,18,19,21,22,23,24,25,26))::INTEGER AS other,
+			COUNT(*) FILTER (WHERE o.type IS NULL OR o.type NOT IN (0,1,2,3,4,6,7,12,13,14,15,16,17,18,20,21,22,23,24,25,26))::INTEGER AS other,
 			COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND o.type = 0)::INTEGER AS successful_account_creation,
 			COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND o.type IN (1, 2, 13))::INTEGER AS successful_payments,
 			COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND o.type IN (3, 4, 12, 22, 23))::INTEGER AS successful_offers_and_amms,
 			COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND o.type IN (6, 7, 21))::INTEGER AS successful_trustlines,
-			COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND o.type IN (14, 15, 19))::INTEGER AS successful_claimable_balances,
+			COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND o.type IN (14, 15, 20))::INTEGER AS successful_claimable_balances,
 			COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND o.type IN (16, 17, 18))::INTEGER AS successful_sponsorship,
 			COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND o.type IN (24, 25, 26))::INTEGER AS successful_soroban,
-			COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND (o.type IS NULL OR o.type NOT IN (0,1,2,3,4,6,7,12,13,14,15,16,17,18,19,21,22,23,24,25,26)))::INTEGER AS successful_other
+			COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND (o.type IS NULL OR o.type NOT IN (0,1,2,3,4,6,7,12,13,14,15,16,17,18,20,21,22,23,24,25,26)))::INTEGER AS successful_other
 		FROM %s o
 		JOIN retained_ledgers l ON l.ledger_sequence = o.ledger_sequence
 		WHERE o.ledger_sequence BETWEEN %d AND %d

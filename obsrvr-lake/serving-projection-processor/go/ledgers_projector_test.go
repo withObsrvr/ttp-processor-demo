@@ -2,8 +2,23 @@ package main
 
 import (
 	"database/sql"
+	"strings"
 	"testing"
 )
+
+func TestClaimableBalanceOperationDiscriminants(t *testing.T) {
+	containsType := func(list string, operationType string) bool {
+		compact := "," + strings.ReplaceAll(list, " ", "") + ","
+		return strings.Contains(compact, ","+operationType+",")
+	}
+
+	if containsType(claimableBalanceOperationTypesSQL, "19") || !containsType(claimableBalanceOperationTypesSQL, "20") {
+		t.Fatalf("claimable-balance operation types = %q, want type 20 and not type 19", claimableBalanceOperationTypesSQL)
+	}
+	if containsType(categorizedOperationTypesSQL, "19") || !containsType(categorizedOperationTypesSQL, "20") {
+		t.Fatalf("categorized operation types = %q, want type 20 and not type 19", categorizedOperationTypesSQL)
+	}
+}
 
 func TestCategoryCountTotalCoversEveryCategory(t *testing.T) {
 	counts := ledgerOperationCategoryCounts{

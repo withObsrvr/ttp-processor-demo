@@ -2597,11 +2597,30 @@ func (h *SilverHotReader) GetServingValidatorIdentity(ctx context.Context, publi
 
 func (h *SilverHotReader) lookupServingValidatorIdentities(ctx context.Context, keys []string) (map[string]ServingRecentLedgerValidator, error) {
 	rows, err := h.db.QueryContext(ctx, `
+		WITH candidates AS (
+			SELECT public_key, name, display_name, alias, home_domain, organization_id,
+			       source, source_updated_at, observed_at,
+			       'resolved'::text AS identity_status, 0 AS source_priority, observed_at AS sort_at
+			FROM serving.sv_validator_identity_current
+			WHERE network = $1 AND public_key = ANY($2)
+			UNION ALL
+			SELECT public_key, name, display_name, alias, home_domain, organization_id,
+			       source, source_updated_at, valid_from AS observed_at,
+			       'historical'::text AS identity_status, 1 AS source_priority, valid_from AS sort_at
+			FROM serving.sv_validator_identity_history
+			WHERE network = $1 AND public_key = ANY($2)
+		), ranked AS (
+			SELECT *, ROW_NUMBER() OVER (
+				PARTITION BY public_key
+				ORDER BY source_priority ASC, sort_at DESC
+			) AS identity_rank
+			FROM candidates
+		)
 		SELECT public_key, COALESCE(name, ''), COALESCE(display_name, ''),
 		       COALESCE(alias, ''), COALESCE(home_domain, ''), COALESCE(organization_id, ''),
-		       source, source_updated_at, observed_at
-		FROM serving.sv_validator_identity_current
-		WHERE network = $1 AND public_key = ANY($2)
+		       source, source_updated_at, observed_at, identity_status
+		FROM ranked
+		WHERE identity_rank = 1
 	`, h.network, pq.Array(keys))
 	if err != nil {
 		return nil, err
@@ -2623,11 +2642,11 @@ func (h *SilverHotReader) lookupServingValidatorIdentities(ctx context.Context, 
 			&identity.Source,
 			&sourceUpdatedAt,
 			&observedAt,
+			&identity.Status,
 		); err != nil {
 			return nil, err
 		}
 		identity.AttributionAvailable = true
-		identity.Status = "resolved"
 		if sourceUpdatedAt.Valid {
 			identity.SourceUpdatedAt = sourceUpdatedAt.Time.UTC().Format(time.RFC3339Nano)
 		}

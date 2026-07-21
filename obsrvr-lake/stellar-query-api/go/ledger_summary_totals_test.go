@@ -55,8 +55,8 @@ func TestLedgerSummaryIncludesResolvedValidatorIdentity(t *testing.T) {
 	mock.ExpectQuery(`(?s)SELECT public_key.*FROM serving\.sv_validator_identity_current.*WHERE network = \$1 AND public_key = ANY\(\$2\)`).
 		WithArgs("testnet", sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"public_key", "name", "display_name", "alias", "home_domain", "organization_id", "source", "source_updated_at", "observed_at",
-		}).AddRow(publicKey, "SDF Testnet 3", "SDF Testnet 3", "sdf_testnet_3", "", "", "radar", observedAt.Add(-time.Hour), observedAt))
+			"public_key", "name", "display_name", "alias", "home_domain", "organization_id", "source", "source_updated_at", "observed_at", "identity_status",
+		}).AddRow(publicKey, "SDF Testnet 3", "SDF Testnet 3", "sdf_testnet_3", "", "", "radar", observedAt.Add(-time.Hour), observedAt, "resolved"))
 
 	handler := &LedgerSummaryHandler{hot: &SilverHotReader{db: db, network: "testnet"}}
 	resp := LedgerSummaryResponse{}

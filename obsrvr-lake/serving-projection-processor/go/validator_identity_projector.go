@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -60,7 +62,6 @@ func (p *ValidatorIdentityProjector) RunOnce(ctx context.Context) (RunStats, err
 	defer tx.Rollback(ctx)
 
 	for _, node := range nodes {
-		node = normalizeRadarNodeIdentity(node)
 		fingerprint := validatorIdentityFingerprint(node)
 		var sourceUpdatedAt *time.Time
 		if parsed, parseErr := time.Parse(time.RFC3339Nano, node.DateUpdated); parseErr == nil {
@@ -117,10 +118,15 @@ func (p *ValidatorIdentityProjector) RunOnce(ctx context.Context) (RunStats, err
 		}
 	}
 
+	retired, err := reconcileValidatorIdentitySnapshot(ctx, tx, p.network, validatorIdentityPublicKeys(nodes), observedAt)
+	if err != nil {
+		return RunStats{}, err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return RunStats{}, fmt.Errorf("commit validator identities: %w", err)
 	}
-	return RunStats{RowsApplied: int64(len(nodes))}, nil
+	return RunStats{RowsApplied: int64(len(nodes)) + retired}, nil
 }
 
 func (p *ValidatorIdentityProjector) loadNodes(ctx context.Context) ([]radarNodeIdentity, error) {
@@ -136,16 +142,29 @@ func (p *ValidatorIdentityProjector) loadNodes(ctx context.Context) ([]radarNode
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("fetch Radar nodes: status %d", resp.StatusCode)
 	}
+	if resp.ContentLength > maxRadarNodeResponseBytes {
+		return nil, fmt.Errorf("fetch Radar nodes: response exceeds %d bytes", maxRadarNodeResponseBytes)
+	}
 
-	limited := io.LimitReader(resp.Body, maxRadarNodeResponseBytes+1)
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, maxRadarNodeResponseBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read Radar nodes: %w", err)
+	}
+	if len(payload) > maxRadarNodeResponseBytes {
+		return nil, fmt.Errorf("fetch Radar nodes: response exceeds %d bytes", maxRadarNodeResponseBytes)
+	}
+
 	var nodes []radarNodeIdentity
-	decoder := json.NewDecoder(limited)
+	decoder := json.NewDecoder(bytes.NewReader(payload))
 	if err := decoder.Decode(&nodes); err != nil {
 		return nil, fmt.Errorf("decode Radar nodes: %w", err)
 	}
 	var trailing interface{}
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return nil, fmt.Errorf("decode Radar nodes: trailing JSON")
+	}
+	if len(nodes) == 0 {
+		return nil, fmt.Errorf("decode Radar nodes: empty snapshot")
 	}
 	seen := make(map[string]struct{}, len(nodes))
 	for i := range nodes {
@@ -159,6 +178,39 @@ func (p *ValidatorIdentityProjector) loadNodes(ctx context.Context) ([]radarNode
 		seen[nodes[i].PublicKey] = struct{}{}
 	}
 	return nodes, nil
+}
+
+func validatorIdentityPublicKeys(nodes []radarNodeIdentity) []string {
+	keys := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		keys = append(keys, node.PublicKey)
+	}
+	return keys
+}
+
+func reconcileValidatorIdentitySnapshot(ctx context.Context, tx pgx.Tx, network string, observedKeys []string, observedAt time.Time) (int64, error) {
+	if len(observedKeys) == 0 {
+		return 0, fmt.Errorf("reconcile validator identities: refusing empty snapshot")
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE serving.sv_validator_identity_history
+		SET valid_to = $3
+		WHERE network = $1 AND source = 'radar' AND valid_to IS NULL
+		  AND NOT (public_key = ANY($2::text[]))
+	`, network, observedKeys, observedAt); err != nil {
+		return 0, fmt.Errorf("close omitted validator identity history: %w", err)
+	}
+
+	deleted, err := tx.Exec(ctx, `
+		DELETE FROM serving.sv_validator_identity_current
+		WHERE network = $1 AND source = 'radar'
+		  AND NOT (public_key = ANY($2::text[]))
+	`, network, observedKeys)
+	if err != nil {
+		return 0, fmt.Errorf("retire omitted validator identities: %w", err)
+	}
+	return deleted.RowsAffected(), nil
 }
 
 func normalizeRadarNodeIdentity(node radarNodeIdentity) radarNodeIdentity {

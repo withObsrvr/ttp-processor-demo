@@ -284,6 +284,59 @@ func TestFeedBackfillRerunResumeNoDuplicates(t *testing.T) {
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_projection_checkpoints WHERE last_ledger_sequence=6`, 19)
 }
 
+func TestLedgerStatsClassifiesClaimableBalanceClawback(t *testing.T) {
+	ctx := context.Background()
+	db := openBackfillFixtureDB(t)
+	defer db.Close()
+	loadBackfillFixture(t, ctx, db)
+
+	if _, err := db.ExecContext(ctx, `
+		UPDATE bronze.ledgers_row_v2
+		SET operation_count = 2, tx_set_operation_count = 2
+		WHERE sequence = 6
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO bronze.operations_row_v2 VALUES
+			('tx6',6,0,1,25769807872,25769807873,19,true,0),
+			('tx6',6,1,1,25769807872,25769807874,20,true,0)
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Config{
+		Network:         "mainnet",
+		Start:           6,
+		End:             6,
+		Chunk:           1,
+		RetentionDays:   30,
+		BronzeSchema:    "bronze",
+		SilverSchema:    "silver",
+		ServingSchema:   "serving",
+		FeedProjections: "sv_ledger_stats_recent",
+		SkipCurrent:     true,
+	}
+	backfiller := NewBackfillerWithDB(db, cfg)
+	if err := backfiller.ensureServingSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := backfiller.ensureManifest(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if err := backfiller.Run(ctx, &out); err != nil {
+		t.Fatalf("backfill: %v\n%s", err, out.String())
+	}
+
+	assertBackfillCount(t, db, `SELECT op_category_claimable_balances FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=6`, 1)
+	assertBackfillCount(t, db, `SELECT op_category_other FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=6`, 1)
+	assertBackfillCount(t, db, `SELECT successful_op_category_claimable_balances FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=6`, 1)
+	assertBackfillCount(t, db, `SELECT successful_op_category_other FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=6`, 1)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=6 AND operation_categories_complete=true`, 1)
+}
+
 func TestLedgerStatsBackfillDoesNotRequireSilverEnrichedLedgers(t *testing.T) {
 	ctx := context.Background()
 	db := openBackfillFixtureDB(t)
