@@ -16,6 +16,12 @@ func buildProjectors(cfg *Config, bronze, silver, serving *pgxpool.Pool, checkpo
 	network := cfg.Service.Network
 
 	var projectors []ProjectorRunner
+	// Validator identity is a small independent network projection. Keep it
+	// ahead of multi-minute aggregate rebuilds so attribution freshness is not
+	// coupled to asset or contract statistics throughput.
+	if cfg.Projectors.ValidatorIdentities.Enabled {
+		projectors = append(projectors, NewValidatorIdentityProjector(network, cfg.Radar.BaseURL, time.Duration(cfg.Radar.RequestTimeoutSeconds)*time.Second, serving))
+	}
 	if cfg.Projectors.LedgersRecent.Enabled {
 		projectors = append(projectors, NewLedgersRecentProjector(network, cfg.Projectors.LedgersRecent.BatchSize, bronze, serving, checkpoints))
 	}

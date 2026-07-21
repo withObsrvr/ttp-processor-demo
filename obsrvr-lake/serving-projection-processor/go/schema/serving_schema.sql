@@ -735,7 +735,27 @@ create table if not exists serving.sv_ledger_stats_recent (
     successful_tx_count          integer,
     failed_tx_count              integer,
     operation_count              integer,
+    tx_set_operation_count       integer,
+    validator_node_id            text,
+    ledger_close_signature       text,
     soroban_op_count             integer,
+    op_category_account_creation integer,
+    op_category_payments         integer,
+    op_category_offers_and_amms  integer,
+    op_category_trustlines       integer,
+    op_category_claimable_balances integer,
+    op_category_sponsorship      integer,
+    op_category_soroban          integer,
+    op_category_other            integer,
+    successful_op_category_account_creation integer,
+    successful_op_category_payments integer,
+    successful_op_category_offers_and_amms integer,
+    successful_op_category_trustlines integer,
+    successful_op_category_claimable_balances integer,
+    successful_op_category_sponsorship integer,
+    successful_op_category_soroban integer,
+    successful_op_category_other integer,
+    operation_categories_complete boolean not null default false,
     events_emitted               integer,
     total_fee_charged_stroops    bigint,
     total_cpu_insns              bigint,
@@ -745,8 +765,72 @@ create table if not exists serving.sv_ledger_stats_recent (
     close_time_seconds           numeric(10,2)
 );
 
+-- CREATE TABLE IF NOT EXISTS does not add columns to an existing serving
+-- table. Keep this additive migration beside the canonical definition so
+-- auto-apply upgrades both streaming- and cold-backfill-created tables.
+alter table serving.sv_ledger_stats_recent
+    add column if not exists tx_set_operation_count integer;
+alter table serving.sv_ledger_stats_recent
+    add column if not exists validator_node_id text;
+alter table serving.sv_ledger_stats_recent
+    add column if not exists ledger_close_signature text;
+alter table serving.sv_ledger_stats_recent add column if not exists op_category_account_creation integer;
+alter table serving.sv_ledger_stats_recent add column if not exists op_category_payments integer;
+alter table serving.sv_ledger_stats_recent add column if not exists op_category_offers_and_amms integer;
+alter table serving.sv_ledger_stats_recent add column if not exists op_category_trustlines integer;
+alter table serving.sv_ledger_stats_recent add column if not exists op_category_claimable_balances integer;
+alter table serving.sv_ledger_stats_recent add column if not exists op_category_sponsorship integer;
+alter table serving.sv_ledger_stats_recent add column if not exists op_category_soroban integer;
+alter table serving.sv_ledger_stats_recent add column if not exists op_category_other integer;
+alter table serving.sv_ledger_stats_recent add column if not exists successful_op_category_account_creation integer;
+alter table serving.sv_ledger_stats_recent add column if not exists successful_op_category_payments integer;
+alter table serving.sv_ledger_stats_recent add column if not exists successful_op_category_offers_and_amms integer;
+alter table serving.sv_ledger_stats_recent add column if not exists successful_op_category_trustlines integer;
+alter table serving.sv_ledger_stats_recent add column if not exists successful_op_category_claimable_balances integer;
+alter table serving.sv_ledger_stats_recent add column if not exists successful_op_category_sponsorship integer;
+alter table serving.sv_ledger_stats_recent add column if not exists successful_op_category_soroban integer;
+alter table serving.sv_ledger_stats_recent add column if not exists successful_op_category_other integer;
+alter table serving.sv_ledger_stats_recent add column if not exists operation_categories_complete boolean not null default false;
+
 create index if not exists sv_ledger_stats_recent_closed_idx
     on serving.sv_ledger_stats_recent (closed_at desc);
+
+create table if not exists serving.sv_validator_identity_current (
+    network                     text not null,
+    public_key                  text not null,
+    name                        text,
+    display_name                text,
+    alias                       text,
+    home_domain                 text,
+    organization_id             text,
+    is_validator                boolean not null default false,
+    source                      text not null,
+    source_updated_at           timestamptz,
+    observed_at                 timestamptz not null,
+    identity_fingerprint        text not null,
+    primary key (network, public_key)
+);
+
+create table if not exists serving.sv_validator_identity_history (
+    network                     text not null,
+    public_key                  text not null,
+    name                        text,
+    display_name                text,
+    alias                       text,
+    home_domain                 text,
+    organization_id             text,
+    is_validator                boolean not null default false,
+    source                      text not null,
+    source_updated_at           timestamptz,
+    identity_fingerprint        text not null,
+    valid_from                  timestamptz not null,
+    valid_to                    timestamptz,
+    primary key (network, public_key, valid_from)
+);
+
+create index if not exists sv_validator_identity_history_current_idx
+    on serving.sv_validator_identity_history (network, public_key)
+    where valid_to is null;
 
 
 create table if not exists serving.sv_asset_holders_top (
@@ -1361,6 +1445,7 @@ begin
       ('serving.sv_account_balances_current','sv_account_balances_current_uq',    'account_id, asset_key'),
       ('serving.sv_network_stats_current',  'sv_network_stats_current_net_uq',   'network'),
       ('serving.sv_ledger_stats_recent',    'sv_ledger_stats_recent_ls_uq',      'ledger_sequence'),
+      ('serving.sv_validator_identity_current','sv_validator_identity_current_uq','network, public_key'),
       ('serving.sv_operations_recent',      'sv_operations_recent_op_uq',        'operation_id'),
       ('serving.sv_transactions_recent',    'sv_transactions_recent_tx_uq',      'tx_hash'),
       ('serving.sv_tx_receipts',            'sv_tx_receipts_tx_uq',              'tx_hash'),

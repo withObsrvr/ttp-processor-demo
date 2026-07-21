@@ -21,6 +21,7 @@ var Version = "dev"
 const componentID = "serving-cold-backfill"
 const progressInterval = 15 * time.Second
 const toidOperationMask int64 = 0xFFF
+const bronzeLedgerRangeSize int64 = 10_000
 
 type FailureClass string
 
@@ -172,6 +173,13 @@ type CurrentProjection struct {
 	// (e.g. sv_assets_current GROUP BY over ~163M-row sv_account_balances_current) — pulling
 	// those out of Postgres into DuckDB buffers outside memory_limit and OOMs.
 	PostgresNative bool
+}
+
+// ProjectionHandoff separates the serving table identity from the logical
+// projector identity used by the incremental processor's checkpoint store.
+type ProjectionHandoff struct {
+	CheckpointName string
+	TargetTable    string
 }
 
 func transactionTOID(ledgerSequence, transactionOrder int64) int64 {
@@ -469,7 +477,8 @@ func (b *Backfiller) Run(ctx context.Context, out io.Writer) error {
 		emit(out, Event{EventType: "component.failed", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, Phase: "verification", FailureClass: FailureVerification, Error: err.Error(), Recommended: recommendedAction(FailureVerification)})
 		return err
 	}
-	if err := b.writeProjectionCheckpoints(ctx, append(feedProjectionNames(feed), currentProjectionNames(current)...)); err != nil {
+	handoffs := append(feedProjectionHandoffs(feed), currentProjectionHandoffs(current)...)
+	if err := b.writeProjectionCheckpoints(ctx, handoffs); err != nil {
 		emit(out, Event{EventType: "component.failed", ComponentID: cfg.Component(), RunID: cfg.RunID(), Network: cfg.Network, Phase: "checkpoint_handoff", FailureClass: classifyFailure(err), Error: err.Error(), Recommended: recommendedAction(classifyFailure(err))})
 		return err
 	}
@@ -481,7 +490,7 @@ func (b *Backfiller) Run(ctx context.Context, out io.Writer) error {
 func requiredProjections(schema string) []Projection {
 	table := func(name string) string { return schema + "." + name }
 	return []Projection{
-		{Name: "sv_ledger_stats_recent", TargetTable: table("sv_ledger_stats_recent"), Source: "silver.enriched_ledgers", Mode: "recent_range_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
+		{Name: "sv_ledger_stats_recent", TargetTable: table("sv_ledger_stats_recent"), Source: "bronze.ledgers_row_v2 + bronze.operations_row_v2", Mode: "recent_range_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_transactions_recent", TargetTable: table("sv_transactions_recent"), Source: "bronze.transactions_row_v2 + silver enriched data", Mode: "recent_range_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_operations_recent", TargetTable: table("sv_operations_recent"), Source: "silver.enriched_history_operations", Mode: "recent_range_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_events_recent", TargetTable: table("sv_events_recent"), Source: "bronze.contract_events_stream_v1 / silver effects", Mode: "recent_range_replace", Checkpoint: false, Required: true, InitialClass: "blocked_source_mapping", Rationale: "required by the broader serving contract, but this binary does not enable the projection yet"},
@@ -493,7 +502,7 @@ func requiredProjections(schema string) []Projection {
 		{Name: "sv_effects_by_account", TargetTable: table("sv_effects_by_account"), Source: "silver.effects + bronze operations_row_v2 TOID", Mode: "full_history_chunk_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_accounts_current", TargetTable: table("sv_accounts_current"), Source: "silver.accounts_current", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_account_balances_current", TargetTable: table("sv_account_balances_current"), Source: "silver.address_balances_current / silver.native_balances_current", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
-		{Name: "sv_network_stats_current", TargetTable: table("sv_network_stats_current"), Source: "silver.enriched_ledgers + aggregate counts", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
+		{Name: "sv_network_stats_current", TargetTable: table("sv_network_stats_current"), Source: "serving recent feed aggregates", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_assets_current", TargetTable: table("sv_assets_current"), Source: "sv_account_balances_current aggregates", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_asset_stats_current", TargetTable: table("sv_asset_stats_current"), Source: "sv_account_balances_current aggregates", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
 		{Name: "sv_contracts_current", TargetTable: table("sv_contracts_current"), Source: "silver.contract_metadata + silver.contract_data_current", Mode: "current_replace", Checkpoint: true, Required: true, InitialClass: "backfilled_now"},
@@ -532,7 +541,7 @@ func checkpointPlan(cfg Config, projections []Projection) []Checkpoint {
 	var checkpoints []Checkpoint
 	for _, p := range projections {
 		if p.Checkpoint {
-			checkpoints = append(checkpoints, Checkpoint{ProjectionName: p.Name, Network: cfg.Network, LastLedgerSequence: cfg.End, Status: "planned_after_all_verify"})
+			checkpoints = append(checkpoints, Checkpoint{ProjectionName: liveProjectorName(p.TargetTable), Network: cfg.Network, LastLedgerSequence: cfg.End, Status: "planned_after_all_verify"})
 		}
 	}
 	return checkpoints
@@ -540,7 +549,17 @@ func checkpointPlan(cfg Config, projections []Projection) []Checkpoint {
 
 func feedProjections() []FeedProjection {
 	return []FeedProjection{
-		{Name: "sv_ledger_stats_recent", TargetTable: "sv_ledger_stats_recent", RangeCol: "ledger_sequence", KeyExprs: []string{"ledger_sequence"}, SelectSQL: selectLedgerStatsRecent},
+		{Name: "sv_ledger_stats_recent", TargetTable: "sv_ledger_stats_recent", RangeCol: "ledger_sequence", KeyExprs: []string{"ledger_sequence"}, InsertColumns: []string{
+			"ledger_sequence", "closed_at", "ledger_hash", "prev_hash", "protocol_version",
+			"base_fee_stroops", "max_tx_set_size", "successful_tx_count", "failed_tx_count", "operation_count",
+			"tx_set_operation_count", "validator_node_id", "ledger_close_signature", "soroban_op_count",
+			"op_category_account_creation", "op_category_payments", "op_category_offers_and_amms", "op_category_trustlines",
+			"op_category_claimable_balances", "op_category_sponsorship", "op_category_soroban", "op_category_other",
+			"successful_op_category_account_creation", "successful_op_category_payments", "successful_op_category_offers_and_amms", "successful_op_category_trustlines",
+			"successful_op_category_claimable_balances", "successful_op_category_sponsorship", "successful_op_category_soroban", "successful_op_category_other",
+			"operation_categories_complete", "events_emitted", "total_fee_charged_stroops", "total_cpu_insns",
+			"total_read_bytes", "total_write_bytes", "total_rent_stroops", "close_time_seconds",
+		}, SelectSQL: selectLedgerStatsRecent},
 		{Name: "sv_transactions_recent", TargetTable: "sv_transactions_recent", RangeCol: "ledger_sequence", KeyExprs: []string{"tx_hash"}, InsertColumns: []string{
 			"tx_hash", "ledger_sequence", "created_at", "source_account",
 			"fee_charged_stroops", "max_fee_stroops", "successful", "operation_count",
@@ -1106,15 +1125,20 @@ func (b *Backfiller) verifyMaxLedger(ctx context.Context, projectionName, table,
 	return nil
 }
 
-func (b *Backfiller) writeProjectionCheckpoints(ctx context.Context, projectionNames []string) error {
+func (b *Backfiller) writeProjectionCheckpoints(ctx context.Context, handoffs []ProjectionHandoff) error {
 	var endClosedAt sql.NullTime
 	_ = b.db.QueryRowContext(ctx, fmt.Sprintf("SELECT MAX(closed_at) FROM %s WHERE ledger_sequence = %d", b.servingTable("sv_ledger_stats_recent"), b.cfg.End)).Scan(&endClosedAt)
 	tx, err := b.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin checkpoint handoff: %w", err)
 	}
-	for _, name := range projectionNames {
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE projection_name=%s AND network=%s", b.servingTable("sv_projection_checkpoints"), q(name), q(b.cfg.Network))); err != nil {
+	for _, handoff := range handoffs {
+		name := handoff.CheckpointName
+		checkpointTable := b.servingTable("sv_projection_checkpoints")
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(
+			"DELETE FROM %s WHERE projection_name=%s AND network=%s AND last_ledger_sequence <= %d",
+			checkpointTable, q(name), q(b.cfg.Network), b.cfg.End,
+		)); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("delete checkpoint %s: %w", name, err)
 		}
@@ -1122,12 +1146,17 @@ func (b *Backfiller) writeProjectionCheckpoints(ctx context.Context, projectionN
 		if endClosedAt.Valid {
 			closedAt = q(endClosedAt.Time.Format("2006-01-02 15:04:05"))
 		}
-		stmt := fmt.Sprintf("INSERT INTO %s VALUES (%s, %s, %d, %s, current_timestamp)", b.servingTable("sv_projection_checkpoints"), q(name), q(b.cfg.Network), b.cfg.End, closedAt)
+		stmt := fmt.Sprintf(`INSERT INTO %s
+			SELECT %s, %s, %d, %s, current_timestamp
+			WHERE NOT EXISTS (
+				SELECT 1 FROM %s WHERE projection_name=%s AND network=%s
+			)`, checkpointTable, q(name), q(b.cfg.Network), b.cfg.End, closedAt,
+			checkpointTable, q(name), q(b.cfg.Network))
 		if _, err := tx.ExecContext(ctx, stmt); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("insert checkpoint %s: %w", name, err)
 		}
-		tableName := b.cfg.ServingSchema + "." + name
+		tableName := b.cfg.ServingSchema + "." + handoff.TargetTable
 		if err := b.extendWatermark(ctx, tx, tableName); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("extend watermark %s: %w", name, err)
@@ -1186,6 +1215,28 @@ func (b *Backfiller) extendWatermark(ctx context.Context, tx *sql.Tx, tableName 
 	return err
 }
 
+func feedProjectionHandoffs(feed []FeedProjection) []ProjectionHandoff {
+	handoffs := make([]ProjectionHandoff, 0, len(feed))
+	for _, projection := range feed {
+		handoffs = append(handoffs, ProjectionHandoff{
+			CheckpointName: liveProjectorName(projection.TargetTable),
+			TargetTable:    projection.TargetTable,
+		})
+	}
+	return handoffs
+}
+
+func currentProjectionHandoffs(current []CurrentProjection) []ProjectionHandoff {
+	handoffs := make([]ProjectionHandoff, 0, len(current))
+	for _, projection := range current {
+		handoffs = append(handoffs, ProjectionHandoff{
+			CheckpointName: liveProjectorName(projection.TargetTable),
+			TargetTable:    projection.TargetTable,
+		})
+	}
+	return handoffs
+}
+
 func feedProjectionNames(feed []FeedProjection) []string {
 	names := make([]string, 0, len(feed))
 	for _, projection := range feed {
@@ -1202,9 +1253,46 @@ func currentProjectionNames(current []CurrentProjection) []string {
 	return names
 }
 
+func liveProjectorName(targetTable string) string {
+	switch tableBaseName(targetTable) {
+	case "sv_ledger_stats_recent":
+		return "ledgers_recent"
+	case "sv_transactions_recent":
+		return "transactions_recent"
+	case "sv_operations_recent":
+		return "operations_recent"
+	case "sv_events_recent":
+		return "events_recent"
+	case "sv_explorer_events_recent":
+		return "explorer_events_recent"
+	case "sv_contract_calls_recent":
+		return "contract_calls_recent"
+	case "sv_tx_receipts":
+		return "tx_receipts"
+	case "sv_effects_by_account":
+		return "effects_by_account"
+	case "sv_accounts_current":
+		return "accounts_current"
+	case "sv_account_balances_current":
+		return "account_balances"
+	case "sv_contract_storage_current":
+		return "contract_storage"
+	default:
+		return tableBaseName(targetTable)
+	}
+}
+
+func tableBaseName(table string) string {
+	if index := strings.LastIndex(table, "."); index >= 0 {
+		return table[index+1:]
+	}
+	return table
+}
+
 func (b *Backfiller) retentionPredicate(timeExpr string) string {
-	return fmt.Sprintf("%s >= COALESCE((SELECT MAX(ledger_closed_at) - INTERVAL %d DAY FROM %s WHERE network=%s AND ledger_sequence <= %d), %s)",
-		timeExpr, b.cfg.RetentionDays, b.silverTable("enriched_ledgers"), q(b.cfg.Network), b.cfg.End, timeExpr)
+	endRange := bronzeLedgerRange(b.cfg.End)
+	return fmt.Sprintf("%s >= COALESCE((SELECT MAX(closed_at) - INTERVAL %d DAY FROM %s WHERE sequence BETWEEN %d AND %d AND ledger_range = %d), %s)",
+		timeExpr, b.cfg.RetentionDays, b.bronzeTable("ledgers_row_v2"), endRange, b.cfg.End, endRange, timeExpr)
 }
 
 func (b *Backfiller) transactionRetentionPredicate(timeExpr string) string {
@@ -1214,17 +1302,80 @@ func (b *Backfiller) transactionRetentionPredicate(timeExpr string) string {
 }
 
 func selectLedgerStatsRecent(b *Backfiller, chunk Chunk) string {
-	return fmt.Sprintf(`SELECT ledger_sequence, ledger_closed_at AS closed_at, ledger_hash,
-		previous_ledger_hash AS prev_hash, ledger_version AS protocol_version,
-		base_fee AS base_fee_stroops, NULL::INTEGER AS max_tx_set_size,
-		successful_tx_count, failed_tx_count, operation_count,
-		NULL::INTEGER AS soroban_op_count, NULL::BIGINT AS events_emitted,
-		NULL::BIGINT AS total_fee_charged_stroops, NULL::BIGINT AS total_cpu_insns,
-		NULL::BIGINT AS total_read_bytes, NULL::BIGINT AS total_write_bytes,
+	startRange := bronzeLedgerRange(chunk.Start)
+	endRange := bronzeLedgerRange(chunk.End)
+	return fmt.Sprintf(`WITH retained_ledgers AS (
+		SELECT b.sequence AS ledger_sequence, b.closed_at, b.ledger_hash,
+			b.previous_ledger_hash AS prev_hash, b.protocol_version,
+			b.base_fee AS base_fee_stroops, b.max_tx_set_size,
+			b.successful_tx_count, b.failed_tx_count, b.operation_count,
+			b.tx_set_operation_count, b.node_id AS validator_node_id,
+			b.signature AS ledger_close_signature, b.soroban_op_count,
+			b.contract_events_count AS events_emitted, b.total_fee_charged AS total_fee_charged_stroops
+		FROM %s b
+		WHERE b.sequence BETWEEN %d AND %d
+			AND b.ledger_range BETWEEN %d AND %d
+			AND %s
+	), operation_categories AS (
+		SELECT o.ledger_sequence,
+			COUNT(*) FILTER (WHERE o.type = 0)::INTEGER AS account_creation,
+			COUNT(*) FILTER (WHERE o.type IN (1, 2, 13))::INTEGER AS payments,
+			COUNT(*) FILTER (WHERE o.type IN (3, 4, 12, 22, 23))::INTEGER AS offers_and_amms,
+			COUNT(*) FILTER (WHERE o.type IN (6, 7, 21))::INTEGER AS trustlines,
+			COUNT(*) FILTER (WHERE o.type IN (14, 15, 20))::INTEGER AS claimable_balances,
+			COUNT(*) FILTER (WHERE o.type IN (16, 17, 18))::INTEGER AS sponsorship,
+			COUNT(*) FILTER (WHERE o.type IN (24, 25, 26))::INTEGER AS soroban,
+			COUNT(*) FILTER (WHERE o.type IS NULL OR o.type NOT IN (0,1,2,3,4,6,7,12,13,14,15,16,17,18,20,21,22,23,24,25,26))::INTEGER AS other,
+			COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND o.type = 0)::INTEGER AS successful_account_creation,
+			COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND o.type IN (1, 2, 13))::INTEGER AS successful_payments,
+			COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND o.type IN (3, 4, 12, 22, 23))::INTEGER AS successful_offers_and_amms,
+			COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND o.type IN (6, 7, 21))::INTEGER AS successful_trustlines,
+			COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND o.type IN (14, 15, 20))::INTEGER AS successful_claimable_balances,
+			COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND o.type IN (16, 17, 18))::INTEGER AS successful_sponsorship,
+			COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND o.type IN (24, 25, 26))::INTEGER AS successful_soroban,
+			COUNT(*) FILTER (WHERE o.transaction_successful IS TRUE AND (o.type IS NULL OR o.type NOT IN (0,1,2,3,4,6,7,12,13,14,15,16,17,18,20,21,22,23,24,25,26)))::INTEGER AS successful_other
+		FROM %s o
+		JOIN retained_ledgers l ON l.ledger_sequence = o.ledger_sequence
+		WHERE o.ledger_sequence BETWEEN %d AND %d
+			AND o.ledger_range BETWEEN %d AND %d
+		GROUP BY o.ledger_sequence
+	)
+	SELECT l.ledger_sequence, l.closed_at, l.ledger_hash, l.prev_hash, l.protocol_version,
+		l.base_fee_stroops, l.max_tx_set_size, l.successful_tx_count, l.failed_tx_count, l.operation_count,
+		l.tx_set_operation_count, l.validator_node_id, l.ledger_close_signature, l.soroban_op_count,
+		COALESCE(c.account_creation, 0) AS op_category_account_creation,
+		COALESCE(c.payments, 0) AS op_category_payments,
+		COALESCE(c.offers_and_amms, 0) AS op_category_offers_and_amms,
+		COALESCE(c.trustlines, 0) AS op_category_trustlines,
+		COALESCE(c.claimable_balances, 0) AS op_category_claimable_balances,
+		COALESCE(c.sponsorship, 0) AS op_category_sponsorship,
+		COALESCE(c.soroban, 0) AS op_category_soroban,
+		COALESCE(c.other, 0) AS op_category_other,
+		COALESCE(c.successful_account_creation, 0) AS successful_op_category_account_creation,
+		COALESCE(c.successful_payments, 0) AS successful_op_category_payments,
+		COALESCE(c.successful_offers_and_amms, 0) AS successful_op_category_offers_and_amms,
+		COALESCE(c.successful_trustlines, 0) AS successful_op_category_trustlines,
+		COALESCE(c.successful_claimable_balances, 0) AS successful_op_category_claimable_balances,
+		COALESCE(c.successful_sponsorship, 0) AS successful_op_category_sponsorship,
+		COALESCE(c.successful_soroban, 0) AS successful_op_category_soroban,
+		COALESCE(c.successful_other, 0) AS successful_op_category_other,
+		l.tx_set_operation_count IS NOT NULL
+			AND COALESCE(c.account_creation, 0) + COALESCE(c.payments, 0) + COALESCE(c.offers_and_amms, 0) + COALESCE(c.trustlines, 0)
+				+ COALESCE(c.claimable_balances, 0) + COALESCE(c.sponsorship, 0) + COALESCE(c.soroban, 0) + COALESCE(c.other, 0) = l.tx_set_operation_count
+			AND COALESCE(c.successful_account_creation, 0) + COALESCE(c.successful_payments, 0) + COALESCE(c.successful_offers_and_amms, 0) + COALESCE(c.successful_trustlines, 0)
+				+ COALESCE(c.successful_claimable_balances, 0) + COALESCE(c.successful_sponsorship, 0) + COALESCE(c.successful_soroban, 0) + COALESCE(c.successful_other, 0) = l.operation_count
+			AS operation_categories_complete,
+		l.events_emitted, l.total_fee_charged_stroops,
+		NULL::BIGINT AS total_cpu_insns, NULL::BIGINT AS total_read_bytes, NULL::BIGINT AS total_write_bytes,
 		NULL::BIGINT AS total_rent_stroops, NULL::DOUBLE AS close_time_seconds
-		FROM %s
-		WHERE network=%s AND ledger_sequence BETWEEN %d AND %d AND %s`,
-		b.silverTable("enriched_ledgers"), q(b.cfg.Network), chunk.Start, chunk.End, b.retentionPredicate("ledger_closed_at"))
+	FROM retained_ledgers l
+	LEFT JOIN operation_categories c ON c.ledger_sequence = l.ledger_sequence`,
+		b.bronzeTable("ledgers_row_v2"), chunk.Start, chunk.End, startRange, endRange, b.retentionPredicate("b.closed_at"),
+		b.bronzeTable("operations_row_v2"), chunk.Start, chunk.End, startRange, endRange)
+}
+
+func bronzeLedgerRange(sequence int64) int64 {
+	return sequence / bronzeLedgerRangeSize * bronzeLedgerRangeSize
 }
 
 func selectTransactionsRecent(b *Backfiller, chunk Chunk) string {

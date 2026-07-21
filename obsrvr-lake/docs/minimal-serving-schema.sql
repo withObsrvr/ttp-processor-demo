@@ -486,7 +486,27 @@ create table if not exists serving.sv_ledger_stats_recent (
     successful_tx_count          integer,
     failed_tx_count              integer,
     operation_count              integer,
+    tx_set_operation_count       integer,
+    validator_node_id            text,
+    ledger_close_signature       text,
     soroban_op_count             integer,
+    op_category_account_creation integer,
+    op_category_payments         integer,
+    op_category_offers_and_amms  integer,
+    op_category_trustlines       integer,
+    op_category_claimable_balances integer,
+    op_category_sponsorship      integer,
+    op_category_soroban          integer,
+    op_category_other            integer,
+    successful_op_category_account_creation integer,
+    successful_op_category_payments integer,
+    successful_op_category_offers_and_amms integer,
+    successful_op_category_trustlines integer,
+    successful_op_category_claimable_balances integer,
+    successful_op_category_sponsorship integer,
+    successful_op_category_soroban integer,
+    successful_op_category_other integer,
+    operation_categories_complete boolean not null default false,
     events_emitted               integer,
     total_fee_charged_stroops    bigint,
     total_cpu_insns              bigint,
@@ -498,6 +518,39 @@ create table if not exists serving.sv_ledger_stats_recent (
 
 create index if not exists sv_ledger_stats_recent_closed_idx
     on serving.sv_ledger_stats_recent (closed_at desc);
+
+create table if not exists serving.sv_validator_identity_current (
+    network text not null,
+    public_key text not null,
+    name text,
+    display_name text,
+    alias text,
+    home_domain text,
+    organization_id text,
+    is_validator boolean not null default false,
+    source text not null,
+    source_updated_at timestamptz,
+    observed_at timestamptz not null,
+    identity_fingerprint text not null,
+    primary key (network, public_key)
+);
+
+create table if not exists serving.sv_validator_identity_history (
+    network text not null,
+    public_key text not null,
+    name text,
+    display_name text,
+    alias text,
+    home_domain text,
+    organization_id text,
+    is_validator boolean not null default false,
+    source text not null,
+    source_updated_at timestamptz,
+    identity_fingerprint text not null,
+    valid_from timestamptz not null,
+    valid_to timestamptz,
+    primary key (network, public_key, valid_from)
+);
 
 
 create table if not exists serving.sv_asset_holders_top (

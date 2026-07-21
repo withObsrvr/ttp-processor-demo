@@ -12,10 +12,16 @@ type Config struct {
 	Service    ServiceConfig    `yaml:"service"`
 	Source     SourceConfig     `yaml:"source"`
 	Target     TargetConfig     `yaml:"target"`
+	Radar      RadarConfig      `yaml:"radar"`
 	Projectors ProjectorsConfig `yaml:"projectors"`
 	Schema     SchemaConfig     `yaml:"schema"`
 	Health     HealthConfig     `yaml:"health"`
 	Trigger    TriggerConfig    `yaml:"trigger"`
+}
+
+type RadarConfig struct {
+	BaseURL               string `yaml:"base_url"`
+	RequestTimeoutSeconds int    `yaml:"request_timeout_seconds"`
 }
 
 type ServiceConfig struct {
@@ -70,6 +76,7 @@ type ProjectorsConfig struct {
 	ContractCallsRecent  ProjectorConfig `yaml:"contract_calls_recent"`
 	TxReceipts           ProjectorConfig `yaml:"tx_receipts"`
 	EffectsByAccount     ProjectorConfig `yaml:"effects_by_account"`
+	ValidatorIdentities  ProjectorConfig `yaml:"validator_identities"`
 }
 
 type ProjectorConfig struct {
@@ -115,6 +122,16 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.Projectors.AssetStats.BatchSize <= 0 {
 		cfg.Projectors.AssetStats.BatchSize = 1
+	}
+	if cfg.Radar.BaseURL == "" {
+		if cfg.Service.Network == "testnet" {
+			cfg.Radar.BaseURL = "https://radar.withobsrvr.com/testnet-api"
+		} else {
+			cfg.Radar.BaseURL = "https://radar.withobsrvr.com/api"
+		}
+	}
+	if cfg.Radar.RequestTimeoutSeconds <= 0 {
+		cfg.Radar.RequestTimeoutSeconds = 10
 	}
 	if cfg.Projectors.ContractsCurrent.BatchSize <= 0 {
 		cfg.Projectors.ContractsCurrent.BatchSize = 1

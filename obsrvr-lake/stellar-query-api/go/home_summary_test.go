@@ -60,14 +60,33 @@ func TestHandleExplorerSummaryHotOnlySuccess(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(`
 		SELECT ledger_sequence, closed_at, COALESCE(ledger_hash, ''), COALESCE(prev_hash, ''),
 		       COALESCE(protocol_version, 0), COALESCE(base_fee_stroops, 0),
-		       COALESCE(successful_tx_count, 0), COALESCE(failed_tx_count, 0), COALESCE(operation_count, 0)
+		       COALESCE(successful_tx_count, 0), COALESCE(failed_tx_count, 0), COALESCE(operation_count, 0),
+		       COALESCE(tx_set_operation_count, operation_count, 0), COALESCE(validator_node_id, ''),
+		       COALESCE(ledger_close_signature, ''),
+		       COALESCE(op_category_account_creation, 0), COALESCE(op_category_payments, 0),
+		       COALESCE(op_category_offers_and_amms, 0), COALESCE(op_category_trustlines, 0),
+		       COALESCE(op_category_claimable_balances, 0), COALESCE(op_category_sponsorship, 0),
+		       COALESCE(op_category_soroban, 0), COALESCE(op_category_other, 0),
+		       COALESCE(successful_op_category_account_creation, 0), COALESCE(successful_op_category_payments, 0),
+		       COALESCE(successful_op_category_offers_and_amms, 0), COALESCE(successful_op_category_trustlines, 0),
+		       COALESCE(successful_op_category_claimable_balances, 0), COALESCE(successful_op_category_sponsorship, 0),
+		       COALESCE(successful_op_category_soroban, 0), COALESCE(successful_op_category_other, 0),
+		       COALESCE(operation_categories_complete, false)
 		FROM serving.sv_ledger_stats_recent
 		ORDER BY ledger_sequence DESC
 		LIMIT $1
 	`)).WithArgs(20).WillReturnRows(sqlmock.NewRows([]string{
 		"ledger_sequence", "closed_at", "ledger_hash", "prev_hash", "protocol_version", "base_fee_stroops", "successful_tx_count", "failed_tx_count", "operation_count",
-	}).AddRow(int64(2144030), closedAt, "abc", "def", 23, int64(100), 11, 1, 44).
-		AddRow(int64(2144029), closedAt.Add(-5*time.Second), "abc2", "def2", 23, int64(100), 10, 0, 30))
+		"tx_set_operation_count", "validator_node_id", "ledger_close_signature",
+		"op_category_account_creation", "op_category_payments", "op_category_offers_and_amms", "op_category_trustlines",
+		"op_category_claimable_balances", "op_category_sponsorship", "op_category_soroban", "op_category_other",
+		"successful_op_category_account_creation", "successful_op_category_payments", "successful_op_category_offers_and_amms", "successful_op_category_trustlines",
+		"successful_op_category_claimable_balances", "successful_op_category_sponsorship", "successful_op_category_soroban", "successful_op_category_other",
+		"operation_categories_complete",
+	}).AddRow(int64(2144030), closedAt, "abc", "def", 23, int64(100), 11, 1, 44, 48, "", "",
+		0, 10, 5, 4, 2, 1, 20, 6, 0, 10, 4, 4, 2, 1, 18, 5, true).
+		AddRow(int64(2144029), closedAt.Add(-5*time.Second), "abc2", "def2", 23, int64(100), 10, 0, 30, 30, "", "",
+			0, 8, 3, 3, 1, 1, 10, 4, 0, 8, 3, 3, 1, 1, 10, 4, true))
 
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT ledger_closed_at FROM enriched_history_operations ORDER BY ledger_sequence DESC LIMIT 1`)).WillReturnRows(
 		sqlmock.NewRows([]string{"ledger_closed_at"}).AddRow(now),

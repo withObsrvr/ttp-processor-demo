@@ -34,15 +34,63 @@ type ServingRecentTransaction struct {
 }
 
 type ServingRecentLedger struct {
-	LedgerSequence     int64  `json:"ledger_sequence"`
-	ClosedAt           string `json:"closed_at"`
-	LedgerHash         string `json:"ledger_hash,omitempty"`
-	PreviousLedgerHash string `json:"previous_ledger_hash,omitempty"`
-	ProtocolVersion    int    `json:"protocol_version,omitempty"`
-	BaseFeeStroops     int64  `json:"base_fee_stroops,omitempty"`
-	SuccessfulTxCount  int    `json:"successful_tx_count"`
-	FailedTxCount      int    `json:"failed_tx_count,omitempty"`
-	OperationCount     int    `json:"operation_count"`
+	LedgerSequence               int64                                `json:"ledger_sequence"`
+	ClosedAt                     string                               `json:"closed_at"`
+	LedgerHash                   string                               `json:"ledger_hash,omitempty"`
+	PreviousLedgerHash           string                               `json:"previous_ledger_hash,omitempty"`
+	ProtocolVersion              int                                  `json:"protocol_version,omitempty"`
+	BaseFeeStroops               int64                                `json:"base_fee_stroops,omitempty"`
+	SuccessfulTxCount            int                                  `json:"successful_tx_count"`
+	FailedTxCount                int                                  `json:"failed_tx_count,omitempty"`
+	OperationCount               int                                  `json:"operation_count"`
+	TransactionCount             int                                  `json:"transaction_count"`
+	TransactionSetOperationCount int                                  `json:"transaction_set_operation_count"`
+	SuccessfulOperationCount     int                                  `json:"successful_operation_count"`
+	FailedOperationCount         int                                  `json:"failed_operation_count,omitempty"`
+	LedgerCloseSignature         string                               `json:"ledger_close_signature,omitempty"`
+	Validator                    ServingRecentLedgerValidator         `json:"validator"`
+	Transactions                 ServingRecentLedgerTransactionCounts `json:"transactions"`
+	Operations                   ServingRecentLedgerOperationCounts   `json:"operations"`
+}
+
+type ServingRecentLedgerValidator struct {
+	PublicKey            string `json:"public_key,omitempty"`
+	AttributionAvailable bool   `json:"attribution_available"`
+	Status               string `json:"status"`
+	Name                 string `json:"name,omitempty"`
+	DisplayName          string `json:"display_name,omitempty"`
+	Alias                string `json:"alias,omitempty"`
+	HomeDomain           string `json:"home_domain,omitempty"`
+	OrganizationID       string `json:"organization_id,omitempty"`
+	Source               string `json:"source,omitempty"`
+	SourceUpdatedAt      string `json:"source_updated_at,omitempty"`
+	ObservedAt           string `json:"observed_at,omitempty"`
+}
+
+type ServingRecentLedgerTransactionCounts struct {
+	Total      int `json:"total"`
+	Successful int `json:"successful"`
+	Failed     int `json:"failed"`
+}
+
+type ServingRecentLedgerOperationCounts struct {
+	Included             int                                  `json:"included"`
+	Successful           int                                  `json:"successful"`
+	Failed               int                                  `json:"failed"`
+	ClassificationStatus string                               `json:"classification_status"`
+	Categories           ServingLedgerOperationCategoryCounts `json:"categories"`
+	SuccessfulCategories ServingLedgerOperationCategoryCounts `json:"successful_categories"`
+}
+
+type ServingLedgerOperationCategoryCounts struct {
+	AccountCreation   int `json:"account_creation"`
+	Payments          int `json:"payments"`
+	OffersAndAMMs     int `json:"offers_and_amms"`
+	Trustlines        int `json:"trustlines"`
+	ClaimableBalances int `json:"claimable_balances"`
+	Sponsorship       int `json:"sponsorship"`
+	Soroban           int `json:"soroban"`
+	Other             int `json:"other"`
 }
 
 type ServingCoverageMetadata struct {
@@ -2390,7 +2438,18 @@ func (h *SilverHotReader) GetServingRecentLedgers(ctx context.Context, limit int
 	rows, err := h.db.QueryContext(ctx, `
 		SELECT ledger_sequence, closed_at, COALESCE(ledger_hash, ''), COALESCE(prev_hash, ''),
 		       COALESCE(protocol_version, 0), COALESCE(base_fee_stroops, 0),
-		       COALESCE(successful_tx_count, 0), COALESCE(failed_tx_count, 0), COALESCE(operation_count, 0)
+		       COALESCE(successful_tx_count, 0), COALESCE(failed_tx_count, 0), COALESCE(operation_count, 0),
+		       COALESCE(tx_set_operation_count, operation_count, 0), COALESCE(validator_node_id, ''),
+		       COALESCE(ledger_close_signature, ''),
+		       COALESCE(op_category_account_creation, 0), COALESCE(op_category_payments, 0),
+		       COALESCE(op_category_offers_and_amms, 0), COALESCE(op_category_trustlines, 0),
+		       COALESCE(op_category_claimable_balances, 0), COALESCE(op_category_sponsorship, 0),
+		       COALESCE(op_category_soroban, 0), COALESCE(op_category_other, 0),
+		       COALESCE(successful_op_category_account_creation, 0), COALESCE(successful_op_category_payments, 0),
+		       COALESCE(successful_op_category_offers_and_amms, 0), COALESCE(successful_op_category_trustlines, 0),
+		       COALESCE(successful_op_category_claimable_balances, 0), COALESCE(successful_op_category_sponsorship, 0),
+		       COALESCE(successful_op_category_soroban, 0), COALESCE(successful_op_category_other, 0),
+		       COALESCE(operation_categories_complete, false)
 		FROM serving.sv_ledger_stats_recent
 		ORDER BY ledger_sequence DESC
 		LIMIT $1
@@ -2403,16 +2462,201 @@ func (h *SilverHotReader) GetServingRecentLedgers(ctx context.Context, limit int
 	for rows.Next() {
 		var item ServingRecentLedger
 		var closedAt time.Time
-		if err := rows.Scan(&item.LedgerSequence, &closedAt, &item.LedgerHash, &item.PreviousLedgerHash, &item.ProtocolVersion, &item.BaseFeeStroops, &item.SuccessfulTxCount, &item.FailedTxCount, &item.OperationCount); err != nil {
+		var validatorNodeID string
+		var operationCategoriesComplete bool
+		if err := rows.Scan(
+			&item.LedgerSequence,
+			&closedAt,
+			&item.LedgerHash,
+			&item.PreviousLedgerHash,
+			&item.ProtocolVersion,
+			&item.BaseFeeStroops,
+			&item.SuccessfulTxCount,
+			&item.FailedTxCount,
+			&item.OperationCount,
+			&item.TransactionSetOperationCount,
+			&validatorNodeID,
+			&item.LedgerCloseSignature,
+			&item.Operations.Categories.AccountCreation,
+			&item.Operations.Categories.Payments,
+			&item.Operations.Categories.OffersAndAMMs,
+			&item.Operations.Categories.Trustlines,
+			&item.Operations.Categories.ClaimableBalances,
+			&item.Operations.Categories.Sponsorship,
+			&item.Operations.Categories.Soroban,
+			&item.Operations.Categories.Other,
+			&item.Operations.SuccessfulCategories.AccountCreation,
+			&item.Operations.SuccessfulCategories.Payments,
+			&item.Operations.SuccessfulCategories.OffersAndAMMs,
+			&item.Operations.SuccessfulCategories.Trustlines,
+			&item.Operations.SuccessfulCategories.ClaimableBalances,
+			&item.Operations.SuccessfulCategories.Sponsorship,
+			&item.Operations.SuccessfulCategories.Soroban,
+			&item.Operations.SuccessfulCategories.Other,
+			&operationCategoriesComplete,
+		); err != nil {
 			return 0, nil, err
 		}
 		item.ClosedAt = closedAt.UTC().Format(time.RFC3339)
+		item.TransactionCount = item.SuccessfulTxCount + item.FailedTxCount
+		item.SuccessfulOperationCount = item.OperationCount
+		if item.TransactionSetOperationCount >= item.SuccessfulOperationCount {
+			item.FailedOperationCount = item.TransactionSetOperationCount - item.SuccessfulOperationCount
+		}
+		item.Validator = unresolvedServingLedgerValidator(decodeValidatorAccountID(validatorNodeID))
+		item.Transactions = ServingRecentLedgerTransactionCounts{
+			Total:      item.TransactionCount,
+			Successful: item.SuccessfulTxCount,
+			Failed:     item.FailedTxCount,
+		}
+		item.Operations = ServingRecentLedgerOperationCounts{
+			Included:             item.TransactionSetOperationCount,
+			Successful:           item.SuccessfulOperationCount,
+			Failed:               item.FailedOperationCount,
+			Categories:           item.Operations.Categories,
+			SuccessfulCategories: item.Operations.SuccessfulCategories,
+		}
+		if operationCategoriesComplete {
+			item.Operations.ClassificationStatus = "materialized"
+		} else {
+			item.Operations.ClassificationStatus = "partial"
+		}
 		out = append(out, item)
 	}
 	if err := rows.Err(); err != nil {
 		return 0, nil, err
 	}
+	h.enrichServingLedgerValidatorIdentities(ctx, out)
 	return latestSequence, out, nil
+}
+
+func (h *SilverHotReader) enrichServingLedgerValidatorIdentities(ctx context.Context, ledgers []ServingRecentLedger) {
+	keys := make([]string, 0, len(ledgers))
+	seen := make(map[string]struct{}, len(ledgers))
+	for i := range ledgers {
+		key := ledgers[i].Validator.PublicKey
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	if len(keys) == 0 {
+		return
+	}
+
+	identities, err := h.lookupServingValidatorIdentities(ctx, keys)
+	if err != nil {
+		log.Printf("serving recent ledger validator identity lookup unavailable: %v", err)
+		for i := range ledgers {
+			if ledgers[i].Validator.PublicKey != "" {
+				ledgers[i].Validator.Status = "unavailable"
+			}
+		}
+		return
+	}
+
+	for i := range ledgers {
+		identity, ok := identities[ledgers[i].Validator.PublicKey]
+		if ok {
+			ledgers[i].Validator = identity
+		}
+	}
+}
+
+func unresolvedServingLedgerValidator(publicKey string) ServingRecentLedgerValidator {
+	validator := ServingRecentLedgerValidator{PublicKey: publicKey}
+	validator.AttributionAvailable = publicKey != ""
+	if publicKey == "" {
+		validator.Status = "unavailable"
+		return validator
+	}
+	validator.Status = "not_found"
+	validator.Source = "radar"
+	return validator
+}
+
+func (h *SilverHotReader) GetServingValidatorIdentity(ctx context.Context, publicKey string) (ServingRecentLedgerValidator, error) {
+	validator := unresolvedServingLedgerValidator(publicKey)
+	if publicKey == "" || h == nil || h.db == nil {
+		return validator, nil
+	}
+	identities, err := h.lookupServingValidatorIdentities(ctx, []string{publicKey})
+	if err != nil {
+		validator.Status = "unavailable"
+		return validator, err
+	}
+	if identity, ok := identities[publicKey]; ok {
+		return identity, nil
+	}
+	return validator, nil
+}
+
+func (h *SilverHotReader) lookupServingValidatorIdentities(ctx context.Context, keys []string) (map[string]ServingRecentLedgerValidator, error) {
+	rows, err := h.db.QueryContext(ctx, `
+		WITH candidates AS (
+			SELECT public_key, name, display_name, alias, home_domain, organization_id,
+			       source, source_updated_at, observed_at,
+			       'resolved'::text AS identity_status, 0 AS source_priority, observed_at AS sort_at
+			FROM serving.sv_validator_identity_current
+			WHERE network = $1 AND public_key = ANY($2)
+			UNION ALL
+			SELECT public_key, name, display_name, alias, home_domain, organization_id,
+			       source, source_updated_at, valid_from AS observed_at,
+			       'historical'::text AS identity_status, 1 AS source_priority, valid_from AS sort_at
+			FROM serving.sv_validator_identity_history
+			WHERE network = $1 AND public_key = ANY($2)
+		), ranked AS (
+			SELECT *, ROW_NUMBER() OVER (
+				PARTITION BY public_key
+				ORDER BY source_priority ASC, sort_at DESC
+			) AS identity_rank
+			FROM candidates
+		)
+		SELECT public_key, COALESCE(name, ''), COALESCE(display_name, ''),
+		       COALESCE(alias, ''), COALESCE(home_domain, ''), COALESCE(organization_id, ''),
+		       source, source_updated_at, observed_at, identity_status
+		FROM ranked
+		WHERE identity_rank = 1
+	`, h.network, pq.Array(keys))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	identities := make(map[string]ServingRecentLedgerValidator, len(keys))
+	for rows.Next() {
+		var identity ServingRecentLedgerValidator
+		var sourceUpdatedAt sql.NullTime
+		var observedAt time.Time
+		if err := rows.Scan(
+			&identity.PublicKey,
+			&identity.Name,
+			&identity.DisplayName,
+			&identity.Alias,
+			&identity.HomeDomain,
+			&identity.OrganizationID,
+			&identity.Source,
+			&sourceUpdatedAt,
+			&observedAt,
+			&identity.Status,
+		); err != nil {
+			return nil, err
+		}
+		identity.AttributionAvailable = true
+		if sourceUpdatedAt.Valid {
+			identity.SourceUpdatedAt = sourceUpdatedAt.Time.UTC().Format(time.RFC3339Nano)
+		}
+		identity.ObservedAt = observedAt.UTC().Format(time.RFC3339Nano)
+		identities[identity.PublicKey] = identity
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return identities, nil
 }
 
 // GetServingExplorerEvents returns recent explorer events from serving projections.

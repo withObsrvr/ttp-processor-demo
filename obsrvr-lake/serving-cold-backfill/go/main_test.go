@@ -66,6 +66,25 @@ func TestAssignedChunkOverridesChunkPlan(t *testing.T) {
 	}
 }
 
+func TestLedgerStatsSelectPrunesBronzePartitionsToChunk(t *testing.T) {
+	backfiller := NewBackfillerWithDB(nil, Config{
+		End:          63_570_750,
+		BronzeSchema: "bronze",
+	})
+
+	query := selectLedgerStatsRecent(backfiller, Chunk{Start: 63_570_750, End: 63_570_750})
+	for _, predicate := range []string{
+		"b.ledger_range BETWEEN 63570000 AND 63570000",
+		"WHERE sequence BETWEEN 63570000 AND 63570750 AND ledger_range = 63570000",
+		"o.ledger_sequence BETWEEN 63570750 AND 63570750",
+		"o.ledger_range BETWEEN 63570000 AND 63570000",
+	} {
+		if !strings.Contains(query, predicate) {
+			t.Fatalf("ledger stats query missing partition-pruning predicate %q:\n%s", predicate, query)
+		}
+	}
+}
+
 func TestCurrentProjectionUsesInsertColumnList(t *testing.T) {
 	ctx := context.Background()
 	db := openBackfillFixtureDB(t)
@@ -126,6 +145,28 @@ func TestClassifiedOptionalTablesAreDocumented(t *testing.T) {
 	}
 }
 
+func TestLiveProjectorNamesMatchIncrementalCheckpointContract(t *testing.T) {
+	tests := map[string]string{
+		"serving.sv_ledger_stats_recent":     "ledgers_recent",
+		"sv_transactions_recent":             "transactions_recent",
+		"sv_operations_recent":               "operations_recent",
+		"sv_events_recent":                   "events_recent",
+		"sv_explorer_events_recent":          "explorer_events_recent",
+		"sv_contract_calls_recent":           "contract_calls_recent",
+		"sv_tx_receipts":                     "tx_receipts",
+		"sv_effects_by_account":              "effects_by_account",
+		"sv_accounts_current":                "accounts_current",
+		"sv_account_balances_current":        "account_balances",
+		"sv_contract_storage_current":        "contract_storage",
+		"sv_contract_function_stats_current": "sv_contract_function_stats_current",
+	}
+	for targetTable, want := range tests {
+		if got := liveProjectorName(targetTable); got != want {
+			t.Errorf("liveProjectorName(%q) = %q, want %q", targetTable, got, want)
+		}
+	}
+}
+
 func TestClassifyFailurePrecedence(t *testing.T) {
 	if got := classifyFailure(errors.New("postgres schema mismatch")); got != FailureNonRetryableSchema {
 		t.Fatalf("classifyFailure schema = %s", got)
@@ -168,6 +209,19 @@ func TestFeedBackfillRerunResumeNoDuplicates(t *testing.T) {
 	}
 
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_ledger_stats_recent`, 4)
+	assertBackfillCount(t, db, `SELECT tx_set_operation_count FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=4`, 2)
+	assertBackfillString(t, db, `SELECT validator_node_id FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=4`, "node4")
+	assertBackfillString(t, db, `SELECT ledger_close_signature FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=4`, "sig4")
+	assertBackfillCount(t, db, `SELECT op_category_payments FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=4`, 1)
+	assertBackfillCount(t, db, `SELECT op_category_soroban FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=4`, 1)
+	assertBackfillCount(t, db, `SELECT successful_op_category_payments FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=4`, 1)
+	assertBackfillCount(t, db, `SELECT successful_op_category_soroban FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=4`, 1)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=4 AND operation_categories_complete=true`, 1)
+	assertBackfillCount(t, db, `SELECT operation_count FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=5`, 0)
+	assertBackfillCount(t, db, `SELECT tx_set_operation_count FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=5`, 1)
+	assertBackfillCount(t, db, `SELECT op_category_payments FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=5`, 1)
+	assertBackfillCount(t, db, `SELECT successful_op_category_payments FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=5`, 0)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=5 AND operation_categories_complete=true`, 1)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_transactions_recent`, 3)
 	assertBackfillCount(t, db, `SELECT transaction_id FROM serving.sv_transactions_recent WHERE tx_hash='tx3' AND tx_envelope='env3' AND tx_result='res3' AND tx_meta='meta3' AND tx_fee_meta='fee3' AND tx_signers='["sig3"]'`, transactionTOID(3, 1))
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_operations_recent`, 4)
@@ -228,6 +282,99 @@ func TestFeedBackfillRerunResumeNoDuplicates(t *testing.T) {
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_transactions_recent`, 3)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_backfill_manifest WHERE status='completed'`, 27)
 	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_projection_checkpoints WHERE last_ledger_sequence=6`, 19)
+}
+
+func TestLedgerStatsClassifiesClaimableBalanceClawback(t *testing.T) {
+	ctx := context.Background()
+	db := openBackfillFixtureDB(t)
+	defer db.Close()
+	loadBackfillFixture(t, ctx, db)
+
+	if _, err := db.ExecContext(ctx, `
+		UPDATE bronze.ledgers_row_v2
+		SET operation_count = 2, tx_set_operation_count = 2
+		WHERE sequence = 6
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO bronze.operations_row_v2 VALUES
+			('tx6',6,0,1,25769807872,25769807873,19,true,0),
+			('tx6',6,1,1,25769807872,25769807874,20,true,0)
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Config{
+		Network:         "mainnet",
+		Start:           6,
+		End:             6,
+		Chunk:           1,
+		RetentionDays:   30,
+		BronzeSchema:    "bronze",
+		SilverSchema:    "silver",
+		ServingSchema:   "serving",
+		FeedProjections: "sv_ledger_stats_recent",
+		SkipCurrent:     true,
+	}
+	backfiller := NewBackfillerWithDB(db, cfg)
+	if err := backfiller.ensureServingSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := backfiller.ensureManifest(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if err := backfiller.Run(ctx, &out); err != nil {
+		t.Fatalf("backfill: %v\n%s", err, out.String())
+	}
+
+	assertBackfillCount(t, db, `SELECT op_category_claimable_balances FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=6`, 1)
+	assertBackfillCount(t, db, `SELECT op_category_other FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=6`, 1)
+	assertBackfillCount(t, db, `SELECT successful_op_category_claimable_balances FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=6`, 1)
+	assertBackfillCount(t, db, `SELECT successful_op_category_other FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=6`, 1)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=6 AND operation_categories_complete=true`, 1)
+}
+
+func TestLedgerStatsBackfillDoesNotRequireSilverEnrichedLedgers(t *testing.T) {
+	ctx := context.Background()
+	db := openBackfillFixtureDB(t)
+	defer db.Close()
+	loadBackfillFixture(t, ctx, db)
+
+	if _, err := db.ExecContext(ctx, `DROP TABLE silver.enriched_ledgers`); err != nil {
+		t.Fatal(err)
+	}
+	backfiller := NewBackfillerWithDB(db, Config{
+		Network:         "mainnet",
+		Start:           3,
+		End:             6,
+		Chunk:           4,
+		RetentionDays:   30,
+		BronzeSchema:    "bronze",
+		SilverSchema:    "silver",
+		ServingSchema:   "serving",
+		FeedProjections: "sv_ledger_stats_recent",
+		SkipCurrent:     true,
+	})
+	if err := backfiller.ensureServingSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := backfiller.ensureManifest(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if err := backfiller.Run(ctx, &out); err != nil {
+		t.Fatalf("ledger stats run: %v\n%s", err, out.String())
+	}
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_ledger_stats_recent`, 4)
+	assertBackfillCount(t, db, `SELECT tx_set_operation_count FROM serving.sv_ledger_stats_recent WHERE ledger_sequence=5`, 1)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_projection_checkpoints WHERE projection_name='ledgers_recent' AND network='mainnet' AND last_ledger_sequence=6`, 1)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_projection_checkpoints WHERE projection_name='sv_ledger_stats_recent' AND network='mainnet'`, 0)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_watermarks WHERE table_name='serving.sv_ledger_stats_recent' AND complete_from=3 AND complete_thru=6`, 1)
+	assertBackfillCount(t, db, `SELECT COUNT(*) FROM serving.sv_watermarks WHERE table_name='serving.ledgers_recent'`, 0)
 }
 
 func TestByAccountOnlyProjectionSelection(t *testing.T) {
@@ -291,12 +438,40 @@ func TestCheckpointHandoffExtendsContiguousWatermark(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `INSERT INTO serving.sv_watermarks VALUES ('serving.sv_transactions_by_account', 'complete', 3, 6, current_timestamp)`); err != nil {
 		t.Fatal(err)
 	}
-	if err := backfiller.writeProjectionCheckpoints(ctx, []string{"sv_transactions_by_account"}); err != nil {
+	if err := backfiller.writeProjectionCheckpoints(ctx, []ProjectionHandoff{{CheckpointName: "sv_transactions_by_account", TargetTable: "sv_transactions_by_account"}}); err != nil {
 		t.Fatalf("writeProjectionCheckpoints: %v", err)
 	}
 
 	assertBackfillCount(t, db, `SELECT complete_from FROM serving.sv_watermarks WHERE table_name='serving.sv_transactions_by_account'`, 3)
 	assertBackfillCount(t, db, `SELECT complete_thru FROM serving.sv_watermarks WHERE table_name='serving.sv_transactions_by_account'`, 8)
+}
+
+func TestCheckpointHandoffDoesNotRewindNewerProjection(t *testing.T) {
+	ctx := context.Background()
+	db := openBackfillFixtureDB(t)
+	defer db.Close()
+	loadBackfillFixture(t, ctx, db)
+
+	backfiller := NewBackfillerWithDB(db, Config{
+		Network:       "mainnet",
+		Start:         3,
+		End:           6,
+		ServingSchema: "serving",
+	})
+	if err := backfiller.ensureServingSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := backfiller.ensureManifest(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO serving.sv_projection_checkpoints VALUES ('ledgers_recent', 'mainnet', 100, TIMESTAMP '2026-01-01 00:01:40', current_timestamp)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := backfiller.writeProjectionCheckpoints(ctx, []ProjectionHandoff{{CheckpointName: "ledgers_recent", TargetTable: "sv_ledger_stats_recent"}}); err != nil {
+		t.Fatalf("writeProjectionCheckpoints: %v", err)
+	}
+
+	assertBackfillCount(t, db, `SELECT last_ledger_sequence FROM serving.sv_projection_checkpoints WHERE projection_name='ledgers_recent' AND network='mainnet'`, 100)
 }
 
 func TestCheckpointHandoffRejectsWatermarkGap(t *testing.T) {
@@ -320,7 +495,7 @@ func TestCheckpointHandoffRejectsWatermarkGap(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `INSERT INTO serving.sv_watermarks VALUES ('serving.sv_transactions_by_account', 'complete', 3, 6, current_timestamp)`); err != nil {
 		t.Fatal(err)
 	}
-	err := backfiller.writeProjectionCheckpoints(ctx, []string{"sv_transactions_by_account"})
+	err := backfiller.writeProjectionCheckpoints(ctx, []ProjectionHandoff{{CheckpointName: "sv_transactions_by_account", TargetTable: "sv_transactions_by_account"}})
 	if err == nil || !strings.Contains(err.Error(), "not contiguous") {
 		t.Fatalf("writeProjectionCheckpoints error = %v, want non-contiguous range error", err)
 	}
@@ -390,6 +565,14 @@ func loadBackfillFixture(t *testing.T, ctx context.Context, db *sql.DB) {
 			previous_ledger_hash VARCHAR, ledger_version INTEGER, base_fee BIGINT,
 			successful_tx_count INTEGER, failed_tx_count INTEGER, operation_count INTEGER
 		)`,
+		`CREATE TABLE bronze.ledgers_row_v2 (
+			sequence BIGINT, ledger_hash VARCHAR, previous_ledger_hash VARCHAR,
+			closed_at TIMESTAMP, protocol_version INTEGER, base_fee BIGINT,
+			max_tx_set_size INTEGER, successful_tx_count INTEGER, failed_tx_count INTEGER,
+			operation_count INTEGER, tx_set_operation_count INTEGER,
+			node_id VARCHAR, signature VARCHAR, soroban_op_count INTEGER,
+			contract_events_count INTEGER, total_fee_charged BIGINT, ledger_range BIGINT
+		)`,
 		`CREATE TABLE bronze.transactions_row_v2 (
 			transaction_hash VARCHAR, ledger_sequence BIGINT, created_at TIMESTAMP, source_account VARCHAR,
 			fee_charged BIGINT, max_fee BIGINT, successful BOOLEAN, operation_count INTEGER,
@@ -399,7 +582,8 @@ func loadBackfillFixture(t *testing.T, ctx context.Context, db *sql.DB) {
 		)`,
 		`CREATE TABLE bronze.operations_row_v2 (
 			transaction_hash VARCHAR, ledger_sequence BIGINT, operation_index INTEGER,
-			transaction_index INTEGER, transaction_id BIGINT, operation_id BIGINT
+			transaction_index INTEGER, transaction_id BIGINT, operation_id BIGINT,
+			type INTEGER, transaction_successful BOOLEAN, ledger_range BIGINT
 		)`,
 		`CREATE TABLE silver.enriched_history_operations (
 			network VARCHAR, transaction_hash VARCHAR, operation_index INTEGER, ledger_sequence BIGINT,
@@ -458,17 +642,22 @@ func loadBackfillFixture(t *testing.T, ctx context.Context, db *sql.DB) {
 		`INSERT INTO silver.enriched_ledgers VALUES
 			('mainnet',3,'2026-01-01 00:00:03','h3','h2',23,100,1,0,1),
 			('mainnet',4,'2026-01-01 00:00:04','h4','h3',23,100,1,0,2),
-			('mainnet',5,'2026-01-01 00:00:05','h5','h4',23,100,0,1,1),
+			('mainnet',5,'2026-01-01 00:00:05','h5','h4',23,100,0,1,0),
 			('mainnet',6,'2026-01-01 00:00:06','h6','h5',23,100,1,0,0)`,
+		`INSERT INTO bronze.ledgers_row_v2 VALUES
+			(3,'h3','h2','2026-01-01 00:00:03',23,100,100,1,0,1,1,'node3','sig3',0,0,100,0),
+			(4,'h4','h3','2026-01-01 00:00:04',23,100,100,1,0,2,2,'node4','sig4',1,2,201,0),
+			(5,'h5','h4','2026-01-01 00:00:05',23,100,100,0,1,0,1,'node5','sig5',0,0,102,0),
+			(6,'h6','h5','2026-01-01 00:00:06',23,100,100,1,0,0,0,'node6','sig6',0,0,0,0)`,
 		`INSERT INTO bronze.transactions_row_v2 VALUES
 			('tx3',3,'2026-01-01 00:00:03','GA1',100,200,true,1,NULL,'none',NULL,10,NULL,NULL,NULL,12884905984,'env3','res3','meta3','fee3','["sig3"]'),
 			('tx4',4,'2026-01-01 00:00:04','GA2',101,201,true,2,'CC1','text','memo',11,1000,10,20,17179873280,'env4','res4','meta4','fee4','["sig4"]'),
 			('tx5',5,'2026-01-01 00:00:05','GA3',102,202,false,1,NULL,'none',NULL,12,NULL,NULL,NULL,21474840576,'env5','res5','meta5','fee5','["sig5"]')`,
 		`INSERT INTO bronze.operations_row_v2 VALUES
-			('tx3',3,0,1,12884905984,12884905985),
-			('tx4',4,0,1,17179873280,17179873281),
-			('tx4',4,1,1,17179873280,17179873282),
-			('tx5',5,0,1,21474840576,21474840577)`,
+			('tx3',3,0,1,12884905984,12884905985,1,true,0),
+			('tx4',4,0,1,17179873280,17179873281,24,true,0),
+			('tx4',4,1,1,17179873280,17179873282,1,true,0),
+			('tx5',5,0,1,21474840576,21474840577,1,false,0)`,
 		`INSERT INTO silver.enriched_history_operations VALUES
 			('mainnet','tx3',0,3,'2026-01-01 00:00:03',1,'payment','GA1','GB1','native','100',NULL,NULL,true,true,false),
 			('mainnet','tx4',0,4,'2026-01-01 00:00:04',24,'invoke_host_function','GA2',NULL,NULL,NULL,'CC1','transfer',true,false,true),
