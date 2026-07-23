@@ -712,13 +712,9 @@ func (w *Worker) extractLedger(meta LedgerMeta) (*LedgerData, error) {
 		return &LedgerData{ContractCreations: rows}, nil
 	})
 	launch("ledgers", func() (*LedgerData, error) {
-		libRows, err := extract.ExtractLedgers(libInput)
+		rows, err := extractLedgers(meta.LCM, w.config.NetworkPassphrase, meta.LedgerSequence, meta.ClosedAt, meta.LedgerRange)
 		if err != nil {
 			return nil, err
-		}
-		rows := make([]LedgerRowData, len(libRows))
-		for i, r := range libRows {
-			rows[i] = LedgerRowData(r)
 		}
 		return &LedgerData{Ledgers: rows}, nil
 	})
